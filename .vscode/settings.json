@@ -1,0 +1,7 @@
+{
+  // eslint 文件类型配置
+  "eslint.validate": [
+    "javascript",
+    "typescript"
+  ]
+}

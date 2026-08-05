@@ -1,0 +1,12 @@
+.vscode/**
+.vscode-test/**
+src/**
+node_modules/**
+out/**/*.js.map
+out/**/*.d.ts
+.gitignore
+.tsconfig.json
+README.md
+.codebuddy/**
+# 包含 media 资源 (状态栏 logo)
+!media/**

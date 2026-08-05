@@ -1,0 +1,82 @@
+{
+  "name": "vscode-gitk",
+  "displayName": "vscode-gitk",
+  "description": "A gitk-style commit graph panel for VS Code",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "enabledApiProposals": [
+    "multiDiffEditor"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "*"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "vscode-gitk.open",
+        "title": "Open Gitk Panel",
+        "category": "Gitk"
+      },
+      {
+        "command": "vscode-gitk.refresh",
+        "title": "Refresh Gitk",
+        "category": "Gitk"
+      },
+      {
+        "command": "vscode-gitk.selectCommit",
+        "title": "Select Commit",
+        "category": "Gitk",
+        "enablement": "false"
+      }
+    ],
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "vscode-gitk",
+          "title": "Gitk",
+          "icon": "media/gitk-logo.png"
+        }
+      ]
+    },
+    "views": {
+      "vscode-gitk": [
+        {
+          "type": "webview",
+          "id": "vscode-gitk.panelView",
+          "name": "Gitk",
+          "contextualTitle": "Gitk"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "vscode-gitk.refresh",
+          "when": "view == vscode-gitk.panelView",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^3.9.2",
+    "typescript": "^5.1.0"
+  },
+  "dependencies": {
+    "@vscode/codicons": "^0.0.36"
+  }
+}

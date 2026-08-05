@@ -1,0 +1,6 @@
+{
+  // 推荐安装的扩展
+  "recommendations": [
+    "dbaeumer.vscode-eslint"
+  ]
+}
