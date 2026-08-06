@@ -219,7 +219,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     this.customDiffPanel.hide();
                     this.retryCount = 0;
                     this.refreshGeneration++;
-                    this.refreshWithRetry();
+                    void this.refreshWithRetry();
                 }
                 break;
             case 'selectBranch':
@@ -230,7 +230,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.customDiffPanel.hide();
                 this.retryCount = 0;
                 this.refreshGeneration++;
-                this.refreshWithRetry();
+                void this.refreshWithRetry();
                 break;
             case 'gitSync':
                 if (msg.action === 'fetch' || msg.action === 'pull' || msg.action === 'push') {
@@ -327,8 +327,27 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   body { font-family: var(--vscode-editor-font-family, sans-serif); font-size: 12px; background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); display: flex; flex-direction: column; height: 100%; }
   #header { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--vscode-panel-border); flex-shrink: 0; min-width: 0; }
   #header button { border: none; cursor: pointer; border-radius: 2px; }
-  #header select { width: auto; min-width: 0; max-width: 42%; height: 24px; background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 2px; padding: 0 4px; font-size: 11px; }
-  #repositorySelect, #branchSelect { flex: 0 1 auto; }
+  .dropdown { position: relative; flex: 0 1 auto; min-width: 0; }
+  #repositoryDropdown { width: min(42vw, 220px); }
+  #branchDropdown { width: min(36vw, 180px); }
+  .dropdown-current { display: flex; align-items: center; gap: 6px; width: 100%; height: 26px; padding: 0 7px; color: var(--vscode-dropdown-foreground, var(--vscode-foreground)); background: var(--vscode-dropdown-background, var(--vscode-editorWidget-background)); border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border)); border-radius: 4px; font: inherit; font-size: 11px; text-align: left; cursor: pointer; }
+  .dropdown-current:hover:not(:disabled), .dropdown.open .dropdown-current { background: var(--vscode-toolbar-hoverBackground); border-color: var(--vscode-focusBorder); }
+  .dropdown-current:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  .dropdown-current:disabled { cursor: default; opacity: .6; }
+  .dropdown-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dropdown-chevron { margin-left: auto; color: var(--vscode-descriptionForeground); font-size: 12px; }
+  .dropdown.open .dropdown-chevron { transform: rotate(180deg); }
+  .dropdown-menu { position: absolute; top: calc(100% + 3px); left: 0; z-index: 20; display: none; flex-direction: column; width: max(100%, 190px); padding: 5px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: var(--vscode-menu-background, var(--vscode-editorWidget-background)); border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border)); border-radius: 5px; box-shadow: 0 4px 14px rgba(0, 0, 0, .28); }
+  .dropdown.open .dropdown-menu { display: flex; }
+  .dropdown-filter { width: 100%; height: 25px; flex: 0 0 auto; margin-bottom: 4px; padding: 0 6px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); border-radius: 3px; font: inherit; font-size: 11px; }
+  .dropdown-filter:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  .dropdown-options { min-height: 0; flex: 1 1 auto; overflow-y: auto; }
+  .dropdown-option, .dropdown-group { width: 100%; min-height: 24px; padding: 4px 7px; overflow: hidden; border: 0; border-radius: 3px; font: inherit; font-size: 11px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+  .dropdown-option { color: inherit; background: transparent; cursor: pointer; }
+  .dropdown-option:hover, .dropdown-option:focus-visible { color: var(--vscode-menu-selectionForeground); background: var(--vscode-menu-selectionBackground); outline: none; }
+  .dropdown-option.selected::before { content: '✓'; display: inline-block; width: 14px; color: var(--vscode-menu-selectionForeground, var(--vscode-textLink-foreground)); }
+  .dropdown-group { padding-bottom: 1px; color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 600; cursor: default; }
+  .dropdown-empty { padding: 8px 7px; color: var(--vscode-descriptionForeground); font-size: 11px; }
   #toolbarActions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
   .toolbar-icon { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; color: var(--vscode-icon-foreground); background: transparent; }
   .toolbar-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
@@ -356,12 +375,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .file-path { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .file-folder { opacity: 0.55; }
   #filesEmpty { padding: 8px 10px; color: var(--vscode-descriptionForeground); }
-  .commit-header, .commit-row { display: grid; grid-template-columns: var(--graph-width) var(--refs-width) var(--hash-width) var(--message-width) var(--author-width) var(--date-width); align-items: center; min-width: max-content; }
+  .commit-header, .commit-row { display: grid; grid-template-columns: var(--graph-width) var(--hash-width) var(--message-width) var(--author-width) var(--date-width); align-items: center; min-width: max-content; }
   .commit-header { position: sticky; top: 0; z-index: 1; height: 26px; background: var(--vscode-editor-background); border-bottom: 1px solid var(--vscode-panel-border); font-weight: 600; }
   .commit-row { min-height: 26px; height: auto; cursor: pointer; border-bottom: 1px solid transparent; }
   .commit-row:hover { background: var(--vscode-list-hoverBackground); }
   .commit-row.expanded { align-items: start; }
-  .commit-description { display: none; grid-column: 4 / -1; padding: 0 5px 7px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vscode-descriptionForeground); line-height: 17px; cursor: text; }
+  .commit-row.expanded .col-graph { grid-row: span 2; }
+  .commit-description { display: none; grid-column: 2 / -1; padding: 0 5px 7px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vscode-descriptionForeground); line-height: 17px; cursor: text; }
   .commit-row.expanded .commit-description { display: block; }
   .commit-description:empty { display: none; }
   .commit-row.selected { background: var(--vscode-list-activeSelectionBackground, #094771); }
@@ -372,31 +392,37 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .commit-header > div { position: relative; min-width: 0; padding: 5px 14px 5px 0; overflow: hidden; white-space: nowrap; text-align: left; }
   .commit-header .resize-handle { position: absolute; top: 0; right: 0; width: 7px; height: 100%; cursor: col-resize; }
   .commit-header .resize-handle:hover { background: var(--vscode-focusBorder); }
-  .col-graph, .col-hash, .col-refs, .col-message, .col-author, .col-date { min-width: 0; overflow: hidden; white-space: nowrap; padding: 0 5px; text-align: left; }
-  .col-graph { display: flex; align-items: center; justify-content: flex-start; }
+  .col-graph, .col-hash, .col-message, .col-author, .col-date { min-width: 0; overflow: hidden; white-space: nowrap; padding: 0 5px; text-align: left; }
+  .col-graph { display: flex; align-self: stretch; align-items: flex-start; justify-content: flex-start; padding-left: 0; overflow: visible; }
   .graph-svg { flex: 0 0 auto; }
-  .col-refs { display: flex; align-items: center; justify-content: flex-start; gap: 3px; }
-  .col-refs:empty::after { content: '—'; color: var(--vscode-descriptionForeground); opacity: .55; }
+  .graph-refs { display: flex; align-items: center; align-self: flex-start; min-width: 0; min-height: 26px; gap: 3px; overflow: hidden; white-space: nowrap; }
+  .graph-refs:empty::after { content: '—'; color: var(--vscode-descriptionForeground); opacity: .55; }
   .col-message { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; overflow-wrap: anywhere; line-height: 16px; }
   .col-hash { font-family: var(--vscode-editor-font-family, monospace); opacity: 0.85; color: var(--vscode-descriptionForeground, inherit); }
   .col-message, .col-author, .col-date { text-overflow: ellipsis; }
   .col-message { color: var(--vscode-foreground, inherit); }
   .col-author { opacity: 0.75; }
   .col-date { opacity: 0.65; font-variant-numeric: tabular-nums; }
-  .ref-label { display: inline-block; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 1px 6px; border-radius: 3px; font-size: 10px; }
-  .ref-head { background: #e06c75; color: #fff; }
-  .ref-branch { background: #61afef; color: #fff; }
-  .ref-tag { background: #98c379; color: #fff; }
-  .ref-remote { background: #c678dd; color: #fff; }
+  .ref-label { display: inline-block; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; color: var(--vscode-badge-foreground); background: var(--vscode-badge-background); border: 1px solid color-mix(in srgb, var(--vscode-badge-background) 74%, var(--vscode-foreground)); border-radius: 3px; padding: 1px 5px; font-size: 10px; line-height: 16px; }
+  .ref-head { color: var(--vscode-editor-background); background: var(--vscode-testing-iconPassed, #89d185); border-color: var(--vscode-testing-iconPassed, #89d185); }
+  .ref-branch { color: var(--vscode-editor-background); background: var(--vscode-textLink-foreground, #3794ff); border-color: var(--vscode-textLink-foreground, #3794ff); }
+  .ref-tag { color: var(--vscode-editor-background); background: var(--vscode-gitDecoration-untrackedResourceForeground, #73c991); border-color: var(--vscode-gitDecoration-untrackedResourceForeground, #73c991); }
+  .ref-remote { color: var(--vscode-editor-background); background: var(--vscode-charts-purple, #b180d7); border-color: var(--vscode-charts-purple, #b180d7); }
   svg { display: block; }
-  .dot { stroke: #fff; stroke-width: 1; }
+  .dot { stroke: var(--vscode-editor-background); stroke-width: 1; }
   #loading { padding: 20px; text-align: center; opacity: 0.6; }
 </style>
 </head>
 <body>
   <div id="header">
-    <select id="repositorySelect" title="切换仓库或子仓库" disabled><option value="">加载仓库...</option></select>
-    <select id="branchSelect" title="切换分支" disabled><option value="">加载分支...</option></select>
+    <div class="dropdown" id="repositoryDropdown">
+      <button class="dropdown-current" type="button" title="切换仓库或子仓库" aria-expanded="false" disabled><span class="dropdown-label">加载仓库...</span><span class="dropdown-chevron">⌄</span></button>
+      <div class="dropdown-menu" role="menu"><input class="dropdown-filter" type="text" placeholder="筛选仓库" aria-label="筛选仓库"><div class="dropdown-options"></div></div>
+    </div>
+    <div class="dropdown" id="branchDropdown">
+      <button class="dropdown-current" type="button" title="切换分支" aria-expanded="false" disabled><span class="dropdown-label">加载分支...</span><span class="dropdown-chevron">⌄</span></button>
+      <div class="dropdown-menu" role="menu"><input class="dropdown-filter" type="text" placeholder="筛选分支" aria-label="筛选分支"><div class="dropdown-options"></div></div>
+    </div>
     <span class="count" id="countLabel"></span>
     <div id="toolbarActions">
       <button class="toolbar-icon" id="fetchBtn" title="获取" aria-label="获取"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8a5 5 0 0 1 9-3M12 2v3H9M8 5v7M5.5 9.5 8 12l2.5-2.5"/></svg></button>
@@ -445,6 +471,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     if (resizeFrame) return;
     resizeFrame = requestAnimationFrame(function() {
       resizeFrame = 0;
+      updateOpenDropdownHeights();
       const graph = document.getElementById('graph');
       if (commits.length > 0 && graph && graph.clientWidth !== graphViewportWidth) {
         render();
@@ -453,12 +480,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   });
 
   function setRepositoryLoading() {
-    const repositorySelect = document.getElementById('repositorySelect');
-    const branchSelect = document.getElementById('branchSelect');
-    repositorySelect.disabled = true;
-    repositorySelect.innerHTML = '<option value="">加载仓库...</option>';
-    branchSelect.disabled = true;
-    branchSelect.innerHTML = '<option value="">加载分支...</option>';
+    closeDropdowns();
+    repositoryDropdown.current.disabled = true;
+    repositoryDropdown.label.textContent = '加载仓库...';
+    repositoryDropdown.options.innerHTML = '';
+    branchDropdown.current.disabled = true;
+    branchDropdown.label.textContent = '加载分支...';
+    branchDropdown.options.innerHTML = '';
   }
   document.getElementById('refreshBtn').addEventListener('click', function() {
     setRepositoryLoading();
@@ -475,12 +503,80 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   document.getElementById('filesModeBtn').addEventListener('click', function() {
     vscode.postMessage({ type: 'toggleFilesMode' });
   });
-  document.getElementById('repositorySelect').addEventListener('change', function(event) {
+  function createDropdown(id, onSelect) {
+    const root = document.getElementById(id);
+    const current = root.querySelector('.dropdown-current');
+    const label = root.querySelector('.dropdown-label');
+    const filter = root.querySelector('.dropdown-filter');
+    const options = root.querySelector('.dropdown-options');
+    const menu = root.querySelector('.dropdown-menu');
+    const dropdown = { root: root, current: current, label: label, menu: menu, filter: filter, options: options, onSelect: onSelect };
+    current.addEventListener('click', function() {
+      if (current.disabled) return;
+      const opening = !root.classList.contains('open');
+      closeDropdowns();
+      if (opening) {
+        root.classList.add('open');
+        updateDropdownHeight(dropdown);
+        current.setAttribute('aria-expanded', 'true');
+        filter.value = '';
+        filter.dispatchEvent(new Event('input'));
+        filter.focus();
+      }
+    });
+    filter.addEventListener('input', function() {
+      const query = filter.value.trim().toLocaleLowerCase();
+      let visibleOptions = 0;
+      options.querySelectorAll('.dropdown-option').forEach(function(option) {
+        const visible = !query || option.textContent.toLocaleLowerCase().includes(query);
+        option.hidden = !visible;
+        if (visible) visibleOptions++;
+      });
+      let empty = options.querySelector('.dropdown-empty');
+      if (!visibleOptions) {
+        if (!empty) { empty = document.createElement('div'); empty.className = 'dropdown-empty'; empty.textContent = '未找到结果'; options.appendChild(empty); }
+      } else if (empty) {
+        empty.remove();
+      }
+    });
+    return dropdown;
+  }
+
+  function updateDropdownHeight(dropdown) {
+    const panelHeight = Math.max(document.documentElement.clientHeight, document.body.clientHeight);
+    dropdown.menu.style.maxHeight = Math.floor(panelHeight / 2) + 'px';
+  }
+
+  function updateOpenDropdownHeights() {
+    [repositoryDropdown, branchDropdown].forEach(function(dropdown) {
+      if (dropdown && dropdown.root.classList.contains('open')) updateDropdownHeight(dropdown);
+    });
+  }
+
+  function closeDropdown(dropdown) {
+    dropdown.root.classList.remove('open');
+    dropdown.current.setAttribute('aria-expanded', 'false');
+  }
+
+  function closeDropdowns() {
+    if (repositoryDropdown) closeDropdown(repositoryDropdown);
+    if (branchDropdown) closeDropdown(branchDropdown);
+  }
+
+  const repositoryDropdown = createDropdown('repositoryDropdown', function(path) {
     setRepositoryLoading();
-    vscode.postMessage({ type: 'selectRepository', path: event.target.value });
+    vscode.postMessage({ type: 'selectRepository', path: path });
   });
-  document.getElementById('branchSelect').addEventListener('change', function(event) {
-    vscode.postMessage({ type: 'selectBranch', name: event.target.value });
+  const branchDropdown = createDropdown('branchDropdown', function(name) {
+    closeDropdown(branchDropdown);
+    vscode.postMessage({ type: 'selectBranch', name: name });
+  });
+
+  document.addEventListener('click', function(event) {
+    if (!event.target.closest('.dropdown')) closeDropdowns();
+  });
+  document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape') closeDropdowns();
   });
   document.getElementById('panelResizeHandle').addEventListener('mousedown', function(event) {
     const workspace = document.getElementById('workspace');
@@ -521,24 +617,48 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
   });
 
-  function renderSelectors(msg) {
-    const repositorySelect = document.getElementById('repositorySelect');
-    const branchSelect = document.getElementById('branchSelect');
-    const repositories = msg.repositories || [];
-    repositorySelect.disabled = repositories.length === 0;
-    repositorySelect.innerHTML = repositories.map(function(repo) {
-      const prefix = repo.description === 'repo' ? '◆ ' : '';
-      return '<option value="' + escapeAttr(repo.path) + '"' + (repo.path === msg.selectedRepository ? ' selected' : '') + ' title="' + escapeAttr(repo.description || '') + '">' + escapeHtml(prefix + repo.label) + '</option>';
-    }).join('') || '<option value="">未找到仓库</option>';
-    const localBranches = (msg.branches || []).filter(function(branch) { return branch.description !== '远程分支'; });
-    const remoteBranches = (msg.branches || []).filter(function(branch) { return branch.description === '远程分支'; });
-    branchSelect.disabled = false;
-    branchSelect.innerHTML = (localBranches.length ? '<optgroup label="本地分支">' + localBranches.map(function(branch) { return renderBranchOption(branch, msg.selectedBranch); }).join('') + '</optgroup>' : '') +
-      (remoteBranches.length ? '<optgroup label="远程分支">' + remoteBranches.map(function(branch) { return renderBranchOption(branch, msg.selectedBranch); }).join('') + '</optgroup>' : '') || '<option value="" selected>未找到分支</option>';
+  function renderDropdownOptions(dropdown, entries, selectedValue) {
+    const options = entries.filter(function(entry) { return !entry.group; });
+    const selected = options.find(function(entry) { return entry.value === selectedValue; });
+    dropdown.current.disabled = options.length === 0;
+    dropdown.label.textContent = selected ? selected.label : '未找到选项';
+    dropdown.options.innerHTML = '';
+    entries.forEach(function(entry) {
+      if (entry.group) {
+        const group = document.createElement('div');
+        group.className = 'dropdown-group';
+        group.textContent = entry.group;
+        dropdown.options.appendChild(group);
+        return;
+      }
+      const option = document.createElement('button');
+      option.type = 'button';
+      option.className = 'dropdown-option' + (entry.value === selectedValue ? ' selected' : '');
+      option.textContent = entry.label;
+      option.title = entry.title || entry.label;
+      option.addEventListener('click', function() { dropdown.onSelect(entry.value); });
+      dropdown.options.appendChild(option);
+    });
   }
 
-  function renderBranchOption(branch, selectedBranch) {
-    return '<option value="' + escapeAttr(branch.name) + '"' + (branch.name === selectedBranch ? ' selected' : '') + '>' + escapeHtml(branch.label) + '</option>';
+  function renderSelectors(msg) {
+    const repositories = msg.repositories || [];
+    renderDropdownOptions(repositoryDropdown, repositories.map(function(repo) {
+      return { value: repo.path, label: (repo.description === 'repo' ? '◆ ' : '') + repo.label, title: repo.path };
+    }), msg.selectedRepository);
+    const branches = msg.branches || [];
+    const localBranches = branches.filter(function(branch) { return branch.description !== '远程分支'; });
+    const remoteBranches = branches.filter(function(branch) { return branch.description === '远程分支'; });
+    const branchEntries = [];
+    if (localBranches.length) {
+      branchEntries.push({ group: '本地分支' });
+      localBranches.forEach(function(branch) { branchEntries.push({ value: branch.name, label: branch.label, title: branch.name }); });
+    }
+    if (remoteBranches.length) {
+      branchEntries.push({ group: '远程分支' });
+      remoteBranches.forEach(function(branch) { branchEntries.push({ value: branch.name, label: branch.label, title: branch.name }); });
+    }
+    renderDropdownOptions(branchDropdown, branchEntries, msg.selectedBranch);
   }
 
   function revealSelectedFile() {
@@ -645,9 +765,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     graphViewportWidth = graph ? graph.clientWidth : 0;
     const graphW = naturalGraphW;
 
+    const refsW = columnWidth(commits.map(function(c) { return (c.refs || []).join(' '); }), 1) + 6 + 'ch';
+    const graphColumnW = 'calc(' + graphW + 'px + ' + refsW + ')';
     let html = '<div class="commit-header">';
-    html += headerCell('分支图', 'graph');
-    html += headerCell('引用', 'refs');
+    html += headerCell('分支图 / 引用', 'graph');
     html += headerCell('Commit ID', 'hash');
     html += headerCell('描述', 'message');
     html += headerCell('作者', 'author');
@@ -655,7 +776,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     html += '</div>';
     function workingTreeRow(hash, label, count) {
       return '<div class="commit-row working-tree" data-hash="' + hash + '">' +
-        '<div class="col-graph"></div><div class="col-refs"></div><div class="col-hash">—</div>' +
+        '<div class="col-graph"></div><div class="col-hash">—</div>' +
         '<div class="col-message working-tree-label">' + label + '</div>' +
         '<div class="col-author working-tree-count">' + count + ' 个文件</div><div class="col-date"></div></div>';
     }
@@ -671,8 +792,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
           refHtml += '<span class="ref-label ' + refClass(r) + '" title="' + escapeAttr(r) + '">' + escapeHtml(r) + '</span>';
         }
       }
-      html += '<div class="col-graph"><svg class="graph-svg" width="' + graphW + '" height="' + ROW_H + '" viewBox="0 0 ' + naturalGraphW + ' ' + ROW_H + '" preserveAspectRatio="none"></svg></div>';
-      html += '<div class="col-refs">' + refHtml + '</div>';
+      html += '<div class="col-graph"><svg class="graph-svg" width="' + graphW + '" height="' + ROW_H + '" viewBox="0 0 ' + naturalGraphW + ' ' + ROW_H + '" preserveAspectRatio="none"></svg><div class="graph-refs">' + refHtml + '</div></div>';
       html += '<div class="col-hash">' + escapeHtml(c.shortHash) + '</div>';
       html += '<div class="col-message" title="' + escapeAttr(c.message) + '">' + escapeHtml(c.message) + '</div>';
       const authorPreview = c.authorEmail ? c.author + ' <' + c.authorEmail + '>' : c.author;
@@ -681,8 +801,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       html += '<div class="commit-description">' + escapeHtml(c.body || '') + '</div>';
       html += '</div>';
     }
-    setColumnWidth(list, 'graph', (graphW + 10) + 'px', true);
-    setColumnWidth(list, 'refs', columnWidth(commits.map(c => (c.refs || []).join(' ')), 1) + 6 + 'ch', true);
+    setColumnWidth(list, 'graph', graphColumnW, true);
     setColumnWidth(list, 'hash', columnWidth(commits.map(c => c.shortHash), 1) + 6 + 'ch', true);
     setColumnWidth(list, 'message', columnWidth(commits.map(c => c.message), 1) + 6 + 'ch', true);
     setColumnWidth(list, 'author', columnWidth(commits.map(c => c.authorEmail ? c.author + ' <' + c.authorEmail + '>' : c.author), 1) + 6 + 'ch', true);
@@ -700,19 +819,16 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       row.addEventListener('click', function() {
         const hash = row.getAttribute('data-hash');
         if (hash && row.dataset.hasDescription === 'true') {
-          const willExpand = !row.classList.contains('expanded');
+          const willExpand = !expandedCommits.has(hash);
           expandedCommits.clear();
-          rows.forEach(function(r) { r.classList.remove('expanded'); });
-          if (willExpand) {
-            row.classList.add('expanded');
-            expandedCommits.add(hash);
-          }
+          if (willExpand) expandedCommits.add(hash);
+          if (hash) vscode.postMessage({ type: 'selectCommit', hash: hash });
+          render();
+          return;
         }
         rows.forEach(function(r) { r.classList.remove('selected'); });
         row.classList.add('selected');
-        if (hash) {
-          vscode.postMessage({ type: 'selectCommit', hash: hash });
-        }
+        if (hash) vscode.postMessage({ type: 'selectCommit', hash: hash });
       });
     });
 
@@ -721,7 +837,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
   function drawSvg(svg, idx, graphW, rowH, laneW, dotR) {
     const c = commits[idx];
+    const expanded = expandedCommits.has(c.hash);
+    const svgH = expanded ? svg.closest('.commit-row').getBoundingClientRect().height : rowH;
     const y = rowH / 2;
+    const detailsBottom = Math.max(rowH, svgH - 1);
+    svg.setAttribute('height', String(svgH));
+    svg.setAttribute('viewBox', '0 0 ' + graphW + ' ' + svgH);
     let content = '';
 
     if (c.lanes) {
@@ -730,10 +851,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const x1 = l.fromLane * laneW + laneW / 2 + 5;
         const x2 = l.toLane * laneW + laneW / 2 + 5;
         if (x1 === x2) {
-          content += '<line x1="' + x1 + '" y1="0" x2="' + x2 + '" y2="' + rowH + '" stroke="' + l.color + '" stroke-width="1.5"/>';
+          content += '<line x1="' + x1 + '" y1="0" x2="' + x2 + '" y2="' + detailsBottom + '" stroke="' + l.color + '" stroke-width="1.5"/>';
         } else {
-          const cpx = (x1 + x2) / 2;
-          content += '<path d="M' + x1 + ',' + rowH + ' C' + x1 + ',' + (rowH * 0.5) + ' ' + x2 + ',' + (rowH * 0.5) + ' ' + x2 + ',0" fill="none" stroke="' + l.color + '" stroke-width="1.5"/>';
+          content += '<path d="M' + x1 + ',' + detailsBottom + ' C' + x1 + ',' + (detailsBottom * 0.5) + ' ' + x2 + ',' + (detailsBottom * 0.5) + ' ' + x2 + ',0" fill="none" stroke="' + l.color + '" stroke-width="1.5"/>';
         }
       }
     }
