@@ -458,7 +458,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .file-path { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .file-folder { opacity: 0.55; }
   #filesEmpty { padding: 8px 10px; color: var(--vscode-descriptionForeground); }
-  .commit-header, .commit-row { display: grid; grid-template-columns: var(--graph-width) var(--hash-width) var(--message-width) var(--author-width) var(--date-width); align-items: center; min-width: max-content; }
+  .commit-header, .commit-row { display: grid; grid-template-columns: var(--graph-width) var(--message-width) var(--author-width) var(--hash-width) var(--date-width); align-items: center; min-width: max-content; }
   .commit-header { position: sticky; top: 0; z-index: 1; height: 30px; margin: 0; padding: 0 10px; color: var(--vscode-tab-activeForeground); background: var(--vscode-editorWidget-background, var(--vscode-tab-activeBackground)); border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); box-sizing: border-box; font-weight: 600; }
   .commit-row { min-height: 26px; height: auto; cursor: pointer; border-bottom: 1px solid transparent; }
   .commit-row:hover { background: var(--vscode-list-hoverBackground); }
@@ -515,7 +515,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   </div>
   <main id="workspace">
     <div id="graph">
-      <div id="commitHeader" class="commit-header"><div>分支图 / 引用</div><div>Commit ID</div><div>描述</div><div>作者</div><div>时间</div></div>
+      <div id="commitHeader" class="commit-header"><div>分支图 / 引用</div><div>描述</div><div>作者</div><div>Commit ID</div><div>时间</div></div>
       <div id="loading">加载中...</div>
       <div id="commitList" style="display:none;"></div>
     </div>
@@ -937,18 +937,17 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     function workingTreeRow(hash, label, count) {
       const selected = selectedCommitHash === hash ? ' selected' : '';
       return '<div class="commit-row working-tree' + selected + '" data-hash="' + hash + '">' +
-        '<div class="col-graph"></div><div class="col-hash">—</div>' +
-        '<div class="col-message working-tree-label">' + label + '</div>' +
-        '<div class="col-author working-tree-count">' + count + ' 个文件</div><div class="col-date"></div></div>';
+        '<div class="col-graph"></div><div class="col-message working-tree-label">' + label + '</div>' +
+        '<div class="col-author working-tree-count">' + count + ' 个文件</div><div class="col-hash">—</div><div class="col-date"></div></div>';
     }
     if (changesCount > 0) html += workingTreeRow('changes', 'Changes', changesCount);
     if (stagedCount > 0) html += workingTreeRow('staged', 'Staged Changes', stagedCount);
     for (let i = 0; i < commits.length; i++) {
       const c = commits[i];
       const commitKey = c.repositoryPath + ':' + c.hash;
-      const expanded = c.body && c.body.trim() && expandedCommits.has(commitKey);
+      const expanded = expandedCommits.has(commitKey);
       const selected = selectedCommitHash === c.hash && selectedCommitRepositoryPath === c.repositoryPath;
-      html += '<div class="commit-row' + (expanded ? ' expanded' : '') + (selected ? ' selected' : '') + '" data-hash="' + escapeAttr(c.hash) + '" data-repository-path="' + escapeAttr(c.repositoryPath) + '" data-row="' + i + '" data-has-description="' + (c.body && c.body.trim() ? 'true' : 'false') + '">';
+      html += '<div class="commit-row' + (expanded ? ' expanded' : '') + (selected ? ' selected' : '') + '" data-hash="' + escapeAttr(c.hash) + '" data-repository-path="' + escapeAttr(c.repositoryPath) + '" data-row="' + i + '" data-has-description="true">';
       let refHtml = '';
       if (c.refs && c.refs.length) {
         for (const r of c.refs) {
@@ -956,12 +955,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
       }
       html += '<div class="col-graph"><svg class="graph-svg" width="' + graphW + '" height="' + ROW_H + '" viewBox="0 0 ' + naturalGraphW + ' ' + ROW_H + '" preserveAspectRatio="none"></svg><div class="graph-refs">' + refHtml + '</div></div>';
-      html += '<div class="col-hash">' + escapeHtml(c.shortHash) + '</div>';
       html += '<div class="col-message" title="' + escapeAttr(c.message) + '">' + escapeHtml(c.message) + '</div>';
       const authorPreview = c.authorEmail ? c.author + ' <' + c.authorEmail + '>' : c.author;
       html += '<div class="col-author" title="' + escapeAttr(authorPreview) + '">' + escapeHtml(authorPreview) + '</div>';
+      html += '<div class="col-hash">' + escapeHtml(c.shortHash) + '</div>';
       html += '<div class="col-date" title="' + escapeAttr(c.authorDateLabel) + '">' + escapeHtml(c.authorDateLabel) + '</div>';
-      html += '<div class="commit-description">' + escapeHtml(c.body || '') + '</div>';
+      const description = [c.body || '', 'Commit ID: ' + c.hash, 'Author: ' + authorPreview].filter(function(line) { return line; }).join('\\n');
+      html += '<div class="commit-description">' + escapeHtml(description) + '</div>';
       html += '</div>';
     }
     setColumnWidth(list, 'graph', graphColumnW, true);
@@ -979,7 +979,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         svg.setAttribute('viewBox', '0 0 ' + naturalGraphW + ' ' + ROW_H);
         drawSvg(svg, Number(row.getAttribute('data-row')), graphW, ROW_H, LANE_W, DOT_R);
       }
-      row.addEventListener('click', function() {
+      row.addEventListener('click', function(event) {
+        if (event.target && event.target.closest('.commit-description')) return;
         const hash = row.getAttribute('data-hash');
         const repositoryPath = row.getAttribute('data-repository-path');
         const commitKey = repositoryPath + ':' + hash;

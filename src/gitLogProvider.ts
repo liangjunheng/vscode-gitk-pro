@@ -251,6 +251,31 @@ async function getGitRefs(rootUri: vscode.Uri): Promise<GitRefRecord[]> {
     });
 }
 
+interface CommitAuthorDetails {
+    name: string;
+    email: string;
+    date: string;
+}
+
+async function getCommitAuthorDetails(rootUri: vscode.Uri, hashes: readonly string[]): Promise<Map<string, CommitAuthorDetails>> {
+    if (hashes.length === 0) { return new Map(); }
+    try {
+        const { stdout } = await execFileAsync('git', [
+            '-C', rootUri.fsPath, 'show', '-s', '--format=%H%x00%an%x00%ae%x00%aI%x00', ...hashes,
+        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+        const values = stdout.split('\0');
+        const details = new Map<string, CommitAuthorDetails>();
+        for (let index = 0; index + 3 < values.length; index += 4) {
+            const [rawHash, name, email, date] = values.slice(index, index + 4);
+            const hash = rawHash.trim();
+            if (hash) { details.set(hash, { name, email, date: date.trim() }); }
+        }
+        return details;
+    } catch {
+        return new Map();
+    }
+}
+
 export async function getGitBranches(rootUri: vscode.Uri): Promise<GitBranchOption[]> {
     try {
         const refs = await getGitRefs(rootUri);
@@ -309,6 +334,7 @@ export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, re
         seenHashes.add(entry.hash);
         return true;
     });
+    const authorDetailsByHash = await getCommitAuthorDetails(rootUri, logEntries.map(entry => entry.hash));
     const refsByCommit = new Map<string, string[]>();
     for (const ref of gitRefs) {
         const name = ref.name.startsWith('refs/tags/') ? `tag: ${ref.label}` : ref.label;
@@ -324,10 +350,11 @@ export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, re
         const matchedRefs = refsByCommit.get(entry.hash) || [];
         const authorObject = typeof entry.author === 'object' ? entry.author : undefined;
         const committerObject = typeof entry.committer === 'object' ? entry.committer : undefined;
-        const authorName = authorObject?.name || (typeof entry.author === 'string' ? entry.author : '') || committerObject?.name || (typeof entry.committer === 'string' ? entry.committer : '');
-        const authorEmail = authorObject?.email || committerObject?.email || '';
+        const gitAuthor = authorDetailsByHash.get(entry.hash);
+        const authorName = authorObject?.name || (typeof entry.author === 'string' ? entry.author : '') || gitAuthor?.name || committerObject?.name || (typeof entry.committer === 'string' ? entry.committer : '');
+        const authorEmail = authorObject?.email || gitAuthor?.email || committerObject?.email || '';
         const authorTimestamp = authorObject?.timestamp || committerObject?.timestamp;
-        const authorDate = entry.authorDate || (authorTimestamp ? new Date(authorTimestamp * 1000) : undefined);
+        const authorDate = entry.authorDate || (authorTimestamp ? new Date(authorTimestamp * 1000) : undefined) || (gitAuthor?.date ? new Date(gitAuthor.date) : undefined);
         const dateIso = authorDate instanceof Date && !isNaN(authorDate.getTime()) ? authorDate.toISOString() : '';
         return {
             hash: entry.hash,
