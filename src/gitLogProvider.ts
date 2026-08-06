@@ -290,16 +290,25 @@ export async function runGitSync(rootUri: vscode.Uri, action: 'fetch' | 'pull' |
 }
 
 // 获取仓库提交列表 (兼容 web)
-export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, ref?: string): Promise<GitCommit[]> {
+export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, refs: readonly string[] = []): Promise<GitCommit[]> {
     const api = await getGitApi();
     if (!api) { throw new Error('Git 扩展不可用'); }
     const repo = findRepository(api, rootUri);
     if (!repo) { throw new Error('未找到 Git 仓库'); }
 
-    const [logEntries, gitRefs] = await Promise.all([
-        repo.log({ maxEntries: limit, hash: ref }),
+    const logRequests = refs.length > 0
+        ? refs.map(ref => repo.log({ maxEntries: limit, hash: ref }))
+        : [repo.log({ maxEntries: limit })];
+    const [logGroups, gitRefs] = await Promise.all([
+        Promise.all(logRequests),
         getGitRefs(rootUri).catch(() => []),
     ]);
+    const seenHashes = new Set<string>();
+    const logEntries = logGroups.flat().filter(entry => {
+        if (seenHashes.has(entry.hash)) { return false; }
+        seenHashes.add(entry.hash);
+        return true;
+    });
     const refsByCommit = new Map<string, string[]>();
     for (const ref of gitRefs) {
         const name = ref.name.startsWith('refs/tags/') ? `tag: ${ref.label}` : ref.label;

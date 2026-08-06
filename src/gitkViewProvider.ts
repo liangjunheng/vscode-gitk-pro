@@ -11,6 +11,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private isFocused = false;
     private refreshInFlight?: Promise<void>;
     private refreshGeneration = 0;
+    private branchRefreshGeneration = 0;
     private readonly onDidChangeDiffAvailabilityEmitter = new vscode.EventEmitter<void>();
     readonly onDidChangeDiffAvailability = this.onDidChangeDiffAvailabilityEmitter.event;
     private files: CommitFile[] = [];
@@ -23,7 +24,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private repositories: GitRepositoryOption[] = [];
     private branches: GitBranchOption[] = [];
     private selectedRepository?: string;
-    private selectedBranch?: string;
+    private selectedBranches: string[] = [];
     private readonly customDiffPanel: CustomDiffPanel;
 
     constructor(private readonly context: vscode.ExtensionContext) {
@@ -97,7 +98,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     async refreshWithRetry(): Promise<void> {
         const generation = ++this.refreshGeneration;
         await this.refresh();
-        if (generation === this.refreshGeneration && this.commits.length === 0 && this.retryCount < this.maxRetry) {
+        if (generation === this.refreshGeneration && this.selectedBranches.length === 0 && this.commits.length === 0 && this.retryCount < this.maxRetry) {
             this.retryCount++;
             setTimeout(() => {
                 if (generation === this.refreshGeneration) {
@@ -121,9 +122,19 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private async refreshInternal(): Promise<void> {
         if (!this.view) { return; }
         this.setLoading(true);
-        await this.refreshSelectors();
+        try {
+            await this.refreshSelectors();
+        } catch (error) {
+            this.setLoading(false);
+            this.view.webview.postMessage({
+                type: 'error',
+                message: `无法加载仓库或分支: ${error instanceof Error ? error.message : String(error)}`,
+            });
+            return;
+        }
         const rootUri = this.getRepoRootUri();
         if (!rootUri) {
+            this.setLoading(false);
             this.view.webview.postMessage({ type: 'error', message: '未找到 Git 仓库' });
             return;
         }
@@ -132,7 +143,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
         try {
             const [raw, workingTreeChanges] = await Promise.all([
-                getGitCommits(rootUri, 500, this.selectedBranch),
+                getGitCommits(rootUri, 500, this.selectedBranches),
                 getWorkingTreeChanges(rootUri),
             ]);
             if (raw.length === 0) {
@@ -166,6 +177,39 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    private async refreshBranchCommits(): Promise<void> {
+        const rootUri = this.getRepoRootUri();
+        if (!this.view || !rootUri) { return; }
+        const generation = ++this.branchRefreshGeneration;
+        this.setLoading(true);
+        this.view.webview.postMessage({ type: 'refreshing', message: '正在刷新...' });
+        try {
+            const raw = await getGitCommits(rootUri, 500, this.selectedBranches);
+            if (generation !== this.branchRefreshGeneration) { return; }
+            this.commits = buildGraph(raw);
+            const selectedCommit = this.commits.some(commit => commit.hash === this.currentHash)
+                ? this.currentHash
+                : this.commits[0]?.hash;
+            this.view.webview.postMessage({
+                type: 'commits',
+                commits: this.commits,
+                stagedCount: this.stagedFiles.length,
+                changesCount: this.changeFiles.length,
+            });
+            if (selectedCommit) {
+                await this.selectCommit(selectedCommit);
+            }
+        } catch (error) {
+            if (generation === this.branchRefreshGeneration) {
+                this.view.webview.postMessage({ type: 'error', message: `无法刷新提交: ${error instanceof Error ? error.message : String(error)}` });
+            }
+        } finally {
+            if (generation === this.branchRefreshGeneration) {
+                this.setLoading(false);
+            }
+        }
+    }
+
     private async refreshSelectors(): Promise<void> {
         this.repositories = await getGitRepositories();
         if (!this.selectedRepository || !this.repositories.some(repo => repo.path === this.selectedRepository)) {
@@ -176,17 +220,16 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             ? await Promise.all([getGitBranches(rootUri), getCurrentGitBranch(rootUri)])
             : [[], undefined];
         this.branches = branches;
-        if (!this.selectedBranch || !this.branches.some(branch => branch.name === this.selectedBranch)) {
-            this.selectedBranch = currentBranch && this.branches.some(branch => branch.name === currentBranch)
-                ? currentBranch
-                : undefined;
+        this.selectedBranches = this.selectedBranches.filter(name => this.branches.some(branch => branch.name === name));
+        if (this.selectedBranches.length === 0 && currentBranch && this.branches.some(branch => branch.name === currentBranch)) {
+            this.selectedBranches = [currentBranch];
         }
         this.view?.webview.postMessage({
             type: 'selectors',
             repositories: this.repositories,
             branches: this.branches,
             selectedRepository: this.selectedRepository,
-            selectedBranch: this.selectedBranch,
+            selectedBranches: this.selectedBranches,
         });
     }
 
@@ -212,7 +255,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             case 'selectRepository':
                 if (typeof msg.path === 'string' && this.repositories.some(repo => repo.path === msg.path)) {
                     this.selectedRepository = msg.path;
-                    this.selectedBranch = undefined;
+                    this.selectedBranches = [];
                     this.commits = [];
                     this.files = [];
                     this.currentHash = undefined;
@@ -222,15 +265,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     void this.refreshWithRetry();
                 }
                 break;
-            case 'selectBranch':
-                this.selectedBranch = typeof msg.name === 'string' && msg.name ? msg.name : undefined;
-                this.commits = [];
-                this.files = [];
-                this.currentHash = undefined;
-                this.customDiffPanel.hide();
-                this.retryCount = 0;
-                this.refreshGeneration++;
-                void this.refreshWithRetry();
+            case 'selectBranches':
+                if (Array.isArray(msg.names) && msg.names.every((name: unknown) => typeof name === 'string' && this.branches.some(branch => branch.name === name))) {
+                    this.selectedBranches = [...new Set(msg.names as string[])];
+                    void this.refreshBranchCommits();
+                }
                 break;
             case 'gitSync':
                 if (msg.action === 'fetch' || msg.action === 'pull' || msg.action === 'push') {
@@ -346,6 +385,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .dropdown-option { color: inherit; background: transparent; cursor: pointer; }
   .dropdown-option:hover, .dropdown-option:focus-visible { color: var(--vscode-menu-selectionForeground); background: var(--vscode-menu-selectionBackground); outline: none; }
   .dropdown-option.selected::before { content: '✓'; display: inline-block; width: 14px; color: var(--vscode-menu-selectionForeground, var(--vscode-textLink-foreground)); }
+  #branchDropdown .dropdown-option { display: flex; align-items: center; gap: 6px; }
+  #branchDropdown .dropdown-option.selected::before { display: none; }
+  #branchDropdown .dropdown-option input { flex: 0 0 auto; margin: 0; accent-color: var(--vscode-checkbox-selectBackground, var(--vscode-focusBorder)); }
   .dropdown-group { padding-bottom: 1px; color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 600; cursor: default; }
   .dropdown-empty { padding: 8px 7px; color: var(--vscode-descriptionForeground); font-size: 11px; }
   #toolbarActions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
@@ -354,11 +396,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .toolbar-icon:hover { background: var(--vscode-toolbar-hoverBackground); }
   #header .count { opacity: 0.7; font-size: 11px; white-space: nowrap; }
   #workspace { display: grid; grid-template-columns: minmax(180px, 1fr) 5px minmax(180px, 1fr); flex: 1; min-height: 0; }
-  #graph { min-width: 0; min-height: 0; overflow: auto; }
+  #graph { --graph-width: 200px; --hash-width: 110px; --message-width: 300px; --author-width: 180px; --date-width: 130px; min-width: 0; min-height: 0; overflow: auto; }
   #panelResizeHandle { cursor: col-resize; background: var(--vscode-panel-border); }
   #panelResizeHandle:hover, #panelResizeHandle.resizing { background: var(--vscode-focusBorder); }
   #filesSection { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-  #filesHeader { height: 30px; padding: 0 10px; display: flex; align-items: center; justify-content: space-between; flex: 0 0 auto; font-weight: 600; }
+  #filesHeader { height: 30px; padding: 0 10px; display: flex; align-items: center; justify-content: space-between; flex: 0 0 auto; color: var(--vscode-tab-activeForeground); background: var(--vscode-editorWidget-background, var(--vscode-tab-activeBackground)); border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); box-sizing: border-box; font-weight: 600; }
   #filesHeader button { color: var(--vscode-textLink-foreground); background: transparent; border: 0; cursor: pointer; font-size: 11px; }
   #filesList { min-height: 0; flex: 1 1 auto; overflow: auto; }
   .file-item, .folder-item { display: flex; align-items: center; gap: 8px; height: 24px; padding: 0 10px; }
@@ -376,7 +418,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .file-folder { opacity: 0.55; }
   #filesEmpty { padding: 8px 10px; color: var(--vscode-descriptionForeground); }
   .commit-header, .commit-row { display: grid; grid-template-columns: var(--graph-width) var(--hash-width) var(--message-width) var(--author-width) var(--date-width); align-items: center; min-width: max-content; }
-  .commit-header { position: sticky; top: 0; z-index: 1; height: 26px; background: var(--vscode-editor-background); border-bottom: 1px solid var(--vscode-panel-border); font-weight: 600; }
+  .commit-header { position: sticky; top: 0; z-index: 1; height: 30px; margin: 0; padding: 0 10px; color: var(--vscode-tab-activeForeground); background: var(--vscode-editorWidget-background, var(--vscode-tab-activeBackground)); border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); box-sizing: border-box; font-weight: 600; }
   .commit-row { min-height: 26px; height: auto; cursor: pointer; border-bottom: 1px solid transparent; }
   .commit-row:hover { background: var(--vscode-list-hoverBackground); }
   .commit-row.expanded { align-items: start; }
@@ -433,6 +475,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   </div>
   <main id="workspace">
     <div id="graph">
+      <div id="commitHeader" class="commit-header"><div>分支图 / 引用</div><div>Commit ID</div><div>描述</div><div>作者</div><div>时间</div></div>
       <div id="loading">加载中...</div>
       <div id="commitList" style="display:none;"></div>
     </div>
@@ -567,10 +610,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     setRepositoryLoading();
     vscode.postMessage({ type: 'selectRepository', path: path });
   });
-  const branchDropdown = createDropdown('branchDropdown', function(name) {
-    closeDropdown(branchDropdown);
-    vscode.postMessage({ type: 'selectBranch', name: name });
-  });
+  const branchDropdown = createDropdown('branchDropdown', function() {});
 
   document.addEventListener('click', function(event) {
     if (!event.target.closest('.dropdown')) closeDropdowns();
@@ -595,6 +635,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       stagedCount = Number(msg.stagedCount) || 0;
       changesCount = Number(msg.changesCount) || 0;
       render();
+    } else if (msg.type === 'refreshing') {
+      document.getElementById('loading').textContent = msg.message || '正在刷新...';
+      document.getElementById('loading').style.display = 'block';
     } else if (msg.type === 'filesLoading') {
       document.getElementById('filesList').innerHTML = '<div id="filesEmpty">加载变更文件...</div>';
     } else if (msg.type === 'filesError') {
@@ -641,6 +684,42 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
+  function renderBranchOptions(entries, selectedValues) {
+    const selected = new Set(selectedValues || []);
+    const options = entries.filter(function(entry) { return !entry.group; });
+    branchDropdown.current.disabled = options.length === 0;
+    branchDropdown.label.textContent = selected.size === 0
+      ? '全部分支'
+      : selected.size === 1
+        ? (options.find(function(entry) { return selected.has(entry.value); }) || {}).label || '已选 1 个分支'
+        : '已选 ' + selected.size + ' 个分支';
+    branchDropdown.options.innerHTML = '';
+    entries.forEach(function(entry) {
+      if (entry.group) {
+        const group = document.createElement('div');
+        group.className = 'dropdown-group';
+        group.textContent = entry.group;
+        branchDropdown.options.appendChild(group);
+        return;
+      }
+      const option = document.createElement('label');
+      option.className = 'dropdown-option' + (selected.has(entry.value) ? ' selected' : '');
+      option.title = entry.title || entry.label;
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = selected.has(entry.value);
+      checkbox.addEventListener('change', function() {
+        if (checkbox.checked) selected.add(entry.value); else selected.delete(entry.value);
+        option.classList.toggle('selected', checkbox.checked);
+        branchDropdown.label.textContent = selected.size === 0 ? '全部分支' : selected.size === 1 ? entry.label : '已选 ' + selected.size + ' 个分支';
+        vscode.postMessage({ type: 'selectBranches', names: Array.from(selected) });
+      });
+      option.appendChild(checkbox);
+      option.appendChild(document.createTextNode(entry.label));
+      branchDropdown.options.appendChild(option);
+    });
+  }
+
   function renderSelectors(msg) {
     const repositories = msg.repositories || [];
     renderDropdownOptions(repositoryDropdown, repositories.map(function(repo) {
@@ -658,7 +737,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       branchEntries.push({ group: '远程分支' });
       remoteBranches.forEach(function(branch) { branchEntries.push({ value: branch.name, label: branch.label, title: branch.name }); });
     }
-    renderDropdownOptions(branchDropdown, branchEntries, msg.selectedBranch);
+    renderBranchOptions(branchEntries, msg.selectedBranches || []);
   }
 
   function revealSelectedFile() {
@@ -767,13 +846,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     const refsW = columnWidth(commits.map(function(c) { return (c.refs || []).join(' '); }), 1) + 6 + 'ch';
     const graphColumnW = 'calc(' + graphW + 'px + ' + refsW + ')';
-    let html = '<div class="commit-header">';
-    html += headerCell('分支图 / 引用', 'graph');
-    html += headerCell('Commit ID', 'hash');
-    html += headerCell('描述', 'message');
-    html += headerCell('作者', 'author');
-    html += headerCell('时间', 'date');
-    html += '</div>';
+    let html = '';
     function workingTreeRow(hash, label, count) {
       return '<div class="commit-row working-tree" data-hash="' + hash + '">' +
         '<div class="col-graph"></div><div class="col-hash">—</div>' +
@@ -880,14 +953,17 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     if (force || columnWidths[key] === undefined) {
       columnWidths[key] = width;
     }
+    const graph = document.getElementById('graph');
+    if (graph) graph.style.setProperty('--' + key + '-width', columnWidths[key]);
     list.style.setProperty('--' + key + '-width', columnWidths[key]);
   }
 
   function applyColumnWidths() {
     const list = document.getElementById('commitList');
-    if (!list) return;
+    const graph = document.getElementById('graph');
     for (const key in columnWidths) {
-      list.style.setProperty('--' + key + '-width', columnWidths[key]);
+      if (graph) graph.style.setProperty('--' + key + '-width', columnWidths[key]);
+      if (list) list.style.setProperty('--' + key + '-width', columnWidths[key]);
     }
   }
 
