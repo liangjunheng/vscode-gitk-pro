@@ -12,6 +12,8 @@ export interface GitCommit {
     parents: string[];
     author: string;
     authorEmail?: string;
+    committer: string;
+    committerEmail?: string;
     authorDate: string;
     authorDateLabel: string;
     message: string;
@@ -19,6 +21,8 @@ export interface GitCommit {
     refs: string[];
     lane?: number;
     lanes?: LaneInfo[];
+    laneColor?: string;
+    laneStartsHere?: boolean;
 }
 
 export interface LaneInfo {
@@ -251,6 +255,21 @@ async function getGitRefs(rootUri: vscode.Uri): Promise<GitRefRecord[]> {
     });
 }
 
+async function resolveCommitRefs(rootUri: vscode.Uri, refs: readonly string[]): Promise<string[]> {
+    const resolved = await Promise.all(refs.map(async ref => {
+        try {
+            const { stdout } = await execFileAsync('git', [
+                '-C', rootUri.fsPath, 'rev-parse', '--verify', `${ref}^{commit}`,
+            ], { windowsHide: true });
+            return stdout.trim();
+        } catch {
+            return '';
+        }
+    }));
+    return [...new Set(resolved.filter(Boolean))];
+}
+
+
 interface CommitAuthorDetails {
     name: string;
     email: string;
@@ -314,107 +333,108 @@ export async function runGitSync(rootUri: vscode.Uri, action: 'fetch' | 'pull' |
     else { await repo.push(); }
 }
 
-// 获取仓库提交列表 (兼容 web)
+// 获取仓库提交列表
 export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, refs: readonly string[] = []): Promise<GitCommit[]> {
     const api = await getGitApi();
-    if (!api) { throw new Error('Git 扩展不可用'); }
-    const repo = findRepository(api, rootUri);
-    if (!repo) { throw new Error('未找到 Git 仓库'); }
+    if (!api || !findRepository(api, rootUri)) { throw new Error('未找到 Git 仓库'); }
 
-    const logRequests = refs.length > 0
-        ? refs.map(ref => repo.log({ maxEntries: limit, hash: ref }))
-        : [repo.log({ maxEntries: limit })];
-    const [logGroups, gitRefs] = await Promise.all([
-        Promise.all(logRequests),
+    const commitRefs = refs.length > 0 ? await resolveCommitRefs(rootUri, refs) : ['HEAD'];
+    if (commitRefs.length === 0) { return []; }
+    const [logResult, gitRefs] = await Promise.all([
+        execFileAsync('git', [
+            '-C', rootUri.fsPath, 'log', '--topo-order', `--max-count=${limit}`,
+            '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1e', ...commitRefs,
+        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 }),
         getGitRefs(rootUri).catch(() => []),
     ]);
-    const seenHashes = new Set<string>();
-    const logEntries = logGroups.flat().filter(entry => {
-        if (seenHashes.has(entry.hash)) { return false; }
-        seenHashes.add(entry.hash);
-        return true;
-    });
-    const authorDetailsByHash = await getCommitAuthorDetails(rootUri, logEntries.map(entry => entry.hash));
     const refsByCommit = new Map<string, string[]>();
     for (const ref of gitRefs) {
         const name = ref.name.startsWith('refs/tags/') ? `tag: ${ref.label}` : ref.label;
-        const names = refsByCommit.get(ref.hash);
-        if (names) {
-            names.push(name);
-        } else {
-            refsByCommit.set(ref.hash, [name]);
-        }
+        const names = refsByCommit.get(ref.hash) || [];
+        names.push(name);
+        refsByCommit.set(ref.hash, names);
     }
 
-    const commits: GitCommit[] = logEntries.map(entry => {
-        const matchedRefs = refsByCommit.get(entry.hash) || [];
-        const authorObject = typeof entry.author === 'object' ? entry.author : undefined;
-        const committerObject = typeof entry.committer === 'object' ? entry.committer : undefined;
-        const gitAuthor = authorDetailsByHash.get(entry.hash);
-        const authorName = authorObject?.name || (typeof entry.author === 'string' ? entry.author : '') || gitAuthor?.name || committerObject?.name || (typeof entry.committer === 'string' ? entry.committer : '');
-        const authorEmail = authorObject?.email || gitAuthor?.email || committerObject?.email || '';
-        const authorTimestamp = authorObject?.timestamp || committerObject?.timestamp;
-        const authorDate = entry.authorDate || (authorTimestamp ? new Date(authorTimestamp * 1000) : undefined) || (gitAuthor?.date ? new Date(gitAuthor.date) : undefined);
-        const dateIso = authorDate instanceof Date && !isNaN(authorDate.getTime()) ? authorDate.toISOString() : '';
-        return {
-            hash: entry.hash,
-            shortHash: entry.hash.slice(0, 8),
-            parents: (entry.parents || []).map(p => p.slice(0, 8)),
-            author: authorName || authorEmail || 'Unknown author',
+    return logResult.stdout.split('\x1e').flatMap(record => {
+        const [hash, parentText, author, authorEmail, committer, committerEmail, dateText, subject, body] = record.trim().split('\x1f');
+        if (!hash) { return []; }
+        const authorDate = new Date(dateText);
+        return [{
+            hash,
+            shortHash: hash.slice(0, 8),
+            parents: parentText ? parentText.split(' ').filter(Boolean) : [],
+            author: author || authorEmail || 'Unknown author',
             authorEmail,
-            authorDate: dateIso,
+            committer: committer || committerEmail || author || authorEmail || 'Unknown committer',
+            committerEmail,
+            authorDate: !isNaN(authorDate.getTime()) ? authorDate.toISOString() : '',
             authorDateLabel: formatDateLabel(authorDate),
-            message: (entry.message || '').split('\n')[0],
-            body: (entry.message || '').split('\n').slice(1).join('\n'),
-            refs: matchedRefs,
-        };
+            message: subject || '',
+            body: body || '',
+            refs: refsByCommit.get(hash) || [],
+        }];
     });
-    return commits;
 }
 
-// 图形布局
+// 图形布局：每行完整描述顶部车道到下一行车道的转换。
 export function buildGraph(commits: GitCommit[]): GitCommit[] {
-    let activeLanes: string[] = [];
-    const colorMap = new Map<string, number>();
+    interface ActiveLane { hash: string; color: string; }
+    const visibleHashes = new Set(commits.map(commit => commit.hash));
+    let activeLanes: Array<ActiveLane | undefined> = [];
     let nextColor = 0;
+    const newLane = (hash: string, preferredColor?: string): ActiveLane => ({
+        hash,
+        color: preferredColor || LANE_COLORS[nextColor++ % LANE_COLORS.length],
+    });
+    const findEmptyLane = (lanes: Array<ActiveLane | undefined>): number => lanes.findIndex(lane => !lane);
 
     for (const c of commits) {
-        let myLane = activeLanes.indexOf(c.shortHash);
-        if (myLane === -1) {
-            myLane = activeLanes.indexOf('');
-            if (myLane === -1) {
-                myLane = activeLanes.length;
-                activeLanes.push(c.shortHash);
-            } else {
-                activeLanes[myLane] = c.shortHash;
-            }
+        let myLane = activeLanes.findIndex(lane => lane?.hash === c.hash);
+        const laneStartsHere = myLane < 0;
+        if (myLane < 0) {
+            myLane = findEmptyLane(activeLanes);
+            if (myLane < 0) { myLane = activeLanes.length; }
+            activeLanes[myLane] = newLane(c.hash);
         }
-        if (!colorMap.has(c.shortHash)) { colorMap.set(c.shortHash, nextColor++); }
-        const myColor = LANE_COLORS[colorMap.get(c.shortHash)! % LANE_COLORS.length];
-        c.lane = myLane;
-        c.lanes = [{ fromLane: myLane, toLane: myLane, color: myColor, isCommit: true }];
+        const lanesAtTop = activeLanes.slice();
+        const commitLane = lanesAtTop[myLane]!;
+        const visibleParents = c.parents.filter(parent => visibleHashes.has(parent));
+        // Git 的八爪合并在图中以连续二叉合并表达，避免同一节点出现三叉以上的车道连接。
+        const binaryParents = visibleParents.slice(0, 2);
+        const nextLanes = lanesAtTop.slice();
+        nextLanes[myLane] = undefined;
+        const parentTargets: Array<{ hash: string; lane: number; color: string }> = [];
 
-        const parents = c.parents;
-        if (parents.length > 0) {
-            activeLanes[myLane] = parents[0];
-            if (!colorMap.has(parents[0])) { colorMap.set(parents[0], colorMap.get(c.shortHash)!); }
-            c.lanes.push({ fromLane: myLane, toLane: myLane, color: myColor, isCommit: false });
-            for (let i = 1; i < parents.length; i++) {
-                let newLane = activeLanes.indexOf('');
-                if (newLane === -1) {
-                    newLane = activeLanes.length;
-                    activeLanes.push(parents[i]);
-                } else {
-                    activeLanes[newLane] = parents[i];
-                }
-                if (!colorMap.has(parents[i])) { colorMap.set(parents[i], nextColor++); }
-                const pColor = LANE_COLORS[colorMap.get(parents[i])! % LANE_COLORS.length];
-                c.lanes.push({ fromLane: newLane, toLane: myLane, color: pColor, isCommit: false });
+        for (let index = 0; index < binaryParents.length; index++) {
+            const parent = binaryParents[index];
+            let targetLane = nextLanes.findIndex(lane => lane?.hash === parent);
+            if (targetLane < 0) {
+                targetLane = index === 0 ? myLane : findEmptyLane(nextLanes);
+                if (targetLane < 0) { targetLane = nextLanes.length; }
+                nextLanes[targetLane] = newLane(parent, index === 0 ? commitLane.color : undefined);
             }
-        } else {
-            activeLanes[myLane] = '';
+            parentTargets.push({ hash: parent, lane: targetLane, color: nextLanes[targetLane]!.color });
         }
-        while (activeLanes.length > 0 && activeLanes[activeLanes.length - 1] === '') { activeLanes.pop(); }
+
+        c.lane = myLane;
+        c.laneColor = commitLane.color;
+        c.laneStartsHere = laneStartsHere;
+        c.lanes = parentTargets.map(target => ({
+            fromLane: myLane,
+            toLane: target.lane,
+            color: target.color,
+            isCommit: false,
+        }));
+        for (let lane = 0; lane < lanesAtTop.length; lane++) {
+            const topLane = lanesAtTop[lane];
+            if (!topLane || lane === myLane) { continue; }
+            const targetLane = nextLanes.findIndex(candidate => candidate?.hash === topLane.hash);
+            if (targetLane >= 0) {
+                c.lanes.push({ fromLane: lane, toLane: targetLane, color: topLane.color, isCommit: false });
+            }
+        }
+        activeLanes = nextLanes;
+        while (activeLanes.length > 0 && !activeLanes[activeLanes.length - 1]) { activeLanes.pop(); }
     }
     return commits;
 }
