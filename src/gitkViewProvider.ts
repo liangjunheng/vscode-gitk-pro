@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { CommitFile, GitBranchOption, GitCommit, GitRepositoryOption, getCommitFiles, buildGraph, getCurrentGitBranch, getGitBranches, getGitCommits, getGitRepositories, runGitSync } from './gitLogProvider';
+import { ChangeSetMode, CommitFile, GitBranchOption, GitCommit, GitRepositoryOption, getCommitFiles, getWorkingTreeChanges, buildGraph, getCurrentGitBranch, getGitBranches, getGitCommits, getGitRepositories, runGitSync } from './gitLogProvider';
 import { CustomDiffPanel } from './customDiffPanel';
 
 // Webview 视图提供器: 渲染 gitk 风格的提交图 (div flex 布局, 避免 table 高度塌陷)
@@ -15,6 +15,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     readonly onDidChangeDiffAvailability = this.onDidChangeDiffAvailabilityEmitter.event;
     private files: CommitFile[] = [];
     private currentHash?: string;
+    private currentChangeSet: ChangeSetMode = 'commit';
+    private stagedFiles: CommitFile[] = [];
+    private changeFiles: CommitFile[] = [];
     private displayMode: 'tree' | 'flat' = 'tree';
     private selectedPath?: string;
     private repositories: GitRepositoryOption[] = [];
@@ -29,7 +32,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     canShowMultiDiff(): boolean {
-        return !this.isLoading && this.isFocused;
+        return !this.isLoading && this.view?.visible === true && !!this.currentHash;
     }
 
     isGitkLoading(): boolean {
@@ -37,8 +40,21 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     async selectCommit(hash: string): Promise<void> {
+        this.currentChangeSet = 'commit';
         this.view?.webview.postMessage({ type: 'selectedCommit', hash });
         await this.setCommitFiles(hash);
+    }
+
+    private async selectWorkingTreeChanges(mode: Extract<ChangeSetMode, 'staged' | 'changes'>): Promise<void> {
+        this.currentChangeSet = mode;
+        this.currentHash = mode;
+        this.selectedPath = undefined;
+        this.files = mode === 'staged' ? this.stagedFiles : this.changeFiles;
+        this.view?.webview.postMessage({ type: 'selectedCommit', hash: mode });
+        this.renderFiles();
+        if (this.files.length > 0 && this.canShowMultiDiff()) {
+            await this.openDiff();
+        }
     }
 
     private setLoading(value: boolean): void {
@@ -49,9 +65,16 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     private setFocused(value: boolean): void {
-        if (this.isFocused !== value) {
-            this.isFocused = value;
-            this.onDidChangeDiffAvailabilityEmitter.fire();
+        if (this.isFocused === value) { return; }
+        this.isFocused = value;
+        this.onDidChangeDiffAvailabilityEmitter.fire();
+    }
+
+    private updateMultiDiffVisibility(): void {
+        if (!this.view?.visible) {
+            this.customDiffPanel.hide();
+        } else if (!this.isLoading && this.currentHash && this.files.length > 0) {
+            void this.openDiff(this.selectedPath);
         }
     }
 
@@ -63,7 +86,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         };
         view.webview.html = this.getHtml();
         view.webview.onDidReceiveMessage(msg => this.onMessage(msg));
-        view.onDidChangeVisibility(() => this.setFocused(view.visible && this.isFocused));
+        view.onDidChangeVisibility(() => this.updateMultiDiffVisibility());
         // 延迟刷新, 等 Git 扩展扫描完仓库
         this.refreshWithRetry();
     }
@@ -108,18 +131,34 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.view.webview.postMessage({ type: 'commits', commits: this.commits });
         }
         try {
-            const raw = await getGitCommits(rootUri, 500, this.selectedBranch);
+            const [raw, workingTreeChanges] = await Promise.all([
+                getGitCommits(rootUri, 500, this.selectedBranch),
+                getWorkingTreeChanges(rootUri),
+            ]);
             if (raw.length === 0) {
                 throw new Error('Git 仓库扫描中...');
             }
             this.commits = buildGraph(raw);
+            this.stagedFiles = workingTreeChanges.staged;
+            this.changeFiles = workingTreeChanges.changes;
             this.retryCount = 0;
+            const selectedWorkingTreeMode = this.currentChangeSet !== 'commit'
+                && (this.currentChangeSet === 'staged' ? this.stagedFiles : this.changeFiles).length > 0
+                ? this.currentChangeSet
+                : undefined;
             const selectedCommit = this.commits.some(commit => commit.hash === this.currentHash)
                 ? this.currentHash
                 : this.commits[0]?.hash;
-            this.view.webview.postMessage({ type: 'commits', commits: this.commits });
+            this.view.webview.postMessage({
+                type: 'commits',
+                commits: this.commits,
+                stagedCount: this.stagedFiles.length,
+                changesCount: this.changeFiles.length,
+            });
             this.setLoading(false);
-            if (selectedCommit) {
+            if (selectedWorkingTreeMode) {
+                await this.selectWorkingTreeChanges(selectedWorkingTreeMode);
+            } else if (selectedCommit) {
                 await this.selectCommit(selectedCommit);
             }
         } catch (e: any) {
@@ -199,8 +238,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 }
                 break;
             case 'selectCommit':
-                this.view?.webview.postMessage({ type: 'selectedCommit', hash: msg.hash });
-                this.setCommitFiles(msg.hash);
+                if (msg.hash === 'staged' || msg.hash === 'changes') {
+                    this.selectWorkingTreeChanges(msg.hash);
+                } else if (typeof msg.hash === 'string') {
+                    this.selectCommit(msg.hash);
+                }
                 break;
             case 'selectFile':
                 this.openDiff(msg.path);
@@ -229,8 +271,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private async setCommitFiles(hash: string): Promise<void> {
         const rootUri = this.getRepoRootUri();
         if (!rootUri) { return; }
-        this.currentHash = hash;
-        this.selectedPath = undefined;
+            this.currentHash = hash;
+            this.currentChangeSet = 'commit';
+            this.selectedPath = undefined;
         this.files = [];
         this.view?.webview.postMessage({ type: 'filesLoading' });
         try {
@@ -260,7 +303,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const rootUri = this.getRepoRootUri();
         if (!rootUri) { return; }
         if (filePath) { this.selectedPath = filePath; this.renderFiles(); }
-        await this.customDiffPanel.show(rootUri, this.currentHash, this.files, filePath);
+        await this.customDiffPanel.show(rootUri, this.currentHash, this.files, filePath, this.currentChangeSet);
     }
 
     private syncFileHighlightFromPath(filePath: string): void {
@@ -317,7 +360,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .commit-header { position: sticky; top: 0; z-index: 1; height: 26px; background: var(--vscode-editor-background); border-bottom: 1px solid var(--vscode-panel-border); font-weight: 600; }
   .commit-row { min-height: 26px; height: auto; cursor: pointer; border-bottom: 1px solid transparent; }
   .commit-row:hover { background: var(--vscode-list-hoverBackground); }
+  .commit-row.expanded { align-items: start; }
+  .commit-description { display: none; grid-column: 4 / -1; padding: 0 5px 7px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vscode-descriptionForeground); line-height: 17px; cursor: text; }
+  .commit-row.expanded .commit-description { display: block; }
+  .commit-description:empty { display: none; }
   .commit-row.selected { background: var(--vscode-list-activeSelectionBackground, #094771); }
+  .commit-row.working-tree { background: color-mix(in srgb, var(--vscode-editorWidget-background, var(--vscode-editor-background)) 82%, var(--vscode-textLink-foreground)); }
+  .commit-row.working-tree:hover { background: var(--vscode-list-hoverBackground); }
+  .working-tree-label { color: var(--vscode-textLink-foreground); font-weight: 600; }
+  .working-tree-count { color: var(--vscode-descriptionForeground); }
   .commit-header > div { position: relative; min-width: 0; padding: 5px 14px 5px 0; overflow: hidden; white-space: nowrap; text-align: left; }
   .commit-header .resize-handle { position: absolute; top: 0; right: 0; width: 7px; height: 100%; cursor: col-resize; }
   .commit-header .resize-handle:hover { background: var(--vscode-focusBorder); }
@@ -369,6 +420,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 (function() {
   const vscode = acquireVsCodeApi();
   let commits = [];
+  let stagedCount = 0;
+  let changesCount = 0;
   let files = [];
   let filesMode = 'tree';
   let selectedPath = '';
@@ -377,8 +430,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   let resizing = null;
   let panelResizing = null;
 
-  const ROW_H = 26;
-  const LANE_W = 20;
+    const ROW_H = 26;
+    const LANE_W = 20;
+    const expandedCommits = new Set();
   const DOT_R = 5;
   let graphViewportWidth = 0;
 
@@ -442,6 +496,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       renderSelectors(msg);
     } else if (msg.type === 'commits') {
       commits = msg.commits;
+      stagedCount = Number(msg.stagedCount) || 0;
+      changesCount = Number(msg.changesCount) || 0;
       render();
     } else if (msg.type === 'filesLoading') {
       document.getElementById('filesList').innerHTML = '<div id="filesEmpty">加载变更文件...</div>';
@@ -597,9 +653,18 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     html += headerCell('作者', 'author');
     html += headerCell('时间', 'date');
     html += '</div>';
+    function workingTreeRow(hash, label, count) {
+      return '<div class="commit-row working-tree" data-hash="' + hash + '">' +
+        '<div class="col-graph"></div><div class="col-refs"></div><div class="col-hash">—</div>' +
+        '<div class="col-message working-tree-label">' + label + '</div>' +
+        '<div class="col-author working-tree-count">' + count + ' 个文件</div><div class="col-date"></div></div>';
+    }
+    if (changesCount > 0) html += workingTreeRow('changes', 'Changes', changesCount);
+    if (stagedCount > 0) html += workingTreeRow('staged', 'Staged Changes', stagedCount);
     for (let i = 0; i < commits.length; i++) {
       const c = commits[i];
-      html += '<div class="commit-row" data-hash="' + escapeAttr(c.hash) + '" data-row="' + i + '">';
+      const expanded = c.body && c.body.trim() && expandedCommits.has(c.hash);
+      html += '<div class="commit-row' + (expanded ? ' expanded' : '') + '" data-hash="' + escapeAttr(c.hash) + '" data-row="' + i + '" data-has-description="' + (c.body && c.body.trim() ? 'true' : 'false') + '">';
       let refHtml = '';
       if (c.refs && c.refs.length) {
         for (const r of c.refs) {
@@ -613,6 +678,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       const authorPreview = c.authorEmail ? c.author + ' <' + c.authorEmail + '>' : c.author;
       html += '<div class="col-author" title="' + escapeAttr(authorPreview) + '">' + escapeHtml(authorPreview) + '</div>';
       html += '<div class="col-date" title="' + escapeAttr(c.authorDateLabel) + '">' + escapeHtml(c.authorDateLabel) + '</div>';
+      html += '<div class="commit-description">' + escapeHtml(c.body || '') + '</div>';
       html += '</div>';
     }
     setColumnWidth(list, 'graph', (graphW + 10) + 'px', true);
@@ -624,18 +690,26 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     list.innerHTML = html;
 
     const rows = list.querySelectorAll('.commit-row');
-    rows.forEach(function(row, idx) {
+    rows.forEach(function(row) {
       const svg = row.querySelector('svg');
       if (svg) {
-        const rowHeight = Math.ceil(row.getBoundingClientRect().height);
-        svg.setAttribute('height', String(rowHeight));
-        svg.setAttribute('viewBox', '0 0 ' + naturalGraphW + ' ' + rowHeight);
-        drawSvg(svg, idx, graphW, rowHeight, LANE_W, DOT_R);
+        svg.setAttribute('height', String(ROW_H));
+        svg.setAttribute('viewBox', '0 0 ' + naturalGraphW + ' ' + ROW_H);
+        drawSvg(svg, Number(row.getAttribute('data-row')), graphW, ROW_H, LANE_W, DOT_R);
       }
       row.addEventListener('click', function() {
+        const hash = row.getAttribute('data-hash');
+        if (hash && row.dataset.hasDescription === 'true') {
+          const willExpand = !row.classList.contains('expanded');
+          expandedCommits.clear();
+          rows.forEach(function(r) { r.classList.remove('expanded'); });
+          if (willExpand) {
+            row.classList.add('expanded');
+            expandedCommits.add(hash);
+          }
+        }
         rows.forEach(function(r) { r.classList.remove('selected'); });
         row.classList.add('selected');
-        const hash = row.getAttribute('data-hash');
         if (hash) {
           vscode.postMessage({ type: 'selectCommit', hash: hash });
         }

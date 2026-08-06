@@ -15,6 +15,7 @@ export interface GitCommit {
     authorDate: string;
     authorDateLabel: string;
     message: string;
+    body?: string;
     refs: string[];
     lane?: number;
     lanes?: LaneInfo[];
@@ -45,6 +46,13 @@ export interface CommitFile {
     path: string;
     status: FileStatus;
     oldPath?: string;
+}
+
+export type ChangeSetMode = 'commit' | 'staged' | 'changes';
+
+export interface WorkingTreeChanges {
+    staged: CommitFile[];
+    changes: CommitFile[];
 }
 
 // 颜色池
@@ -321,6 +329,7 @@ export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, re
             authorDate: dateIso,
             authorDateLabel: formatDateLabel(authorDate),
             message: (entry.message || '').split('\n')[0],
+            body: (entry.message || '').split('\n').slice(1).join('\n'),
             refs: matchedRefs,
         };
     });
@@ -398,6 +407,56 @@ export async function getCommitFiles(rootUri: vscode.Uri, hash: string): Promise
         return parseNameStatus(stdout);
     } catch (error) {
         throw new Error(`无法读取变更文件: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+
+export async function getWorkingTreeChanges(rootUri: vscode.Uri): Promise<WorkingTreeChanges> {
+    try {
+        const { stdout } = await execFileAsync('git', [
+            '-C', rootUri.fsPath,
+            'status', '--porcelain=v1', '-z', '--untracked-files=all',
+        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+        const staged: CommitFile[] = [];
+        const changes: CommitFile[] = [];
+        const entries = stdout.split('\0');
+        for (let index = 0; index < entries.length; index++) {
+            const entry = entries[index];
+            if (!entry || entry.length < 4) { continue; }
+            const indexStatus = entry[0];
+            const workingTreeStatus = entry[1];
+            const filePath = entry.slice(3);
+            const hasRenameSource = indexStatus === 'R' || indexStatus === 'C' || workingTreeStatus === 'R' || workingTreeStatus === 'C';
+            const renameSourcePath = hasRenameSource ? entries[++index] || undefined : undefined;
+            if (indexStatus !== ' ' && indexStatus !== '?') {
+                staged.push({
+                    path: filePath,
+                    status: porcelainStatus(indexStatus),
+                    oldPath: indexStatus === 'R' || indexStatus === 'C' ? renameSourcePath : undefined,
+                });
+            }
+            if (workingTreeStatus !== ' ') {
+                changes.push({
+                    path: filePath,
+                    status: porcelainStatus(workingTreeStatus),
+                    oldPath: workingTreeStatus === 'R' || workingTreeStatus === 'C' ? renameSourcePath : undefined,
+                });
+            }
+        }
+        return { staged, changes };
+    } catch (error) {
+        throw new Error(`无法读取工作区变更: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+
+function porcelainStatus(status: string): FileStatus {
+    switch (status) {
+        case 'A': case '?': return 'A';
+        case 'D': return 'D';
+        case 'R': return 'R';
+        case 'C': return 'C';
+        case 'T': return 'T';
+        case 'U': return 'U';
+        default: return 'M';
     }
 }
 
