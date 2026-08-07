@@ -193,18 +193,37 @@ async function resolveRepositoryRoot(directory: string): Promise<string | undefi
     }
 }
 
-export async function getGitRepositories(): Promise<GitRepositoryOption[]> {
+export async function getGitRepositories(onProgress?: (current: number, total: number) => void): Promise<GitRepositoryOption[]> {
     const api = await getGitApi();
     if (!api) { throw new Error('Git 扩展不可用'); }
 
     const repositories = new Map<string, { rootPath: string; parentPath?: string }>();
-    const pending = api.repositories.map(repo => ({ rootPath: repo.rootUri.fsPath }));
-    for (const folder of vscode.workspace.workspaceFolders || []) {
+    const apiRepos = api.repositories.map(repo => ({ rootPath: repo.rootUri.fsPath }));
+    const workspaceFolders = vscode.workspace.workspaceFolders || [];
+    const pending: { rootPath: string; parentPath?: string }[] = [...apiRepos];
+
+    let total = apiRepos.length + workspaceFolders.length;
+    let progress = 0;
+    if (onProgress) { onProgress(0, Math.max(total, 1)); }
+
+    // API 仓库 (即时, 无 git 命令)
+    progress = apiRepos.length;
+    if (onProgress) { onProgress(progress, total); }
+
+    // 解析工作区文件夹 (并行 git rev-parse)
+    let folderCompleted = apiRepos.length;
+    const folderRoots = await Promise.all(workspaceFolders.map(async folder => {
         const rootPath = await resolveRepositoryRoot(folder.uri.fsPath);
+        folderCompleted++;
+        if (onProgress) { onProgress(folderCompleted, total); }
+        return rootPath;
+    }));
+    for (const rootPath of folderRoots) {
         if (rootPath && !pending.some(repository => repositoryKey(repository.rootPath) === repositoryKey(rootPath))) {
             pending.push({ rootPath });
         }
     }
+
     for (const repository of pending) {
         const key = repositoryKey(repository.rootPath);
         if (!repositories.has(key)) {
@@ -212,16 +231,31 @@ export async function getGitRepositories(): Promise<GitRepositoryOption[]> {
         }
     }
 
-    for (let index = 0; index < pending.length; index++) {
-        const repository = pending[index];
-        for (const submodulePath of await getInitializedSubmodulePaths(repository.rootPath)) {
-            const rootPath = await resolveRepositoryRoot(submodulePath);
-            if (!rootPath) { continue; }
-            const key = repositoryKey(rootPath);
-            if (repositories.has(key)) { continue; }
-            const child = { rootPath, parentPath: repository.rootPath };
-            repositories.set(key, child);
-            pending.push(child);
+    // 扫描子模块 (并行 git config, 嵌套子模块串行处理)
+    total = pending.length + pending.length;
+    progress = pending.length;
+    if (onProgress) { onProgress(progress, total); }
+    let submoduleBatch = pending.slice();
+    while (submoduleBatch.length > 0) {
+        const results = await Promise.all(submoduleBatch.map(async repository => ({
+            repository,
+            submodules: await getInitializedSubmodulePaths(repository.rootPath),
+        })));
+        submoduleBatch = [];
+        for (const { repository, submodules } of results) {
+            for (const submodulePath of submodules) {
+                const rootPath = await resolveRepositoryRoot(submodulePath);
+                if (!rootPath) { continue; }
+                const key = repositoryKey(rootPath);
+                if (repositories.has(key)) { continue; }
+                const child = { rootPath, parentPath: repository.rootPath };
+                repositories.set(key, child);
+                pending.push(child);
+                submoduleBatch.push(child);
+                total++;
+            }
+            progress++;
+            if (onProgress) { onProgress(progress, total); }
         }
     }
 
@@ -242,31 +276,43 @@ interface GitRefRecord {
     label: string;
 }
 
+// refs 缓存, 避免同一次刷新中 getGitBranches 和 getGitCommits 重复调用 git for-each-ref
+const refsCache = new Map<string, { refs: GitRefRecord[]; timestamp: number }>();
+const REFS_CACHE_TTL = 5000;
+
 async function getGitRefs(rootUri: vscode.Uri): Promise<GitRefRecord[]> {
+    const key = rootUri.fsPath;
+    const cached = refsCache.get(key);
+    if (cached && Date.now() - cached.timestamp < REFS_CACHE_TTL) { return cached.refs; }
     const { stdout } = await execFileAsync('git', [
         '-C', rootUri.fsPath,
         'for-each-ref', '--format=%(objectname)%09%(refname:short)%09%(refname)', 'refs/heads', 'refs/remotes', 'refs/tags',
     ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
-    return stdout.split(/\r?\n/).flatMap(line => {
+    const refs = stdout.split(/\r?\n/).flatMap(line => {
         if (!line) { return []; }
         const [hash, label, name] = line.split('\t');
         if (!hash || !label || !name || label.endsWith('/HEAD')) { return []; }
         return [{ hash, label, name }];
     });
+    refsCache.set(key, { refs, timestamp: Date.now() });
+    return refs;
 }
 
+// 批量解析 ref -> commit hash, 单次 git rev-parse 调用
 async function resolveCommitRefs(rootUri: vscode.Uri, refs: readonly string[]): Promise<string[]> {
-    const resolved = await Promise.all(refs.map(async ref => {
-        try {
-            const { stdout } = await execFileAsync('git', [
-                '-C', rootUri.fsPath, 'rev-parse', '--verify', `${ref}^{commit}`,
-            ], { windowsHide: true });
-            return stdout.trim();
-        } catch {
-            return '';
-        }
-    }));
-    return [...new Set(resolved.filter(Boolean))];
+    if (refs.length === 0) { return []; }
+    const hashPattern = /^[0-9a-f]{40}$/i;
+    const parseHashes = (stdout: string) =>
+        [...new Set(stdout.split('\n').map(line => line.trim()).filter(line => hashPattern.test(line)))];
+    try {
+        const { stdout } = await execFileAsync('git', [
+            '-C', rootUri.fsPath, 'rev-parse', ...refs.map(ref => `${ref}^{commit}`),
+        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+        return parseHashes(stdout);
+    } catch (error: any) {
+        // 部分失败时 stdout 仍含有效哈希
+        return error.stdout ? parseHashes(error.stdout) : [];
+    }
 }
 
 
@@ -333,29 +379,9 @@ export async function runGitSync(rootUri: vscode.Uri, action: 'fetch' | 'pull' |
     else { await repo.push(); }
 }
 
-// 获取仓库提交列表
-export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, refs: readonly string[] = [], skip: number = 0): Promise<GitCommit[]> {
-    const api = await getGitApi();
-    if (!api || !findRepository(api, rootUri)) { throw new Error('未找到 Git 仓库'); }
-
-    const commitRefs = refs.length > 0 ? await resolveCommitRefs(rootUri, refs) : ['HEAD'];
-    if (commitRefs.length === 0) { return []; }
-    const [logResult, gitRefs] = await Promise.all([
-        execFileAsync('git', [
-            '-C', rootUri.fsPath, 'log', '--topo-order', `--max-count=${limit}`, ...(skip > 0 ? [`--skip=${skip}`] : []),
-            '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1e', ...commitRefs,
-        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 }),
-        getGitRefs(rootUri).catch(() => []),
-    ]);
-    const refsByCommit = new Map<string, string[]>();
-    for (const ref of gitRefs) {
-        const name = ref.name.startsWith('refs/tags/') ? `tag: ${ref.label}` : ref.label;
-        const names = refsByCommit.get(ref.hash) || [];
-        names.push(name);
-        refsByCommit.set(ref.hash, names);
-    }
-
-    return logResult.stdout.split('\x1e').flatMap(record => {
+// 解析 git log --format 输出
+function parseLogOutput(stdout: string, refsByCommit: Map<string, string[]>): GitCommit[] {
+    return stdout.split('\x1e').flatMap(record => {
         const [hash, parentText, author, authorEmail, committer, committerEmail, dateText, subject, body] = record.trim().split('\x1f');
         if (!hash) { return []; }
         const authorDate = new Date(dateText);
@@ -376,19 +402,86 @@ export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, re
     });
 }
 
+function buildRefsByCommit(gitRefs: GitRefRecord[]): Map<string, string[]> {
+    const refsByCommit = new Map<string, string[]>();
+    for (const ref of gitRefs) {
+        const name = ref.name.startsWith('refs/tags/') ? `tag: ${ref.label}` : ref.label;
+        const names = refsByCommit.get(ref.hash) || [];
+        names.push(name);
+        refsByCommit.set(ref.hash, names);
+    }
+    return refsByCommit;
+}
+
+// 预取全量 commit hash (仅 hash, 无格式化, 比 git log 快)
+export async function getCommitHashes(rootUri: vscode.Uri, refs: readonly string[], limit: number = 10000): Promise<string[]> {
+    const args = refs.length > 0 ? [...refs] : ['HEAD'];
+    const { stdout } = await execFileAsync('git', [
+        '-C', rootUri.fsPath, 'rev-list', '--topo-order', `--max-count=${limit}`, ...args,
+    ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+    return stdout.trim().split('\n').filter(Boolean);
+}
+
+// 按指定 hash 列表获取提交 (git log --no-walk, 无遍历, O(N) N=hash数)
+export async function getGitCommitsByHashes(rootUri: vscode.Uri, hashes: readonly string[]): Promise<GitCommit[]> {
+    if (hashes.length === 0) { return []; }
+    const [logResult, gitRefs] = await Promise.all([
+        execFileAsync('git', [
+            '-C', rootUri.fsPath, 'log', '--no-walk',
+            '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1e',
+            ...hashes,
+        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 }),
+        getGitRefs(rootUri).catch(() => []),
+    ]);
+    const refsByCommit = buildRefsByCommit(gitRefs);
+    const commits = parseLogOutput(logResult.stdout, refsByCommit);
+    // --no-walk 不保证顺序, 按输入 hash 顺序排序
+    const order = new Map(hashes.map((hash, index) => [hash, index]));
+    return commits.sort((a, b) => (order.get(a.hash) ?? 0) - (order.get(b.hash) ?? 0));
+}
+
+// 获取仓库提交列表
+export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, refs: readonly string[] = [], skip: number = 0, onProgress?: (current: number, total: number) => void): Promise<GitCommit[]> {
+    const api = await getGitApi();
+    if (!api || !findRepository(api, rootUri)) { throw new Error('未找到 Git 仓库'); }
+
+    // 直接传 refs 给 git log, 跳过 resolveCommitRefs
+    const commitRefs = refs.length > 0 ? [...refs] : ['HEAD'];
+    if (commitRefs.length === 0) { return []; }
+    if (onProgress) { onProgress(0, 1); }
+    const [logResult, gitRefs] = await Promise.all([
+        execFileAsync('git', [
+            '-C', rootUri.fsPath, 'log', '--topo-order', `--max-count=${limit}`, ...(skip > 0 ? [`--skip=${skip}`] : []),
+            '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1e', ...commitRefs,
+        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 }),
+        getGitRefs(rootUri).catch(() => []),
+    ]);
+    if (onProgress) { onProgress(1, 1); }
+    const refsByCommit = buildRefsByCommit(gitRefs);
+    return parseLogOutput(logResult.stdout, refsByCommit);
+}
+
+// 图形布局状态, 用于增量构建
+export interface GraphState {
+    activeLanes: Array<{ hash: string; color: string } | undefined>;
+    nextColor: number;
+}
+
 // 图形布局：每行完整描述顶部车道到下一行车道的转换。
-export function buildGraph(commits: GitCommit[]): GitCommit[] {
+// state + startIndex 支持增量构建: 只处理新追加的提交, 跳过已处理的
+export function buildGraph(commits: GitCommit[], state?: GraphState, startIndex: number = 0): GitCommit[] {
     interface ActiveLane { hash: string; color: string; }
     const visibleHashes = new Set(commits.map(commit => commit.hash));
-    let activeLanes: Array<ActiveLane | undefined> = [];
-    let nextColor = 0;
+    let activeLanes: Array<ActiveLane | undefined> = state ? state.activeLanes.map(l => l ? { ...l } : undefined) : [];
+    let nextColor = state?.nextColor ?? 0;
     const newLane = (hash: string, preferredColor?: string): ActiveLane => ({
         hash,
         color: preferredColor || LANE_COLORS[nextColor++ % LANE_COLORS.length],
     });
     const findEmptyLane = (lanes: Array<ActiveLane | undefined>): number => lanes.findIndex(lane => !lane);
 
-    for (const c of commits) {
+    for (let i = startIndex; i < commits.length; i++) {
+        const c = commits[i];
         let myLane = activeLanes.findIndex(lane => lane?.hash === c.hash);
         const laneStartsHere = myLane < 0;
         if (myLane < 0) {
@@ -435,6 +528,10 @@ export function buildGraph(commits: GitCommit[]): GitCommit[] {
         }
         activeLanes = nextLanes;
         while (activeLanes.length > 0 && !activeLanes[activeLanes.length - 1]) { activeLanes.pop(); }
+    }
+    if (state) {
+        state.activeLanes = activeLanes;
+        state.nextColor = nextColor;
     }
     return commits;
 }

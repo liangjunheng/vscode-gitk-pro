@@ -33,6 +33,31 @@ VS Code 扩展, 在活动栏提供 gitk 风格的提交图面板。
   - VS Code editorService 识别 untyped input 的 resources 字段, 经 MultiDiffEditorResolverContribution 解析
 - Added/Deleted 文件空侧: 注册 `gitk-empty` scheme TextDocumentContentProvider 返回空字符串
 
+### 加载进度条 (2026-08-07)
+- gitkViewProvider.ts webview `loadingProgress` 消息携带 {phase, message, current, total}
+- phase: 'repository' | 'branch' | 'commit' | 'start'
+- gitLogProvider.ts:
+  - getGitRepositories(onProgress) 报告工作区文件夹解析 (git rev-parse) + 子模块扫描 (git config) 进度, total 随子模块发现增长
+  - resolveCommitRefs(rootUri, refs) 批量单次 git rev-parse, 正则过滤有效哈希, 部分失败从 error.stdout 提取
+  - getGitCommits(rootUri, limit, refs, skip, onProgress) 报告 resolveCommitRefs + git log 进度, total = 2 (1 resolve + 1 log)
+  - getGitRefs 5s TTL 缓存, 避免 refreshSelectors + getGitCommits 重复调用
+  - getGitRepositories 工作区文件夹解析 + 子模块扫描均改 Promise.all 并行
+  - buildGraph(commits, state?, startIndex?) 增量构建, GraphState 保存 activeLanes + nextColor
+  - loadMoreCommits 用增量构建, 只处理新提交 (prevCount 起始), O(N²)→O(N)
+  - 跳过 resolveCommitRefs, refs 直接传 git log
+  - getCommitHashes(rootUri, refs) 预取全量 hash (git rev-list), 与首次 git log 并行
+  - getGitCommitsByHashes(rootUri, hashes) 用 git log --no-walk, O(101) 无遍历
+  - loadMoreCommits 优先用预取 hash + getGitCommitsByHashes, 耗尽回退 git log --skip
+- gitkViewProvider.ts:
+  - refreshSelectors 传 onProgress 给 getGitRepositories; 分支 0/1→1/1
+  - refreshInternal 单仓库时透传 getGitCommits 的 onProgress; 多仓库时按 rootUris.length 逐个完成计数
+  - refreshBranchCommits 传 onProgress 给 getGitCommits
+  - 双重加载修复: refresh()/refreshInternal() 加 skipSelectors 参数, refreshWithRetry 用 retryCount===0 判断首次
+- webview 单条进度条始终可见:
+  - total=0: indeterminate 动画 (translateX -150%→350%, 30% 宽蓝色条)
+  - total>0: 比例填充 (current/total*100%) + "current / total" 文字
+  - showLoadingProgress(phase, message, current, total) 切换 indeterminate/比例两种态
+
 ### 环境
 - VS Code 安装路径: C:\Users\JUNHENG.LIANG\AppData\Local\Programs\Microsoft VS Code\Code.exe
 - code 命令不在 PATH 中
