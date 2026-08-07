@@ -334,7 +334,7 @@ export async function runGitSync(rootUri: vscode.Uri, action: 'fetch' | 'pull' |
 }
 
 // 获取仓库提交列表
-export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, refs: readonly string[] = []): Promise<GitCommit[]> {
+export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, refs: readonly string[] = [], skip: number = 0): Promise<GitCommit[]> {
     const api = await getGitApi();
     if (!api || !findRepository(api, rootUri)) { throw new Error('未找到 Git 仓库'); }
 
@@ -342,7 +342,7 @@ export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, re
     if (commitRefs.length === 0) { return []; }
     const [logResult, gitRefs] = await Promise.all([
         execFileAsync('git', [
-            '-C', rootUri.fsPath, 'log', '--topo-order', `--max-count=${limit}`,
+            '-C', rootUri.fsPath, 'log', '--topo-order', `--max-count=${limit}`, ...(skip > 0 ? [`--skip=${skip}`] : []),
             '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1e', ...commitRefs,
         ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 }),
         getGitRefs(rootUri).catch(() => []),
