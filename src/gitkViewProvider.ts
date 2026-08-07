@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ChangeSetMode, CommitFile, GitBranchOption, GitCommit, GitRepositoryOption, getCommitFiles, getWorkingTreeChanges, buildGraph, getCurrentGitBranch, getGitBranches, getGitCommits, getGitRepositories, runGitSync } from './gitLogProvider';
+import { ChangeSetMode, CommitFile, GitBranchOption, GitCommit, GitRepositoryOption, getCommitFiles, getWorkingTreeChanges, buildGraph, getGitBranches, getGitCommits, getGitRepositories, runGitSync } from './gitLogProvider';
 import { CustomDiffPanel } from './customDiffPanel';
 
 interface RepositoryCommit extends GitCommit {
@@ -237,12 +237,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const branches = rootUri ? await getGitBranches(rootUri) : [];
         this.branches = this.selectedRepositoryPaths.length === 1 ? branches : [];
         this.selectedBranches = this.selectedBranches.filter(name => this.branches.some(branch => branch.name === name));
-        if (this.branches.length > 0 && !this.hasBranchSelection && this.selectedBranches.length === 0) {
-            const currentBranch = await getCurrentGitBranch(rootUri!);
-            this.selectedBranches = currentBranch && this.branches.some(branch => branch.name === currentBranch)
-                ? [currentBranch]
-                : [];
-            this.hasBranchSelection = this.selectedBranches.length > 0;
+        if (!this.hasBranchSelection) {
+            this.selectedBranches = this.branches.map(branch => branch.name);
+            this.hasBranchSelection = true;
         }
         this.view?.webview.postMessage({
             type: 'selectors',
@@ -276,6 +273,22 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.view?.webview.postMessage({ type: 'files', files: [], mode: this.displayMode, selectedPath: undefined });
     }
 
+    private async selectRepositories(paths: string[]): Promise<void> {
+        const repositoryPath = paths.length === 1 ? paths[0] : undefined;
+        this.selectedRepositoryPaths = paths;
+        this.hasRepositorySelection = true;
+        this.selectedBranches = [];
+        this.hasBranchSelection = false;
+        this.view?.webview.postMessage({ type: 'branchesLoading' });
+
+        if (repositoryPath !== this.selectedRepositoryPath) { return; }
+
+        this.beginCommitReload('正在加载提交...');
+        this.retryCount = 0;
+        this.refreshGeneration++;
+        void this.refreshWithRetry();
+    }
+
     private onMessage(msg: any): void {
         switch (msg.type) {
             case 'focus':
@@ -293,14 +306,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 if (Array.isArray(msg.paths) && msg.paths.every((path: unknown) => typeof path === 'string' && this.repositories.some(repo => repo.path === path))) {
                     const paths = [...new Set(msg.paths as string[])];
                     if (paths.length === this.selectedRepositoryPaths.length && paths.every(path => this.selectedRepositoryPaths.includes(path))) { break; }
-                    this.selectedRepositoryPaths = paths;
-                    this.hasRepositorySelection = true;
-                    this.selectedBranches = [];
-                    this.hasBranchSelection = false;
-                    this.beginCommitReload('正在加载提交...');
-                    this.retryCount = 0;
-                    this.refreshGeneration++;
-                    void this.refreshWithRetry();
+                    void this.selectRepositories(paths);
                 }
                 break;
             case 'selectBranches':
@@ -417,6 +423,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .dropdown-current:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .dropdown-current:disabled { cursor: default; opacity: .6; }
   .dropdown-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .repository-icon { display: inline-flex; flex: 0 0 auto; width: 16px; height: 16px; margin-right: 4px; vertical-align: -3px; color: var(--vscode-icon-foreground, currentColor); }
+  .repository-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .repository-icon.repository-root { color: var(--vscode-gitDecoration-addedResourceForeground, var(--vscode-icon-foreground, currentColor)); }
   .dropdown-chevron { margin-left: auto; color: var(--vscode-descriptionForeground); font-size: 12px; }
   .dropdown.open .dropdown-chevron { transform: rotate(180deg); }
   .dropdown-menu { position: absolute; top: calc(100% + 3px); left: 0; z-index: 20; display: none; flex-direction: column; width: max(100%, 190px); padding: 5px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: var(--vscode-menu-background, var(--vscode-editorWidget-background)); border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border)); border-radius: 5px; box-shadow: 0 4px 14px rgba(0, 0, 0, .28); }
@@ -430,7 +439,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .dropdown-option.selected::before { content: '✓'; display: inline-block; width: 14px; color: var(--vscode-menu-selectionForeground, var(--vscode-textLink-foreground)); }
   #repositoryDropdown .dropdown-option, #branchDropdown .dropdown-option { display: flex; align-items: center; gap: 6px; }
   #repositoryDropdown .dropdown-option.selected::before, #branchDropdown .dropdown-option.selected::before { display: none; }
-  #repositoryDropdown .dropdown-option input, #branchDropdown .dropdown-option input { flex: 0 0 auto; margin: 0; accent-color: var(--vscode-checkbox-selectBackground, var(--vscode-focusBorder)); }
+  #repositoryDropdown .dropdown-option input { display: none; }
+  #branchDropdown .dropdown-option input { flex: 0 0 auto; margin: 0; accent-color: var(--vscode-checkbox-selectBackground, var(--vscode-focusBorder)); }
   .dropdown-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 4px 2px 0; border-top: 1px solid var(--vscode-menu-separatorBackground, var(--vscode-panel-border)); }
   .dropdown-actions button { padding: 2px 4px; color: var(--vscode-textLink-foreground); background: transparent; border: 0; cursor: pointer; font: inherit; font-size: 11px; }
   .dropdown-group { padding-bottom: 1px; color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 600; cursor: default; }
@@ -498,7 +508,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   <div id="header">
     <div class="selector"><span class="selector-prefix">repo:</span><div class="dropdown" id="repositoryDropdown">
       <button class="dropdown-current" type="button" title="切换仓库或子仓库" aria-expanded="false" disabled><span class="dropdown-label">加载仓库...</span><span class="dropdown-chevron">⌄</span></button>
-      <div class="dropdown-menu" role="menu"><input class="dropdown-filter" type="text" placeholder="筛选仓库" aria-label="筛选仓库"><div class="dropdown-options"></div><div class="dropdown-actions"><button type="button" class="select-all">全选</button><button type="button" class="clear-all">清空</button></div></div>
+      <div class="dropdown-menu" role="menu"><input class="dropdown-filter" type="text" placeholder="筛选仓库" aria-label="筛选仓库"><div class="dropdown-options"></div></div>
     </div></div>
     <div class="selector" id="branchSelector"><span class="selector-prefix">branchs:</span><div class="dropdown" id="branchDropdown">
       <button class="dropdown-current" type="button" title="切换分支" aria-expanded="false" disabled><span class="dropdown-label">加载分支...</span><span class="dropdown-chevron">⌄</span></button>
@@ -668,6 +678,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     const msg = event.data;
     if (msg.type === 'selectors') {
       renderSelectors(msg);
+    } else if (msg.type === 'branchesLoading') {
+      closeDropdown(branchDropdown);
+      branchDropdown.current.disabled = true;
+      branchDropdown.label.textContent = '加载分支...';
+      branchDropdown.current.title = '加载分支...';
+      branchDropdown.options.innerHTML = '';
     } else if (msg.type === 'commits') {
       commits = msg.commits;
       stagedCount = Number(msg.stagedCount) || 0;
@@ -714,44 +730,47 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     return entries.filter(function(entry) { return selected.has(entry.value); }).map(function(entry) { return entry.label; }).join(', ') || emptyLabel;
   }
 
+  function repositoryIcon(kind) {
+    return kind === 'repo'
+      ? '<span class="repository-icon repository-root" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="4" cy="3.5" r="1.5"/><circle cx="4" cy="12.5" r="1.5"/><circle cx="12" cy="8" r="1.5"/><path d="M4 5v6M5.5 3.5h1.3a3 3 0 0 1 3 3v0M5.5 12.5h1.3a3 3 0 0 0 3-3v0"/></svg></span>'
+      : '<span class="repository-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2.25 4.75h4l1.4 1.75h6.1v5.75H2.25z"/><path d="M2.25 4.75V3.25h4.1l1.3 1.5"/><path d="M2.25 6.5h11.5"/></svg></span>';
+  }
+  function setRepositoryLabel(entry) {
+    repositoryDropdown.label.innerHTML = entry ? repositoryIcon(entry.kind) + escapeHtml(entry.label) : '未选择仓库';
+    repositoryDropdown.current.title = entry ? (entry.title || entry.label) : '未选择仓库';
+  }
   function renderRepositoryOptions(entries, selectedValues) {
-    const selected = new Set(selectedValues || []);
+    const selectedValue = (selectedValues || []).find(function(value) {
+      return entries.some(function(entry) { return entry.value === value; });
+    }) || '';
     repositoryDropdown.current.disabled = entries.length === 0;
-    repositoryDropdown.label.textContent = selectedLabel(entries, selected, '未选择仓库', '全部仓库');
-    repositoryDropdown.current.title = selectedTitle(entries, selected, '未选择仓库');
+    const selectedEntry = entries.find(function(entry) { return entry.value === selectedValue; });
+    setRepositoryLabel(selectedEntry);
     repositoryDropdown.options.innerHTML = '';
-    function applySelection(values) {
-      selected.clear();
-      values.forEach(function(value) { selected.add(value); });
-      repositoryDropdown.label.textContent = selectedLabel(entries, selected, '未选择仓库', '全部仓库');
-      repositoryDropdown.current.title = selectedTitle(entries, selected, '未选择仓库');
-      repositoryDropdown.options.querySelectorAll('input').forEach(function(checkbox) {
-        checkbox.checked = selected.has(checkbox.value);
-        checkbox.parentElement.classList.toggle('selected', checkbox.checked);
-      });
-      vscode.postMessage({ type: 'selectRepositories', paths: Array.from(selected) });
-    }
     entries.forEach(function(entry) {
       const option = document.createElement('label');
-      option.className = 'dropdown-option' + (selected.has(entry.value) ? ' selected' : '');
+      const checked = entry.value === selectedValue;
+      option.className = 'dropdown-option' + (checked ? ' selected' : '');
       option.title = entry.title || entry.label;
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.value = entry.value;
-      checkbox.checked = selected.has(entry.value);
-      checkbox.addEventListener('change', function() {
-        if (checkbox.checked) selected.add(entry.value); else selected.delete(entry.value);
-        option.classList.toggle('selected', checkbox.checked);
-        repositoryDropdown.label.textContent = selectedLabel(entries, selected, '未选择仓库', '全部仓库');
-        repositoryDropdown.current.title = selectedTitle(entries, selected, '未选择仓库');
-        vscode.postMessage({ type: 'selectRepositories', paths: Array.from(selected) });
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = 'repository';
+      radio.value = entry.value;
+      radio.checked = checked;
+      radio.addEventListener('change', function() {
+        if (!radio.checked) return;
+        repositoryDropdown.options.querySelectorAll('.dropdown-option').forEach(function(item) {
+          item.classList.toggle('selected', item === option);
+        });
+        setRepositoryLabel(entry);
+        closeDropdown(repositoryDropdown);
+        vscode.postMessage({ type: 'selectRepositories', paths: [entry.value] });
       });
-      option.appendChild(checkbox);
+      option.appendChild(radio);
+      option.insertAdjacentHTML('beforeend', repositoryIcon(entry.kind));
       option.appendChild(document.createTextNode(entry.label));
       repositoryDropdown.options.appendChild(option);
     });
-    repositoryDropdown.menu.querySelector('.select-all').onclick = function() { applySelection(entries.map(function(entry) { return entry.value; })); };
-    repositoryDropdown.menu.querySelector('.clear-all').onclick = function() { applySelection([]); };
   }
 
   function renderBranchOptions(entries, selectedValues) {
@@ -808,7 +827,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   function renderSelectors(msg) {
     const repositories = msg.repositories || [];
     renderRepositoryOptions(repositories.map(function(repo) {
-      return { value: repo.path, label: (repo.description === 'repo' ? '◆ ' : '') + repo.label, title: repo.path };
+      return { value: repo.path, label: repo.label, title: repo.path, kind: repo.description === 'repo' ? 'repo' : 'subrepo' };
     }), msg.selectedRepositoryPaths || []);
     const branches = msg.branches || [];
     branchDropdown.root.hidden = false;
