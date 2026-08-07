@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ChangeSetMode, CommitFile, GitBranchOption, GitCommit, GitRepositoryOption, GraphState, getCommitFiles, getCommitHashes, getGitCommitsByHashes, getWorkingTreeChanges, buildGraph, getGitBranches, getGitCommits, getGitRepositories, runGitSync } from './gitLogProvider';
+import { ChangeSetMode, CommitFile, GitBranchOption, GitCommit, GitRepositoryOption, GraphState, WorkingTreeChanges, getCommitFiles, getCommitHashes, getFirstRepoPath, getGitCommitsByHashes, getWorkingTreeChanges, buildGraph, getGitBranches, getGitCommits, getGitRepositories, runGitSync } from './gitLogProvider';
 import { CustomDiffPanel } from './customDiffPanel';
 
 interface RepositoryCommit extends GitCommit {
@@ -15,13 +15,17 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private view?: vscode.WebviewView;
     private commits: RepositoryCommit[] = [];
     private rawCommits: GitCommit[] = [];
-    private graphState: GraphState = { activeLanes: [], nextColor: 0 };
+    private graphState: GraphState = { activeLanes: [], visibleHashes: new Set(), nextColor: 0 };
     private allCommitHashes: string[] = [];
+    private prefetchAbortController?: AbortController;
+    private prefetchPromise: Promise<GitCommit[]> | null = null;
+    private prefetchGeneration = 0;
     private hasMoreCommits = false;
     private isLoadingMoreCommits = false;
     private commitPageGeneration = 0;
     private isLoading = true;
     private isFocused = false;
+    private retryTimer?: ReturnType<typeof setTimeout>;
     private refreshInFlight?: Promise<void>;
     private refreshGeneration = 0;
     private branchRefreshGeneration = 0;
@@ -49,7 +53,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     constructor(private readonly context: vscode.ExtensionContext) {
         this.customDiffPanel = new CustomDiffPanel(context, path => this.syncFileHighlightFromPath(path));
-        context.subscriptions.push(this.onDidChangeDiffAvailabilityEmitter, this.customDiffPanel);
+        context.subscriptions.push(
+            this.onDidChangeDiffAvailabilityEmitter,
+            this.customDiffPanel,
+            new vscode.Disposable(() => {
+                this.retryTimer && clearTimeout(this.retryTimer);
+                this.retryTimer = undefined;
+                this.invalidatePrefetch();
+            }),
+        );
     }
 
     canShowMultiDiff(): boolean {
@@ -107,8 +119,23 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             localResourceRoots: [],
         };
         view.webview.html = this.getHtml();
-        view.webview.onDidReceiveMessage(msg => this.onMessage(msg));
-        view.onDidChangeVisibility(() => this.updateMultiDiffVisibility());
+        this.context.subscriptions.push(
+            view.webview.onDidReceiveMessage(msg => this.onMessage(msg)),
+            view.onDidChangeVisibility(() => {
+                this.updateMultiDiffVisibility();
+                if (!view.visible) {
+                    this.invalidatePrefetch();
+                }
+            }),
+            view.onDidDispose(() => {
+                if (this.view === view) {
+                    this.view = undefined;
+                    this.retryTimer && clearTimeout(this.retryTimer);
+                    this.retryTimer = undefined;
+                    this.invalidatePrefetch();
+                }
+            }),
+        );
         // 延迟刷新, 等 Git 扩展扫描完仓库
         this.refreshWithRetry();
     }
@@ -122,9 +149,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         await this.refresh(!isFirstAttempt);
         if (generation === this.refreshGeneration && this.selectedRepositoryPaths.length > 0 && this.commits.length === 0 && this.retryCount < this.maxRetry) {
             this.retryCount++;
-            setTimeout(() => {
+            this.retryTimer && clearTimeout(this.retryTimer);
+            this.retryTimer = setTimeout(() => {
+                this.retryTimer = undefined;
                 if (generation === this.refreshGeneration) {
-                    this.refreshWithRetry();
+                    void this.refreshWithRetry();
                 }
             }, 1500);
         }
@@ -144,7 +173,56 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private async refreshInternal(skipSelectors = false): Promise<void> {
         if (!this.view) { return; }
         this.setLoading(true);
-        if (!skipSelectors) {
+        // 首次加载: 从 Git API 瞬间获取仓库路径, 并行加载 selectors + 提交数据
+        let selectorsLoaded = skipSelectors;
+        if (!selectorsLoaded && !this.hasRepositorySelection) {
+            const firstRepoPath = await getFirstRepoPath();
+            if (firstRepoPath) {
+                this.selectedRepositoryPaths = [firstRepoPath];
+                const rootUri = vscode.Uri.parse(firstRepoPath);
+                const commitPageGeneration = ++this.commitPageGeneration;
+                this.view?.webview.postMessage({ type: 'loadingProgress', phase: 'commit', message: '加载提交...', current: 0, total: 0 });
+                // 并行: refreshSelectors (仓库扫描+分支) + getGitCommits(HEAD) + getCommitHashes(HEAD) + getWorkingTreeChanges
+                const parallelResults = await Promise.allSettled([
+                    this.refreshSelectors(),
+                    getGitCommits(rootUri, COMMIT_PAGE_REQUEST_SIZE, [], 0, (current, total) => {
+                        this.view?.webview.postMessage({ type: 'loadingProgress', phase: 'commit', message: '加载提交...', current, total });
+                    }),
+                    getCommitHashes(rootUri, []).catch(() => []),
+                    getWorkingTreeChanges(rootUri),
+                ]);
+                if (commitPageGeneration !== this.commitPageGeneration) { return; }
+                const selectorsOk = parallelResults[0].status === 'fulfilled';
+                const commitsOk = parallelResults[1].status === 'fulfilled';
+                const hashesOk = parallelResults[2].status === 'fulfilled';
+                const changesOk = parallelResults[3].status === 'fulfilled';
+                if (selectorsOk) { selectorsLoaded = true; }
+                // 全部成功且仓库未变: 直接使用预加载数据
+                if (selectorsOk && commitsOk && hashesOk && changesOk &&
+                    this.selectedRepositoryPaths.length === 1 && this.selectedRepositoryPaths[0] === firstRepoPath) {
+                    const raw = (parallelResults[1] as PromiseFulfilledResult<GitCommit[]>).value;
+                    const allHashes = (parallelResults[2] as PromiseFulfilledResult<string[]>).value;
+                    const workingTreeChanges = (parallelResults[3] as PromiseFulfilledResult<WorkingTreeChanges>).value;
+                    this.rawCommits = raw.slice(0, COMMIT_PAGE_SIZE);
+                    this.hasMoreCommits = raw.length > COMMIT_PAGE_SIZE;
+                    this.allCommitHashes = allHashes;
+                    this.isLoadingMoreCommits = false;
+                    this.graphState = { activeLanes: [], visibleHashes: new Set(), nextColor: 0 };
+                    this.commits = buildGraph(this.rawCommits, this.graphState).map(c => ({ ...c, repositoryPath: rootUri.toString() }));
+                    if (this.commits.length === 0) { throw new Error('Git 仓库扫描中...'); }
+                    this.stagedFiles = workingTreeChanges.staged;
+                    this.changeFiles = workingTreeChanges.changes;
+                    this.retryCount = 0;
+                    const selectedCommit = this.commits.find(c => c.hash === this.currentHash && c.repositoryPath === this.currentRepositoryPath) ?? this.commits[0];
+                    this.view.webview.postMessage({ type: 'commits', commits: this.commits, stagedCount: this.stagedFiles.length, changesCount: this.changeFiles.length, hasMoreCommits: this.hasMoreCommits, isLoadingMoreCommits: false });
+                    this.setLoading(false);
+                    this.startPrefetch();
+                    if (selectedCommit) { await this.selectCommit(selectedCommit.hash, selectedCommit.repositoryPath); }
+                    return;
+                }
+            }
+        }
+        if (!selectorsLoaded) {
             try {
                 await this.refreshSelectors();
             } catch (error) {
@@ -161,6 +239,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.commits = [];
             this.rawCommits = [];
             this.allCommitHashes = [];
+            this.invalidatePrefetch();
             this.hasMoreCommits = false;
             this.isLoadingMoreCommits = false;
             ++this.commitPageGeneration;
@@ -209,7 +288,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.rawCommits = isSingleRepository ? (successful[0]?.raw.slice(0, COMMIT_PAGE_SIZE) ?? []) : [];
             this.hasMoreCommits = isSingleRepository && (successful[0]?.raw.length ?? 0) > COMMIT_PAGE_SIZE;
             this.allCommitHashes = isSingleRepository ? (successful[0]?.allHashes ?? []) : [];
-            this.graphState = { activeLanes: [], nextColor: 0 };
+            this.graphState = { activeLanes: [], visibleHashes: new Set(), nextColor: 0 };
             const commits = successful.flatMap(({ rootUri, raw }) => buildGraph(isSingleRepository ? raw.slice(0, COMMIT_PAGE_SIZE) : raw).map(commit => ({ ...commit, repositoryPath: rootUri.toString() })));
             if (commits.length === 0) { throw new Error('Git 仓库扫描中...'); }
             this.commits = commits;
@@ -225,6 +304,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const selectedCommit = this.commits.find(commit => commit.hash === this.currentHash && commit.repositoryPath === this.currentRepositoryPath) ?? this.commits[0];
             this.view.webview.postMessage({ type: 'commits', commits: this.commits, stagedCount: this.stagedFiles.length, changesCount: this.changeFiles.length, hasMoreCommits: this.hasMoreCommits, isLoadingMoreCommits: false });
             this.setLoading(false);
+            this.startPrefetch();
             if (selectedCommit) { await this.selectCommit(selectedCommit.hash, selectedCommit.repositoryPath); }
         } catch (error) {
             this.setLoading(false);
@@ -256,7 +336,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.hasMoreCommits = page.length > COMMIT_PAGE_SIZE;
             this.allCommitHashes = allHashes;
             this.isLoadingMoreCommits = false;
-            this.graphState = { activeLanes: [], nextColor: 0 };
+            this.graphState = { activeLanes: [], visibleHashes: new Set(), nextColor: 0 };
             this.commits = buildGraph(this.rawCommits, this.graphState).map(commit => ({ ...commit, repositoryPath: rootUri.toString() }));
             const selectedCommit = this.commits.find(commit => commit.hash === this.currentHash && commit.repositoryPath === this.currentRepositoryPath);
             this.view.webview.postMessage({
@@ -267,6 +347,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 hasMoreCommits: this.hasMoreCommits,
                 isLoadingMoreCommits: false,
             });
+            this.startPrefetch();
             if (selectedCommit) {
                 await this.selectCommit(selectedCommit.hash, selectedCommit.repositoryPath);
             }
@@ -283,17 +364,24 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     private async loadMoreCommits(): Promise<void> {
         const rootUri = this.getRepoRootUri();
-        if (!this.view || !rootUri || this.selectedRepositoryPaths.length !== 1 || !this.hasBranchSelection || !this.hasMoreCommits || this.isLoadingMoreCommits) { return; }
+        if (!this.view || !this.view.visible || !rootUri || this.selectedRepositoryPaths.length !== 1 || !this.hasBranchSelection || !this.hasMoreCommits || this.isLoadingMoreCommits) { return; }
 
         const generation = this.commitPageGeneration;
         const skip = this.rawCommits.length;
         this.isLoadingMoreCommits = true;
         this.view.webview.postMessage({ type: 'commitPageState', hasMoreCommits: true, isLoadingMoreCommits: true });
         try {
-            // 优先用预取的 hash 列表 + git log --no-walk (O(101), 无遍历)
-            // 回退到 git log --skip (O(N), 遍历 N 个提交)
             let page: GitCommit[];
-            if (this.allCommitHashes.length > skip) {
+            // 优先用后台预取的数据 (无 git 进程等待)
+            if (this.prefetchPromise) {
+                page = await this.prefetchPromise;
+                this.prefetchPromise = null;
+                // 预取被失效或失败时回退
+                if (page.length === 0 && this.allCommitHashes.length > skip) {
+                    const pageHashes = this.allCommitHashes.slice(skip, skip + COMMIT_PAGE_REQUEST_SIZE);
+                    page = await getGitCommitsByHashes(rootUri, pageHashes);
+                }
+            } else if (this.allCommitHashes.length > skip) {
                 const pageHashes = this.allCommitHashes.slice(skip, skip + COMMIT_PAGE_REQUEST_SIZE);
                 page = await getGitCommitsByHashes(rootUri, pageHashes);
             } else {
@@ -316,6 +404,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 hasMoreCommits: this.hasMoreCommits,
                 isLoadingMoreCommits: false,
             });
+            // 预取下一页
+            this.startPrefetch();
         } catch (error) {
             if (generation === this.commitPageGeneration) {
                 this.view.webview.postMessage({
@@ -372,8 +462,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     private beginCommitReload(message: string): void {
         ++this.commitPageGeneration;
+        this.retryTimer && clearTimeout(this.retryTimer);
+        this.retryTimer = undefined;
+        this.invalidatePrefetch();
         this.commits = [];
         this.rawCommits = [];
+        this.allCommitHashes = [];
+        this.graphState = { activeLanes: [], visibleHashes: new Set(), nextColor: 0 };
         this.hasMoreCommits = false;
         this.isLoadingMoreCommits = false;
         this.files = [];
@@ -385,6 +480,34 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.customDiffPanel.hide();
         this.view?.webview.postMessage({ type: 'loadingProgress', phase: 'start', message, current: 0, total: 0 });
         this.view?.webview.postMessage({ type: 'files', files: [], mode: this.displayMode, selectedPath: undefined });
+    }
+
+    // 后台预取下一页: 首页/加载更多完成后立即在后台获取下一批提交, 用户触发"加载更多"时数据已就绪
+    private startPrefetch(): void {
+        if (this.prefetchPromise) { return; }
+        const rootUri = this.getRepoRootUri();
+        if (!this.view?.visible || !rootUri || this.selectedRepositoryPaths.length !== 1 || !this.hasMoreCommits) { return; }
+        const skip = this.rawCommits.length;
+        if (skip === 0 || this.allCommitHashes.length <= skip) { return; }
+        const generation = this.prefetchGeneration;
+        const pageHashes = this.allCommitHashes.slice(skip, skip + COMMIT_PAGE_REQUEST_SIZE);
+        const abortController = new AbortController();
+        this.prefetchAbortController = abortController;
+        this.prefetchPromise = getGitCommitsByHashes(rootUri, pageHashes, abortController.signal)
+            .then(page => generation !== this.prefetchGeneration ? [] : page)
+            .catch(() => [] as GitCommit[])
+            .finally(() => {
+                if (this.prefetchAbortController === abortController) {
+                    this.prefetchAbortController = undefined;
+                }
+            });
+    }
+
+    private invalidatePrefetch(): void {
+        this.prefetchAbortController?.abort();
+        this.prefetchAbortController = undefined;
+        this.prefetchPromise = null;
+        ++this.prefetchGeneration;
     }
 
     private async selectRepositories(paths: string[]): Promise<void> {
@@ -1317,9 +1440,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     for (var i = startIndex; i < commits.length; i++) {
       html += buildCommitRowHTML(i, currentGraphW);
     }
+    var beforeCount = list.children.length;
     list.insertAdjacentHTML('beforeend', html);
-    for (var i = startIndex; i < commits.length; i++) {
-      var row = list.querySelector('.commit-row[data-row="' + i + '"]');
+    var newCount = commits.length - startIndex;
+    for (var j = 0; j < newCount; j++) {
+      var row = list.children[beforeCount + j];
       if (row) setupRow(row, currentGraphW);
     }
     // 列宽可能因新提交增宽

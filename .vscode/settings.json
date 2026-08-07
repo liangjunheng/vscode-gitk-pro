@@ -3,5 +3,9 @@
   "eslint.validate": [
     "javascript",
     "typescript"
-  ]
+  ],
+  // 强制使用工作区 TS 版本
+  "typescript.tsdk": "./node_modules/typescript/lib",
+  // 禁用增量编译缓存
+  "typescript.enablePromptUseWorkspaceTsdk": true
 }

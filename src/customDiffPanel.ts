@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { spawn } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import { readFile } from 'fs/promises';
 import * as path from 'path';
 import { ChangeSetMode, CommitFile } from './gitLogProvider';
@@ -24,6 +24,7 @@ export class CustomDiffPanel implements vscode.Disposable {
     private rootUri?: vscode.Uri;
     private requestGeneration = 0;
     private readonly disposables: vscode.Disposable[] = [];
+    private childProcess?: ChildProcess;
 
     constructor(
         private readonly context: vscode.ExtensionContext,
@@ -34,6 +35,11 @@ export class CustomDiffPanel implements vscode.Disposable {
         const isSameCommit = this.panel && this.rootUri?.toString() === rootUri.toString() && this.hash === hash && this.changeSetMode === changeSetMode;
         if (!isSameCommit) {
             this.requestGeneration++;
+            // 终止旧 git cat-file 进程
+            if (this.childProcess) {
+                try { this.childProcess.kill(); } catch { /* 已退出 */ }
+                this.childProcess = undefined;
+            }
         }
         this.rootUri = rootUri;
         this.hash = hash;
@@ -49,7 +55,12 @@ export class CustomDiffPanel implements vscode.Disposable {
             this.panel.webview.html = this.getHtml();
             this.disposables.push(
                 this.panel.webview.onDidReceiveMessage(message => this.onMessage(message)),
-                this.panel.onDidDispose(() => { this.panel = undefined; }),
+                this.panel.onDidDispose(() => {
+                    this.panel = undefined;
+                    // 清理已释放的面板级 disposable, 避免数组无限增长
+                    vscode.Disposable.from(...this.disposables).dispose();
+                    this.disposables.length = 0;
+                }),
             );
         }
         this.panel.title = `Gitk Diff (${hash.slice(0, 8)})`;
@@ -73,10 +84,14 @@ export class CustomDiffPanel implements vscode.Disposable {
         if (payload.type === 'loadAll') {
             const generation = Number(payload.generation);
             if (generation !== this.requestGeneration) { return; }
-            const diffs = await this.readAllDiffs();
-            if (generation !== this.requestGeneration) { return; }
-            await this.panel?.webview.postMessage({ type: 'progress', generation, completed: diffs.length, total: diffs.length });
-            await this.panel?.webview.postMessage({ type: 'diffs', generation, diffs });
+            try {
+                const diffs = await this.readAllDiffs();
+                if (generation !== this.requestGeneration) { return; }
+                await this.panel?.webview.postMessage({ type: 'progress', generation, completed: diffs.length, total: diffs.length });
+                await this.panel?.webview.postMessage({ type: 'diffs', generation, diffs });
+            } catch {
+                // 请求被取消或失败, 忽略 (generation 不匹配时已被新请求取代)
+            }
         } else if (payload.type === 'selectFile' && typeof payload.path === 'string') {
             this.onSelectFile(payload.path);
         }
@@ -132,12 +147,17 @@ export class CustomDiffPanel implements vscode.Disposable {
         const uniqueObjects = [...new Set(objects)];
         return new Promise((resolve, reject) => {
             const child = spawn('git', ['-C', this.rootUri!.fsPath, 'cat-file', '--batch'], { windowsHide: true });
+            this.childProcess = child;
             const chunks: Buffer[] = [];
             let stderr = '';
             child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
             child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
-            child.on('error', reject);
+            child.on('error', err => {
+                if (this.childProcess === child) { this.childProcess = undefined; }
+                reject(err);
+            });
             child.on('close', code => {
+                if (this.childProcess === child) { this.childProcess = undefined; }
                 if (code !== 0) { reject(new Error(stderr || `git cat-file 失败（退出码 ${code}）`)); return; }
                 try {
                     const output = Buffer.concat(chunks);
@@ -160,13 +180,24 @@ export class CustomDiffPanel implements vscode.Disposable {
         });
     }
 
+    private stopChildProcess(): void {
+        if (this.childProcess) {
+            try { this.childProcess.kill(); } catch { /* 已退出 */ }
+            this.childProcess = undefined;
+        }
+    }
+
     hide(): void {
+        this.requestGeneration++;
+        this.stopChildProcess();
         this.panel?.dispose();
     }
 
     dispose(): void {
+        this.stopChildProcess();
         this.panel?.dispose();
         vscode.Disposable.from(...this.disposables).dispose();
+        this.disposables.length = 0;
     }
 
     private getHtml(): string {

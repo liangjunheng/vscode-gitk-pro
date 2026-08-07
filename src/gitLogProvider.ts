@@ -123,6 +123,21 @@ async function getGitApi(): Promise<GitApi | undefined> {
     return cachedGitApi;
 }
 
+// 快速获取首个仓库路径 (从 Git API, 无 git 命令)
+export async function getFirstRepoPath(): Promise<string | undefined> {
+    const api = await getGitApi();
+    if (api && api.repositories.length > 0) {
+        return vscode.Uri.file(api.repositories[0].rootUri.fsPath).toString();
+    }
+    // API 未就绪, 尝试工作区文件夹
+    const workspaceFolders = vscode.workspace.workspaceFolders || [];
+    for (const folder of workspaceFolders) {
+        const rootPath = await resolveRepositoryRoot(folder.uri.fsPath);
+        if (rootPath) { return vscode.Uri.file(rootPath).toString(); }
+    }
+    return undefined;
+}
+
 // 格式化日期
 function formatDateLabel(date: Date | string): string {
     const raw = date instanceof Date ? date : new Date(date);
@@ -279,6 +294,7 @@ interface GitRefRecord {
 // refs 缓存, 避免同一次刷新中 getGitBranches 和 getGitCommits 重复调用 git for-each-ref
 const refsCache = new Map<string, { refs: GitRefRecord[]; timestamp: number }>();
 const REFS_CACHE_TTL = 5000;
+const REFS_CACHE_MAX = 20;
 
 async function getGitRefs(rootUri: vscode.Uri): Promise<GitRefRecord[]> {
     const key = rootUri.fsPath;
@@ -294,6 +310,14 @@ async function getGitRefs(rootUri: vscode.Uri): Promise<GitRefRecord[]> {
         if (!hash || !label || !name || label.endsWith('/HEAD')) { return []; }
         return [{ hash, label, name }];
     });
+    if (refsCache.size >= REFS_CACHE_MAX) {
+        let oldestKey: string | undefined;
+        let oldestTime = Infinity;
+        for (const [k, v] of refsCache) {
+            if (v.timestamp < oldestTime) { oldestTime = v.timestamp; oldestKey = k; }
+        }
+        if (oldestKey) { refsCache.delete(oldestKey); }
+    }
     refsCache.set(key, { refs, timestamp: Date.now() });
     return refs;
 }
@@ -423,14 +447,14 @@ export async function getCommitHashes(rootUri: vscode.Uri, refs: readonly string
 }
 
 // 按指定 hash 列表获取提交 (git log --no-walk, 无遍历, O(N) N=hash数)
-export async function getGitCommitsByHashes(rootUri: vscode.Uri, hashes: readonly string[]): Promise<GitCommit[]> {
+export async function getGitCommitsByHashes(rootUri: vscode.Uri, hashes: readonly string[], signal?: AbortSignal): Promise<GitCommit[]> {
     if (hashes.length === 0) { return []; }
     const [logResult, gitRefs] = await Promise.all([
         execFileAsync('git', [
             '-C', rootUri.fsPath, 'log', '--no-walk',
             '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1e',
             ...hashes,
-        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 }),
+        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
         getGitRefs(rootUri).catch(() => []),
     ]);
     const refsByCommit = buildRefsByCommit(gitRefs);
@@ -464,6 +488,7 @@ export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, re
 // 图形布局状态, 用于增量构建
 export interface GraphState {
     activeLanes: Array<{ hash: string; color: string } | undefined>;
+    visibleHashes: Set<string>;
     nextColor: number;
 }
 
@@ -471,7 +496,17 @@ export interface GraphState {
 // state + startIndex 支持增量构建: 只处理新追加的提交, 跳过已处理的
 export function buildGraph(commits: GitCommit[], state?: GraphState, startIndex: number = 0): GitCommit[] {
     interface ActiveLane { hash: string; color: string; }
-    const visibleHashes = new Set(commits.map(commit => commit.hash));
+    const visibleHashes = state?.visibleHashes ?? new Set<string>();
+    const firstNewIndex = Math.min(Math.max(startIndex, 0), commits.length);
+    // 首次全量建立；追加分页时仅记录新提交，避免重复扫描全部历史。
+    for (let i = state ? firstNewIndex : 0; i < commits.length; i++) {
+        const commit = commits[i];
+        visibleHashes.add(commit.hash);
+        // 预留未加载页中的父提交车道，避免分页追加时父提交重新开线。
+        for (const parent of commit.parents) {
+            visibleHashes.add(parent);
+        }
+    }
     let activeLanes: Array<ActiveLane | undefined> = state ? state.activeLanes.map(l => l ? { ...l } : undefined) : [];
     let nextColor = state?.nextColor ?? 0;
     const newLane = (hash: string, preferredColor?: string): ActiveLane => ({
@@ -531,6 +566,7 @@ export function buildGraph(commits: GitCommit[], state?: GraphState, startIndex:
     }
     if (state) {
         state.activeLanes = activeLanes;
+        state.visibleHashes = visibleHashes;
         state.nextColor = nextColor;
     }
     return commits;
