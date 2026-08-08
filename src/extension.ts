@@ -49,10 +49,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.commands.registerCommand('vscode-gitk.selectCommit', (hash: string) => provider.selectCommit(hash))
     );
 
-    // 状态栏: workspace 是 git 仓库时显示 "Gitk" 字样 + 内置 git-merge 图标, 点击打开面板
+    // 状态栏: workspace 有 git 仓库时显示 "Gitk" 字样 + 内置 git-merge 图标
     const statusBar = new GitkStatusBar(context, 'vscode-gitk.open');
     context.subscriptions.push(statusBar);
-    statusBar.initialize();
+    await statusBar.initialize();
+    // 工作区文件夹变化时重新检查状态栏可见性
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeWorkspaceFolders(() => void statusBar.checkVisibility())
+    );
 }
 
 export function deactivate(): void {}

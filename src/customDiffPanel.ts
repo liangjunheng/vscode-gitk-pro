@@ -57,6 +57,7 @@ export class CustomDiffPanel implements vscode.Disposable {
                 this.panel.webview.onDidReceiveMessage(message => this.onMessage(message)),
                 this.panel.onDidDispose(() => {
                     this.panel = undefined;
+                    this.stopChildProcess();
                     // 清理已释放的面板级 disposable, 避免数组无限增长
                     vscode.Disposable.from(...this.disposables).dispose();
                     this.disposables.length = 0;

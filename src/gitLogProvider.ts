@@ -217,22 +217,13 @@ export async function getGitRepositories(onProgress?: (current: number, total: n
     const workspaceFolders = vscode.workspace.workspaceFolders || [];
     const pending: { rootPath: string; parentPath?: string }[] = [...apiRepos];
 
-    let total = apiRepos.length + workspaceFolders.length;
-    let progress = 0;
-    if (onProgress) { onProgress(0, Math.max(total, 1)); }
-
     // API 仓库 (即时, 无 git 命令)
-    progress = apiRepos.length;
-    if (onProgress) { onProgress(progress, total); }
+    if (onProgress) { onProgress(0, Math.max(apiRepos.length, 1)); }
+    if (onProgress) { onProgress(apiRepos.length, Math.max(apiRepos.length, 1)); }
 
-    // 解析工作区文件夹 (并行 git rev-parse)
-    let folderCompleted = apiRepos.length;
-    const folderRoots = await Promise.all(workspaceFolders.map(async folder => {
-        const rootPath = await resolveRepositoryRoot(folder.uri.fsPath);
-        folderCompleted++;
-        if (onProgress) { onProgress(folderCompleted, total); }
-        return rootPath;
-    }));
+    // 解析工作区文件夹 (并行 git rev-parse, 可能与 API 仓库重复, 用 indeterminate)
+    if (workspaceFolders.length > 0 && onProgress) { onProgress(0, 0); }
+    const folderRoots = await Promise.all(workspaceFolders.map(folder => resolveRepositoryRoot(folder.uri.fsPath)));
     for (const rootPath of folderRoots) {
         if (rootPath && !pending.some(repository => repositoryKey(repository.rootPath) === repositoryKey(rootPath))) {
             pending.push({ rootPath });
@@ -247,8 +238,8 @@ export async function getGitRepositories(onProgress?: (current: number, total: n
     }
 
     // 扫描子模块 (并行 git config, 嵌套子模块串行处理)
-    total = pending.length + pending.length;
-    progress = pending.length;
+    let total = pending.length + pending.length;
+    let progress = pending.length;
     if (onProgress) { onProgress(progress, total); }
     let submoduleBatch = pending.slice();
     while (submoduleBatch.length > 0) {
@@ -483,6 +474,34 @@ export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, re
     if (onProgress) { onProgress(1, 1); }
     const refsByCommit = buildRefsByCommit(gitRefs);
     return parseLogOutput(logResult.stdout, refsByCommit);
+}
+
+// 搜索提交: 全量获取后在 TS 端过滤, 任意关键词命中任意字段即返回
+export async function searchCommits(rootUri: vscode.Uri, keywords: string[], refs: readonly string[] = []): Promise<GitCommit[]> {
+    if (keywords.length === 0) { return []; }
+    const commitRefs = refs.length > 0 ? [...refs] : ['HEAD'];
+    const [logResult, gitRefs] = await Promise.all([
+        execFileAsync('git', [
+            '-C', rootUri.fsPath, 'log', '--topo-order',
+            '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1e', ...commitRefs,
+        ], { windowsHide: true, maxBuffer: 64 * 1024 * 1024 }),
+        getGitRefs(rootUri).catch(() => []),
+    ]);
+    const refsByCommit = buildRefsByCommit(gitRefs);
+    const allCommits = parseLogOutput(logResult.stdout, refsByCommit);
+    const lowerKeywords = keywords.map(k => k.toLowerCase());
+    return allCommits.filter(c => {
+        const fields = [
+            c.hash, c.shortHash,
+            c.parents.join(' '),
+            c.author, c.authorEmail,
+            c.committer, c.committerEmail,
+            c.authorDate, c.authorDateLabel,
+            c.message, c.body,
+            c.refs.join(' '),
+        ].map(f => (f || '').toLowerCase());
+        return lowerKeywords.some(kw => fields.some(f => f.includes(kw)));
+    });
 }
 
 // 图形布局状态, 用于增量构建
