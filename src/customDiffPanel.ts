@@ -86,10 +86,7 @@ export class CustomDiffPanel implements vscode.Disposable {
             const generation = Number(payload.generation);
             if (generation !== this.requestGeneration) { return; }
             try {
-                const diffs = await this.readAllDiffs();
-                if (generation !== this.requestGeneration) { return; }
-                await this.panel?.webview.postMessage({ type: 'progress', generation, completed: diffs.length, total: diffs.length });
-                await this.panel?.webview.postMessage({ type: 'diffs', generation, diffs });
+                await this.readAllDiffsIncrementally(generation);
             } catch {
                 // 请求被取消或失败, 忽略 (generation 不匹配时已被新请求取代)
             }
@@ -98,43 +95,59 @@ export class CustomDiffPanel implements vscode.Disposable {
         }
     }
 
+    private async readAllDiffsIncrementally(generation: number): Promise<void> {
+        const batchSize = 20;
+        const total = this.files.length;
+        for (let start = 0; start < total; start += batchSize) {
+            const files = this.files.slice(start, start + batchSize);
+            const diffs = await this.readDiffs(files, start);
+            if (generation !== this.requestGeneration) { return; }
+            await this.panel?.webview.postMessage({ type: 'diffs', generation, diffs, append: start > 0 });
+            await this.panel?.webview.postMessage({ type: 'progress', generation, completed: Math.min(start + files.length, total), total });
+        }
+    }
+
     private async readAllDiffs(): Promise<DiffPayload[]> {
+        return this.readDiffs(this.files);
+    }
+
+    private async readDiffs(files: CommitFile[], indexOffset = 0): Promise<DiffPayload[]> {
         if (!this.rootUri) { throw new Error('未找到 Git 仓库'); }
         if (this.changeSetMode !== 'commit') {
-            return this.readWorkingTreeDiffs();
+            return this.readWorkingTreeDiffs(files, indexOffset);
         }
         const objects: string[] = [];
-        for (const file of this.files) {
+        for (const file of files) {
             if (file.status !== 'A') { objects.push(`${this.hash}^:${file.oldPath || file.path}`); }
             if (file.status !== 'D') { objects.push(`${this.hash}:${file.path}`); }
         }
         const contents = await this.readGitObjects(objects);
-        return this.files.map((file, index) => {
+        return files.map((file, index) => {
             const originalObject = file.status === 'A' ? undefined : `${this.hash}^:${file.oldPath || file.path}`;
             const modifiedObject = file.status === 'D' ? undefined : `${this.hash}:${file.path}`;
             const original = originalObject ? contents.get(originalObject) : '';
             const modified = modifiedObject ? contents.get(modifiedObject) : '';
             const missing = [originalObject, modifiedObject].find(object => object && !contents.has(object));
-            return { index, path: file.path, fullPath: path.join(this.rootUri!.fsPath, file.path), oldPath: file.oldPath, status: file.status, original: original || '', modified: modified || '', error: missing ? `无法读取 Git 对象：${missing}` : undefined };
+            return { index: index + indexOffset, path: file.path, fullPath: path.join(this.rootUri!.fsPath, file.path), oldPath: file.oldPath, status: file.status, original: original || '', modified: modified || '', error: missing ? `无法读取 Git 对象：${missing}` : undefined };
         });
     }
 
-    private async readWorkingTreeDiffs(): Promise<DiffPayload[]> {
+    private async readWorkingTreeDiffs(files = this.files, indexOffset = 0): Promise<DiffPayload[]> {
         const originalRef = this.changeSetMode === 'staged' ? 'HEAD' : '';
         const objects: string[] = [];
-        for (const file of this.files) {
+        for (const file of files) {
             if (file.status !== 'A') { objects.push(`${originalRef}:${file.oldPath || file.path}`); }
             if (file.status !== 'D') { objects.push(`:${file.path}`); }
         }
         const contents = await this.readGitObjects(objects);
-        return Promise.all(this.files.map(async (file, index) => {
+        return Promise.all(files.map(async (file, index) => {
             const originalObject = file.status === 'A' ? undefined : `${originalRef}:${file.oldPath || file.path}`;
             const modifiedObject = file.status === 'D' ? undefined : `:${file.path}`;
             const original = originalObject ? contents.get(originalObject) || '' : '';
             const modified = this.changeSetMode === 'staged'
                 ? (modifiedObject ? contents.get(modifiedObject) || '' : '')
                 : await this.readWorkspaceFile(file.path);
-            return { index, path: file.path, fullPath: path.join(this.rootUri!.fsPath, file.path), oldPath: file.oldPath, status: file.status, original, modified };
+            return { index: index + indexOffset, path: file.path, fullPath: path.join(this.rootUri!.fsPath, file.path), oldPath: file.oldPath, status: file.status, original, modified };
         }));
     }
 
@@ -306,13 +319,13 @@ export class CustomDiffPanel implements vscode.Disposable {
         loadingView.style.display = 'none';
         list.hidden = false;
         const target = files.find(function(file) { return file.path === revealPath; });
-        if (target) { selectFile(target.path, true); } else if (files.length) { selectFile(files[0].path, false); vscode.postMessage({ type: 'selectFile', path: files[0].path }); }
+        if (target) { selectFile(target.path, true); } else if (files.length && loaded.size === files.length) { selectFile(files[0].path, false); vscode.postMessage({ type: 'selectFile', path: files[0].path }); }
         updateNavigationButtons(changeTargets(), -1);
         return;
       }
       renderDiff(diffs[index++]);
-      loadingText.textContent = '正在生成 Diff：' + index + ' / ' + diffs.length;
-      progressBar.style.width = (index / diffs.length * 100) + '%';
+      loadingView.style.display = 'none';
+      list.hidden = false;
       requestAnimationFrame(renderNext);
     }
     requestAnimationFrame(renderNext);
@@ -333,19 +346,22 @@ export class CustomDiffPanel implements vscode.Disposable {
     });
     return targets.sort(function(left, right) { return left.getBoundingClientRect().top - right.getBoundingClientRect().top; });
   }
-  let changeRevealTimer = 0;
   let lastChangeTarget = null;
   let lastChangeKey = '';
   function targetKey(target) { const diff = target.closest('.diff'); return diff ? diff.dataset.index + ':' + target.dataset.change : ''; }
+  function clearChangeReveal(event) {
+    const target = event.target;
+    if (target && target.classList && target.classList.contains('change-reveal')) target.classList.remove('change-reveal');
+  }
+  document.addEventListener('animationend', clearChangeReveal);
+  document.addEventListener('animationcancel', clearChangeReveal);
   function highlightChangeTarget(target) {
-    if (changeRevealTimer) window.clearTimeout(changeRevealTimer);
     document.querySelectorAll('.change-block.change-reveal, .line.change-cursor').forEach(function(item) { item.classList.remove('change-reveal', 'change-cursor'); });
     const diff = target.closest('.diff'); const change = target.dataset.change;
     const related = diff ? Array.from(diff.querySelectorAll('.change-block')).filter(function(block) { return block.querySelector('.line[data-change="' + change + '"]'); }) : [target.closest('.change-block')];
     related.forEach(function(item) { if (item) item.classList.add('change-reveal'); });
     const cursorTarget = target.classList.contains('placeholder') ? Array.from(related).map(function(block) { return block && block.querySelector('.line[data-change="' + change + '"]:not(.placeholder)'); }).find(Boolean) : target;
     if (cursorTarget) cursorTarget.classList.add('change-cursor');
-    changeRevealTimer = window.setTimeout(function() { related.forEach(function(item) { if (item) item.classList.remove('change-reveal'); }); changeRevealTimer = 0; }, 1000);
   }
   function updateNavigationButtons(targets, currentIndex) {
     previousChangeButton.disabled = !targets.length || currentIndex <= 0;
@@ -392,7 +408,7 @@ export class CustomDiffPanel implements vscode.Disposable {
     }
     line.classList.add('change-cursor'); code.style.setProperty('--cursor-x', offset + 'px');
   });
-  window.addEventListener('message', function(event) { const message = event.data; if (message.type === 'reset') { generation = message.generation; files = message.files || []; loaded = new Set(); selectedPath = ''; revealPath = message.revealPath || ''; lastChangeTarget = null; updateNavigationButtons([], -1); document.getElementById('hash').textContent = message.hash ? '(' + message.hash.slice(0, 8) + ')' : ''; loadingView.hidden = false; loadingView.style.display = 'block'; loadingText.textContent = '正在准备 Diff：0 / ' + files.length; progressBar.style.width = '0%'; list.hidden = true; list.innerHTML = files.map(function(file) { return '<section class="diff" data-index="' + file.index + '"></section>'; }).join(''); requestAll(); } else if (message.type === 'progress' && message.generation === generation) { const total = Number(message.total) || 0; const completed = Number(message.completed) || 0; loadingText.textContent = '正在准备 Diff：' + completed + ' / ' + total; progressBar.style.width = (total ? completed / total * 100 : 100) + '%'; } else if (message.type === 'selectFile') { selectFile(message.path, true); } else if (message.type === 'diffs' && message.generation === generation) { renderAllDiffs(message.diffs || []); } });
+  window.addEventListener('message', function(event) { const message = event.data; if (message.type === 'reset') { generation = message.generation; files = message.files || []; loaded = new Set(); selectedPath = ''; revealPath = message.revealPath || ''; lastChangeTarget = null; updateNavigationButtons([], -1); document.getElementById('hash').textContent = message.hash ? '(' + message.hash.slice(0, 8) + ')' : ''; loadingView.hidden = false; loadingView.style.display = 'block'; loadingText.textContent = '正在准备 Diff：已处理 0 / ' + files.length + ' 个文件'; progressBar.style.width = '0%'; list.hidden = true; list.innerHTML = files.map(function(file) { return '<section class="diff" data-index="' + file.index + '"></section>'; }).join(''); requestAll(); } else if (message.type === 'progress' && message.generation === generation) { const total = Number(message.total) || 0; const completed = Number(message.completed) || 0; loadingText.textContent = '正在准备 Diff：已处理 ' + completed + ' / ' + total + ' 个文件'; progressBar.style.width = (total ? completed / total * 100 : 100) + '%'; } else if (message.type === 'selectFile') { selectFile(message.path, true); } else if (message.type === 'diffs' && message.generation === generation) { renderAllDiffs(message.diffs || []); if (message.append) { return; } } });
 })();</script></body></html>`;
     }
 }

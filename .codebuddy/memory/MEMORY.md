@@ -42,6 +42,13 @@ VS Code 扩展, 在活动栏提供 gitk 风格的提交图面板。
   - getGitCommits(rootUri, limit, refs, skip, onProgress) 报告 resolveCommitRefs + git log 进度, total = 2 (1 resolve + 1 log)
   - getGitRefs 5s TTL 缓存, 避免 refreshSelectors + getGitCommits 重复调用
   - getGitRepositories 工作区文件夹解析 + 子模块扫描均改 Promise.all 并行
+  - GitRepositoryOption 新增 hasSubmodules 字段; getGitRepositoriesInternal 遍历 allRepositories 的 parentPath 构建 parentPaths 集合判定
+  - 初始化流程严格顺序: 初始化环境→初始化仓库→加载子模块→加载分支→加载提交→刷新内容
+  - 仓库图标按 hasSubmodules 区分: 有子模块=文件夹+内嵌矩形(绿色), 无子模块=纯文件夹图标
+  - Changed Files 标题栏的全部动作图标已重绘为统一 16px / 1.5px 圆角线框 SVG；标题栏按钮使用 24px VS Code 风格 hover、active、focus 状态，树状/平铺切换路径同步更新
+  - 已选 commit 的折叠/展开属于 Webview 本地状态：setupRow 仅在 !wasSelected 时发送 selectCommit，避免重复执行 setCommitFiles 和刷新 Changed Files
+  - Changed Files 标题左侧布局固定为：文案 → 8 位 commit id（changes/staged 时隐藏）→ Copy Hash；其余提交/分支操作保持右对齐，短哈希由 updateFilesCommitHash() 在选择、点击和加载清空时同步
+  - 加载更多提交须保持增量渲染：appendRows 只扫描新增批次更新 columnWidthChars/列宽；仅当新增 lane 或 refs 扩宽图区域时回退全量 render
   - buildGraph(commits, state?, startIndex?) 增量构建, GraphState 保存 activeLanes + nextColor
   - loadMoreCommits 用增量构建, 只处理新提交 (prevCount 起始), O(N²)→O(N)
   - 跳过 resolveCommitRefs, refs 直接传 git log
@@ -49,6 +56,7 @@ VS Code 扩展, 在活动栏提供 gitk 风格的提交图面板。
   - getGitCommitsByHashes(rootUri, hashes) 用 git log --no-walk, O(101) 无遍历
   - loadMoreCommits 优先用预取 hash + getGitCommitsByHashes, 耗尽回退 git log --skip
 - gitkViewProvider.ts:
+  - refreshInternal 严格顺序: 初始化环境→refreshSelectors(初始化仓库+加载子模块+加载分支)→加载提交→刷新内容
   - refreshSelectors 传 onProgress 给 getGitRepositories; 分支 0/1→1/1
   - refreshInternal 单仓库时透传 getGitCommits 的 onProgress; 多仓库时按 rootUris.length 逐个完成计数
   - refreshBranchCommits 传 onProgress 给 getGitCommits

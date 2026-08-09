@@ -38,6 +38,7 @@ export interface GitRepositoryOption {
     path: string;
     label: string;
     description?: string;
+    hasSubmodules?: boolean;
 }
 
 export interface GitBranchOption {
@@ -97,6 +98,7 @@ interface GitRepository {
     push(remoteName?: string, branchName?: string, setUpstream?: boolean, force?: boolean): Promise<void>;
     state: {
         refs?: GitRefApi[];
+        onDidChange?: vscode.Event<void>;
     };
 }
 
@@ -179,12 +181,19 @@ function repositoryKey(filePath: string): string {
     return process.platform === 'win32' ? path.normalize(filePath).toLowerCase() : path.normalize(filePath);
 }
 
-async function getInitializedSubmodulePaths(rootPath: string): Promise<string[]> {
+function throwIfAborted(signal?: AbortSignal): void {
+    if (!signal?.aborted) { return; }
+    const error = new Error('请求已取消');
+    error.name = 'AbortError';
+    throw error;
+}
+
+async function getInitializedSubmodulePaths(rootPath: string, signal?: AbortSignal): Promise<string[]> {
     try {
         const { stdout } = await execFileAsync('git', [
             '-C', rootPath,
             'config', '--null', '--file', '.gitmodules', '--get-regexp', '^submodule\\..*\\.path$',
-        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
         return stdout.split('\0').flatMap(record => {
             if (!record) { return []; }
             const separator = record.indexOf('\n');
@@ -192,38 +201,150 @@ async function getInitializedSubmodulePaths(rootPath: string): Promise<string[]>
             const submodulePath = record.slice(separator + 1);
             return submodulePath ? [path.resolve(rootPath, submodulePath)] : [];
         });
-    } catch {
+    } catch (error: any) {
+        if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
         return [];
     }
 }
 
-async function resolveRepositoryRoot(directory: string): Promise<string | undefined> {
+interface RepositoryRecord {
+    rootPath: string;
+    parentPath?: string;
+}
+
+function isNestedRepository(childPath: string, parentPath: string): boolean {
+    const relative = path.relative(parentPath, childPath);
+    return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
+}
+
+function getTopLevelRepositories(repositories: RepositoryRecord[]): RepositoryRecord[] {
+    return repositories.filter(repository => !repositories.some(candidate =>
+        repositoryKey(candidate.rootPath) !== repositoryKey(repository.rootPath)
+        && isNestedRepository(repository.rootPath, candidate.rootPath)
+    ));
+}
+
+async function collectSubmoduleRepositories(
+    initialRepositories: RepositoryRecord[],
+    knownRepositoryRoots: ReadonlyMap<string, string>,
+    onDiscovered?: (count: number) => void,
+    signal?: AbortSignal
+): Promise<RepositoryRecord[]> {
+    const repositories = new Map<string, RepositoryRecord>();
+    const batch = initialRepositories.slice();
+    for (const repository of batch) {
+        repositories.set(repositoryKey(repository.rootPath), repository);
+    }
+    // BFS: 已由 Git API 登记的子模块无需再次执行 rev-parse。
+    let currentLevel = initialRepositories.slice();
+    while (currentLevel.length > 0) {
+        const levelResults = await Promise.all(currentLevel.map(async repo => {
+            const submodulePaths = await getInitializedSubmodulePaths(repo.rootPath, signal);
+            const roots = await Promise.all(submodulePaths.map(submodulePath =>
+                knownRepositoryRoots.get(repositoryKey(submodulePath)) ?? resolveRepositoryRoot(submodulePath, signal)
+            ));
+            return { repo, roots };
+        }));
+        throwIfAborted(signal);
+        currentLevel = [];
+        for (const { repo, roots } of levelResults) {
+            for (const rootPath of roots) {
+                if (!rootPath || repositories.has(repositoryKey(rootPath))) { continue; }
+                const child = { rootPath, parentPath: repo.rootPath };
+                repositories.set(repositoryKey(rootPath), child);
+                batch.push(child);
+                currentLevel.push(child);
+                onDiscovered?.(batch.length - initialRepositories.length);
+            }
+        }
+    }
+    return batch;
+}
+
+async function resolveRepositoryRoot(directory: string, signal?: AbortSignal): Promise<string | undefined> {
     try {
         const { stdout } = await execFileAsync('git', ['-C', directory, 'rev-parse', '--show-toplevel'], {
             windowsHide: true,
+            signal,
         });
         return stdout.trim() || undefined;
-    } catch {
+    } catch (error: any) {
+        if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
         return undefined;
     }
 }
 
-export async function getGitRepositories(onProgress?: (current: number, total: number) => void): Promise<GitRepositoryOption[]> {
+// 仓库列表缓存与单飞扫描, 避免首次重入时重复扫描子模块
+let repositoriesCache: { repos: GitRepositoryOption[]; sourceKeys: string; timestamp: number } | null = null;
+let repositoriesInFlight: Promise<GitRepositoryOption[]> | undefined;
+const REPOSITORIES_CACHE_TTL = 10000;
+
+function getRepositorySourceKeys(api: GitApi): string {
+    return api.repositories
+        .map(repository => repositoryKey(repository.rootUri.fsPath))
+        .sort()
+        .join('\0');
+}
+
+export function invalidateGitRepositoriesCache(): void {
+    repositoriesCache = null;
+}
+
+export function invalidateGitRefsCache(rootUri?: vscode.Uri): void {
+    if (rootUri) {
+        const key = rootUri.fsPath;
+        refsCache.delete(key);
+        refsCacheVersions.set(key, (refsCacheVersions.get(key) ?? 0) + 1);
+    } else {
+        for (const key of new Set([...refsCache.keys(), ...refsInFlight.keys(), ...refsCacheVersions.keys()])) {
+            refsCacheVersions.set(key, (refsCacheVersions.get(key) ?? 0) + 1);
+        }
+        refsCache.clear();
+    }
+}
+
+export async function getGitRepositories(onProgress?: (current: number, total: number, message?: string) => void, signal?: AbortSignal): Promise<GitRepositoryOption[]> {
+    throwIfAborted(signal);
     const api = await getGitApi();
+    throwIfAborted(signal);
     if (!api) { throw new Error('Git 扩展不可用'); }
+    const sourceKeys = getRepositorySourceKeys(api);
+    if (repositoriesCache
+        && repositoriesCache.sourceKeys === sourceKeys
+        && Date.now() - repositoriesCache.timestamp < REPOSITORIES_CACHE_TTL) {
+        return repositoriesCache.repos;
+    }
+    if (!signal && repositoriesInFlight) {
+        onProgress?.(0, 0, '正在等待子模块扫描完成...');
+        return repositoriesInFlight;
+    }
+    const scan = getGitRepositoriesInternal(api, sourceKeys, onProgress, signal);
+    if (signal) { return scan; }
+    repositoriesInFlight = scan;
+    try {
+        return await scan;
+    } finally {
+        if (repositoriesInFlight === scan) { repositoriesInFlight = undefined; }
+    }
+}
 
-    const repositories = new Map<string, { rootPath: string; parentPath?: string }>();
+async function getGitRepositoriesInternal(api: GitApi, sourceKeys: string, onProgress?: (current: number, total: number, message?: string) => void, signal?: AbortSignal): Promise<GitRepositoryOption[]> {
+    throwIfAborted(signal);
+
+    const repositories = new Map<string, RepositoryRecord>();
     const apiRepos = api.repositories.map(repo => ({ rootPath: repo.rootUri.fsPath }));
+    const knownRepositoryRoots = new Map(apiRepos.map(repository => [repositoryKey(repository.rootPath), repository.rootPath]));
     const workspaceFolders = vscode.workspace.workspaceFolders || [];
-    const pending: { rootPath: string; parentPath?: string }[] = [...apiRepos];
+    const pending: RepositoryRecord[] = [...apiRepos];
 
-    // API 仓库 (即时, 无 git 命令)
-    if (onProgress) { onProgress(0, Math.max(apiRepos.length, 1)); }
-    if (onProgress) { onProgress(apiRepos.length, Math.max(apiRepos.length, 1)); }
+    // 2. 初始化仓库 (API 仓库即时, 无 git 命令)
+    if (onProgress) { onProgress(0, Math.max(apiRepos.length, 1), '初始化仓库...'); }
+    if (onProgress) { onProgress(apiRepos.length, Math.max(apiRepos.length, 1), '初始化仓库...'); }
 
     // 解析工作区文件夹 (并行 git rev-parse, 可能与 API 仓库重复, 用 indeterminate)
-    if (workspaceFolders.length > 0 && onProgress) { onProgress(0, 0); }
-    const folderRoots = await Promise.all(workspaceFolders.map(folder => resolveRepositoryRoot(folder.uri.fsPath)));
+    if (workspaceFolders.length > 0 && onProgress) { onProgress(0, 0, '初始化仓库...'); }
+    const folderRoots = await Promise.all(workspaceFolders.map(folder => resolveRepositoryRoot(folder.uri.fsPath, signal)));
+    throwIfAborted(signal);
     for (const rootPath of folderRoots) {
         if (rootPath && !pending.some(repository => repositoryKey(repository.rootPath) === repositoryKey(rootPath))) {
             pending.push({ rootPath });
@@ -237,43 +358,47 @@ export async function getGitRepositories(onProgress?: (current: number, total: n
         }
     }
 
-    // 扫描子模块 (并行 git config, 嵌套子模块串行处理)
-    let total = pending.length + pending.length;
-    let progress = pending.length;
-    if (onProgress) { onProgress(progress, total); }
-    let submoduleBatch = pending.slice();
-    while (submoduleBatch.length > 0) {
-        const results = await Promise.all(submoduleBatch.map(async repository => ({
-            repository,
-            submodules: await getInitializedSubmodulePaths(repository.rootPath),
-        })));
-        submoduleBatch = [];
-        for (const { repository, submodules } of results) {
-            for (const submodulePath of submodules) {
-                const rootPath = await resolveRepositoryRoot(submodulePath);
-                if (!rootPath) { continue; }
-                const key = repositoryKey(rootPath);
-                if (repositories.has(key)) { continue; }
-                const child = { rootPath, parentPath: repository.rootPath };
-                repositories.set(key, child);
-                pending.push(child);
-                submoduleBatch.push(child);
-                total++;
-            }
-            progress++;
-            if (onProgress) { onProgress(progress, total); }
+    // 3. 只从顶层仓库扫描，已登记的嵌套仓库不会重复递归。
+    if (onProgress) { onProgress(0, 0, '正在扫描子模块...'); }
+    const scanRoots = getTopLevelRepositories(pending);
+    const scanTaskResults = new Map<string, Promise<RepositoryRecord[]>>();
+    const scanRoot = (root: RepositoryRecord): Promise<RepositoryRecord[]> => {
+        const key = repositoryKey(root.rootPath);
+        let task = scanTaskResults.get(key);
+        if (!task) {
+            task = collectSubmoduleRepositories([root], knownRepositoryRoots, discovered => {
+                if (onProgress) { onProgress(0, 0, `已扫描到子模块 ${discovered} 个...`); }
+            }, signal);
+            scanTaskResults.set(key, task);
+        }
+        return task;
+    };
+    const allRepositories = (await Promise.all(scanRoots.map(scanRoot))).flat();
+    throwIfAborted(signal);
+    for (const repository of allRepositories) {
+        repositories.set(repositoryKey(repository.rootPath), repository);
+    }
+
+    // 计算哪些仓库包含子模块 (有子模块的仓库用不同图标)
+    const parentPaths = new Set<string>();
+    for (const repository of allRepositories) {
+        if (repository.parentPath) {
+            parentPaths.add(repositoryKey(repository.parentPath));
         }
     }
 
-    return [...repositories.values()].map(repository => ({
+    const result = [...repositories.values()].map(repository => ({
         path: vscode.Uri.file(repository.rootPath).toString(),
         label: path.basename(repository.rootPath) || repository.rootPath,
         description: repository.parentPath ? 'subrepo' : 'repo',
+        hasSubmodules: parentPaths.has(repositoryKey(repository.rootPath)),
     })).sort((left, right) => {
         const leftSubrepository = left.description === 'subrepo';
         const rightSubrepository = right.description === 'subrepo';
         return Number(leftSubrepository) - Number(rightSubrepository) || left.label.localeCompare(right.label);
     });
+    repositoriesCache = { repos: result, sourceKeys, timestamp: Date.now() };
+    return result;
 }
 
 interface GitRefRecord {
@@ -282,39 +407,57 @@ interface GitRefRecord {
     label: string;
 }
 
-// refs 缓存, 避免同一次刷新中 getGitBranches 和 getGitCommits 重复调用 git for-each-ref
+// refs 缓存与单飞请求，避免分支、提交和预取并发重复扫描全部 refs。
 const refsCache = new Map<string, { refs: GitRefRecord[]; timestamp: number }>();
+const refsInFlight = new Map<string, Promise<GitRefRecord[]>>();
+const refsCacheVersions = new Map<string, number>();
 const REFS_CACHE_TTL = 5000;
 const REFS_CACHE_MAX = 20;
 
-async function getGitRefs(rootUri: vscode.Uri): Promise<GitRefRecord[]> {
+async function getGitRefs(rootUri: vscode.Uri, signal?: AbortSignal): Promise<GitRefRecord[]> {
     const key = rootUri.fsPath;
     const cached = refsCache.get(key);
     if (cached && Date.now() - cached.timestamp < REFS_CACHE_TTL) { return cached.refs; }
-    const { stdout } = await execFileAsync('git', [
-        '-C', rootUri.fsPath,
-        'for-each-ref', '--format=%(objectname)%09%(refname:short)%09%(refname)', 'refs/heads', 'refs/remotes', 'refs/tags',
-    ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
-    const refs = stdout.split(/\r?\n/).flatMap(line => {
-        if (!line) { return []; }
-        const [hash, label, name] = line.split('\t');
-        if (!hash || !label || !name || label.endsWith('/HEAD')) { return []; }
-        return [{ hash, label, name }];
-    });
-    if (refsCache.size >= REFS_CACHE_MAX) {
-        let oldestKey: string | undefined;
-        let oldestTime = Infinity;
-        for (const [k, v] of refsCache) {
-            if (v.timestamp < oldestTime) { oldestTime = v.timestamp; oldestKey = k; }
-        }
-        if (oldestKey) { refsCache.delete(oldestKey); }
+    if (!signal) {
+        const inFlight = refsInFlight.get(key);
+        if (inFlight) { return inFlight; }
     }
-    refsCache.set(key, { refs, timestamp: Date.now() });
-    return refs;
+    const requestVersion = refsCacheVersions.get(key) ?? 0;
+    const request = (async () => {
+        const { stdout } = await execFileAsync('git', [
+            '-C', rootUri.fsPath,
+            'for-each-ref', '--format=%(objectname)%09%(refname:short)%09%(refname)', 'refs/heads', 'refs/remotes', 'refs/tags',
+        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
+        const refs = stdout.split(/\r?\n/).flatMap(line => {
+            if (!line) { return []; }
+            const [hash, label, name] = line.split('\t');
+            if (!hash || !label || !name || label.endsWith('/HEAD')) { return []; }
+            return [{ hash, label, name }];
+        });
+        if (refsCache.size >= REFS_CACHE_MAX) {
+            let oldestKey: string | undefined;
+            let oldestTime = Infinity;
+            for (const [cacheKey, value] of refsCache) {
+                if (value.timestamp < oldestTime) { oldestTime = value.timestamp; oldestKey = cacheKey; }
+            }
+            if (oldestKey) { refsCache.delete(oldestKey); }
+        }
+        if ((refsCacheVersions.get(key) ?? 0) === requestVersion) {
+            refsCache.set(key, { refs, timestamp: Date.now() });
+        }
+        return refs;
+    })();
+    if (signal) { return request; }
+    refsInFlight.set(key, request);
+    try {
+        return await request;
+    } finally {
+        if (refsInFlight.get(key) === request) { refsInFlight.delete(key); }
+    }
 }
 
 // 批量解析 ref -> commit hash, 单次 git rev-parse 调用
-async function resolveCommitRefs(rootUri: vscode.Uri, refs: readonly string[]): Promise<string[]> {
+async function resolveCommitRefs(rootUri: vscode.Uri, refs: readonly string[], signal?: AbortSignal): Promise<string[]> {
     if (refs.length === 0) { return []; }
     const hashPattern = /^[0-9a-f]{40}$/i;
     const parseHashes = (stdout: string) =>
@@ -322,9 +465,10 @@ async function resolveCommitRefs(rootUri: vscode.Uri, refs: readonly string[]): 
     try {
         const { stdout } = await execFileAsync('git', [
             '-C', rootUri.fsPath, 'rev-parse', ...refs.map(ref => `${ref}^{commit}`),
-        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
         return parseHashes(stdout);
     } catch (error: any) {
+        if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
         // 部分失败时 stdout 仍含有效哈希
         return error.stdout ? parseHashes(error.stdout) : [];
     }
@@ -356,9 +500,9 @@ async function getCommitAuthorDetails(rootUri: vscode.Uri, hashes: readonly stri
     }
 }
 
-export async function getGitBranches(rootUri: vscode.Uri): Promise<GitBranchOption[]> {
+export async function getGitBranches(rootUri: vscode.Uri, signal?: AbortSignal): Promise<GitBranchOption[]> {
     try {
-        const refs = await getGitRefs(rootUri);
+        const refs = await getGitRefs(rootUri, signal);
         return refs.filter(ref => !ref.name.startsWith('refs/tags/')).map(ref => ({
             name: ref.name,
             label: ref.label,
@@ -389,9 +533,26 @@ export async function runGitSync(rootUri: vscode.Uri, action: 'fetch' | 'pull' |
     const api = await getGitApi();
     const repo = api && findRepository(api, rootUri);
     if (!repo) { throw new Error('未找到 Git 仓库'); }
-    if (action === 'fetch') { await repo.fetch(); }
-    else if (action === 'pull') { await repo.pull(); }
-    else { await repo.push(); }
+    if (action === 'fetch') {
+        await repo.fetch();
+    } else if (action === 'pull') {
+        await runGitCommand(rootUri, ['pull', '--recurse-submodules']);
+        await runGitCommand(rootUri, ['submodule', 'update', '--init', '--recursive']);
+    } else {
+        await repo.push();
+    }
+}
+
+export async function runGitCommand(rootUri: vscode.Uri, args: string[]): Promise<string> {
+    try {
+        const { stdout } = await execFileAsync('git', ['-C', rootUri.fsPath, ...args], {
+            windowsHide: true,
+            maxBuffer: 16 * 1024 * 1024,
+        });
+        return stdout;
+    } catch (error) {
+        throw new Error(error instanceof Error ? error.message : String(error));
+    }
 }
 
 // 解析 git log --format 输出
@@ -429,11 +590,11 @@ function buildRefsByCommit(gitRefs: GitRefRecord[]): Map<string, string[]> {
 }
 
 // 预取全量 commit hash (仅 hash, 无格式化, 比 git log 快)
-export async function getCommitHashes(rootUri: vscode.Uri, refs: readonly string[], limit: number = 10000): Promise<string[]> {
+export async function getCommitHashes(rootUri: vscode.Uri, refs: readonly string[], limit: number = 10000, signal?: AbortSignal): Promise<string[]> {
     const args = refs.length > 0 ? [...refs] : ['HEAD'];
     const { stdout } = await execFileAsync('git', [
         '-C', rootUri.fsPath, 'rev-list', '--topo-order', `--max-count=${limit}`, ...args,
-    ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+    ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
     return stdout.trim().split('\n').filter(Boolean);
 }
 
@@ -456,9 +617,9 @@ export async function getGitCommitsByHashes(rootUri: vscode.Uri, hashes: readonl
 }
 
 // 获取仓库提交列表
-export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, refs: readonly string[] = [], skip: number = 0, onProgress?: (current: number, total: number) => void): Promise<GitCommit[]> {
-    const api = await getGitApi();
-    if (!api || !findRepository(api, rootUri)) { throw new Error('未找到 Git 仓库'); }
+export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, refs: readonly string[] = [], skip: number = 0, onProgress?: (current: number, total: number) => void, signal?: AbortSignal): Promise<GitCommit[]> {
+    // 提交读取完全由本地 Git 完成；仓库发现与 VS Code Git API 的异步登记互不依赖。
+    // 这也使工作区仓库和已初始化子模块在 Git API 尚未登记时可立即切换。
 
     // 直接传 refs 给 git log, 跳过 resolveCommitRefs
     const commitRefs = refs.length > 0 ? [...refs] : ['HEAD'];
@@ -468,8 +629,11 @@ export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, re
         execFileAsync('git', [
             '-C', rootUri.fsPath, 'log', '--topo-order', `--max-count=${limit}`, ...(skip > 0 ? [`--skip=${skip}`] : []),
             '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1e', ...commitRefs,
-        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 }),
-        getGitRefs(rootUri).catch(() => []),
+        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
+        getGitRefs(rootUri, signal).catch(error => {
+            if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
+            return [];
+        }),
     ]);
     if (onProgress) { onProgress(1, 1); }
     const refsByCommit = buildRefsByCommit(gitRefs);
@@ -477,15 +641,18 @@ export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, re
 }
 
 // 搜索提交: 全量获取后在 TS 端过滤, 任意关键词命中任意字段即返回
-export async function searchCommits(rootUri: vscode.Uri, keywords: string[], refs: readonly string[] = []): Promise<GitCommit[]> {
+export async function searchCommits(rootUri: vscode.Uri, keywords: string[], refs: readonly string[] = [], signal?: AbortSignal): Promise<GitCommit[]> {
     if (keywords.length === 0) { return []; }
     const commitRefs = refs.length > 0 ? [...refs] : ['HEAD'];
     const [logResult, gitRefs] = await Promise.all([
         execFileAsync('git', [
             '-C', rootUri.fsPath, 'log', '--topo-order',
             '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1e', ...commitRefs,
-        ], { windowsHide: true, maxBuffer: 64 * 1024 * 1024 }),
-        getGitRefs(rootUri).catch(() => []),
+        ], { windowsHide: true, maxBuffer: 64 * 1024 * 1024, signal }),
+        getGitRefs(rootUri, signal).catch(error => {
+            if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
+            return [];
+        }),
     ]);
     const refsByCommit = buildRefsByCommit(gitRefs);
     const allCommits = parseLogOutput(logResult.stdout, refsByCommit);
@@ -600,30 +767,53 @@ export async function isGitRepo(rootUri: vscode.Uri): Promise<boolean> {
 
 // 获取指定提交的变更文件列表 (兼容 web)
 // 使用 diffBetween(parent, commit) 获取 Change[] 再转换
-export async function getCommitFiles(rootUri: vscode.Uri, hash: string): Promise<CommitFile[]> {
-    const api = await getGitApi();
-    if (!api) { throw new Error('Git 扩展不可用'); }
-    const repo = api.getRepository(rootUri);
-    if (!repo) { throw new Error('未找到 Git 仓库'); }
-
-    // 使用本地 Git 读取变更列表，绕过 Git 扩展 `diffBetween` 的内部缓存异常。
+export async function getCommitFiles(rootUri: vscode.Uri, hash: string, signal?: AbortSignal): Promise<CommitFile[]> {
+    // 使用本地 Git 读取变更列表，避免依赖 Git API 对子模块的异步登记。
     try {
         const { stdout } = await execFileAsync('git', [
-            '-C', repo.rootUri.fsPath,
+            '-C', rootUri.fsPath,
             'diff-tree', '--root', '--no-commit-id', '--name-status', '-r', '-M', '-C', hash,
-        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
         return parseNameStatus(stdout);
-    } catch (error) {
+    } catch (error: any) {
+        if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
         throw new Error(`无法读取变更文件: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
 
-export async function getWorkingTreeChanges(rootUri: vscode.Uri): Promise<WorkingTreeChanges> {
+export interface GitRepositoryState {
+    head: string;
+    branch: string;
+    refs: string;
+    status: string;
+}
+
+export async function getGitRepositoryState(rootUri: vscode.Uri, signal?: AbortSignal): Promise<GitRepositoryState> {
+    try {
+        const [headResult, branchResult, refsResult, statusResult] = await Promise.all([
+            execFileAsync('git', ['-C', rootUri.fsPath, 'rev-parse', '--verify', 'HEAD'], { windowsHide: true, signal }),
+            execFileAsync('git', ['-C', rootUri.fsPath, 'branch', '--show-current'], { windowsHide: true, signal }),
+            execFileAsync('git', ['-C', rootUri.fsPath, 'for-each-ref', '--format=%(refname) %(objectname)'], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
+            execFileAsync('git', ['-C', rootUri.fsPath, 'status', '--porcelain=v1', '-z', '--untracked-files=normal'], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
+        ]);
+        return {
+            head: headResult.stdout.trim(),
+            branch: branchResult.stdout.trim() || 'HEAD',
+            refs: refsResult.stdout,
+            status: statusResult.stdout,
+        };
+    } catch (error: any) {
+        if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
+        throw new Error(`无法读取仓库状态: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+
+export async function getWorkingTreeChanges(rootUri: vscode.Uri, signal?: AbortSignal): Promise<WorkingTreeChanges> {
     try {
         const { stdout } = await execFileAsync('git', [
             '-C', rootUri.fsPath,
             'status', '--porcelain=v1', '-z', '--untracked-files=all',
-        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
         const staged: CommitFile[] = [];
         const changes: CommitFile[] = [];
         const entries = stdout.split('\0');
@@ -651,7 +841,8 @@ export async function getWorkingTreeChanges(rootUri: vscode.Uri): Promise<Workin
             }
         }
         return { staged, changes };
-    } catch (error) {
+    } catch (error: any) {
+        if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
         throw new Error(`无法读取工作区变更: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
