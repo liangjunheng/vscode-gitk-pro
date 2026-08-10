@@ -1,28 +1,9 @@
 import * as vscode from 'vscode';
-import { ChangeSetMode, CommitFile } from './git/gitLogProvider';
-
-export interface DiffPayload {
-    index: number;
-    path: string;
-    fullPath: string;
-    oldPath?: string;
-    status: string;
-    original: string;
-    modified: string;
-    error?: string;
-}
-
-export type MultiDiffLoadEvent = {
-    type: 'progress' | 'complete' | 'error';
-    hash: string;
-    rootUri: vscode.Uri;
-    generation: number;
-    completed: number;
-    total: number;
-    message?: string;
-};
+import type { ChangeSetMode, CommitFile, DiffPayload } from '../types';
+import { store } from '../state/store';
 
 // 自定义 Diff 面板，按需读取文件，并使用接近 VS Code 的并排行级差异渲染。
+// 数据来自 Store (单一数据源), 订阅 diffData/diffProgress/diffLoading/diffError 自动转发到 Webview
 export class CustomDiffPanel implements vscode.Disposable {
     private panel?: vscode.WebviewPanel;
     private files: CommitFile[] = [];
@@ -30,19 +11,94 @@ export class CustomDiffPanel implements vscode.Disposable {
     private changeSetMode: ChangeSetMode = 'commit';
     private rootUri?: vscode.Uri;
     private requestGeneration = 0;
+    // 仅在 Webview 接收对应 reset 后转发 Diff，避免快速切换时旧 loading 收到新批次。
+    private webviewGeneration = 0;
+    private lastSentCount = 0;
     private readonly disposables: vscode.Disposable[] = [];
+    private readonly storeUnsubscribers: (() => void)[] = [];
 
     constructor(
         private readonly context: vscode.ExtensionContext,
         private readonly onSelectFile: (path: string) => void,
-        private readonly onLoadEvent?: (event: MultiDiffLoadEvent) => void,
-    ) {}
+    ) {
+        // 订阅 Store diff 数据变化, 自动转发到 Webview (单一数据源)
+        this.storeUnsubscribers.push(
+            store.subscribeSelector(state => state.diffGeneration, () => { this.lastSentCount = 0; }),
+            store.subscribeSelector(state => state.diffData, diffs => this.forwardDiffs(diffs)),
+            store.subscribeSelector(state => state.diffProgress, progress => this.forwardProgress(progress)),
+            store.subscribeSelector(state => state.diffLoading, loading => this.forwardLoading(loading)),
+            store.subscribeSelector(state => state.filesLoading, () => this.forwardSourceComplete()),
+            store.subscribeSelector(state => state.diffError, error => this.forwardError(error)),
+        );
+    }
+
+    // 转发 diffData 到 Webview (只发送新增部分)
+    private forwardDiffs(diffs: DiffPayload[]): void {
+        if (!this.panel) return;
+        const gen = store.getState().diffGeneration;
+        if (gen !== this.requestGeneration || gen !== this.webviewGeneration) return;
+        if (diffs.length < this.lastSentCount) {
+            this.lastSentCount = 0;
+        }
+        if (diffs.length <= this.lastSentCount) return;
+        const isNewBatch = this.lastSentCount > 0;
+        const newDiffs = diffs.slice(this.lastSentCount);
+        this.lastSentCount = diffs.length;
+        this.panel.webview.postMessage({ type: 'diffs', generation: gen, diffs: newDiffs, append: isNewBatch });
+    }
+
+    // 转发 diffProgress 到 Webview
+    private forwardProgress(progress: { completed: number; total: number }): void {
+        if (!this.panel) return;
+        const gen = store.getState().diffGeneration;
+        if (gen !== this.requestGeneration || gen !== this.webviewGeneration) return;
+        this.panel.webview.postMessage({ type: 'progress', generation: gen, completed: progress.completed, total: progress.total });
+    }
+
+    // 当前 Diff 投影读取完成后立即结束准备态；文件目录不能阻塞同一投影的内容展示。
+    private forwardLoading(loading: boolean): void {
+        if (!this.panel) return;
+        const gen = store.getState().diffGeneration;
+        if (gen !== this.requestGeneration || gen !== this.webviewGeneration) return;
+        this.panel.webview.postMessage({ type: 'loading', generation: gen, loading });
+        if (!loading) this.forwardSourceComplete();
+    }
+
+    private forwardSourceComplete(): void {
+        if (!this.panel) return;
+        const state = store.getState();
+        const gen = state.diffGeneration;
+        if (gen !== this.requestGeneration || gen !== this.webviewGeneration) return;
+        if (state.diffError) {
+            this.panel.webview.postMessage({
+                type: 'error',
+                generation: gen,
+                message: state.diffError,
+            });
+            return;
+        }
+        if (state.diffLoading) return;
+        this.panel.webview.postMessage({
+            type: 'sourceComplete',
+            generation: gen,
+            total: this.files.length,
+        });
+    }
+
+    // 转发 diffError 到 Webview
+    private forwardError(error: string | undefined): void {
+        if (!this.panel || !error) return;
+        const gen = store.getState().diffGeneration;
+        if (gen !== this.requestGeneration || gen !== this.webviewGeneration) return;
+        this.panel.webview.postMessage({ type: 'error', generation: gen, message: error });
+    }
 
     async show(rootUri: vscode.Uri, hash: string, files: CommitFile[], revealPath?: string, changeSetMode: ChangeSetMode = 'commit'): Promise<boolean> {
-        const isSameCommit = this.panel && this.rootUri?.toString() === rootUri.toString() && this.hash === hash && this.changeSetMode === changeSetMode;
-        if (!isSameCommit) {
-            this.requestGeneration++;
-        }
+        const isSameCommit = this.panel
+            && this.rootUri?.toString() === rootUri.toString()
+            && this.hash === hash
+            && this.changeSetMode === changeSetMode
+            && this.webviewGeneration === this.requestGeneration;
         this.rootUri = rootUri;
         this.hash = hash;
         this.changeSetMode = changeSetMode;
@@ -71,77 +127,67 @@ export class CustomDiffPanel implements vscode.Disposable {
             await this.panel.webview.postMessage({ type: 'selectFile', path: revealPath || '' });
             return false;
         }
+        // 新 commit: 同步到 Store 的 generation (数据可能已在后台加载)
+        this.requestGeneration = store.getState().diffGeneration;
+        this.webviewGeneration = 0;
+        this.lastSentCount = 0;
+        const generation = this.requestGeneration;
         await this.panel.webview.postMessage({
             type: 'reset',
             hash,
-            generation: this.requestGeneration,
+            generation,
             files: files.map((file, index) => ({ index, path: file.path, oldPath: file.oldPath, status: file.status })),
             revealPath,
         });
+        if (!this.panel || generation !== this.requestGeneration || generation !== store.getState().diffGeneration) { return false; }
+        // reset 已入队后再补发完整 Store 快照，防止快速切换时数据消息先于 reset 被新 Webview 忽略。
+        this.webviewGeneration = generation;
+        const state = store.getState();
+        this.forwardDiffs(state.diffData);
+        this.forwardProgress(state.diffProgress);
+        this.forwardSourceComplete();
+        if (state.diffError) { this.forwardError(state.diffError); }
         return true;
     }
 
     private async onMessage(message: unknown): Promise<void> {
         if (!message || typeof message !== 'object') { return; }
         const payload = message as { type?: string; path?: unknown; generation?: unknown };
-        if (payload.type === 'renderComplete') {
-            const generation = Number(payload.generation);
-            if (generation !== this.requestGeneration) { return; }
-            this.onLoadEvent?.({
-                type: 'complete',
-                hash: this.hash,
-                rootUri: this.rootUri!,
-                generation,
-                completed: this.files.length,
-                total: this.files.length,
-            });
-        } else if (payload.type === 'selectFile' && typeof payload.path === 'string') {
+        if (payload.type === 'selectFile' && typeof payload.path === 'string') {
             this.onSelectFile(payload.path);
         }
-    }
-
-    /** 当前请求代次, 用于取消旧请求 */
-    getGeneration(): number { return this.requestGeneration; }
-
-    /** 追加发送 Diff 数据到 Webview */
-    async appendDiffs(diffs: DiffPayload[], generation: number, append: boolean): Promise<void> {
-        if (generation !== this.requestGeneration || !this.panel) { return; }
-        await this.panel.webview.postMessage({ type: 'diffs', generation, diffs, append });
-    }
-
-    /** 发送加载进度到 Webview */
-    async sendProgress(completed: number, total: number, generation: number): Promise<void> {
-        if (generation !== this.requestGeneration || !this.panel) { return; }
-        await this.panel.webview.postMessage({ type: 'progress', generation, completed, total });
-    }
-
-    /** 通知 Webview 所有 Diff 数据已发送完毕 */
-    async completeLoading(generation: number, total: number): Promise<void> {
-        if (generation !== this.requestGeneration || !this.panel) { return; }
-        await this.panel.webview.postMessage({ type: 'sourceComplete', generation, total });
-    }
-
-    /** 发送错误信息到 Webview */
-    async sendError(message: string, generation: number): Promise<void> {
-        if (generation !== this.requestGeneration || !this.panel) { return; }
-        await this.panel.webview.postMessage({ type: 'error', generation, message });
     }
 
     // 取消旧请求, 不销毁 panel, 显示加载态等待下一次 show()
     cancelPending(): void {
         this.requestGeneration++;
+        this.webviewGeneration = 0;
+        store.setState({
+            diffGeneration: this.requestGeneration,
+            diffData: [],
+            diffLoading: true,
+            diffError: undefined,
+        });
         if (this.panel) {
             this.panel.reveal(this.panel.viewColumn ?? vscode.ViewColumn.Active, false);
-            this.panel.webview.postMessage({ type: 'loading', generation: this.requestGeneration });
+            this.panel.webview.postMessage({ type: 'loading', generation: this.requestGeneration, loading: true });
         }
     }
 
     hide(): void {
         this.requestGeneration++;
+        store.setState({
+            diffGeneration: this.requestGeneration,
+            diffData: [],
+            diffLoading: false,
+            diffError: undefined,
+        });
         this.panel?.dispose();
     }
 
     dispose(): void {
+        this.storeUnsubscribers.forEach(unsub => unsub());
+        this.storeUnsubscribers.length = 0;
         this.panel?.dispose();
         vscode.Disposable.from(...this.disposables).dispose();
         this.disposables.length = 0;
@@ -154,7 +200,7 @@ export class CustomDiffPanel implements vscode.Disposable {
 </style></head><body><header id="toolbar"><span id="title">Gitk Diff</span><span id="hash"></span><span id="toolbar-spacer"></span><button id="previousChange" class="toolbar-button" title="上一个修改点" aria-label="上一个修改点">↑</button><button id="nextChange" class="toolbar-button" title="下一个修改点" aria-label="下一个修改点">↓</button><button id="layout" class="toolbar-button" title="切换并排 / 内联差异">并排</button></header><section id="loadingView" class="empty"><span class="loading"></span><span id="loadingText">正在准备 Diff...</span><div id="progressTrack"><div id="progressBar"></div></div></section><main id="list" hidden></main><script>
 (function() {
   const vscode = acquireVsCodeApi(); const list = document.getElementById('list'); const loadingView = document.getElementById('loadingView'); const loadingText = document.getElementById('loadingText'); const progressBar = document.getElementById('progressBar'); const layoutButton = document.getElementById('layout'); const previousChangeButton = document.getElementById('previousChange'); const nextChangeButton = document.getElementById('nextChange');
-  let files = []; let loaded = new Set(); let unified = false; let selectedPath = ''; let revealPath = ''; let generation = 0;
+  let files = []; let pendingDiffs = []; let sourceComplete = false; let sourceTotal = 0; let renderStarted = false; let renderEpoch = 0; let loaded = new Set(); let unified = false; let selectedPath = ''; let revealPath = ''; let generation = 0;
   function escapeHtml(value) { return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
   function splitLines(text) { const lines = String(text || '').split(/\\r?\\n/); return lines.length > 1 && lines[lines.length - 1] === '' ? lines.slice(0, -1) : lines; }
   function lineHtml(leftNumber, rightNumber, code, type, marker, change) { const attribute = change === undefined ? '' : ' data-change="' + change + '"'; return '<div class="line ' + type + '"' + attribute + '><span class="line-marker">' + (marker || '') + '</span><span class="line-number">' + (leftNumber || '') + '</span><span class="line-number">' + (rightNumber || '') + '</span><span class="line-code">' + (code === '' ? '&nbsp;' : escapeHtml(code)) + '</span></div>'; }
@@ -232,7 +278,7 @@ export class CustomDiffPanel implements vscode.Disposable {
     if (diff.error) {
       const unavailable = '<div class="empty">文件：' + escapeHtml(diff.fullPath) + '<br>无法读取原因：该文件无法进行内容对比</div>';
       holder.innerHTML = '<button class="file-header"><span class="status status-' + escapeHtml(diff.status) + '">' + escapeHtml(diff.status) + '</span><span class="file-path">' + escapeHtml(diff.path) + '</span>' + (diff.oldPath ? '<span class="rename">← ' + escapeHtml(diff.oldPath) + '</span>' : '') + '</button><div class="editor"><div class="split' + (unified ? ' unified' : '') + '"><section class="pane left-pane"><span class="pane-title">' + escapeHtml(oldLabel) + '</span>' + unavailable + '</section><section class="pane right-pane"><span class="pane-title">' + escapeHtml(newLabel) + '</span>' + unavailable + '</section><section class="unified-pane"><span class="pane-title">' + escapeHtml(diff.path) + '</span>' + unavailable + '</section></div></div>';
-      holder.querySelector('.file-header').addEventListener('click', function() { revealDiffTarget(holder); });
+      holder.querySelector('.file-header').addEventListener('click', function() { selectFile(diff.path, true); vscode.postMessage({ type: 'selectFile', path: diff.path }); });
       return;
     }
     const result = calculateDiff(diff.original, diff.modified); const rows = renderRows(result, expandedRanges || new Map());
@@ -242,28 +288,31 @@ export class CustomDiffPanel implements vscode.Disposable {
     const removedIcon = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M1 5h10v2H1z"/></svg>';
     const lineStats = '<span class="line-stats"><span class="line-stat line-stat-added" title="新增 ' + addedLines + ' 行">' + addedIcon + '<span>' + addedLines + '</span></span><span class="line-stat line-stat-removed" title="删除 ' + removedLines + ' 行">' + removedIcon + '<span>' + removedLines + '</span></span></span>';
     holder.innerHTML = '<button class="file-header"><span class="status status-' + escapeHtml(diff.status) + '">' + escapeHtml(diff.status) + '</span>' + lineStats + '<span class="file-path">' + escapeHtml(diff.path) + '</span>' + (diff.oldPath ? '<span class="rename">← ' + escapeHtml(diff.oldPath) + '</span>' : '') + '</button><div class="editor"><div class="split' + (unified ? ' unified' : '') + '"><section class="pane left-pane"><span class="pane-title">' + escapeHtml(oldLabel) + '</span>' + rows.leftRows + '</section><section class="pane right-pane"><span class="pane-title">' + escapeHtml(newLabel) + '</span>' + rows.rightRows + '</section><section class="unified-pane"><span class="pane-title">' + escapeHtml(diff.path) + '</span>' + rows.unifiedRows + '</section></div></div>';
-    holder.querySelector('.file-header').addEventListener('click', function() { revealDiffTarget(holder); });
+    holder.querySelector('.file-header').addEventListener('click', function() { selectFile(diff.path, true); vscode.postMessage({ type: 'selectFile', path: diff.path }); });
     holder.querySelectorAll('.context-fold').forEach(function(fold) {
       function expand(action) { const start = fold.dataset.start; const end = fold.dataset.end; const key = start + ':' + end; const expanded = expandedRanges || new Map(); const state = expanded.get(key) || { top: 0, bottom: 0, all: false }; if (action === 'all') state.all = true; else state[action] += 10; expanded.set(key, state); renderDiff(diff, expanded); }
       fold.querySelectorAll('button').forEach(function(button) { button.addEventListener('click', function(event) { event.stopPropagation(); expand(button.dataset.action); }); });
       const label = fold.querySelector('.context-fold-label'); if (label) label.addEventListener('dblclick', function(event) { event.stopPropagation(); expand('all'); });
     });
   }
-  function renderAllDiffs(diffs) {
+  function renderAllDiffs(diffs, expectedGeneration, expectedEpoch) {
+    if (renderStarted || generation !== expectedGeneration || renderEpoch !== expectedEpoch) { return; }
+    renderStarted = true;
+    list.hidden = false;
+    loadingView.hidden = true;
+    loadingView.style.display = 'none';
     let index = 0;
     function renderNext() {
+      if (generation !== expectedGeneration || renderEpoch !== expectedEpoch) { return; }
       if (index >= diffs.length) {
-        loadingView.style.display = 'none';
-        list.hidden = false;
         const target = files.find(function(file) { return file.path === revealPath; });
         if (target) { selectFile(target.path, true); } else if (files.length && loaded.size === files.length) { selectFile(files[0].path, false); vscode.postMessage({ type: 'selectFile', path: files[0].path }); }
         updateNavigationButtons(changeTargets(), -1);
+        vscode.postMessage({ type: 'renderComplete', generation: expectedGeneration });
         return;
       }
       renderDiff(diffs[index++]);
-      loadingView.style.display = 'none';
-      list.hidden = false;
-      requestAnimationFrame(renderNext);
+      if (generation === expectedGeneration && renderEpoch === expectedEpoch) { requestAnimationFrame(renderNext); }
     }
     requestAnimationFrame(renderNext);
   }
@@ -345,7 +394,7 @@ export class CustomDiffPanel implements vscode.Disposable {
     }
     line.classList.add('change-cursor'); code.style.setProperty('--cursor-x', offset + 'px');
   });
-  window.addEventListener('message', function(event) { const message = event.data; if (message.type === 'loading') { generation = message.generation; loaded = new Set(); selectedPath = ''; revealPath = ''; lastChangeTarget = null; updateNavigationButtons([], -1); document.getElementById('hash').textContent = ''; loadingView.hidden = false; loadingView.style.display = 'block'; loadingText.textContent = '正在准备 Diff...'; progressBar.style.width = '0%'; list.hidden = true; list.innerHTML = ''; } else if (message.type === 'reset') { generation = message.generation; files = message.files || []; loaded = new Set(); selectedPath = ''; revealPath = message.revealPath || ''; lastChangeTarget = null; updateNavigationButtons([], -1); document.getElementById('hash').textContent = message.hash ? '(' + message.hash.slice(0, 8) + ')' : ''; loadingView.hidden = false; loadingView.style.display = 'block'; loadingText.textContent = '正在准备 Diff：已处理 0 / ' + files.length + ' 个文件'; progressBar.style.width = '0%'; list.hidden = true; list.innerHTML = files.map(function(file) { return '<section class="diff" data-index="' + file.index + '"></section>'; }).join(''); } else if (message.type === 'progress' && message.generation === generation) { const total = Number(message.total) || 0; const completed = Number(message.completed) || 0; loadingText.textContent = '正在准备 Diff：已处理 ' + completed + ' / ' + total + ' 个文件'; progressBar.style.width = (total ? completed / total * 100 : 100) + '%'; } else if (message.type === 'sourceComplete' && message.generation === generation) { requestAnimationFrame(function() { vscode.postMessage({ type: 'renderComplete', generation: generation }); loadingView.hidden = true; loadingView.style.display = 'none'; list.hidden = false; updateNavigationButtons(changeTargets(), -1); }); } else if (message.type === 'error' && message.generation === generation) { loadingText.textContent = '准备 Diff 失败：' + (message.message || '未知错误'); progressBar.style.width = '0%'; } else if (message.type === 'selectFile') { selectFile(message.path, true); } else if (message.type === 'diffs' && message.generation === generation) { renderAllDiffs(message.diffs || []); if (message.append) { return; } } });
+  window.addEventListener('message', function(event) { const message = event.data; if (message.type === 'loading') { if (message.loading && message.generation !== generation) { generation = message.generation; renderEpoch++; pendingDiffs = []; sourceComplete = false; sourceTotal = 0; renderStarted = false; loaded = new Set(); selectedPath = ''; revealPath = ''; lastChangeTarget = null; updateNavigationButtons([], -1); document.getElementById('hash').textContent = ''; loadingView.hidden = false; loadingView.style.display = 'block'; loadingText.textContent = '正在准备 Diff...'; progressBar.style.width = '0%'; list.hidden = true; list.innerHTML = ''; } } else if (message.type === 'reset') { generation = message.generation; renderEpoch++; files = message.files || []; pendingDiffs = []; sourceComplete = false; sourceTotal = 0; renderStarted = false; loaded = new Set(); selectedPath = ''; revealPath = message.revealPath || ''; lastChangeTarget = null; updateNavigationButtons([], -1); document.getElementById('hash').textContent = message.hash ? '(' + message.hash.slice(0, 8) + ')' : ''; loadingView.hidden = false; loadingView.style.display = 'block'; loadingText.textContent = '正在准备 Diff：已处理 0 / ' + files.length + ' 个文件'; progressBar.style.width = '0%'; list.hidden = true; list.innerHTML = files.map(function(file) { return '<section class="diff" data-index="' + file.index + '"></section>'; }).join(''); } else if (message.type === 'progress' && message.generation === generation) { const total = Number(message.total) || 0; const completed = Number(message.completed) || 0; loadingText.textContent = '正在准备 Diff：已处理 ' + completed + ' / ' + total + ' 个文件'; progressBar.style.width = (total ? completed / total * 100 : 100) + '%'; } else if (message.type === 'sourceComplete' && message.generation === generation && !sourceComplete) { sourceComplete = true; sourceTotal = Number(message.total) || 0; if (pendingDiffs.length === sourceTotal) { renderAllDiffs(pendingDiffs, generation, renderEpoch); } } else if (message.type === 'error' && message.generation === generation) { loadingText.textContent = '准备 Diff 失败：' + (message.message || '未知错误'); progressBar.style.width = '0%'; } else if (message.type === 'selectFile') { selectFile(message.path, true); } else if (message.type === 'diffs' && message.generation === generation) { pendingDiffs = pendingDiffs.concat(message.diffs || []); if (sourceComplete && pendingDiffs.length === sourceTotal) { renderAllDiffs(pendingDiffs, generation, renderEpoch); } } });
 })();</script></body></html>`;
     }
 }

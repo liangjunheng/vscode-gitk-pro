@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { getCommitFiles, buildGitFileUri } from './gitLogProvider';
+import { getCommitFiles, buildGitFileUri } from '../git/gitLogProvider';
 
 // 虚拟文档提供器: 为 commit 的完整 diff 提供文本内容
 // URI 格式: vscode-gitk-diff:<commit-hash>  (用 path 而非 authority 避免 URI 解析问题)

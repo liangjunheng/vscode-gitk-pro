@@ -2,63 +2,14 @@ import * as vscode from 'vscode';
 import { execFile } from 'child_process';
 import * as path from 'path';
 import { promisify } from 'util';
+// 类型定义统一从 types/ 导入, 消除重复
+export type { ChangeSetMode, CommitFile, FileStatus, GitBranchOption, GitCommit, GitRepositoryOption, GraphState, GitRepositoryState, LaneInfo, WorkingTreeChanges } from '../types';
+import type { ChangeSetMode, CommitFile, FileStatus, GitBranchOption, GitCommit, GitRepositoryOption, GraphState, GitRepositoryState, WorkingTreeChanges } from '../types';
 
 const execFileAsync = promisify(execFile);
-
-// 单条提交记录
-export interface GitCommit {
-    hash: string;
-    shortHash: string;
-    parents: string[];
-    author: string;
-    authorEmail?: string;
-    committer: string;
-    committerEmail?: string;
-    authorDate: string;
-    authorDateLabel: string;
-    message: string;
-    body?: string;
-    refs: string[];
-    lane?: number;
-    lanes?: LaneInfo[];
-    laneColor?: string;
-    laneStartsHere?: boolean;
-}
-
-export interface LaneInfo {
-    fromLane: number;
-    toLane: number;
-    color: string;
-    isCommit: boolean;
-}
-
-export type FileStatus = 'A' | 'M' | 'D' | 'R' | 'C' | 'T' | 'U' | '?';
-
-export interface GitRepositoryOption {
-    path: string;
-    label: string;
-    description?: string;
-    hasSubmodules?: boolean;
-}
-
-export interface GitBranchOption {
-    name: string;
-    label: string;
-    description?: string;
-}
-
-export interface CommitFile {
-    path: string;
-    status: FileStatus;
-    oldPath?: string;
-}
-
-export type ChangeSetMode = 'commit' | 'staged' | 'changes';
-
-export interface WorkingTreeChanges {
-    staged: CommitFile[];
-    changes: CommitFile[];
-}
+const completeCommitFilesCache = new Map<string, CommitFile[]>();
+const completeCommitFilesInFlight = new Map<string, Promise<CommitFile[]>>();
+const maxCommitFilesCacheEntries = 100;
 
 // 颜色池
 const LANE_COLORS = [
@@ -97,25 +48,30 @@ interface GitRepository {
     pull(rebase?: boolean, remote?: string, branch?: string): Promise<void>;
     push(remoteName?: string, branchName?: string, setUpstream?: boolean, force?: boolean): Promise<void>;
     state: {
+        HEAD?: GitRefApi;
         refs?: GitRefApi[];
+        workingTreeChanges?: GitChangeApi[];
+        indexChanges?: GitChangeApi[];
         onDidChange?: vscode.Event<void>;
     };
 }
 
-interface GitApi {
+export interface GitApi {
     repositories: GitRepository[];
     getRepository(uri: vscode.Uri): GitRepository | undefined;
+    onDidOpenRepository?: vscode.Event<GitRepository>;
+    onDidCloseRepository?: vscode.Event<GitRepository>;
 }
 
-function findRepository(api: GitApi, rootUri: vscode.Uri): GitRepository | undefined {
+export function findRepository(api: GitApi, rootUri: vscode.Uri): GitRepository | undefined {
     const target = repositoryKey(rootUri.fsPath);
     return api.getRepository(rootUri)
         || api.repositories.find(repository => repositoryKey(repository.rootUri.fsPath) === target);
 }
 
-// 缓存 Git API
+// 缓存 Git API (单一数据源, 供 gitkViewProvider/statusBar 共用)
 let cachedGitApi: GitApi | undefined;
-async function getGitApi(): Promise<GitApi | undefined> {
+export async function getGitApi(): Promise<GitApi | undefined> {
     if (cachedGitApi) { return cachedGitApi; }
     const ext = vscode.extensions.getExtension('vscode.git');
     if (!ext) { return undefined; }
@@ -123,6 +79,66 @@ async function getGitApi(): Promise<GitApi | undefined> {
     const api = ext.exports?.getAPI?.(1);
     if (api) { cachedGitApi = api as unknown as GitApi; }
     return cachedGitApi;
+}
+
+// 同步获取已缓存的 Git API (未初始化时返回 undefined)
+export function getCachedGitApi(): GitApi | undefined {
+    return cachedGitApi;
+}
+
+// 竞速: 同时发起 API 与 CLI；首个有效结果获胜并取消 CLI。
+// VS Code Git API 不支持 AbortSignal，落后结果只能忽略。
+async function raceSources<T>(
+    apiFn: () => T | Promise<T | undefined>,
+    cliFn: (signal: AbortSignal) => Promise<T | undefined>,
+    isValid: (value: T | undefined) => value is T = (value): value is T => value !== undefined,
+    signal?: AbortSignal,
+): Promise<T> {
+    throwIfAborted(signal);
+    const cliController = new AbortController();
+    const abortCli = () => cliController.abort();
+    const apiTask = Promise.resolve().then(apiFn);
+    const cliTask = Promise.resolve().then(() => cliFn(cliController.signal));
+    let cancel: (() => void) | undefined;
+    try {
+        return await new Promise<T>((resolve, reject) => {
+            let pending = 2;
+            let settled = false;
+            let firstError: unknown;
+            cancel = () => {
+                if (settled) { return; }
+                settled = true;
+                abortCli();
+                const error = new Error('请求已取消');
+                error.name = 'AbortError';
+                reject(error);
+            };
+            signal?.addEventListener('abort', cancel, { once: true });
+            const finish = (value: T) => {
+                if (settled) { return; }
+                settled = true;
+                abortCli();
+                resolve(value);
+            };
+            const settle = (value: T | undefined) => {
+                if (isValid(value)) {
+                    finish(value);
+                    return;
+                }
+                if (--pending === 0 && !settled) { reject(firstError ?? new Error('未获得有效 Git 数据')); }
+            };
+            const failed = (error: unknown) => {
+                if (settled) { return; }
+                if (!firstError) { firstError = error; }
+                if (--pending === 0) { reject(firstError ?? new Error('未获得有效 Git 数据')); }
+            };
+            apiTask.then(settle, failed);
+            cliTask.then(settle, failed);
+        });
+    } finally {
+        if (cancel) { signal?.removeEventListener('abort', cancel); }
+        abortCli();
+    }
 }
 
 // 快速获取首个仓库路径 (从 Git API, 无 git 命令)
@@ -179,6 +195,32 @@ function statusFromChange(s: number): FileStatus {
 
 function repositoryKey(filePath: string): string {
     return process.platform === 'win32' ? path.normalize(filePath).toLowerCase() : path.normalize(filePath);
+}
+
+// 适配器: VS Code Git API refs -> GitRefRecord[]
+function apiRefsToRefRecords(refs: readonly GitRefApi[]): GitRefRecord[] {
+    return refs
+        .filter(ref => ref.name && !ref.name.endsWith('/HEAD'))
+        .map(ref => ({
+            hash: ref.commit || '',
+            name: ref.name!,
+            label: refDisplayName(ref),
+        }));
+}
+
+// 适配器: VS Code Git API changes -> CommitFile[]
+export function apiChangesToCommitFiles(changes: readonly GitChangeApi[], rootUri: vscode.Uri): CommitFile[] {
+    return changes.map(change => {
+        const filePath = path.relative(rootUri.fsPath, change.uri.fsPath);
+        const oldPath = change.originalUri && change.originalUri.fsPath !== change.uri.fsPath
+            ? path.relative(rootUri.fsPath, change.originalUri.fsPath)
+            : undefined;
+        return {
+            path: filePath,
+            status: statusFromChange(change.status),
+            oldPath,
+        };
+    });
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -305,10 +347,10 @@ export function invalidateGitRefsCache(rootUri?: vscode.Uri): void {
 
 export async function getGitRepositories(onProgress?: (current: number, total: number, message?: string) => void, signal?: AbortSignal): Promise<GitRepositoryOption[]> {
     throwIfAborted(signal);
-    const api = await getGitApi();
-    throwIfAborted(signal);
-    if (!api) { throw new Error('Git 扩展不可用'); }
-    const sourceKeys = getRepositorySourceKeys(api);
+    const apiPromise = getGitApi();
+    // CLI 无需等待 Git 扩展激活，工作区路径用于首次竞速期间的缓存键。
+    const sourceKeys = (vscode.workspace.workspaceFolders ?? [])
+        .map(folder => repositoryKey(folder.uri.fsPath)).sort().join('\0');
     if (repositoriesCache
         && repositoriesCache.sourceKeys === sourceKeys
         && Date.now() - repositoriesCache.timestamp < REPOSITORIES_CACHE_TTL) {
@@ -318,21 +360,51 @@ export async function getGitRepositories(onProgress?: (current: number, total: n
         onProgress?.(0, 0, '正在等待子模块扫描完成...');
         return repositoriesInFlight;
     }
-    const scan = getGitRepositoriesInternal(api, sourceKeys, onProgress, signal);
+    const scan = raceSources(
+        async () => {
+            const currentApi = await apiPromise;
+            if (!currentApi || currentApi.repositories.length === 0) { return undefined; }
+            return getGitRepositoriesFromApi(currentApi);
+        },
+        cliSignal => getGitRepositoriesInternal(undefined, sourceKeys, onProgress, cliSignal),
+        (repositories): repositories is GitRepositoryOption[] => !!repositories && repositories.length > 0,
+        signal,
+    );
     if (signal) { return scan; }
     repositoriesInFlight = scan;
     try {
-        return await scan;
+        const repositories = await scan;
+        repositoriesCache = { repos: repositories, sourceKeys, timestamp: Date.now() };
+        return repositories;
     } finally {
         if (repositoriesInFlight === scan) { repositoriesInFlight = undefined; }
     }
 }
 
-async function getGitRepositoriesInternal(api: GitApi, sourceKeys: string, onProgress?: (current: number, total: number, message?: string) => void, signal?: AbortSignal): Promise<GitRepositoryOption[]> {
+function getGitRepositoriesFromApi(api: GitApi): GitRepositoryOption[] {
+    // Git 扩展已登记的嵌套仓库即为 API 子模块扫描结果。
+    const repositories = api.repositories.map(repository => ({ rootPath: repository.rootUri.fsPath }));
+    const parentPaths = new Set<string>();
+    for (const repository of repositories) {
+        for (const candidate of repositories) {
+            if (repository !== candidate && isNestedRepository(repository.rootPath, candidate.rootPath)) {
+                parentPaths.add(repositoryKey(candidate.rootPath));
+            }
+        }
+    }
+    return repositories.map(repository => ({
+        path: vscode.Uri.file(repository.rootPath).toString(),
+        label: path.basename(repository.rootPath) || repository.rootPath,
+        description: 'repo',
+        hasSubmodules: parentPaths.has(repositoryKey(repository.rootPath)),
+    })).sort((left, right) => left.label.localeCompare(right.label));
+}
+
+async function getGitRepositoriesInternal(api: GitApi | undefined, sourceKeys: string, onProgress?: (current: number, total: number, message?: string) => void, signal?: AbortSignal): Promise<GitRepositoryOption[]> {
     throwIfAborted(signal);
 
     const repositories = new Map<string, RepositoryRecord>();
-    const apiRepos = api.repositories.map(repo => ({ rootPath: repo.rootUri.fsPath }));
+    const apiRepos = api?.repositories.map(repo => ({ rootPath: repo.rootUri.fsPath })) ?? [];
     const knownRepositoryRoots = new Map(apiRepos.map(repository => [repositoryKey(repository.rootPath), repository.rootPath]));
     const workspaceFolders = vscode.workspace.workspaceFolders || [];
     const pending: RepositoryRecord[] = [...apiRepos];
@@ -397,7 +469,6 @@ async function getGitRepositoriesInternal(api: GitApi, sourceKeys: string, onPro
         const rightSubrepository = right.description === 'subrepo';
         return Number(leftSubrepository) - Number(rightSubrepository) || left.label.localeCompare(right.label);
     });
-    repositoriesCache = { repos: result, sourceKeys, timestamp: Date.now() };
     return result;
 }
 
@@ -424,16 +495,17 @@ async function getGitRefs(rootUri: vscode.Uri, signal?: AbortSignal): Promise<Gi
     }
     const requestVersion = refsCacheVersions.get(key) ?? 0;
     const request = (async () => {
-        const { stdout } = await execFileAsync('git', [
-            '-C', rootUri.fsPath,
-            'for-each-ref', '--format=%(objectname)%09%(refname:short)%09%(refname)', 'refs/heads', 'refs/remotes', 'refs/tags',
-        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
-        const refs = stdout.split(/\r?\n/).flatMap(line => {
-            if (!line) { return []; }
-            const [hash, label, name] = line.split('\t');
-            if (!hash || !label || !name || label.endsWith('/HEAD')) { return []; }
-            return [{ hash, label, name }];
-        });
+        const refs = await raceSources(
+            () => {
+                const api = getCachedGitApi();
+                const repo = api && findRepository(api, rootUri);
+                if (repo?.state.refs && repo.state.refs.length > 0) {
+                    return apiRefsToRefRecords(repo.state.refs);
+                }
+                return undefined;
+            },
+            () => readRefsFromCli(rootUri, signal),
+        );
         if (refsCache.size >= REFS_CACHE_MAX) {
             let oldestKey: string | undefined;
             let oldestTime = Infinity;
@@ -454,6 +526,20 @@ async function getGitRefs(rootUri: vscode.Uri, signal?: AbortSignal): Promise<Gi
     } finally {
         if (refsInFlight.get(key) === request) { refsInFlight.delete(key); }
     }
+}
+
+// 从 git CLI 读 refs
+async function readRefsFromCli(rootUri: vscode.Uri, signal?: AbortSignal): Promise<GitRefRecord[]> {
+    const { stdout } = await execFileAsync('git', [
+        '-C', rootUri.fsPath,
+        'for-each-ref', '--format=%(objectname)%09%(refname:short)%09%(refname)', 'refs/heads', 'refs/remotes', 'refs/tags',
+    ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
+    return stdout.split(/\r?\n/).flatMap(line => {
+        if (!line) { return []; }
+        const [hash, label, name] = line.split('\t');
+        if (!hash || !label || !name || label.endsWith('/HEAD')) { return []; }
+        return [{ hash, label, name }];
+    });
 }
 
 // 批量解析 ref -> commit hash, 单次 git rev-parse 调用
@@ -502,22 +588,37 @@ async function getCommitAuthorDetails(rootUri: vscode.Uri, hashes: readonly stri
 
 export async function getGitBranches(rootUri: vscode.Uri, signal?: AbortSignal): Promise<GitBranchOption[]> {
     try {
-        const refs = await getGitRefs(rootUri, signal);
-        return refs.filter(ref => !ref.name.startsWith('refs/tags/')).map(ref => ({
+        const [refs, currentBranch, currentHash] = await Promise.all([
+            getGitRefs(rootUri, signal),
+            getCurrentGitBranch(rootUri),
+            getCurrentGitHeadHash(rootUri, signal),
+        ]);
+        const branchRefs = refs.filter(ref => !ref.name.startsWith('refs/tags/'));
+        const currentRef = currentBranch ? branchRefs.find(ref => ref.name === currentBranch) : undefined;
+        const current = currentHash ? [{
+            name: currentBranch ?? currentHash,
+            label: currentRef?.label ?? `HEAD (${currentHash.slice(0, 8)})`,
+            hash: currentHash,
+            kind: 'current' as const,
+        }] : [];
+        const branches = branchRefs.map(ref => ({
             name: ref.name,
             label: ref.label,
-            description: ref.name.startsWith('refs/remotes/') ? '远程分支' : '本地分支',
-        })).sort((left, right) => {
-            const leftRemote = left.description === '远程分支';
-            const rightRemote = right.description === '远程分支';
-            return Number(leftRemote) - Number(rightRemote) || left.label.localeCompare(right.label);
-        });
+            hash: ref.hash,
+            kind: ref.name.startsWith('refs/remotes/') ? 'remote' as const : 'local' as const,
+        })).sort((left, right) => Number(left.kind === 'remote') - Number(right.kind === 'remote') || left.label.localeCompare(right.label));
+        return [...current, ...branches];
     } catch (error) {
         throw new Error(`无法读取分支: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
 
 export async function getCurrentGitBranch(rootUri: vscode.Uri): Promise<string | undefined> {
+    const api = getCachedGitApi();
+    const repo = api && findRepository(api, rootUri);
+    if (repo?.state.HEAD?.name) {
+        return repo.state.HEAD.type === 0 ? `refs/heads/${repo.state.HEAD.name}` : repo.state.HEAD.name;
+    }
     try {
         const { stdout } = await execFileAsync('git', ['-C', rootUri.fsPath, 'symbolic-ref', '--quiet', '--short', 'HEAD'], {
             windowsHide: true,
@@ -525,8 +626,28 @@ export async function getCurrentGitBranch(rootUri: vscode.Uri): Promise<string |
         const label = stdout.trim();
         return label ? `refs/heads/${label}` : undefined;
     } catch {
+        // Detached HEAD 时 symbolic-ref 按 Git 约定返回非零。
         return undefined;
     }
+}
+
+async function getCurrentGitHeadHash(rootUri: vscode.Uri, signal?: AbortSignal): Promise<string | undefined> {
+    return raceSources(
+        () => {
+            const api = getCachedGitApi();
+            return api && findRepository(api, rootUri)?.state.HEAD?.commit;
+        },
+        async cliSignal => {
+            const { stdout } = await execFileAsync('git', ['-C', rootUri.fsPath, 'rev-parse', 'HEAD'], {
+                windowsHide: true,
+                signal: cliSignal,
+            });
+            const hash = stdout.trim();
+            return hash || undefined;
+        },
+        undefined,
+        signal,
+    );
 }
 
 export async function runGitSync(rootUri: vscode.Uri, action: 'fetch' | 'pull' | 'push'): Promise<void> {
@@ -616,15 +737,38 @@ export async function getGitCommitsByHashes(rootUri: vscode.Uri, hashes: readonl
     return commits.sort((a, b) => (order.get(a.hash) ?? 0) - (order.get(b.hash) ?? 0));
 }
 
-// 获取仓库提交列表
-export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, refs: readonly string[] = [], skip: number = 0, onProgress?: (current: number, total: number) => void, signal?: AbortSignal): Promise<GitCommit[]> {
-    // 提交读取完全由本地 Git 完成；仓库发现与 VS Code Git API 的异步登记互不依赖。
-    // 这也使工作区仓库和已初始化子模块在 Git API 尚未登记时可立即切换。
+function apiCommitToGitCommit(commit: GitCommitApi): GitCommit | undefined {
+    if (!commit.hash) { return undefined; }
+    const author = typeof commit.author === 'string' ? { name: commit.author } : commit.author;
+    const committer = typeof commit.committer === 'string' ? { name: commit.committer } : commit.committer;
+    const authorDate = commit.authorDate ?? (author?.timestamp ? new Date(author.timestamp) : new Date(0));
+    return {
+        hash: commit.hash,
+        shortHash: commit.hash.slice(0, 8),
+        parents: commit.parents ?? [],
+        author: author?.name || author?.email || 'Unknown author',
+        authorEmail: author?.email || '',
+        committer: committer?.name || committer?.email || author?.name || author?.email || 'Unknown committer',
+        committerEmail: committer?.email || author?.email || '',
+        authorDate: !isNaN(authorDate.getTime()) ? authorDate.toISOString() : '',
+        authorDateLabel: formatDateLabel(authorDate),
+        message: commit.message || '',
+        body: '',
+        refs: [],
+    };
+}
 
-    // 直接传 refs 给 git log, 跳过 resolveCommitRefs
+async function readCommitsFromApi(rootUri: vscode.Uri, limit: number, refs: readonly string[], skip: number): Promise<GitCommit[] | undefined> {
+    const api = await getGitApi();
+    const repository = api && findRepository(api, rootUri);
+    if (!repository || skip > 0 || refs.length > 1) { return undefined; }
+    const commits = await repository.log({ maxEntries: limit, ...(refs[0] && refs[0] !== 'HEAD' ? { hash: refs[0] } : {}) });
+    const result = commits.map(apiCommitToGitCommit).filter((commit): commit is GitCommit => !!commit);
+    return result.length > 0 ? result : undefined;
+}
+
+async function readCommitsFromCli(rootUri: vscode.Uri, limit: number, refs: readonly string[], skip: number, signal: AbortSignal): Promise<GitCommit[]> {
     const commitRefs = refs.length > 0 ? [...refs] : ['HEAD'];
-    if (commitRefs.length === 0) { return []; }
-    if (onProgress) { onProgress(0, 1); }
     const [logResult, gitRefs] = await Promise.all([
         execFileAsync('git', [
             '-C', rootUri.fsPath, 'log', '--topo-order', `--max-count=${limit}`, ...(skip > 0 ? [`--skip=${skip}`] : []),
@@ -635,9 +779,20 @@ export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, re
             return [];
         }),
     ]);
+    return parseLogOutput(logResult.stdout, buildRefsByCommit(gitRefs));
+}
+
+// 获取仓库提交列表
+export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, refs: readonly string[] = [], skip: number = 0, onProgress?: (current: number, total: number) => void, signal?: AbortSignal): Promise<GitCommit[]> {
+    if (onProgress) { onProgress(0, 1); }
+    const commits = await raceSources(
+        () => readCommitsFromApi(rootUri, limit, refs, skip),
+        cliSignal => readCommitsFromCli(rootUri, limit, refs, skip, cliSignal),
+        (value): value is GitCommit[] => value !== undefined,
+        signal,
+    );
     if (onProgress) { onProgress(1, 1); }
-    const refsByCommit = buildRefsByCommit(gitRefs);
-    return parseLogOutput(logResult.stdout, refsByCommit);
+    return commits;
 }
 
 // 搜索提交: 全量获取后在 TS 端过滤, 任意关键词命中任意字段即返回
@@ -669,13 +824,6 @@ export async function searchCommits(rootUri: vscode.Uri, keywords: string[], ref
         ].map(f => (f || '').toLowerCase());
         return lowerKeywords.some(kw => fields.some(f => f.includes(kw)));
     });
-}
-
-// 图形布局状态, 用于增量构建
-export interface GraphState {
-    activeLanes: Array<{ hash: string; color: string } | undefined>;
-    visibleHashes: Set<string>;
-    nextColor: number;
 }
 
 // 图形布局：每行完整描述顶部车道到下一行车道的转换。
@@ -767,28 +915,103 @@ export async function isGitRepo(rootUri: vscode.Uri): Promise<boolean> {
 
 // 获取指定提交的变更文件列表 (兼容 web)
 // 使用 diffBetween(parent, commit) 获取 Change[] 再转换
+export async function preloadCommitFiles(rootUri: vscode.Uri, hashes: readonly string[], onProgress?: (current: number, total: number) => void, signal?: AbortSignal): Promise<void> {
+    const uniqueHashes = [...new Set(hashes)];
+    const total = uniqueHashes.length;
+    if (total === 0) { return; }
+    let nextIndex = 0;
+    let completed = 0;
+    const workerCount = Math.min(3, total);
+    onProgress?.(0, total);
+    const worker = async (): Promise<void> => {
+        while (!signal?.aborted) {
+            const index = nextIndex++;
+            if (index >= total) { return; }
+            try {
+                await getCommitFilesWithLineStats(rootUri, uniqueHashes[index], signal);
+            } catch (error) {
+                if (error instanceof Error && error.name === 'AbortError') { throw error; }
+            } finally {
+                completed++;
+                onProgress?.(completed, total);
+            }
+        }
+    };
+    await Promise.all(Array.from({ length: workerCount }, worker));
+}
+
 export async function getCommitFiles(rootUri: vscode.Uri, hash: string, signal?: AbortSignal): Promise<CommitFile[]> {
-    // 使用本地 Git 读取变更列表，避免依赖 Git API 对子模块的异步登记。
-    try {
+    return getCommitFilesWithLineStats(rootUri, hash, signal);
+}
+
+export async function getCommitFilesWithLineStats(rootUri: vscode.Uri, hash: string, signal?: AbortSignal, onProgress?: (current: number, total: number) => void): Promise<CommitFile[]> {
+    const cacheKey = `${rootUri.fsPath}\0${hash}`;
+    const cached = completeCommitFilesCache.get(cacheKey);
+    if (cached) {
+        onProgress?.(cached.length, cached.length);
+        return cached;
+    }
+    // 可取消的前台请求不能复用预加载请求，避免旧调用者取消当前选择。
+    const pending = signal ? undefined : completeCommitFilesInFlight.get(cacheKey);
+    if (pending) { return pending; }
+    const request = (async () => {
+        onProgress?.(0, 0);
         const { stdout } = await execFileAsync('git', [
             '-C', rootUri.fsPath,
-            'diff-tree', '--root', '--no-commit-id', '--name-status', '-r', '-M', '-C', hash,
+            'diff-tree', '--root', '--no-commit-id', '--raw', '--numstat', '-r', '--no-renames', hash,
         ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
-        return parseNameStatus(stdout);
-    } catch (error: any) {
-        if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
-        throw new Error(`无法读取变更文件: ${error instanceof Error ? error.message : String(error)}`);
+        const files = applyNumStat(parseRawStatus(stdout), stdout);
+        completeCommitFilesCache.set(cacheKey, files);
+        if (completeCommitFilesCache.size > maxCommitFilesCacheEntries) {
+            completeCommitFilesCache.delete(completeCommitFilesCache.keys().next().value!);
+        }
+        onProgress?.(files.length, files.length);
+        return files;
+    })();
+    if (!signal) { completeCommitFilesInFlight.set(cacheKey, request); }
+    try {
+        return await request;
+    } finally {
+        if (!signal && completeCommitFilesInFlight.get(cacheKey) === request) {
+            completeCommitFilesInFlight.delete(cacheKey);
+        }
     }
 }
 
-export interface GitRepositoryState {
-    head: string;
-    branch: string;
-    refs: string;
-    status: string;
+export async function getGitRepositoryState(rootUri: vscode.Uri, signal?: AbortSignal): Promise<GitRepositoryState> {
+    return raceSources(
+        () => readRepositoryStateFromApi(rootUri),
+        () => readRepositoryStateFromCli(rootUri, signal),
+    );
 }
 
-export async function getGitRepositoryState(rootUri: vscode.Uri, signal?: AbortSignal): Promise<GitRepositoryState> {
+// 从 VS Code Git API 读状态签名 (同步, 零 git 命令)
+function readRepositoryStateFromApi(rootUri: vscode.Uri): GitRepositoryState | undefined {
+    const api = getCachedGitApi();
+    const repo = api && findRepository(api, rootUri);
+    if (repo?.state.HEAD && repo.state.refs) {
+        const head = repo.state.HEAD.commit || '';
+        const branch = repo.state.HEAD.name || 'HEAD';
+        const refsStr = repo.state.refs
+            .filter(r => r.name && !r.name.endsWith('/HEAD'))
+            .map(r => `${r.name} ${r.commit || ''}`)
+            .sort()
+            .join('\n');
+        const allChanges = [
+            ...(repo.state.workingTreeChanges || []),
+            ...(repo.state.indexChanges || []),
+        ];
+        const statusStr = allChanges
+            .map(c => `${c.status}\t${c.uri.fsPath}`)
+            .sort()
+            .join('\0');
+        return { head, branch, refs: refsStr, status: statusStr };
+    }
+    return undefined;
+}
+
+// 从 git CLI 读状态签名 (4 条命令并行)
+async function readRepositoryStateFromCli(rootUri: vscode.Uri, signal?: AbortSignal): Promise<GitRepositoryState> {
     try {
         const [headResult, branchResult, refsResult, statusResult] = await Promise.all([
             execFileAsync('git', ['-C', rootUri.fsPath, 'rev-parse', '--verify', 'HEAD'], { windowsHide: true, signal }),
@@ -809,6 +1032,27 @@ export async function getGitRepositoryState(rootUri: vscode.Uri, signal?: AbortS
 }
 
 export async function getWorkingTreeChanges(rootUri: vscode.Uri, signal?: AbortSignal): Promise<WorkingTreeChanges> {
+    return raceSources(
+        () => readWorkingTreeChangesFromApi(rootUri),
+        () => readWorkingTreeChangesFromCli(rootUri, signal),
+    );
+}
+
+// 从 VS Code Git API 读工作区变更 (同步, 零 git 命令)
+function readWorkingTreeChangesFromApi(rootUri: vscode.Uri): WorkingTreeChanges | undefined {
+    const api = getCachedGitApi();
+    const repo = api && findRepository(api, rootUri);
+    if (repo?.state.indexChanges && repo.state.workingTreeChanges) {
+        return {
+            staged: apiChangesToCommitFiles(repo.state.indexChanges, rootUri),
+            changes: apiChangesToCommitFiles(repo.state.workingTreeChanges, rootUri),
+        };
+    }
+    return undefined;
+}
+
+// 从 git CLI 读工作区变更
+async function readWorkingTreeChangesFromCli(rootUri: vscode.Uri, signal?: AbortSignal): Promise<WorkingTreeChanges> {
     try {
         const { stdout } = await execFileAsync('git', [
             '-C', rootUri.fsPath,
@@ -859,21 +1103,37 @@ function porcelainStatus(status: string): FileStatus {
     }
 }
 
-function parseNameStatus(output: string): CommitFile[] {
+function parseRawStatus(output: string): CommitFile[] {
     const files: CommitFile[] = [];
+    for (const line of output.split(/\r?\n/)) {
+        if (!line.startsWith(':')) { continue; }
+        const tabIndex = line.indexOf('\t');
+        if (tabIndex < 0) { continue; }
+        const statusParts = line.slice(0, tabIndex).trim().split(/\s+/);
+        const status = statusParts[statusParts.length - 1] || 'M';
+        const filePath = line.slice(tabIndex + 1);
+        const code = status[0];
+        const mapped: FileStatus = code === 'A' ? 'A' : code === 'D' ? 'D' : code === 'T' ? 'T' : 'M';
+        files.push({ path: filePath, status: mapped });
+    }
+    return files;
+}
+
+function applyNumStat(files: CommitFile[], output: string): CommitFile[] {
+    const stats = new Map<string, { addedLines: number; removedLines: number }>();
     for (const line of output.split(/\r?\n/)) {
         if (!line) { continue; }
         const parts = line.split('\t');
-        const status = parts[0] || '';
-        const code = status[0];
-        if ((code === 'R' || code === 'C') && parts.length >= 3) {
-            files.push({ path: parts[2], status: code, oldPath: parts[1] });
-        } else if (parts[1]) {
-            const mapped: FileStatus = code === 'A' ? 'A' : code === 'D' ? 'D' : code === 'T' ? 'T' : 'M';
-            files.push({ path: parts[1], status: mapped });
-        }
+        if (parts.length < 3 || parts[0] === '-' || parts[1] === '-') { continue; }
+        const addedLines = Number(parts[0]);
+        const removedLines = Number(parts[1]);
+        if (!Number.isFinite(addedLines) || !Number.isFinite(removedLines)) { continue; }
+        stats.set(parts.slice(2).join('\t'), { addedLines, removedLines });
     }
-    return files;
+    return files.map(file => {
+        const stat = stats.get(file.path);
+        return stat ? { ...file, ...stat } : file;
+    });
 }
 
 // 构造 git scheme URI (用于 diff 编辑器)

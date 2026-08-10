@@ -50,7 +50,8 @@
           "type": "webview",
           "id": "vscode-gitk.panelView",
           "name": "Gitk",
-          "contextualTitle": "Gitk"
+          "contextualTitle": "Gitk",
+          "when": "gitk:hasRepository"
         }
       ]
     },

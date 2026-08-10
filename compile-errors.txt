@@ -1,2 +1,2 @@
-src/gitkViewProvider.ts(52,22): error TS2304: Cannot find name 'GitApi'.
-src/gitkViewProvider.ts(167,62): error TS2304: Cannot find name 'GitExtensionApi'.
+No compilation errors.
+npm run compile (tsc -p ./) exits with code 0.

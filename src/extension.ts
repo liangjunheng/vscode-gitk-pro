@@ -1,11 +1,12 @@
 import * as vscode from 'vscode';
-import { GitkViewProvider } from './gitkViewProvider';
+import { GitkViewProvider } from './webview/gitkViewProvider';
 import { GitkStatusBar } from './statusBar';
+import { store } from './state/store';
 
 // 插件激活入口
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-    // 诊断信息: 确认插件被加载
-    console.log('[vscode-gitk] activate called');
+    // 单一数据源 Store 在激活时即存在, 存放所有业务数据
+    console.log('[vscode-gitk] activate called, Store initialized:', store.getState().isLoading);
     vscode.window.showInformationMessage('vscode-gitk 已激活');
 
     // 诊断: 列出所有 multi/diff 相关命令, 确认可用命令名
@@ -53,10 +54,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const statusBar = new GitkStatusBar(context, 'vscode-gitk.open');
     context.subscriptions.push(statusBar);
     await statusBar.initialize();
-    // 工作区文件夹变化时重新检查状态栏可见性
-    context.subscriptions.push(
-        vscode.workspace.onDidChangeWorkspaceFolders(() => void statusBar.checkVisibility())
-    );
 }
 
 export function deactivate(): void {}
