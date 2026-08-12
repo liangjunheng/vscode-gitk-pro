@@ -1,9 +1,6 @@
 import * as vscode from 'vscode';
-import { execFile, spawn, type ChildProcess } from 'child_process';
-import { promisify } from 'util';
+import { spawn, type ChildProcess } from 'child_process';
 import * as path from 'path';
-
-const execFileAsync = promisify(execFile);
 import { ChangeSetMode, CommitFile, DiffPayload } from '../types';
 import { store } from '../state/store';
 
@@ -76,7 +73,7 @@ export class DiffReader {
             const original = originalObject ? contents.get(originalObject) : '';
             const modified = modifiedObject ? contents.get(modifiedObject) : '';
             const missing = [originalObject, modifiedObject].find(object => object && !contents.has(object));
-            return { index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, addedLines: file.addedLines, removedLines: file.removedLines, original: original || '', modified: modified || '', error: missing ? `无法读取 Git 对象：${missing}` : undefined };
+            return { index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, addedLines: file.addedLines, removedLines: file.removedLines, original: original || '', modified: modified || '', error: missing ? `无法读取 Git 对象：${missing}` : undefined };
         });
     }
 
@@ -98,7 +95,7 @@ export class DiffReader {
             const modified = changeSetMode === 'staged'
                 ? (modifiedObject ? contents.get(modifiedObject) || '' : '')
                 : workingTreeFile.content;
-            return { index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, addedLines: file.addedLines, removedLines: file.removedLines, original, modified, error: workingTreeFile.error };
+            return { index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, addedLines: file.addedLines, removedLines: file.removedLines, original, modified, error: workingTreeFile.error };
         }));
     }
 

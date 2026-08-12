@@ -57,6 +57,10 @@ export interface CommitFile {
     path: string;
     status: FileStatus;
     oldPath?: string;
+    oldObjectId?: string;
+    newObjectId?: string;
+    oldMode?: string;
+    newMode?: string;
     addedLines?: number;
     removedLines?: number;
 }

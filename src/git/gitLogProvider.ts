@@ -728,15 +728,16 @@ function parseRawStatus(output: string): CommitFile[] {
     for (let index = 0; index < fields.length;) {
         const header = fields[index++];
         if (!header?.startsWith(':')) { continue; }
-        const match = /^:\d+ \d+ [0-9a-f]+ [0-9a-f]+ ([A-Z]\d*)$/.exec(header);
+        const match = /^:(\d+) (\d+) ([0-9a-f]+) ([0-9a-f]+) ([A-Z]\d*)$/.exec(header);
         if (!match) { continue; }
-        const code = match[1][0];
+        const [, oldMode, newMode, oldObjectId, newObjectId, status] = match;
+        const code = status[0];
         const firstPath = fields[index++];
         if (!firstPath) { continue; }
         const oldPath = code === 'R' || code === 'C' ? firstPath : undefined;
         const path = oldPath ? fields[index++] : firstPath;
         if (!path) { continue; }
-        files.push({ path, oldPath, status: porcelainStatus(code) });
+        files.push({ path, oldPath, status: porcelainStatus(code), oldObjectId, newObjectId, oldMode, newMode });
     }
     return files;
 }
