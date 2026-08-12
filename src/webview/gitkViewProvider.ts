@@ -756,6 +756,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const gen = ++this.searchGeneration;
         const rootUri = this.getRepoRootUri();
         if (!rootUri || this.searchKeywords.length === 0) { return; }
+        store.setState({ isLoading: true, loadingMessage: '搜索提交...' });
         this.view?.webview.postMessage({ type: 'loadingProgress', phase: 'search', message: '搜索提交...', current: 0, total: 0 });
         try {
             const refs = this.selectedBranches.length > 0 ? this.selectedBranches : [];
@@ -766,6 +767,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.hasMoreCommits = false;
                 this.isLoadingMoreCommits = false;
                 this.commitPageError = '';
+                this.isLoading = false;
+                this.loadingMessage = undefined;
             });
             const firstSearchResult = this.commits[0];
             if (firstSearchResult) { await this.selectCommit(firstSearchResult.hash, firstSearchResult.repositoryPath); }
@@ -778,7 +781,20 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     private async refreshSearchCleared(): Promise<void> {
-        await this.refresh();
+        this.searchAbortController?.abort();
+        const rootUri = this.getRepoRootUri();
+        if (!rootUri) { return; }
+        const commits = buildGraph(this.rawCommits).map(commit => ({ ...commit, repositoryPath: rootUri.toString() }));
+        store.batch(() => {
+            this.commits = commits;
+            this.hasMoreCommits = this.rawCommits.length === COMMIT_PAGE_SIZE;
+            this.isLoadingMoreCommits = false;
+            this.commitPageError = '';
+            this.isLoading = false;
+            this.loadingMessage = undefined;
+        });
+        const selectedCommit = commits.find(commit => commit.hash === this.currentHash && commit.repositoryPath === this.currentRepositoryPath) ?? commits[0];
+        if (selectedCommit) { await this.selectCommit(selectedCommit.hash, selectedCommit.repositoryPath); }
     }
 
     private getRepoRootUri(repositoryPath = this.currentRepositoryPath): vscode.Uri | undefined {
@@ -786,7 +802,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         return path ? vscode.Uri.parse(path) : undefined;
     }
 
-    private beginCommitReload(message: string): void {
+    private beginCommitReload(message: string, clearSearch = true): void {
         ++this.commitPageGeneration;
         this.loadMoreAbortController?.abort();
         this.searchAbortController?.abort();
@@ -805,7 +821,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.currentHash = '';
             this.currentRepositoryPath = undefined;
             this.selectedPath = '';
-            this.searchKeywords = [];
+            if (clearSearch) { this.searchKeywords = []; }
             this.isLoading = true;
             this.loadingMessage = message;
         });
@@ -844,6 +860,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 }
                 break;
             case 'reloadBranches':
+                this.beginCommitReload(this.searchKeywords.length > 0 ? '搜索提交...' : '正在加载提交历史...', false);
                 if (this.searchKeywords.length > 0) {
                     void this.performSearch();
                 } else {
