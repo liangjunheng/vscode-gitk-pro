@@ -1821,7 +1821,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       });
     });
     list.querySelectorAll('.file-item').forEach(function(item) {
-      item.addEventListener('click', function() {
+      item.addEventListener('pointerdown', function(event) {
+        if (event.button !== 0) return;
         const path = item.getAttribute('data-path');
         if (!path) return;
         // 立即高亮, 不等扩展往返
