@@ -409,13 +409,40 @@ export async function getCurrentGitHeadHash(rootUri: vscode.Uri, signal?: AbortS
     return hash || undefined;
 }
 
-export async function runGitSync(rootUri: vscode.Uri, action: 'fetch' | 'pull' | 'push'): Promise<void> {
+export async function runGitSync(
+    rootUri: vscode.Uri,
+    action: 'fetch' | 'pull' | 'push',
+    pullSubmodules = false,
+    onProgress?: (message: string) => void,
+): Promise<void> {
     if (action === 'fetch') {
+        onProgress?.('Fetching all remotes and pruning stale references...');
         await runGitCommand(rootUri, ['fetch', '--all', '--prune', '--recurse-submodules=on-demand']);
+
+        const repositories = await collectSubmoduleRepositories([{ rootPath: rootUri.fsPath }]);
+        const submodules = repositories.slice(1);
+        for (let index = 0; index < submodules.length; index++) {
+            const submodule = submodules[index];
+            onProgress?.(`Fetching submodule ${index + 1}/${submodules.length}: ${submodule.rootPath}`);
+            await runGitCommand(vscode.Uri.file(submodule.rootPath), ['fetch', '--all', '--prune']);
+            onProgress?.(`Completed submodule ${index + 1}/${submodules.length}: ${submodule.rootPath}`);
+        }
     } else if (action === 'pull') {
-        await runGitCommand(rootUri, ['pull', '--recurse-submodules']);
-        await runGitCommand(rootUri, ['submodule', 'update', '--init', '--recursive']);
+        onProgress?.(pullSubmodules ? 'Pulling changes and submodule references...' : 'Pulling changes...');
+        await runGitCommand(rootUri, pullSubmodules ? ['pull', '--recurse-submodules'] : ['pull']);
+        if (pullSubmodules) {
+            onProgress?.('Initializing and updating submodules recursively...');
+            await runGitCommand(rootUri, ['submodule', 'update', '--init', '--recursive']);
+            const status = await runGitCommand(rootUri, ['submodule', 'status', '--recursive']);
+            for (const line of status.split(/\r?\n/)) {
+                const match = /^[ +\-U]?\S+\s+(.+?)(?:\s+\(|$)/.exec(line);
+                if (match) {
+                    onProgress?.(`Completed submodule: ${match[1]}`);
+                }
+            }
+        }
     } else {
+        onProgress?.('Pushing changes...');
         await runGitCommand(rootUri, ['push']);
     }
 }
