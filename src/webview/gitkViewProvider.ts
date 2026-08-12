@@ -252,8 +252,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     private updateMultiDiffVisibility(): void {
-        if (this.view?.visible && !this.isLoading && this.currentHash && this.files.length > 0) {
-            // 宿主视图的临时隐藏不能取消独立 Multi-Diff 面板的数据。
+        if (!this.view?.visible) {
+            this.customDiffPanel.hide();
+            return;
+        }
+        if (!this.isLoading && this.currentHash && this.files.length > 0) {
             void this.openDiff(this.selectedPath);
         }
     }
@@ -1014,6 +1017,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     private async openDiff(filePath?: string): Promise<void> {
+        if (!this.view?.visible) {
+            this.customDiffPanel.hide();
+            return;
+        }
         if (this.isLoading || !this.currentHash) {
             this.customDiffPanel.cancelPending();
             return;
