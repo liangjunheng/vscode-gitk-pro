@@ -306,6 +306,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             // Store 已包含上次后台准备的选择器与提交数据时，直接复用快照，不重复读取分支和提交历史。
             if (this.hasPreparedInitialData()) {
                 this.pushStateToWebview();
+                // 首次进入时后台数据已就绪，不会触发可见性事件，需主动显示 Diff。
+                this.updateMultiDiffVisibility();
             } else {
                 await this.refresh();
             }
