@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import type { ChangeSetMode, ChangedFile, CommitFile, GitBranchOption, GitBranchVirtualCommit, GitCommit, GitkIntent, GitRepositoryOption, RepositoryCommit } from '../types';
-import { getCommitFilesWithLineStats, getWorkingTreeChanges, buildGraph, getCurrentGitHeadHash, getGitBranches, getGitCommits, getGitRepositories, invalidateGitRefsCache, invalidateGitRepositoriesCache, searchCommits } from '../git/gitLogProvider';
+import { getCommitFilesWithLineStats, getWorkingTreeChangePresence, getWorkingTreeChanges, buildGraph, getCurrentGitHeadHash, getGitBranches, getGitCommits, getGitRepositories, invalidateGitRefsCache, invalidateGitRepositoriesCache, searchCommits } from '../git/gitLogProvider';
 import { CustomDiffPanel } from './customDiffPanel';
 import { DiffReader } from '../git/diffReader';
 import { GitActionRunner } from '../services/gitActions';
@@ -30,6 +30,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     readonly onDidChangeDiffAvailability = this.onDidChangeDiffAvailabilityEmitter.event;
     private repositoryStateDebounceTimer?: ReturnType<typeof setTimeout>;
     private headChangeDebounceTimer?: ReturnType<typeof setTimeout>;
+    private workingTreePresenceTimer?: ReturnType<typeof setTimeout>;
+    private workingTreePresenceAbortController?: AbortController;
+    private workingTreePresenceGeneration = 0;
+    private workingTreePresenceRepositoryPath?: string;
     private searchGeneration = 0;
     private storeUnsubscribe?: () => void;
     private pushStatePending = false;
@@ -154,6 +158,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.storeUnsubscribe?.();
                 this.storeUnsubscribe = undefined;
                 this.cancelActiveRequests();
+                this.stopWorkingTreePresencePolling();
                 this.viewDisposables.forEach(disposable => disposable.dispose());
                 this.viewDisposables = [];
                 this.gitWatchDisposables.forEach(disposable => disposable.dispose());
@@ -213,17 +218,51 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.currentChangeSet = mode;
             this.currentHash = mode;
             this.selectedPath = undefined;
-            this.files = mode === 'staged' ? this.stagedFiles : this.changeFiles;
+            this.files = [];
             this.filesLoading = true;
         });
-        await this.completeChangedFilesSelection(generation);
-        if (generation !== this.commitFilesGeneration) { return; }
-        if (this.files.length === 0) {
-            this.customDiffPanel.hide();
+        const rootUri = this.getRepoRootUri();
+        if (!rootUri) {
             store.batch(() => {
                 this.filesLoading = false;
-                store.setState({ diffLoading: false });
+                store.setState({ diffLoading: false, diffError: '无法确定当前 Git 仓库。' });
             });
+            return;
+        }
+        const abortController = new AbortController();
+        this.commitFilesAbortController = abortController;
+        try {
+            // 虚拟提交每次选择都重新读取工作区，不能复用分支加载时的缓存快照。
+            const workingTreeChanges = await getWorkingTreeChanges(rootUri, abortController.signal);
+            if (abortController.signal.aborted || generation !== this.commitFilesGeneration) { return; }
+            store.batch(() => {
+                this.stagedFiles = workingTreeChanges.staged;
+                this.changeFiles = workingTreeChanges.changes;
+                this.files = mode === 'staged' ? workingTreeChanges.staged : workingTreeChanges.changes;
+            });
+            await this.completeChangedFilesSelection(generation, abortController.signal);
+            if (generation !== this.commitFilesGeneration || abortController.signal.aborted) { return; }
+            if (this.files.length === 0) {
+                this.customDiffPanel.hide();
+                store.batch(() => {
+                    this.filesLoading = false;
+                    store.setState({ diffLoading: false });
+                });
+            }
+        } catch (error) {
+            if (!this.isAbortError(error) && generation === this.commitFilesGeneration) {
+                store.batch(() => {
+                    this.filesLoading = false;
+                    store.setState({
+                        diffLoading: false,
+                        diffError: error instanceof Error ? error.message : String(error),
+                    });
+                });
+            }
+        } finally {
+            if (this.commitFilesAbortController === abortController) {
+                this.commitFilesAbortController = undefined;
+            }
         }
     }
 
@@ -261,6 +300,77 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    private updateWorkingTreePresencePolling(): void {
+        const repositoryPath = this.selectedRepositoryPath;
+        if (!this.view?.visible || !repositoryPath) {
+            this.stopWorkingTreePresencePolling();
+            return;
+        }
+        if (this.workingTreePresenceRepositoryPath === repositoryPath
+            && (this.workingTreePresenceTimer || this.workingTreePresenceAbortController)) {
+            return;
+        }
+        this.stopWorkingTreePresencePolling();
+        this.workingTreePresenceRepositoryPath = repositoryPath;
+        const generation = this.workingTreePresenceGeneration;
+        void this.pollWorkingTreePresence(repositoryPath, generation);
+    }
+
+    private stopWorkingTreePresencePolling(): void {
+        if (this.workingTreePresenceTimer) {
+            clearTimeout(this.workingTreePresenceTimer);
+            this.workingTreePresenceTimer = undefined;
+        }
+        this.workingTreePresenceAbortController?.abort();
+        this.workingTreePresenceAbortController = undefined;
+        this.workingTreePresenceRepositoryPath = undefined;
+        this.workingTreePresenceGeneration++;
+    }
+
+    private async pollWorkingTreePresence(repositoryPath: string, generation: number): Promise<void> {
+        const rootUri = vscode.Uri.parse(repositoryPath);
+        const abortController = new AbortController();
+        this.workingTreePresenceAbortController = abortController;
+        try {
+            const presence = await getWorkingTreeChangePresence(rootUri, abortController.signal);
+            if (abortController.signal.aborted || generation !== this.workingTreePresenceGeneration
+                || repositoryPath !== this.selectedRepositoryPath || !this.view?.visible) { return; }
+            this.applyWorkingTreePresence(presence);
+        } catch (error) {
+            if (!this.isAbortError(error)) {
+                console.warn('[vscode-gitk] 无法读取工作区变更状态:', error);
+            }
+        } finally {
+            if (this.workingTreePresenceAbortController === abortController) {
+                this.workingTreePresenceAbortController = undefined;
+            }
+        }
+        if (generation !== this.workingTreePresenceGeneration || repositoryPath !== this.selectedRepositoryPath || !this.view?.visible) { return; }
+        this.workingTreePresenceTimer = setTimeout(() => {
+            this.workingTreePresenceTimer = undefined;
+            void this.pollWorkingTreePresence(repositoryPath, generation);
+        }, 3000);
+    }
+
+    private applyWorkingTreePresence(presence: { staged: boolean; changes: boolean }): void {
+        const currentBranch = this.branches.find(branch => branch.kind === 'current');
+        if (!currentBranch) { return; }
+        const currentVirtualCommits = currentBranch.virtualCommits ?? [];
+        const hasStaged = currentVirtualCommits.some(commit => commit.mode === 'staged');
+        const hasChanges = currentVirtualCommits.some(commit => commit.mode === 'changes');
+        if (hasStaged === presence.staged && hasChanges === presence.changes) { return; }
+        const stagedFiles = currentVirtualCommits.find(commit => commit.mode === 'staged')?.files ?? this.stagedFiles;
+        const changeFiles = currentVirtualCommits.find(commit => commit.mode === 'changes')?.files ?? this.changeFiles;
+        const virtualCommits: GitBranchVirtualCommit[] = [];
+        if (presence.changes) {
+            virtualCommits.push({ mode: 'changes', hash: VIRTUAL_CHANGES_HASH, label: 'Changes', files: changeFiles });
+        }
+        if (presence.staged) {
+            virtualCommits.push({ mode: 'staged', hash: VIRTUAL_STAGED_HASH, label: 'Staged Changes', files: stagedFiles });
+        }
+        this.branches = this.branches.map(branch => branch === currentBranch ? { ...branch, virtualCommits } : branch);
+    }
+
     resolveWebviewView(view: vscode.WebviewView): void {
         const viewGeneration = ++this.viewGeneration;
         this.view = view;
@@ -281,9 +391,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             view.onDidChangeVisibility(() => {
                 this.updateViewVisible();
                 this.updateMultiDiffVisibility();
+                this.updateWorkingTreePresencePolling();
             }),
             view.onDidDispose(() => {
                 if (this.view === view) {
+                    this.stopWorkingTreePresencePolling();
                     this.view = undefined;
                     this.updateViewVisible();
                     this.storeUnsubscribe?.();
@@ -308,6 +420,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.pushStateToWebview();
                 // 首次进入时后台数据已就绪，不会触发可见性事件，需主动显示 Diff。
                 this.updateMultiDiffVisibility();
+                this.updateWorkingTreePresencePolling();
             } else {
                 await this.refresh();
             }
@@ -582,6 +695,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             }
         }
         this.updateViewVisible();
+        this.updateWorkingTreePresencePolling();
     }
 
     private async refreshBranchCommits(): Promise<void> {

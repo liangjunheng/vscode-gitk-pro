@@ -670,6 +670,33 @@ export async function getWorkingTreeChanges(rootUri: vscode.Uri, signal?: AbortS
     return readWorkingTreeChangesFromCli(rootUri, signal);
 }
 
+// 仅判断暂存区与工作区是否有变更，不读取 Diff 元数据。
+export async function getWorkingTreeChangePresence(rootUri: vscode.Uri, signal?: AbortSignal): Promise<{ staged: boolean; changes: boolean }> {
+    try {
+        const { stdout } = await execFileAsync('git', [
+            '-C', rootUri.fsPath,
+            'status', '--porcelain=v1', '-z', '--untracked-files=normal',
+        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
+        let staged = false;
+        let changes = false;
+        const entries = stdout.split('\0');
+        for (let index = 0; index < entries.length; index++) {
+            const entry = entries[index];
+            if (!entry || entry.length < 3 || entry[2] !== ' ') { continue; }
+            const indexStatus = entry[0];
+            const workingTreeStatus = entry[1];
+            staged ||= indexStatus !== ' ' && indexStatus !== '?';
+            changes ||= workingTreeStatus !== ' ';
+            if (indexStatus === 'R' || indexStatus === 'C' || workingTreeStatus === 'R' || workingTreeStatus === 'C') { index++; }
+            if (staged && changes) { break; }
+        }
+        return { staged, changes };
+    } catch (error: any) {
+        if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
+        throw new Error(`无法读取工作区变更状态: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+
 // 从 git CLI 读工作区变更
 async function readWorkingTreeChangesFromCli(rootUri: vscode.Uri, signal?: AbortSignal): Promise<WorkingTreeChanges> {
     try {
