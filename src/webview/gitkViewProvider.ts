@@ -1074,8 +1074,17 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   #repositoryDropdown .dropdown-option.selected::before, #branchDropdown .dropdown-option.selected::before { display: none; }
   #repositoryDropdown .dropdown-option input { display: none; }
   #branchDropdown .dropdown-option input { flex: 0 0 auto; margin: 0; accent-color: var(--vscode-checkbox-selectBackground, var(--vscode-focusBorder)); }
-  .dropdown-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 4px 2px 0; border-top: 1px solid var(--vscode-menu-separatorBackground, var(--vscode-panel-border)); }
-  .dropdown-actions button { padding: 2px 4px; color: var(--vscode-textLink-foreground); background: transparent; border: 0; cursor: pointer; font: inherit; font-size: 11px; }
+  .dropdown-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 2px 1px; border-top: 1px solid var(--vscode-menu-separatorBackground, var(--vscode-panel-border)); }
+  .dropdown-actions-right { display: flex; align-items: center; gap: 6px; }
+  .dropdown-actions button { min-width: 52px; height: 26px; padding: 0 10px; color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); background: var(--vscode-button-secondaryBackground, var(--vscode-toolbar-hoverBackground)); border: 1px solid transparent; border-radius: 6px; cursor: pointer; font: inherit; font-size: 11px; transition: background-color 120ms ease, border-color 120ms ease; }
+  .dropdown-actions button:hover { background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground)); }
+  .dropdown-actions button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+  .dropdown-actions .toggle-all { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 0; padding: 0 7px; background: transparent; }
+  .dropdown-actions .toggle-all:hover, .dropdown-actions .toggle-all:active { background: transparent; }
+  .dropdown-actions .toggle-all input { width: 13px; height: 13px; margin: 0; accent-color: var(--vscode-checkbox-selectBackground, var(--vscode-focusBorder)); pointer-events: none; }
+  .dropdown-actions .confirm-selection, .dropdown-actions .cancel-selection { min-width: 35px; height: 18px; padding: 0 6px; border-radius: 5px; font-size: 10px; }
+  .dropdown-actions .confirm-selection { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
+  .dropdown-actions .confirm-selection:hover { background: var(--vscode-button-hoverBackground); }
   .dropdown-group { padding-bottom: 1px; color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 600; cursor: default; }
   .dropdown-empty { padding: 8px 7px; color: var(--vscode-descriptionForeground); font-size: 11px; }
   #toolbarActions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
@@ -1187,7 +1196,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     </div></div><button class="toolbar-icon locator-icon" id="locateCommitBtn" title="定位当前提交" aria-label="定位当前提交"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="4.5"/><circle cx="8" cy="8" r="1.25" fill="currentColor" stroke="none"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2"/></svg></button>
     <div class="selector" id="branchSelector"><span class="selector-prefix">branchs:</span><div class="dropdown" id="branchDropdown">
       <button class="dropdown-current" type="button" title="切换分支" aria-expanded="false" disabled><span class="dropdown-label"><span class="dropdown-spinner"></span>加载分支...</span><span class="dropdown-chevron" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></span></button>
-      <div class="dropdown-menu" role="menu"><input class="dropdown-filter" type="text" placeholder="筛选分支" aria-label="筛选分支"><div class="dropdown-options"></div><div class="dropdown-actions"><button type="button" class="select-all">全选</button><button type="button" class="clear-all">清空</button></div></div>
+      <div class="dropdown-menu" role="menu"><input class="dropdown-filter" type="text" placeholder="筛选分支" aria-label="筛选分支"><div class="dropdown-options"></div><div class="dropdown-actions"><button type="button" class="toggle-all" aria-pressed="false"><input type="checkbox" tabindex="-1" aria-hidden="true"><span>全选</span></button><div class="dropdown-actions-right"><button type="button" class="confirm-selection">确定</button><button type="button" class="cancel-selection">取消</button></div></div></div>
     </div></div>
     <div class="selector" id="searchBox"><svg id="searchIcon" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 .96-.96l3.04 3.03-1.06 1.06-2.94-3.13z"/></svg><input type="text" id="searchInput" placeholder="搜索提交..." title="输入关键词搜索, 支持作者/邮箱/消息/Hash/日期, 多个关键词用空格隔开, 回车开始搜索"><button id="searchClear" title="清除搜索">&times;</button></div>
     <span class="count" id="countLabel"></span>
@@ -1251,8 +1260,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   const REF_GAP = 3 * 7;
 
   window.addEventListener('focus', function() { vscode.postMessage({ type: 'focus' }); });
-  window.addEventListener('blur', function() { vscode.postMessage({ type: 'blur' }); });
-  document.addEventListener('visibilitychange', function() { vscode.postMessage({ type: document.visibilityState === 'visible' ? 'focus' : 'blur' }); });
+  window.addEventListener('blur', function() { closeDropdowns(); vscode.postMessage({ type: 'blur' }); });
+  document.addEventListener('visibilitychange', function() { if (document.visibilityState !== 'visible') closeDropdowns(); vscode.postMessage({ type: document.visibilityState === 'visible' ? 'focus' : 'blur' }); });
 
   let resizeFrame = 0;
   window.addEventListener('resize', function() {
@@ -1347,7 +1356,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     searchDebounceTimer = setTimeout(function() {
       searchDebounceTimer = null;
       triggerSearch();
-    }, 300);
+    }, 500);
   }
   function triggerSearchImmediately() {
     if (searchDebounceTimer) {
@@ -1392,6 +1401,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       const opening = !root.classList.contains('open');
       closeDropdowns();
       if (opening) {
+        if (root === branchDropdown) {
+          // 每次打开都以已确认选择重置弹窗草稿。
+          const applied = branchDropdown.appliedSelection || new Set();
+          branchDropdown.selected.clear();
+          applied.forEach(function(value) { branchDropdown.selected.add(value); });
+        }
         root.classList.add('open');
         updateDropdownHeight(dropdown);
         current.setAttribute('aria-expanded', 'true');
@@ -1430,6 +1445,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   }
 
   function closeDropdown(dropdown) {
+    const wasOpen = dropdown.root.classList.contains('open');
+    if (wasOpen && !dropdown.skipRestore && dropdown.restoreSelection) dropdown.restoreSelection();
+    dropdown.skipRestore = false;
     dropdown.root.classList.remove('open');
     dropdown.current.setAttribute('aria-expanded', 'false');
   }
@@ -1619,6 +1637,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
   function renderBranchOptions(entries, selectedValues) {
     const options = entries.filter(function(entry) { return !entry.group; });
+    // 当前分支会同时出现在本地分支分组；全选状态和动作均按唯一引用计算。
+    const uniqueOptionValues = Array.from(new Set(options.map(function(entry) { return entry.value; })));
     // 持久化 selected Set, 避免 stateUpdate 重建时旧 change handler 引用过期 Set
     if (!branchDropdown.selected) branchDropdown.selected = new Set();
     const selected = branchDropdown.selected;
@@ -1627,36 +1647,64 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     var canUpdateInPlace = existingInputs.length === options.length &&
       Array.from(existingInputs).every(function(input, i) { return input.value === options[i].value; });
     const serverSelection = (selectedValues || []).slice().sort().join('\0');
-    const keepPendingSelection = branchDropdown.pendingSelection && canUpdateInPlace && branchDropdown.pendingSelection !== serverSelection;
+    // 弹窗打开期间，无论选项 DOM 是否因状态刷新重建，都保留打开前快照及未确认的选择。
+    const keepPendingSelection = Boolean(branchDropdown.openSelection) || (branchDropdown.pendingSelection && branchDropdown.pendingSelection !== serverSelection);
     if (!keepPendingSelection) {
       selected.clear();
       (selectedValues || []).forEach(function(v) { selected.add(v); });
+      branchDropdown.appliedSelection = new Set(selected);
       branchDropdown.pendingSelection = undefined;
     }
-    const hasSelection = selected.size > 0;
     branchDropdown.current.disabled = options.length === 0;
-    branchDropdown.label.textContent = hasSelection ? selectedLabel(options, selected, '未选择分支', '全部分支') : '未选择分支';
-    branchDropdown.current.title = hasSelection ? selectedTitle(options, selected, '未选择分支') : '未选择分支';
-    function applySelection(values) {
-      selected.clear();
-      values.forEach(function(value) { selected.add(value); });
-      branchDropdown.pendingSelection = Array.from(selected).sort().join('\0');
-      const showingAll = selected.size === 0;
-      branchDropdown.label.textContent = showingAll ? '未选择分支' : selectedLabel(options, selected, '未选择分支', '全部分支');
-      branchDropdown.current.title = showingAll ? '未选择分支' : selectedTitle(options, selected, '未选择分支');
+    function updateSelectionUi() {
+      const hasSelection = selected.size > 0;
+      branchDropdown.label.textContent = hasSelection ? selectedLabel(options, selected, '未选择分支', '全部分支') : '未选择分支';
+      branchDropdown.current.title = hasSelection ? selectedTitle(options, selected, '未选择分支') : '未选择分支';
       branchDropdown.options.querySelectorAll('input').forEach(function(checkbox) {
         checkbox.checked = selected.has(checkbox.value);
         checkbox.parentElement.classList.toggle('selected', checkbox.checked);
       });
-      vscode.postMessage({ type: 'selectBranches', names: Array.from(selected) });
+      const toggleAll = branchDropdown.menu.querySelector('.toggle-all');
+      const toggleAllCheckbox = toggleAll && toggleAll.querySelector('input[type="checkbox"]');
+      const allSelected = uniqueOptionValues.length > 0 && uniqueOptionValues.every(function(value) { return selected.has(value); });
+      if (toggleAll) toggleAll.setAttribute('aria-pressed', String(allSelected));
+      if (toggleAllCheckbox) {
+        toggleAllCheckbox.checked = allSelected;
+        toggleAllCheckbox.indeterminate = false;
+      }
+    }
+    function applySelection(values) {
+      selected.clear();
+      values.forEach(function(value) { selected.add(value); });
+      updateSelectionUi();
+    }
+    branchDropdown.restoreSelection = function() {
+      // 非确认关闭时，草稿无条件回到最后一次已应用选择。
+      const appliedSelection = Array.from(branchDropdown.appliedSelection || []);
+      branchDropdown.pendingSelection = undefined;
+      applySelection(appliedSelection);
+    };
+    function bindBranchActions() {
+      const toggleAll = branchDropdown.menu.querySelector('.toggle-all');
+      const cancel = branchDropdown.menu.querySelector('.cancel-selection');
+      const confirm = branchDropdown.menu.querySelector('.confirm-selection');
+      toggleAll.onclick = function() {
+        const allSelected = uniqueOptionValues.length > 0 && uniqueOptionValues.every(function(value) { return selected.has(value); });
+        applySelection(allSelected ? [] : uniqueOptionValues);
+      };
+      cancel.onclick = function() { closeDropdown(branchDropdown); };
+      confirm.onclick = function() {
+        const confirmedValues = Array.from(selected);
+        branchDropdown.pendingSelection = confirmedValues.sort().join('\0');
+        // Store 状态回传前不更新本地确认快照，避免未被扩展端接受的草稿污染回滚基准。
+        branchDropdown.skipRestore = true;
+        closeDropdown(branchDropdown);
+        vscode.postMessage({ type: 'selectBranches', names: confirmedValues });
+      };
     }
     if (canUpdateInPlace) {
-      existingInputs.forEach(function(checkbox) {
-        checkbox.checked = selected.has(checkbox.value);
-        checkbox.parentElement.classList.toggle('selected', checkbox.checked);
-      });
-      branchDropdown.menu.querySelector('.select-all').onclick = function() { applySelection(options.map(function(entry) { return entry.value; })); };
-      branchDropdown.menu.querySelector('.clear-all').onclick = function() { applySelection([]); };
+      updateSelectionUi();
+      bindBranchActions();
       return;
     }
     branchDropdown.options.innerHTML = '';
@@ -1677,19 +1725,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       checkbox.checked = selected.has(entry.value);
       checkbox.addEventListener('change', function() {
         if (checkbox.checked) selected.add(entry.value); else selected.delete(entry.value);
-        branchDropdown.pendingSelection = Array.from(selected).sort().join('\0');
-        option.classList.toggle('selected', checkbox.checked);
-        const hasSelection = selected.size > 0;
-        branchDropdown.label.textContent = hasSelection ? selectedLabel(options, selected, '未选择分支', '全部分支') : '未选择分支';
-        branchDropdown.current.title = hasSelection ? selectedTitle(options, selected, '未选择分支') : '未选择分支';
-        vscode.postMessage({ type: 'selectBranches', names: Array.from(selected) });
+        updateSelectionUi();
       });
       option.appendChild(checkbox);
       option.appendChild(document.createTextNode(entry.label));
       branchDropdown.options.appendChild(option);
     });
-    branchDropdown.menu.querySelector('.select-all').onclick = function() { applySelection(options.map(function(entry) { return entry.value; })); };
-    branchDropdown.menu.querySelector('.clear-all').onclick = function() { applySelection([]); };
+    updateSelectionUi();
+    bindBranchActions();
   }
 
   function renderSelectors(msg) {

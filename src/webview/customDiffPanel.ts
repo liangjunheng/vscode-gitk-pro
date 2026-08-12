@@ -237,16 +237,17 @@ export class CustomDiffPanel implements vscode.Disposable {
       } else {
         const change = left.change === undefined ? right.change : left.change; let end = index + 1;
         while (end < result.left.length && (result.left[end].change === undefined ? result.right[end].change : result.left[end].change) === change) end++;
-        let leftBlock = ''; let rightBlock = ''; let unifiedBlock = ''; let leftClass = ''; let rightClass = '';
+        let leftBlock = ''; let rightBlock = ''; let unifiedRemoved = ''; let unifiedAdded = ''; let leftClass = ''; let rightClass = '';
         for (let rowIndex = index; rowIndex < end; rowIndex++) {
           const currentLeft = rowAt(result.left, rowIndex); const currentRight = rowAt(result.right, rowIndex);
           leftBlock += splitLineHtml(currentLeft.number, currentLeft.value, currentLeft.type, change); rightBlock += splitLineHtml(currentRight.number, currentRight.value, currentRight.type, change);
-          if (currentLeft.type === 'removed') unifiedBlock += lineHtml(currentLeft.number, '', currentLeft.value, 'removed', '−', change);
-          else if (currentRight.type === 'added') unifiedBlock += lineHtml('', currentRight.number, currentRight.value, 'added', '+', change);
-          else if (currentLeft.type === 'modified-removed') { unifiedBlock += lineHtml(currentLeft.number, '', currentLeft.value, 'modified-removed', '−', change); unifiedBlock += lineHtml('', currentRight.number, currentRight.value, 'modified-added', '+', change); }
+          // 内联视图: 先收集全部删除行, 再收集全部新增行, 连续修改块显示为 --- ++++ 而非 -+-+ 交替
+          if (currentLeft.type === 'removed' || currentLeft.type === 'modified-removed') unifiedRemoved += lineHtml(currentLeft.number, '', currentLeft.value, currentLeft.type, '−', change);
+          if (currentRight.type === 'added' || currentRight.type === 'modified-added') unifiedAdded += lineHtml('', currentRight.number, currentRight.value, currentRight.type, '+', change);
           if (currentLeft.type === 'removed') leftClass = 'removed-block'; else if (currentLeft.type === 'modified-removed') leftClass = 'modified-block';
           if (currentRight.type === 'added') rightClass = 'added-block'; else if (currentRight.type === 'modified-added') rightClass = 'modified-block';
         }
+        const unifiedBlock = unifiedRemoved + unifiedAdded;
         const unifiedClass = leftClass === 'modified-block' || rightClass === 'modified-block' ? 'modified-block' : (leftClass || rightClass);
         leftRows += '<div class="change-block ' + leftClass + '">' + leftBlock + '</div>'; rightRows += '<div class="change-block ' + rightClass + '">' + rightBlock + '</div>'; unifiedRows += '<div class="change-block ' + unifiedClass + '">' + unifiedBlock + '</div>';
         index = end;
