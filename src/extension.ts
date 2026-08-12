@@ -22,6 +22,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
 
     const provider = new GitkViewProvider(context);
+    provider.initializeBackground();
 
     // 注册 webview view provider
     context.subscriptions.push(

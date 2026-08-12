@@ -5,7 +5,6 @@ export type StoreEffect =
     | { type: 'selectRepositories'; paths: unknown }
     | { type: 'reloadBranches' }
     | { type: 'loadMoreCommits' }
-    | { type: 'prefetchVisibleCommits'; commits: Array<{ hash: string; repositoryPath: string }> }
     | { type: 'gitSync'; action: unknown }
     | { type: 'commitAction'; action: unknown; hash: unknown; repositoryPath: unknown }
     | { type: 'selectCommit'; hash: unknown; repositoryPath?: unknown }
@@ -84,9 +83,6 @@ export class Store {
             case 'loadMoreCommits':
                 effects = [{ type: 'loadMoreCommits' }];
                 break;
-            case 'visibleCommits':
-                effects = [{ type: 'prefetchVisibleCommits', commits: intent.commits }];
-                break;
             case 'gitSync':
                 effects = [{ type: 'gitSync', action: intent.action }];
                 break;
@@ -114,7 +110,9 @@ export class Store {
                 break;
             }
             case 'selectFile':
-                partial = typeof intent.path === 'string' ? { selectedPath: intent.path } : undefined;
+                if (typeof intent.path !== 'string' || !this.state.files.some(file => file.path === intent.path)) { break; }
+                if (intent.path === this.state.selectedPath) { break; }
+                partial = { selectedPath: intent.path };
                 effects = [{ type: 'selectFile', path: intent.path }];
                 break;
             case 'copyFilePath':

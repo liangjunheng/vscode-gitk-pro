@@ -1,12 +1,11 @@
 import * as vscode from 'vscode';
-import { store } from './state/store';
-import { getGitApi } from './git/gitLogProvider';
 
-// 状态栏管理: 仅在 workspace 有 git 仓库时显示 "Gitk" 字样 + 内置 git-merge 图标
-// 通过 Store 订阅仓库变化, 不维护独立 gitApi
+// 状态栏管理: 通过 workspace 根目录 .git/HEAD 是否存在控制 Gitk 面板和状态栏显示
 export class GitkStatusBar {
     private item: vscode.StatusBarItem;
-    private unsubscribe?: () => void;
+    private headWatchers: vscode.Disposable[] = [];
+    private workspaceFoldersListener?: vscode.Disposable;
+    private refreshTimer?: ReturnType<typeof setTimeout>;
 
     constructor(
         private readonly context: vscode.ExtensionContext,
@@ -22,33 +21,50 @@ export class GitkStatusBar {
         this.item.text = '$(git-merge) Gitk';
     }
 
-    // 初始化: 直接查 Git API 决定可见性, 不依赖 Store (避免面板未显示时 Store 永远为空的死锁)
     async initialize(): Promise<void> {
-        // 订阅 Store repositories 变化, 后续数据驱动可见性
-        this.unsubscribe = store.subscribeSelector(
-            state => state.repositories,
-            repos => { this.checkVisibility(repos.length > 0); }
-        );
-        const api = await getGitApi();
-        if (api) {
-            // 直接查 Git API 已打开的仓库, 打破死锁
-            this.checkVisibility(api.repositories.length > 0);
-            if (api.onDidOpenRepository) {
-                this.context.subscriptions.push(
-                    api.onDidOpenRepository(() => void this.checkVisibility(api.repositories.length > 0))
-                );
-            }
-            if (api.onDidCloseRepository) {
-                this.context.subscriptions.push(
-                    api.onDidCloseRepository(() => void this.checkVisibility(api.repositories.length > 0))
-                );
-            }
-        }
-        // Store 可能已有数据 (面板已显示过的情况)
-        this.checkVisibility(store.getState().repositories.length > 0);
+        this.rebuildWatchers();
+        this.workspaceFoldersListener = vscode.workspace.onDidChangeWorkspaceFolders(() => this.rebuildWatchers());
+        await this.refreshVisibility();
     }
 
-    // 检查是否有 git 仓库, 有则显示状态栏和面板, 无则隐藏
+    private rebuildWatchers(): void {
+        this.headWatchers.splice(0).forEach(disposable => disposable.dispose());
+        for (const folder of vscode.workspace.workspaceFolders ?? []) {
+            const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(folder, '.git/HEAD'));
+            watcher.onDidCreate(() => this.queueRefreshVisibility());
+            watcher.onDidChange(() => this.queueRefreshVisibility());
+            watcher.onDidDelete(() => this.queueRefreshVisibility());
+            this.headWatchers.push(watcher);
+        }
+        this.queueRefreshVisibility();
+    }
+
+    private queueRefreshVisibility(): void {
+        if (this.refreshTimer) { clearTimeout(this.refreshTimer); }
+        this.refreshTimer = setTimeout(() => {
+            this.refreshTimer = undefined;
+            void this.refreshVisibility();
+        }, 100);
+    }
+
+    private async refreshVisibility(): Promise<void> {
+        const hasRootGitHead = await this.hasAnyRootGitHead();
+        await this.checkVisibility(hasRootGitHead);
+    }
+
+    private async hasAnyRootGitHead(): Promise<boolean> {
+        for (const folder of vscode.workspace.workspaceFolders ?? []) {
+            try {
+                const stat = await vscode.workspace.fs.stat(vscode.Uri.joinPath(folder.uri, '.git', 'HEAD'));
+                if ((stat.type & vscode.FileType.File) !== 0) { return true; }
+            } catch {
+                // 根目录没有 .git/HEAD, 继续检查其他 workspace root
+            }
+        }
+        return false;
+    }
+
+    // 有根目录 .git/HEAD 则显示状态栏和面板, 否则隐藏
     private async checkVisibility(hasRepo: boolean): Promise<void> {
         await vscode.commands.executeCommand('setContext', 'gitk:hasRepository', hasRepo);
         if (hasRepo) {
@@ -59,7 +75,9 @@ export class GitkStatusBar {
     }
 
     dispose(): void {
-        this.unsubscribe?.();
+        if (this.refreshTimer) { clearTimeout(this.refreshTimer); }
+        this.workspaceFoldersListener?.dispose();
+        this.headWatchers.splice(0).forEach(disposable => disposable.dispose());
         this.item.dispose();
     }
 }

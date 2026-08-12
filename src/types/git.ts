@@ -68,12 +68,6 @@ export interface WorkingTreeChanges {
     changes: CommitFile[];
 }
 
-export interface GraphState {
-    activeLanes: Array<{ hash: string; color: string } | undefined>;
-    visibleHashes: Set<string>;
-    nextColor: number;
-}
-
 export interface GitRepositoryState {
     head: string;
     branch: string;
@@ -95,6 +89,9 @@ export interface DiffPayload extends CommitFile {
     error?: string;
 }
 
+// Changed Files 在读取正文前为元数据，完成后替换为完整 Diff 数据。
+export type ChangedFile = CommitFile | DiffPayload;
+
 // Multi-Diff 加载事件
 export interface MultiDiffLoadEvent {
     type: 'progress' | 'complete' | 'error';
@@ -104,44 +101,4 @@ export interface MultiDiffLoadEvent {
     completed: number;
     total: number;
     message?: string;
-}
-
-export interface VisibleCommitTarget {
-    hash: string;
-    repositoryPath: string;
-}
-
-// VS Code Git 扩展 API 类型 (部分字段)
-export interface GitRefApi {
-    readonly name?: string;
-    readonly type?: number; // 0=Head, 1=RemoteHead, 2=Tag
-    readonly commit?: string;
-}
-
-export interface GitChangeApi {
-    readonly uri: vscode.Uri;
-    readonly originalUri: vscode.Uri;
-    readonly renameUri?: vscode.Uri;
-    readonly status: number;
-}
-
-export interface GitApiRepository {
-    rootUri: vscode.Uri;
-    state: {
-        HEAD?: GitRefApi;
-        refs?: GitRefApi[];
-        workingTreeChanges?: GitChangeApi[];
-        indexChanges?: GitChangeApi[];
-        onDidChange: vscode.Event<void>;
-    };
-}
-
-export interface GitApi {
-    repositories: GitApiRepository[];
-    onDidOpenRepository?: vscode.Event<GitApiRepository>;
-    onDidCloseRepository?: vscode.Event<GitApiRepository>;
-}
-
-export interface GitExtensionApi {
-    getAPI(version: 1): GitApi;
 }

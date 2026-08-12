@@ -1,5 +1,10 @@
 import * as vscode from 'vscode';
-import { getCommitFiles, buildGitFileUri } from '../git/gitLogProvider';
+import { getCommitFiles } from '../git/gitLogProvider';
+
+function buildGitFileUri(rootUri: vscode.Uri, ref: string, relativePath: string): vscode.Uri {
+    const path = vscode.Uri.joinPath(rootUri, relativePath).fsPath;
+    return vscode.Uri.parse(`git:${path}?${encodeURIComponent(JSON.stringify({ path, ref }))}`);
+}
 
 // 虚拟文档提供器: 为 commit 的完整 diff 提供文本内容
 // URI 格式: vscode-gitk-diff:<commit-hash>  (用 path 而非 authority 避免 URI 解析问题)
@@ -57,7 +62,6 @@ export class GitkDiffContentProvider implements vscode.TextDocumentContentProvid
         try {
             const text = await getCommitDiffText(rootUri, cleanHash);
             this.cache.set(cleanHash, text);
-            console.log('[vscode-gitk] diff text length:', text.length);
             return text;
         } catch (e: any) {
             console.error('[vscode-gitk] getCommitDiffText failed:', e);

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ChangeSetMode, CommitFile, DiffPayload, GitBranchOption, GitCommit, GitRepositoryOption, GraphState, RepositoryCommit } from './git';
+import { ChangeSetMode, ChangedFile, CommitFile, GitBranchOption, GitCommit, GitRepositoryOption, RepositoryCommit } from './git';
 
 export type GitSyncAction = 'fetch' | 'pull' | 'push';
 
@@ -11,7 +11,6 @@ export type GitkIntent =
     | { type: 'selectRepositories'; paths: unknown }
     | { type: 'selectBranches'; names: unknown }
     | { type: 'loadMoreCommits' }
-    | { type: 'visibleCommits'; commits: Array<{ hash: string; repositoryPath: string }> }
     | { type: 'gitSync'; action: unknown }
     | { type: 'commitAction'; action: unknown; hash: unknown; repositoryPath: unknown }
     | { type: 'selectCommit'; hash: unknown; repositoryPath?: unknown }
@@ -19,18 +18,6 @@ export type GitkIntent =
     | { type: 'copyFilePath'; path: unknown; absolute?: unknown }
     | { type: 'toggleFilesMode' }
     | { type: 'search'; keywords: unknown };
-
-export interface DiffEntry {
-    key: string;
-    repositoryPath: string;
-    hash: string;
-    changeSet: ChangeSetMode;
-    files: CommitFile[];
-    data: DiffPayload[];
-    loading: boolean;
-    progress: { completed: number; total: number };
-    error: string | undefined;
-}
 
 // 单一数据源: 应用全局状态
 export interface AppState {
@@ -45,8 +32,6 @@ export interface AppState {
     // 提交数据
     commits: RepositoryCommit[];
     rawCommits: GitCommit[];
-    graphState: GraphState;
-    allCommitHashes: string[];
     hasMoreCommits: boolean;
     isLoadingMoreCommits: boolean;
     commitPageError: string;
@@ -55,7 +40,7 @@ export interface AppState {
     currentHash: string | undefined;
     currentRepositoryPath: string | undefined;
     currentChangeSet: ChangeSetMode;
-    files: CommitFile[];
+    files: ChangedFile[];
     filesLoading: boolean;
     selectedPath: string | undefined;
     displayMode: 'tree' | 'flat';
@@ -66,17 +51,16 @@ export interface AppState {
 
     // 搜索
     searchKeywords: string[];
-    searchBackupCommits: RepositoryCommit[] | null;
 
     // UI 状态
     isLoading: boolean;
     loadingMessage: string | undefined;
     isFocused: boolean;
     isViewVisible: boolean;
+    reposLoading: boolean;
+    branchesLoading: boolean;
 
-    // Multi-Diff 面板数据 (单一数据源)
-    diffData: DiffPayload[];
-    diffEntries: Record<string, DiffEntry>;
+    // Multi-Diff 面板状态；Diff 正文复用 files。
     diffLoading: boolean;
     diffProgress: { completed: number; total: number };
     diffError: string | undefined;
@@ -94,8 +78,6 @@ export function createInitialState(): AppState {
 
         commits: [],
         rawCommits: [],
-        graphState: { activeLanes: [], visibleHashes: new Set(), nextColor: 0 },
-        allCommitHashes: [],
         hasMoreCommits: false,
         isLoadingMoreCommits: false,
         commitPageError: '',
@@ -112,16 +94,15 @@ export function createInitialState(): AppState {
         changeFiles: [],
 
         searchKeywords: [],
-        searchBackupCommits: null,
 
         isLoading: true,
         loadingMessage: undefined,
         isFocused: false,
         isViewVisible: false,
+        reposLoading: false,
+        branchesLoading: false,
 
-        // Multi-Diff 面板数据 (单一数据源)
-        diffData: [],
-        diffEntries: {},
+        // Multi-Diff 面板状态
         diffLoading: false,
         diffProgress: { completed: 0, total: 0 },
         diffError: undefined,

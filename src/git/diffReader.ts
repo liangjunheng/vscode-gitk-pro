@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
-import { spawn, type ChildProcess } from 'child_process';
-import { readFile } from 'fs/promises';
+import { execFile, spawn, type ChildProcess } from 'child_process';
+import { promisify } from 'util';
 import * as path from 'path';
+
+const execFileAsync = promisify(execFile);
 import { ChangeSetMode, CommitFile, DiffPayload } from '../types';
 import { store } from '../state/store';
 
@@ -11,7 +13,7 @@ import { store } from '../state/store';
  * 流程:
  * 1. prepare() 分批读取 (首批 1 个, 后续 8 个/批)
  * 2. 每批通过 readDiffs() 获取 DiffPayload[]
- * 3. 写入 store.diffData, CustomDiffPanel 订阅后自动转发到 Webview
+ * 3. 以完整 DiffPayload 写回 store.files，Changed Files 与 CustomDiffPanel 共用
  * 4. 完成后 store.diffLoading = false 通知渲染完毕
  */
 export class DiffReader {
@@ -35,44 +37,26 @@ export class DiffReader {
         const isCurrent = () => readerGeneration === this.requestGeneration && generation === store.getState().diffGeneration;
         const batchSize = 8;
         const total = files.length;
-        const entryKey = `${rootUri.fsPath}\0${changeSetMode}\0${hash}`;
         try {
+            const data: DiffPayload[] = [];
             store.setState({ diffProgress: { completed: 0, total } });
             for (let start = 0; start < total;) {
                 const size = start === 0 ? 1 : batchSize;
                 const batch = files.slice(start, start + size);
                 const diffs = await this.readDiffs(rootUri, hash, batch, changeSetMode, start);
                 if (!isCurrent()) { return; }
+                data.push(...diffs);
                 const completed = Math.min(start + batch.length, total);
-                // 写入 Store (单一数据源), 两个 UI 投影订阅同一状态。
-                const existing = store.getState().diffData;
-                const data = [...existing, ...diffs];
-                const previousEntry = store.getState().diffEntries[entryKey];
-                store.setState({
-                    diffData: data,
-                    diffProgress: { completed, total },
-                    diffEntries: previousEntry ? {
-                        ...store.getState().diffEntries,
-                        [entryKey]: { ...previousEntry, data, progress: { completed, total } },
-                    } : store.getState().diffEntries,
-                });
+                store.setState({ diffProgress: { completed, total } });
                 start += batch.length;
             }
             if (!isCurrent()) { return; }
-            const entry = store.getState().diffEntries[entryKey];
-            store.setState({
-                diffLoading: false,
-                diffEntries: entry ? { ...store.getState().diffEntries, [entryKey]: { ...entry, loading: false } } : store.getState().diffEntries,
-            });
+            // 完整 Diff 就绪后一次性替换共享文件数据，避免两个视图读取不同快照。
+            store.setState({ files: data, diffLoading: false });
         } catch (error) {
             if (!isCurrent()) { return; }
             const message = error instanceof Error ? error.message : String(error);
-            const entry = store.getState().diffEntries[entryKey];
-            store.setState({
-                diffError: message,
-                diffLoading: false,
-                diffEntries: entry ? { ...store.getState().diffEntries, [entryKey]: { ...entry, loading: false, error: message } } : store.getState().diffEntries,
-            });
+            store.setState({ diffError: message, diffLoading: false });
         }
     }
 
@@ -108,15 +92,24 @@ export class DiffReader {
             const originalObject = file.status === 'A' ? undefined : `${originalRef}:${file.oldPath || file.path}`;
             const modifiedObject = file.status === 'D' ? undefined : `:${file.path}`;
             const original = originalObject ? contents.get(originalObject) || '' : '';
+            const workingTreeFile = changeSetMode === 'staged' || file.status === 'D'
+                ? { content: '', error: undefined }
+                : await this.readWorkingTreeFile(rootUri, file.path);
             const modified = changeSetMode === 'staged'
                 ? (modifiedObject ? contents.get(modifiedObject) || '' : '')
-                : await this.readWorkspaceFile(rootUri, file.path);
-            return { index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, addedLines: file.addedLines, removedLines: file.removedLines, original, modified };
+                : workingTreeFile.content;
+            return { index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, addedLines: file.addedLines, removedLines: file.removedLines, original, modified, error: workingTreeFile.error };
         }));
     }
 
-    private async readWorkspaceFile(rootUri: vscode.Uri, filePath: string): Promise<string> {
-        try { return await readFile(path.join(rootUri.fsPath, filePath), 'utf8'); } catch { return ''; }
+    private async readWorkingTreeFile(rootUri: vscode.Uri, filePath: string): Promise<{ content: string; error?: string }> {
+        try {
+            const uri = vscode.Uri.joinPath(rootUri, ...filePath.split('/'));
+            return { content: Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8') };
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return { content: '', error: `无法读取工作区文件：${filePath}（${message}）` };
+        }
     }
 
     private readGitObjects(rootUri: vscode.Uri, objects: string[]): Promise<Map<string, string>> {
