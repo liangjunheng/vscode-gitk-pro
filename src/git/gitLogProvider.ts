@@ -673,10 +673,15 @@ export async function getWorkingTreeChanges(rootUri: vscode.Uri, signal?: AbortS
 // 从 git CLI 读工作区变更
 async function readWorkingTreeChangesFromCli(rootUri: vscode.Uri, signal?: AbortSignal): Promise<WorkingTreeChanges> {
     try {
-        const { stdout } = await execFileAsync('git', [
-            '-C', rootUri.fsPath,
-            'status', '--porcelain=v1', '-z', '--untracked-files=all',
-        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
+        const [statusResult, stagedMetadata, changesMetadata] = await Promise.all([
+            execFileAsync('git', [
+                '-C', rootUri.fsPath,
+                'status', '--porcelain=v1', '-z', '--untracked-files=all',
+            ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
+            readDiffMetadata(rootUri, ['diff', '--cached'], signal),
+            readDiffMetadata(rootUri, ['diff'], signal),
+        ]);
+        const stdout = statusResult.stdout;
         const staged: CommitFile[] = [];
         const changes: CommitFile[] = [];
         const entries = stdout.split('\0');
@@ -703,7 +708,10 @@ async function readWorkingTreeChangesFromCli(rootUri: vscode.Uri, signal?: Abort
                 });
             }
         }
-        return { staged, changes };
+        return {
+            staged: mergeDiffMetadata(staged, stagedMetadata),
+            changes: mergeDiffMetadata(changes, changesMetadata),
+        };
     } catch (error: any) {
         if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
         throw new Error(`无法读取工作区变更: ${error instanceof Error ? error.message : String(error)}`);
@@ -720,6 +728,22 @@ function porcelainStatus(status: string): FileStatus {
         case 'U': return 'U';
         default: return 'M';
     }
+}
+
+async function readDiffMetadata(rootUri: vscode.Uri, args: string[], signal?: AbortSignal): Promise<CommitFile[]> {
+    const [rawResult, numStatResult] = await Promise.all([
+        execFileAsync('git', ['-C', rootUri.fsPath, ...args, '--raw', '-z', '-M', '-C'], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
+        execFileAsync('git', ['-C', rootUri.fsPath, ...args, '--numstat', '-z', '-M', '-C'], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
+    ]);
+    return applyNumStat(parseRawStatus(rawResult.stdout), numStatResult.stdout);
+}
+
+function mergeDiffMetadata(files: CommitFile[], metadata: CommitFile[]): CommitFile[] {
+    return files.map(file => {
+        const match = metadata.find(candidate => candidate.path === file.path && candidate.status === file.status)
+            ?? metadata.find(candidate => candidate.path === file.path);
+        return match ? { ...file, ...match, status: file.status } : file;
+    });
 }
 
 function parseRawStatus(output: string): CommitFile[] {
@@ -743,21 +767,20 @@ function parseRawStatus(output: string): CommitFile[] {
 }
 
 function applyNumStat(files: CommitFile[], output: string): CommitFile[] {
-    const stats = new Map<string, { addedLines: number; removedLines: number }>();
+    const stats = new Map<string, { addedLines: number; removedLines: number; isBinary: boolean }>();
     const fields = output.split('\0');
     for (let index = 0; index < fields.length;) {
         const entry = fields[index++];
         if (!entry) { continue; }
-        const match = /^(\d+|-)\t(\d+|-)\t$/.exec(entry);
+        const match = /^(\d+|-)\t(\d+|-)\t(.*)$/.exec(entry);
         if (!match) { continue; }
-        const firstPath = fields[index++];
-        if (!firstPath) { continue; }
-        const renamedFile = files.find(file => file.oldPath === firstPath);
-        const path = renamedFile ? fields[index++] : firstPath;
+        const path = match[3] || fields[index + 1];
         if (!path) { continue; }
+        if (!match[3]) { index += 2; }
+        const isBinary = match[1] === '-' && match[2] === '-';
         const addedLines = match[1] === '-' ? 0 : Number(match[1]);
         const removedLines = match[2] === '-' ? 0 : Number(match[2]);
-        stats.set(path, { addedLines, removedLines });
+        stats.set(path, { addedLines, removedLines, isBinary });
     }
     return files.map(file => {
         const stat = stats.get(file.path);

@@ -63,6 +63,7 @@ export interface CommitFile {
     newMode?: string;
     addedLines?: number;
     removedLines?: number;
+    isBinary?: boolean;
 }
 
 export type ChangeSetMode = 'commit' | 'staged' | 'changes';

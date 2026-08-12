@@ -63,17 +63,18 @@ export class DiffReader {
         }
         const objects: string[] = [];
         for (const file of files) {
+            if (file.isBinary) { continue; }
             if (file.status !== 'A') { objects.push(`${hash}^:${file.oldPath || file.path}`); }
             if (file.status !== 'D') { objects.push(`${hash}:${file.path}`); }
         }
         const contents = await this.readGitObjects(rootUri, objects);
         return files.map((file, index) => {
-            const originalObject = file.status === 'A' ? undefined : `${hash}^:${file.oldPath || file.path}`;
-            const modifiedObject = file.status === 'D' ? undefined : `${hash}:${file.path}`;
+            const originalObject = file.isBinary || file.status === 'A' ? undefined : `${hash}^:${file.oldPath || file.path}`;
+            const modifiedObject = file.isBinary || file.status === 'D' ? undefined : `${hash}:${file.path}`;
             const original = originalObject ? contents.get(originalObject) : '';
             const modified = modifiedObject ? contents.get(modifiedObject) : '';
             const missing = [originalObject, modifiedObject].find(object => object && !contents.has(object));
-            return { index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, addedLines: file.addedLines, removedLines: file.removedLines, original: original || '', modified: modified || '', error: missing ? `无法读取 Git 对象：${missing}` : undefined };
+            return { index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, addedLines: file.addedLines, removedLines: file.removedLines, isBinary: file.isBinary, original: original || '', modified: modified || '', error: missing ? `无法读取 Git 对象：${missing}` : undefined };
         });
     }
 
@@ -81,21 +82,22 @@ export class DiffReader {
         const originalRef = changeSetMode === 'staged' ? 'HEAD' : '';
         const objects: string[] = [];
         for (const file of files) {
+            if (file.isBinary) { continue; }
             if (file.status !== 'A') { objects.push(`${originalRef}:${file.oldPath || file.path}`); }
             if (file.status !== 'D') { objects.push(`:${file.path}`); }
         }
         const contents = await this.readGitObjects(rootUri, objects);
         return Promise.all(files.map(async (file, index) => {
-            const originalObject = file.status === 'A' ? undefined : `${originalRef}:${file.oldPath || file.path}`;
-            const modifiedObject = file.status === 'D' ? undefined : `:${file.path}`;
+            const originalObject = file.isBinary || file.status === 'A' ? undefined : `${originalRef}:${file.oldPath || file.path}`;
+            const modifiedObject = file.isBinary || file.status === 'D' ? undefined : `:${file.path}`;
             const original = originalObject ? contents.get(originalObject) || '' : '';
-            const workingTreeFile = changeSetMode === 'staged' || file.status === 'D'
+            const workingTreeFile = file.isBinary || changeSetMode === 'staged' || file.status === 'D'
                 ? { content: '', error: undefined }
                 : await this.readWorkingTreeFile(rootUri, file.path);
             const modified = changeSetMode === 'staged'
                 ? (modifiedObject ? contents.get(modifiedObject) || '' : '')
                 : workingTreeFile.content;
-            return { index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, addedLines: file.addedLines, removedLines: file.removedLines, original, modified, error: workingTreeFile.error };
+            return { index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, addedLines: file.addedLines, removedLines: file.removedLines, isBinary: file.isBinary, original, modified, error: workingTreeFile.error };
         }));
     }
 

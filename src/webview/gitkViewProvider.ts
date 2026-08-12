@@ -942,7 +942,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.view?.webview.postMessage({ type: 'filesError', hash, repositoryPath, message: error instanceof Error ? error.message : String(error) });
                 store.batch(() => {
                     this.filesLoading = false;
-                    store.setState({ diffLoading: false });
+                    store.setState({
+                        diffLoading: false,
+                        diffError: error instanceof Error ? error.message : String(error),
+                    });
                 });
             }
         }
