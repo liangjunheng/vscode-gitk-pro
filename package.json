@@ -2,7 +2,9 @@
   "name": "vscode-gitk",
   "displayName": "vscode-gitk",
   "description": "A gitk-style commit graph panel for VS Code",
-  "version": "0.0.1",
+  "version": "1.0.0",
+  "publisher": "liangjunheng",
+  "license": "MIT",
   "engines": {
     "vscode": "^1.80.0"
   },
