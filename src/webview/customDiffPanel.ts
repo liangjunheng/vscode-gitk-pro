@@ -191,10 +191,11 @@ export class CustomDiffPanel implements vscode.Disposable {
     const left = splitLines(original); const right = splitLines(modified); const rowsLeft = []; const rowsRight = []; let changeIndex = 0;
     function append(leftIndex, rightIndex, leftType, rightType, change, leftHtml, rightHtml) { rowsLeft.push({ value: leftIndex === undefined ? '' : left[leftIndex], number: leftIndex === undefined ? '' : leftIndex + 1, type: leftType, change: change, html: leftHtml }); rowsRight.push({ value: rightIndex === undefined ? '' : right[rightIndex], number: rightIndex === undefined ? '' : rightIndex + 1, type: rightType, change: change, html: rightHtml }); }
     function appendUnchanged(leftIndex, rightIndex, change) { if (left[leftIndex] === right[rightIndex]) { append(leftIndex, rightIndex, '', '', change); return; } const id = change === undefined ? changeIndex++ : change; const words = wordDiff(left[leftIndex], right[rightIndex]); append(leftIndex, rightIndex, 'modified-removed', 'modified-added', id, words.left, words.right); }
-    function appendChanged(removed, added, existingChange) { if (!removed.length && !added.length) return existingChange; const change = existingChange === undefined ? changeIndex++ : existingChange; const modifiedLineCount = Math.min(removed.length, added.length); for (let index = 0; index < modifiedLineCount; index++) { const words = wordDiff(left[removed[index]], right[added[index]]); append(removed[index], added[index], 'modified-removed', 'modified-added', change, words.left, words.right); }
-      // 纯删除和纯新增只使用整行差异色，不生成词级范围。
-      for (let index = modifiedLineCount; index < removed.length; index++) append(removed[index], undefined, 'removed', 'placeholder', change);
-      for (let index = modifiedLineCount; index < added.length; index++) append(undefined, added[index], 'placeholder', 'added', change);
+    function appendChanged(removed, added, existingChange) { if (!removed.length && !added.length) return existingChange; const change = existingChange === undefined ? changeIndex++ : existingChange;
+      // 仅等长替换 hunk 逐行配对为修改；不等长 hunk 保持纯删除与纯新增。
+      if (removed.length === added.length && removed.length > 0) { for (let index = 0; index < removed.length; index++) { const words = wordDiff(left[removed[index]], right[added[index]]); append(removed[index], added[index], 'modified-removed', 'modified-added', change, words.left, words.right); } return change; }
+      for (let index = 0; index < removed.length; index++) append(removed[index], undefined, 'removed', 'placeholder', change);
+      for (let index = 0; index < added.length; index++) append(undefined, added[index], 'placeholder', 'added', change);
       return change;
     }
     // Patience anchors match VS Code's preference for stable, low-noise line alignment.
