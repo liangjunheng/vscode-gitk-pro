@@ -127,7 +127,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 selectedPath: s.selectedPath,
                 selectedCommit: s.currentHash ? {
                     hash: s.currentHash,
-                    repositoryPath: s.currentRepositoryPath ?? '',
+                    repositoryPath: s.currentHash === 'changes' || s.currentHash === 'staged'
+                        ? ''
+                        : (s.currentRepositoryPath ?? ''),
                 } : null,
                 isLoading: s.isLoading,
                 loadingMessage: s.loadingMessage,
