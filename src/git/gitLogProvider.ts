@@ -409,41 +409,88 @@ export async function getCurrentGitHeadHash(rootUri: vscode.Uri, signal?: AbortS
     return hash || undefined;
 }
 
+export interface GitSyncResult {
+    headChanged: boolean;
+    submodulesNeedUpdate: boolean;
+    submoduleTopologyChanged: boolean;
+}
+
+interface GitlinkChange {
+    status: string;
+    path: string;
+}
+
+async function getGitlinkChanges(rootUri: vscode.Uri, beforeHead: string, afterHead: string): Promise<GitlinkChange[]> {
+    const output = await runGitCommand(rootUri, [
+        'diff', '--raw', '-z', '--no-abbrev', '--no-renames', beforeHead, afterHead, '--',
+    ]);
+    const fields = output.split('\0');
+    const changes: GitlinkChange[] = [];
+    for (let index = 0; index + 1 < fields.length; index += 2) {
+        const header = fields[index];
+        const path = fields[index + 1];
+        const match = /^:(\d{6}) (\d{6}) [0-9a-f]+ [0-9a-f]+ ([A-Z])$/.exec(header);
+        if (match && path && (match[1] === '160000' || match[2] === '160000')) {
+            changes.push({ status: match[3], path });
+        }
+    }
+    return changes;
+}
+
 export async function runGitSync(
     rootUri: vscode.Uri,
     action: 'fetch' | 'pull' | 'push',
-    pullSubmodules = false,
     onProgress?: (message: string) => void,
-): Promise<void> {
+): Promise<GitSyncResult> {
     if (action === 'fetch') {
-        onProgress?.('Fetching all remotes and pruning stale references...');
+        onProgress?.('正在获取所有远程仓库，并清理过期引用...');
         await runGitCommand(rootUri, ['fetch', '--all', '--prune', '--recurse-submodules=on-demand']);
 
         const repositories = await collectSubmoduleRepositories([{ rootPath: rootUri.fsPath }]);
         const submodules = repositories.slice(1);
         for (let index = 0; index < submodules.length; index++) {
             const submodule = submodules[index];
-            onProgress?.(`Fetching submodule ${index + 1}/${submodules.length}: ${submodule.rootPath}`);
+            onProgress?.(`正在获取 Submodule 模块（${index + 1}/${submodules.length}）：${submodule.rootPath}`);
             await runGitCommand(vscode.Uri.file(submodule.rootPath), ['fetch', '--all', '--prune']);
-            onProgress?.(`Completed submodule ${index + 1}/${submodules.length}: ${submodule.rootPath}`);
+            onProgress?.(`已完成 Submodule 模块（${index + 1}/${submodules.length}）：${submodule.rootPath}`);
         }
-    } else if (action === 'pull') {
-        onProgress?.(pullSubmodules ? 'Pulling changes and submodule references...' : 'Pulling changes...');
-        await runGitCommand(rootUri, pullSubmodules ? ['pull', '--recurse-submodules'] : ['pull']);
-        if (pullSubmodules) {
-            onProgress?.('Initializing and updating submodules recursively...');
-            await runGitCommand(rootUri, ['submodule', 'update', '--init', '--recursive']);
-            const status = await runGitCommand(rootUri, ['submodule', 'status', '--recursive']);
-            for (const line of status.split(/\r?\n/)) {
-                const match = /^[ +\-U]?\S+\s+(.+?)(?:\s+\(|$)/.exec(line);
-                if (match) {
-                    onProgress?.(`Completed submodule: ${match[1]}`);
-                }
-            }
+        return { headChanged: false, submodulesNeedUpdate: false, submoduleTopologyChanged: false };
+    }
+
+    if (action === 'pull') {
+        const beforeHead = await getCurrentGitHeadHash(rootUri);
+        onProgress?.('正在拉取远程代码...');
+        await runGitCommand(rootUri, ['pull']);
+        const afterHead = await getCurrentGitHeadHash(rootUri);
+        if (!beforeHead || !afterHead || beforeHead === afterHead) {
+            return { headChanged: false, submodulesNeedUpdate: false, submoduleTopologyChanged: false };
         }
-    } else {
-        onProgress?.('Pushing changes...');
-        await runGitCommand(rootUri, ['push']);
+
+        const gitlinkChanges = await getGitlinkChanges(rootUri, beforeHead, afterHead);
+        return {
+            headChanged: true,
+            submodulesNeedUpdate: gitlinkChanges.some(change => change.status !== 'D'),
+            submoduleTopologyChanged: gitlinkChanges.some(change => change.status === 'A' || change.status === 'D'),
+        };
+    }
+
+    onProgress?.('正在推送本地提交...');
+    await runGitCommand(rootUri, ['push']);
+    return { headChanged: false, submodulesNeedUpdate: false, submoduleTopologyChanged: false };
+}
+
+export async function updateGitSubmodules(
+    rootUri: vscode.Uri,
+    onProgress?: (message: string) => void,
+): Promise<void> {
+    onProgress?.('正在递归初始化并更新 Submodule 模块...');
+    await runGitCommand(rootUri, ['submodule', 'update', '--init', '--recursive']);
+    const status = await runGitCommand(rootUri, ['submodule', 'status', '--recursive']);
+    for (const line of status.split(/\r?\n/)) {
+        const match = /^[ +\-U]?\S+\s+(.+?)(?:\s+\(|$)/.exec(line);
+        if (match) {
+            onProgress?.(`已完成 Submodule 模块：${match[1]}`);
+        }
     }
 }
 

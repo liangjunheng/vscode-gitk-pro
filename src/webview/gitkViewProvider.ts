@@ -149,7 +149,17 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.diffReader = new DiffReader();
         this.gitActions = new GitActionRunner(
             repositoryPath => this.getRepoRootUri(repositoryPath),
-            () => this.refresh(),
+            (_rootUri, reloadSelectors = true, refreshOnlyWhenCurrentBranchSelected?: boolean) => {
+                if (refreshOnlyWhenCurrentBranchSelected !== undefined) {
+                    const currentBranch = this.branches.find(branch => branch.kind === 'current');
+                    if (!refreshOnlyWhenCurrentBranchSelected
+                        || !currentBranch
+                        || !this.selectedBranches.includes(currentBranch.name)) {
+                        return Promise.resolve();
+                    }
+                }
+                return this.refresh(reloadSelectors);
+            },
         );
         context.subscriptions.push(
             this.onDidChangeDiffAvailabilityEmitter,
@@ -377,7 +387,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.updateViewVisible();
         view.webview.options = {
             enableScripts: true,
-            localResourceRoots: [],
+            localResourceRoots: [
+                vscode.Uri.joinPath(this.context.extensionUri, 'node_modules', '@vscode', 'codicons', 'dist'),
+            ],
         };
         view.webview.html = this.getHtml();
         // Store 订阅: 数据驱动推送到 Webview
@@ -989,11 +1001,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             case 'loadMoreCommits':
                 void this.loadMoreCommits();
                 break;
-            case 'gitSync':
-                if (effect.action === 'fetch' || effect.action === 'pull' || effect.action === 'push') {
-                    this.gitActions.syncRepository(effect.action);
+            case 'gitSync': {
+                const repositoryPath = this.selectedRepositoryPath;
+                if (repositoryPath && (effect.action === 'fetch' || effect.action === 'pull' || effect.action === 'push')) {
+                    void this.gitActions.syncRepository(effect.action, repositoryPath);
                 }
                 break;
+            }
             case 'commitAction':
                 if (typeof effect.action === 'string' && typeof effect.hash === 'string' && typeof effect.repositoryPath === 'string') {
                     this.gitActions.runCommitAction(effect.action, effect.hash, effect.repositoryPath);
@@ -1155,12 +1169,16 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     // 生成 webview HTML (div flex 布局, 替代 table)
     private getHtml(): string {
+        const codiconCssUri = this.view?.webview.asWebviewUri(
+            vscode.Uri.joinPath(this.context.extensionUri, 'node_modules', '@vscode', 'codicons', 'dist', 'codicon.css'),
+        );
         return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Gitk</title>
+<link rel="stylesheet" href="${codiconCssUri}">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; margin: 0; overflow: hidden; }
@@ -1214,6 +1232,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .locator-icon { flex: 0 0 auto; width: 24px; height: 24px; }
   .toolbar-icon { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; color: var(--vscode-icon-foreground); background: transparent; }
   .toolbar-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .toolbar-icon .codicon { font-size: 16px; line-height: 16px; }
   .toolbar-icon:hover { background: var(--vscode-toolbar-hoverBackground); }
   .toolbar-icon.refresh-unchanged { animation: refresh-unchanged 550ms ease-out; }
   @keyframes refresh-unchanged { 0%, 100% { color: var(--vscode-icon-foreground); } 45% { color: var(--vscode-descriptionForeground); } }
@@ -1324,9 +1343,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     <div class="selector" id="searchBox"><svg id="searchIcon" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 .96-.96l3.04 3.03-1.06 1.06-2.94-3.13z"/></svg><input type="text" id="searchInput" placeholder="搜索提交..." title="输入关键词搜索, 支持作者/邮箱/消息/Hash/日期, 多个关键词用空格隔开, 回车开始搜索"><button id="searchClear" title="清除搜索">&times;</button></div>
     <span class="count" id="countLabel"></span>
     <div id="toolbarActions">
-      <button class="toolbar-icon" id="fetchBtn" title="Fetch" aria-label="Fetch"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8a5 5 0 0 1 9-3M12 2v3H9M8 5v7M5.5 9.5 8 12l2.5-2.5"/></svg></button>
-      <button class="toolbar-icon" id="pullBtn" title="Pull" aria-label="Pull"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3v8m0 0-2-2m2 2 2-2M12 13V5m0 0-2 2m2-2 2 2M4 5h5a3 3 0 0 1 3 3"/></svg></button>
-      <button class="toolbar-icon" id="pushBtn" title="Push" aria-label="Push"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 13V5m0 0-2-2m2-2 2 2M12 3v8m0 0-2-2m2 2 2-2M12 11H7a3 3 0 0 1-3 3"/></svg></button>
+      <button class="toolbar-icon" id="fetchBtn" title="Fetch" aria-label="Fetch"><span class="codicon codicon-repo-fetch" aria-hidden="true"></span></button>
+      <button class="toolbar-icon" id="pullBtn" title="Pull" aria-label="Pull"><span class="codicon codicon-repo-pull" aria-hidden="true"></span></button>
+      <button class="toolbar-icon" id="pushBtn" title="Push" aria-label="Push"><span class="codicon codicon-repo-push" aria-hidden="true"></span></button>
     </div>
   </div>
   <main id="workspace">

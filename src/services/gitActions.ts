@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import {
     runGitCommand,
     runGitSync,
+    updateGitSubmodules,
     invalidateGitRefsCache,
     invalidateGitRepositoriesCache,
 } from '../git/gitLogProvider';
@@ -15,7 +16,11 @@ export class GitActionRunner {
     constructor(
         private readonly getRootUri: (repositoryPath?: string) => vscode.Uri | undefined,
         /** 仓库变更后的回调 (通常触发刷新) */
-        private readonly onMutated: (rootUri: vscode.Uri) => Promise<void>,
+        private readonly onMutated: (
+            rootUri: vscode.Uri,
+            reloadSelectors?: boolean,
+            refreshOnlyWhenCurrentBranchSelected?: boolean,
+        ) => Promise<void>,
     ) {}
 
     async runCommitAction(action: string, hash: string, repositoryPath: string): Promise<void> {
@@ -84,46 +89,45 @@ export class GitActionRunner {
         }
     }
 
-    async syncRepository(action: 'fetch' | 'pull' | 'push'): Promise<void> {
-        const rootUri = this.getRootUri();
+    async syncRepository(action: 'fetch' | 'pull' | 'push', repositoryPath: string): Promise<void> {
+        const rootUri = this.getRootUri(repositoryPath);
         if (!rootUri) { return; }
         if (this.syncInProgress) {
-            void vscode.window.showWarningMessage('A Git sync operation is already running.');
+            void vscode.window.showWarningMessage('已有 Git 同步操作正在进行，请稍候。');
             return;
         }
 
         this.syncInProgress = true;
         try {
-            let pullSubmodules = false;
-            if (action === 'pull') {
-                const choice = await vscode.window.showInformationMessage(
-                    'Pull submodules as well?',
-                    'Yes',
-                    'No',
-                );
-                if (!choice) { return; }
-                pullSubmodules = choice === 'Yes';
-            }
-
-            const operation = action[0].toUpperCase() + action.slice(1);
+            const operation = action === 'fetch' ? '获取' : action === 'pull' ? '拉取' : '推送';
             await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
                 title: `Git ${operation}`,
                 cancellable: false,
             }, async progress => {
                 try {
-                    progress.report({ message: 'Running Git command...' });
-                    await runGitSync(rootUri, action, pullSubmodules, message => progress.report({ message }));
-                    progress.report({ message: 'Refreshing repository...' });
-                    if (action === 'pull' && pullSubmodules) {
+                    progress.report({ message: '正在执行 Git 命令...' });
+                    const result = await runGitSync(rootUri, action, message => progress.report({ message }));
+                    if (action === 'pull' && result.submodulesNeedUpdate) {
+                        await updateGitSubmodules(rootUri, message => progress.report({ message }));
+                    }
+                    if (result.submoduleTopologyChanged) {
+                        progress.report({ message: '检测到 Submodule 模块新增或删除，正在刷新仓库信息...' });
                         invalidateGitRepositoriesCache();
+                    } else {
+                        progress.report({ message: '正在刷新提交记录...' });
                     }
                     invalidateGitRefsCache(rootUri);
-                    await this.onMutated(rootUri);
-                    void vscode.window.showInformationMessage(`Git ${operation} completed.`);
+                    const shouldRefreshHistory = action === 'push' || (action === 'pull' && result.headChanged);
+                    await this.onMutated(
+                        rootUri,
+                        result.submoduleTopologyChanged,
+                        shouldRefreshHistory,
+                    );
+                    void vscode.window.showInformationMessage(`Git ${operation}操作已完成。`);
                 } catch (error) {
                     const reason = error instanceof Error ? error.message : String(error);
-                    void vscode.window.showErrorMessage(`Git ${operation} failed: ${reason}`);
+                    void vscode.window.showErrorMessage(`Git ${operation}操作失败：${reason}`);
                 }
             });
         } finally {
