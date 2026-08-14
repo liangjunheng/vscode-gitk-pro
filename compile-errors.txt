@@ -1,2 +1,0 @@
-No compilation errors.
-npm run compile (tsc -p ./) exits with code 0.
