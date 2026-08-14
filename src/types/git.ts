@@ -15,16 +15,15 @@ export interface GitCommit {
     body?: string;
     refs: string[];
     lane?: number;
-    lanes?: LaneInfo[];
+    inputSwimlanes?: GraphLane[];
+    outputSwimlanes?: GraphLane[];
     laneColor?: string;
     laneStartsHere?: boolean;
 }
 
-export interface LaneInfo {
-    fromLane: number;
-    toLane: number;
+export interface GraphLane {
+    hash: string;
     color: string;
-    isCommit: boolean;
 }
 
 export type FileStatus = 'A' | 'M' | 'D' | 'R' | 'C' | 'T' | 'U' | '?';

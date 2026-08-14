@@ -1283,7 +1283,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   @keyframes files-loading-spin { to { transform: rotate(360deg); } }
   .commit-header, .commit-row { display: grid; grid-template-columns: var(--graph-width) var(--message-width) var(--author-width) var(--hash-width) var(--date-width); align-items: center; min-width: max-content; }
   .commit-header { position: sticky; top: 0; z-index: 1; height: 30px; margin: 0; padding: 0 10px; color: var(--vscode-tab-activeForeground); background: var(--vscode-editorWidget-background, var(--vscode-tab-activeBackground)); border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); box-sizing: border-box; font-weight: 600; }
-  .commit-row { min-height: 26px; height: auto; cursor: pointer; border-bottom: 1px solid transparent; }
+  .commit-row { min-height: 26px; height: auto; box-sizing: border-box; cursor: pointer; }
   .commit-row:hover { background: var(--vscode-list-hoverBackground); }
   .commit-row.expanded .col-graph { grid-row: span 2; }
   .commit-description { display: none; grid-column: 2 / -1; grid-row: 2; padding: 0 5px 7px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vscode-descriptionForeground); line-height: 17px; cursor: text; }
@@ -1394,14 +1394,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   let panelResizing = null;
 
     const ROW_H = 26;
-    const LANE_W = 20;
+    const LANE_W = 12;
     const expandedCommits = new Set();
   const DOT_R = 5;
   let graphViewportWidth = 0;
   // 增量渲染状态
   let currentMaxLane = 0;
   let currentGraphW = 280;
-  const REF_GAP = 3 * 7;
+  const REF_GAP = 10;
 
   window.addEventListener('focus', function() { vscode.postMessage({ type: 'focus' }); });
   window.addEventListener('blur', function() { closeDropdowns(); vscode.postMessage({ type: 'blur' }); });
@@ -2074,13 +2074,18 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  // 标签和轨道共用官方泳道索引，确保横线始终从当前提交点向右连接。
+  function rowMaxSwimlane(c) {
+    var inputCount = (c.inputSwimlanes || []).length;
+    var outputCount = (c.outputSwimlanes || []).length;
+    var inputIndex = (c.inputSwimlanes || []).findIndex(function(lane) { return lane.hash === c.hash; });
+    var circleIndex = inputIndex >= 0 ? inputIndex : inputCount;
+    return Math.max(circleIndex, inputCount - 1, outputCount - 1, 0);
+  }
+
   // 全局: 计算行 ref 列起始 X
   function rowRefX(c) {
-    var rowMaxLane = c.lane || 0;
-    (c.lanes || []).forEach(function(l) {
-      rowMaxLane = Math.max(rowMaxLane, l.fromLane, l.toLane);
-    });
-    return (rowMaxLane + 1) * LANE_W + 5 + REF_GAP;
+    return (rowMaxSwimlane(c) + 1) * LANE_W + 5 + REF_GAP;
   }
 
   // 构建单行提交 HTML
@@ -2205,17 +2210,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  // 计算 maxLane (从 startIndex 起, 与 currentMaxLane 取大)
+  // 计算官方输入/输出泳道的最大列索引。
   function calcMaxLane(startIndex) {
     var maxLane = startIndex > 0 ? currentMaxLane : 0;
     for (var i = startIndex; i < commits.length; i++) {
-      var c = commits[i];
-      if (c.lane > maxLane) maxLane = c.lane;
-      if (c.lanes) for (var j = 0; j < c.lanes.length; j++) {
-        var l = c.lanes[j];
-        if (l.fromLane > maxLane) maxLane = l.fromLane;
-        if (l.toLane > maxLane) maxLane = l.toLane;
-      }
+      maxLane = Math.max(maxLane, rowMaxSwimlane(commits[i]));
     }
     return maxLane;
   }
@@ -2328,37 +2327,79 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       && expandedCommits.has(c.repositoryPath + ':' + c.hash);
     const svgH = expanded ? svg.closest('.commit-row').getBoundingClientRect().height : rowH;
     const y = rowH / 2;
-    const detailsBottom = Math.max(rowH, svgH - 1);
+    const detailsBottom = Math.max(rowH, svgH);
     svg.setAttribute('height', String(svgH));
     svg.setAttribute('viewBox', '0 0 ' + graphW + ' ' + svgH);
     let content = '';
 
-    const cx = c.lane === undefined ? undefined : c.lane * laneW + laneW / 2 + 5;
-    const commitColor = c.laneColor || (c.lanes && c.lanes.length > 0 ? c.lanes[0].color : '#888');
-    if (c.lanes) {
-      for (const l of c.lanes) {
-        if (l.isCommit) { continue; }
-        const x1 = l.fromLane * laneW + laneW / 2 + 5;
-        const x2 = l.toLane * laneW + laneW / 2 + 5;
-        if (l.fromLane === c.lane && cx !== undefined) {
-          if (x1 === x2) {
-            content += '<line x1="' + cx + '" y1="' + y + '" x2="' + x2 + '" y2="' + detailsBottom + '" stroke="' + l.color + '" stroke-width="1.5"/>';
-          } else {
-            const curveHeight = detailsBottom - y;
-            content += '<path d="M' + cx + ',' + y + ' C' + cx + ',' + (y + curveHeight * 0.35) + ' ' + x2 + ',' + (y + curveHeight * 0.65) + ' ' + x2 + ',' + detailsBottom + '" fill="none" stroke="' + l.color + '" stroke-width="1.5"/>';
-          }
-        } else if (x1 === x2) {
-          content += '<line x1="' + x1 + '" y1="0" x2="' + x2 + '" y2="' + detailsBottom + '" stroke="' + l.color + '" stroke-width="1.5"/>';
+    const inputSwimlanes = c.inputSwimlanes || [];
+    const outputSwimlanes = c.outputSwimlanes || [];
+    const inputIndex = inputSwimlanes.findIndex(function(lane) { return lane.hash === c.hash; });
+    const circleIndex = inputIndex >= 0 ? inputIndex : inputSwimlanes.length;
+    const cx = circleIndex * laneW + laneW / 2 + 5;
+    const commitColor = (outputSwimlanes[circleIndex] || inputSwimlanes[circleIndex] || {}).color || c.laneColor || '#888';
+    const laneX = function(index) { return index * laneW + laneW / 2 + 5; };
+
+    let outputIndex = 0;
+
+    // 主 lane 替换为第一父时才消耗输出槽位；同 hash 的其余 lane 在当前节点汇入。
+    for (let index = 0; index < inputSwimlanes.length; index++) {
+      const inputLane = inputSwimlanes[index];
+      if (inputLane.hash === c.hash) {
+        if (index === inputIndex) {
+          if (c.parents.length > 0) { outputIndex++; }
         } else {
-          content += '<path d="M' + x1 + ',0 C' + x1 + ',' + (detailsBottom * 0.45) + ' ' + x2 + ',' + (detailsBottom * 0.55) + ' ' + x2 + ',' + detailsBottom + '" fill="none" stroke="' + l.color + '" stroke-width="1.5"/>';
+          const x1 = laneX(index);
+          const curveHeight = y;
+          content += '<path d="M ' + x1 + ' 0 C ' + x1 + ' ' + (curveHeight * 0.45) + ' ' + cx + ' ' + (curveHeight * 0.75) + ' ' + cx + ' ' + y + '" fill="none" stroke="' + inputLane.color + '" stroke-width="1.5" stroke-linecap="round"/>';
         }
+        continue;
+      }
+      if (outputIndex >= outputSwimlanes.length || inputLane.hash !== outputSwimlanes[outputIndex].hash) {
+        continue;
+      }
+      const x1 = laneX(index);
+      const x2 = laneX(outputIndex);
+      if (index === outputIndex) {
+        content += '<path d="M ' + x1 + ' 0 V ' + detailsBottom + '" fill="none" stroke="' + inputLane.color + '" stroke-width="1.5" stroke-linecap="round"/>';
+      } else {
+        const radius = 5;
+        const direction = x2 > x1 ? 1 : -1;
+        content += '<path d="M ' + x1 + ' 0 V ' + (y - radius) + ' A ' + radius + ' ' + radius + ' 0 0 ' + (direction > 0 ? 1 : 0) + ' ' + (x1 + direction * radius) + ' ' + y + ' H ' + (x2 - direction * radius) + ' A ' + radius + ' ' + radius + ' 0 0 ' + (direction > 0 ? 0 : 1) + ' ' + x2 + ' ' + (y + radius) + ' V ' + detailsBottom + '" fill="none" stroke="' + inputLane.color + '" stroke-width="1.5" stroke-linecap="round"/>';
+      }
+      outputIndex++;
+    }
+
+    // 当前节点到父提交的边：已在输入泳道的节点只连后续父；新分支首节点连全部父。
+    // 后续父可能与既有轨道同 hash，按 VS Code 连接最后追加的输出泳道。
+    const firstConnectedParent = inputIndex >= 0 ? 1 : 0;
+    for (let parentIndex = firstConnectedParent; parentIndex < c.parents.length; parentIndex++) {
+      let parentOutputIndex = -1;
+      for (let index = outputSwimlanes.length - 1; index >= 0; index--) {
+        if (outputSwimlanes[index].hash === c.parents[parentIndex]) {
+          parentOutputIndex = index;
+          break;
+        }
+      }
+      if (parentOutputIndex < 0) { continue; }
+      const parentX = laneX(parentOutputIndex);
+      const color = inputIndex < 0 ? commitColor : outputSwimlanes[parentOutputIndex].color;
+      if (parentX === cx) {
+        content += '<path d="M ' + cx + ' ' + y + ' V ' + detailsBottom + '" fill="none" stroke="' + color + '" stroke-width="1.5" stroke-linecap="round"/>';
+      } else {
+        const curveHeight = detailsBottom - y;
+        content += '<path d="M ' + cx + ' ' + y + ' C ' + cx + ' ' + (y + curveHeight * 0.35) + ' ' + parentX + ' ' + (y + curveHeight * 0.65) + ' ' + parentX + ' ' + detailsBottom + '" fill="none" stroke="' + color + '" stroke-width="1.5" stroke-linecap="round"/>';
+      }
+    }
+
+    if (inputIndex >= 0) {
+      content += '<path d="M ' + cx + ' 0 V ' + y + '" fill="none" stroke="' + inputSwimlanes[inputIndex].color + '" stroke-width="1.5" stroke-linecap="round"/>';
+      if (c.parents.length > 0) {
+        content += '<path d="M ' + cx + ' ' + y + ' V ' + detailsBottom + '" fill="none" stroke="' + commitColor + '" stroke-width="1.5" stroke-linecap="round"/>';
       }
     }
 
     if (cx !== undefined) {
-      if (!c.laneStartsHere) {
-        content += '<line x1="' + cx + '" y1="0" x2="' + cx + '" y2="' + y + '" stroke="' + commitColor + '" stroke-width="1.5"/>';
-      }
       if (c.refs && c.refs.length > 0) {
         const lineStart = cx + dotR;
         let refX = refColumnX;
@@ -2366,7 +2407,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
           const label = ref.length > 18 ? ref.slice(0, 17) + '…' : ref;
           return { ref: ref, label: label, width: Math.max(30, label.length * 7 + 12) };
         });
-        content += '<line x1="' + lineStart + '" y1="' + y + '" x2="' + (refX - 5) + '" y2="' + y + '" stroke="' + commitColor + '" stroke-width="1.5"/>';
+        content += '<line x1="' + lineStart + '" y1="' + y + '" x2="' + refX + '" y2="' + y + '" stroke="' + commitColor + '" stroke-width="1.5"/>';
         for (const item of labels) {
           content += '<rect x="' + refX + '" y="4" width="' + item.width + '" height="18" rx="5" ry="5" fill="' + commitColor + '"/>';
           content += '<text class="graph-ref" x="' + (refX + 6) + '" y="' + y + '" fill="var(--vscode-editor-background)" title="' + escapeAttr(item.ref) + '">' + escapeHtml(item.label) + '</text>';
@@ -2374,8 +2415,16 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
       }
       const isHead = c.refs && c.refs.some(function(r) { return r === 'HEAD'; });
+      const isJoin = (c.parents && c.parents.length > 1) || inputSwimlanes.filter(function(lane) { return lane.hash === c.hash; }).length > 1;
       const r = isHead ? dotR + 2 : dotR;
-      content += '<circle class="dot" cx="' + cx + '" cy="' + y + '" r="' + r + '" fill="' + commitColor + '"/>';
+      if (isJoin) {
+        const outerR = r + 1;
+        const innerR = Math.max(2, r - 3);
+        content += '<circle class="join-dot" cx="' + cx + '" cy="' + y + '" r="' + outerR + '" fill="var(--vscode-editor-background)" stroke="' + commitColor + '" stroke-width="1.5"/>';
+        content += '<circle class="join-dot" cx="' + cx + '" cy="' + y + '" r="' + innerR + '" fill="' + commitColor + '" stroke="none"/>';
+      } else {
+        content += '<circle class="dot" cx="' + cx + '" cy="' + y + '" r="' + r + '" fill="' + commitColor + '"/>';
+      }
       if (isHead) {
         content += '<circle class="dot" cx="' + cx + '" cy="' + y + '" r="' + (r + 3) + '" fill="none" stroke="' + commitColor + '" stroke-width="1.5"/>';
       }

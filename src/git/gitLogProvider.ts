@@ -3,7 +3,7 @@ import { execFile } from 'child_process';
 import * as path from 'path';
 import { promisify } from 'util';
 // 类型定义统一从 types/ 导入, 消除重复
-export type { ChangeSetMode, CommitFile, FileStatus, GitBranchOption, GitCommit, GitRepositoryOption, GitRepositoryState, LaneInfo, WorkingTreeChanges } from '../types';
+export type { ChangeSetMode, CommitFile, FileStatus, GitBranchOption, GitCommit, GitRepositoryOption, GitRepositoryState, WorkingTreeChanges } from '../types';
 import type { ChangeSetMode, CommitFile, FileStatus, GitBranchOption, GitCommit, GitRepositoryOption, GitRepositoryState, WorkingTreeChanges } from '../types';
 
 const execFileAsync = promisify(execFile);
@@ -594,72 +594,50 @@ export async function searchCommits(rootUri: vscode.Uri, keywords: string[], ref
     });
 }
 
-// 图形布局：每行完整描述顶部车道到下一行车道的转换。
+// 图形布局：按 VS Code SCM History 的 inputSwimlanes → outputSwimlanes 状态机转换。
 export function buildGraph(commits: GitCommit[]): GitCommit[] {
-    interface ActiveLane { hash: string; color: string; }
-    const visibleHashes = new Set<string>();
-    for (let i = 0; i < commits.length; i++) {
-        const commit = commits[i];
-        visibleHashes.add(commit.hash);
-        for (const parent of commit.parents) {
-            visibleHashes.add(parent);
-        }
-    }
-    let activeLanes: Array<ActiveLane | undefined> = [];
+    interface Swimlane { hash: string; color: string; }
+    let outputSwimlanes: Swimlane[] = [];
     let nextColor = 0;
-    const newLane = (hash: string, preferredColor?: string): ActiveLane => ({
+    const createSwimlane = (hash: string, color?: string): Swimlane => ({
         hash,
-        color: preferredColor || LANE_COLORS[nextColor++ % LANE_COLORS.length],
+        color: color ?? LANE_COLORS[nextColor++ % LANE_COLORS.length],
     });
-    const findEmptyLane = (lanes: Array<ActiveLane | undefined>): number => lanes.findIndex(lane => !lane);
 
-    for (let i = 0; i < commits.length; i++) {
-        const c = commits[i];
-        let myLane = activeLanes.findIndex(lane => lane?.hash === c.hash);
-        const laneStartsHere = myLane < 0;
-        if (myLane < 0) {
-            myLane = findEmptyLane(activeLanes);
-            if (myLane < 0) { myLane = activeLanes.length; }
-            activeLanes[myLane] = newLane(c.hash);
-        }
-        const lanesAtTop = activeLanes.slice();
-        const commitLane = lanesAtTop[myLane]!;
-        const visibleParents = c.parents.filter(parent => visibleHashes.has(parent));
-        const binaryParents = visibleParents.slice(0, 2);
-        const nextLanes = lanesAtTop.slice();
-        nextLanes[myLane] = undefined;
-        const parentTargets: Array<{ hash: string; lane: number; color: string }> = [];
+    for (const commit of commits) {
+        const inputSwimlanes = outputSwimlanes.map(lane => ({ ...lane }));
+        const inputIndex = inputSwimlanes.findIndex(lane => lane.hash === commit.hash);
+        const lane = inputIndex >= 0 ? inputIndex : inputSwimlanes.length;
+        const nextSwimlanes: Swimlane[] = [];
+        let firstParentAdded = false;
 
-        for (let index = 0; index < binaryParents.length; index++) {
-            const parent = binaryParents[index];
-            let targetLane = nextLanes.findIndex(lane => lane?.hash === parent);
-            if (targetLane < 0) {
-                targetLane = index === 0 ? myLane : findEmptyLane(nextLanes);
-                if (targetLane < 0) { targetLane = nextLanes.length; }
-                nextLanes[targetLane] = newLane(parent, index === 0 ? commitLane.color : undefined);
+        // 首个命中 lane 是当前提交主轨；同 hash 的其余 lane 在此汇入，不再向下延续。
+        for (let index = 0; index < inputSwimlanes.length; index++) {
+            const inputLane = inputSwimlanes[index];
+            if (inputLane.hash === commit.hash) {
+                if (index === inputIndex && commit.parents.length > 0) {
+                    nextSwimlanes.push(createSwimlane(commit.parents[0], inputLane.color));
+                    firstParentAdded = true;
+                }
+                continue;
             }
-            parentTargets.push({ hash: parent, lane: targetLane, color: nextLanes[targetLane]!.color });
+            nextSwimlanes.push({ ...inputLane });
         }
 
-        c.lane = myLane;
-        c.laneColor = commitLane.color;
-        c.laneStartsHere = laneStartsHere;
-        c.lanes = parentTargets.map(target => ({
-            fromLane: myLane,
-            toLane: target.lane,
-            color: target.color,
-            isCommit: false,
-        }));
-        for (let lane = 0; lane < lanesAtTop.length; lane++) {
-            const topLane = lanesAtTop[lane];
-            if (!topLane || lane === myLane) { continue; }
-            const targetLane = nextLanes.findIndex(candidate => candidate?.hash === topLane.hash);
-            if (targetLane >= 0) {
-                c.lanes.push({ fromLane: lane, toLane: targetLane, color: topLane.color, isCommit: false });
-            }
+        // 与 VS Code 一致：第一父原位替换当前轨道；其他父始终追加独立泳道。
+        // 即使父提交已在别的泳道中也不能去重，否则 merge 与多轮分支的起点会丢失。
+        for (let index = firstParentAdded ? 1 : 0; index < commit.parents.length; index++) {
+            nextSwimlanes.push(createSwimlane(commit.parents[index]));
         }
-        activeLanes = nextLanes;
-        while (activeLanes.length > 0 && !activeLanes[activeLanes.length - 1]) { activeLanes.pop(); }
+
+        commit.lane = lane;
+        commit.laneColor = inputIndex >= 0
+            ? inputSwimlanes[inputIndex].color
+            : nextSwimlanes[lane]?.color ?? LANE_COLORS[nextColor % LANE_COLORS.length];
+        commit.laneStartsHere = inputIndex < 0;
+        commit.inputSwimlanes = inputSwimlanes;
+        commit.outputSwimlanes = nextSwimlanes;
+        outputSwimlanes = nextSwimlanes;
     }
     return commits;
 }
