@@ -1,12 +1,13 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import type { ChangeSetMode, ChangedFile, CommitFile, GitBranchOption, GitBranchVirtualCommit, GitCommit, GitkIntent, GitRepositoryOption, RepositoryCommit } from '../types';
-import { getCommitFilesWithLineStats, getWorkingTreeChangePresence, getWorkingTreeChanges, buildGraph, getCurrentGitHeadHash, getGitBranches, getGitCommits, getGitRepositories, invalidateGitRefsCache, invalidateGitRepositoriesCache, searchCommits } from '../git/gitLogProvider';
+import { getCommitFilesWithLineStats, getFirstRepoPath, getGitRepositoryState, getWorkingTreeChangePresence, getWorkingTreeChanges, buildGraph, getCurrentGitBranch, getCurrentGitHeadHash, getGitBranches, getGitCommits, getGitRepositories, invalidateGitRefsCache, invalidateGitRepositoriesCache, searchCommits } from '../git/gitLogProvider';
 import { CustomDiffPanel } from './customDiffPanel';
 import { DiffReader } from '../git/diffReader';
 import { GitActionRunner } from '../services/gitActions';
 import { store, type StoreEffect } from '../state/store';
 
-const COMMIT_PAGE_SIZE = 100;
+const COMMIT_PAGE_SIZE = 50;
 const COMMIT_PAGE_REQUEST_SIZE = COMMIT_PAGE_SIZE + 1;
 const VIRTUAL_STAGED_HASH = 'staged';
 const VIRTUAL_CHANGES_HASH = 'changes';
@@ -35,6 +36,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private workingTreePresenceGeneration = 0;
     private workingTreePresenceRepositoryPath?: string;
     private searchGeneration = 0;
+    private lastLoadingProgress?: { phase: string; message: string; current: number; total: number };
+    private repositoryStateSignature?: string;
     private storeUnsubscribe?: () => void;
     private pushStatePending = false;
     private gitWatchDisposables: vscode.Disposable[] = [];
@@ -65,10 +68,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private set currentHash(value: string | undefined) { store.setState({ currentHash: value }); }
     private get currentChangeSet(): ChangeSetMode { return store.getState().currentChangeSet; }
     private set currentChangeSet(value: ChangeSetMode) { store.setState({ currentChangeSet: value }); }
-    private get stagedFiles(): CommitFile[] { return store.getState().stagedFiles; }
-    private set stagedFiles(value: CommitFile[]) { store.setState({ stagedFiles: value }); }
-    private get changeFiles(): CommitFile[] { return store.getState().changeFiles; }
-    private set changeFiles(value: CommitFile[]) { store.setState({ changeFiles: value }); }
     private get displayMode(): 'tree' | 'flat' { return store.getState().displayMode; }
     private set displayMode(value: 'tree' | 'flat') { store.setState({ displayMode: value }); }
     private get selectedPath(): string | undefined { return store.getState().selectedPath; }
@@ -105,12 +104,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (!this.view) { return; }
         const s = store.getState();
         const files = s.files;
+        const currentVirtualCommits = s.branches.find(branch => branch.kind === 'current')?.virtualCommits ?? [];
+        const stagedCount = currentVirtualCommits.find(commit => commit.mode === 'staged')?.enabled ? 1 : 0;
+        const changesCount = currentVirtualCommits.find(commit => commit.mode === 'changes')?.enabled ? 1 : 0;
         this.view.webview.postMessage({
             type: 'stateUpdate',
             state: {
                 commits: s.commits,
-                stagedCount: s.stagedFiles.length,
-                changesCount: s.changeFiles.length,
+                stagedCount,
+                changesCount,
                 hasMoreCommits: s.hasMoreCommits,
                 isLoadingMoreCommits: s.isLoadingMoreCommits,
                 commitPageError: s.commitPageError,
@@ -205,6 +207,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.selectedPath = undefined;
             this.files = [];
             this.filesLoading = true;
+            store.setState({ diffProgress: { completed: 0, total: 0 } });
         });
         if (generation !== this.commitFilesGeneration) { return; }
         const abortController = new AbortController();
@@ -222,6 +225,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     private async selectWorkingTreeChanges(mode: Extract<ChangeSetMode, 'staged' | 'changes'>): Promise<void> {
+        const currentBranch = this.branches.find(branch => branch.kind === 'current');
+        if (!currentBranch?.virtualCommits?.find(commit => commit.mode === mode)?.enabled) { return; }
         const generation = ++this.commitFilesGeneration;
         this.commitFilesAbortController?.abort();
         this.diffReader.stop();
@@ -232,6 +237,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.selectedPath = undefined;
             this.files = [];
             this.filesLoading = true;
+            store.setState({ diffProgress: { completed: 0, total: 0 } });
         });
         const rootUri = this.getRepoRootUri();
         if (!rootUri) {
@@ -248,8 +254,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const workingTreeChanges = await getWorkingTreeChanges(rootUri, abortController.signal);
             if (abortController.signal.aborted || generation !== this.commitFilesGeneration) { return; }
             store.batch(() => {
-                this.stagedFiles = workingTreeChanges.staged;
-                this.changeFiles = workingTreeChanges.changes;
                 this.files = mode === 'staged' ? workingTreeChanges.staged : workingTreeChanges.changes;
             });
             await this.completeChangedFilesSelection(generation, abortController.signal);
@@ -294,12 +298,28 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.loadMoreAbortController = undefined;
     }
 
-    private setLoading(value: boolean): void {
+    private setLoading(value: boolean, message?: string): void {
         if (this.isLoading !== value) {
             this.isLoading = value;
             if (!value) { this.loadingMessage = undefined; }
             this.onDidChangeDiffAvailabilityEmitter.fire();
         }
+        // 二次刷新沿用 setLoading 时也要带阶段文案，避免退回通用"加载中..."。
+        if (value && message) { this.loadingMessage = message; }
+        if (!value) { this.lastLoadingProgress = undefined; }
+    }
+
+    // 统一投递加载进度并记录，供 Webview 后接管时重播。
+    private postLoadingProgress(phase: string, message: string, current: number, total: number): void {
+        this.lastLoadingProgress = { phase, message, current, total };
+        this.loadingMessage = message;
+        this.view?.webview.postMessage({ type: 'loadingProgress', phase, message, current, total });
+    }
+
+    private republishLoadingProgress(): void {
+        const progress = this.lastLoadingProgress;
+        if (!progress) { return; }
+        this.view?.webview.postMessage({ type: 'loadingProgress', ...progress });
     }
 
     private updateMultiDiffVisibility(): void {
@@ -368,18 +388,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const currentBranch = this.branches.find(branch => branch.kind === 'current');
         if (!currentBranch) { return; }
         const currentVirtualCommits = currentBranch.virtualCommits ?? [];
-        const hasStaged = currentVirtualCommits.some(commit => commit.mode === 'staged');
-        const hasChanges = currentVirtualCommits.some(commit => commit.mode === 'changes');
-        if (hasStaged === presence.staged && hasChanges === presence.changes) { return; }
-        const stagedFiles = currentVirtualCommits.find(commit => commit.mode === 'staged')?.files ?? this.stagedFiles;
-        const changeFiles = currentVirtualCommits.find(commit => commit.mode === 'changes')?.files ?? this.changeFiles;
-        const virtualCommits: GitBranchVirtualCommit[] = [];
-        if (presence.changes) {
-            virtualCommits.push({ mode: 'changes', hash: VIRTUAL_CHANGES_HASH, label: 'Changes', files: changeFiles });
-        }
-        if (presence.staged) {
-            virtualCommits.push({ mode: 'staged', hash: VIRTUAL_STAGED_HASH, label: 'Staged Changes', files: stagedFiles });
-        }
+        const stagedEnabled = currentVirtualCommits.find(commit => commit.mode === 'staged')?.enabled;
+        const changesEnabled = currentVirtualCommits.find(commit => commit.mode === 'changes')?.enabled;
+        if (stagedEnabled === presence.staged && changesEnabled === presence.changes) { return; }
+        const virtualCommits: GitBranchVirtualCommit[] = [
+            { mode: 'changes', hash: VIRTUAL_CHANGES_HASH, label: 'Changes', enabled: presence.changes },
+            { mode: 'staged', hash: VIRTUAL_STAGED_HASH, label: 'Staged Changes', enabled: presence.staged },
+        ];
         this.branches = this.branches.map(branch => branch === currentBranch ? { ...branch, virtualCommits } : branch);
     }
 
@@ -435,6 +450,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 // 首次进入时后台数据已就绪，不会触发可见性事件，需主动显示 Diff。
                 this.updateMultiDiffVisibility();
                 this.updateWorkingTreePresencePolling();
+            } else if (this.refreshAbortController) {
+                // 后台首次加载仍在进行时只复用其进度，禁止 abort 后从头重启。
+                this.pushStateToWebview();
+                this.republishLoadingProgress();
             } else {
                 await this.refresh();
             }
@@ -498,17 +517,24 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         return generation === this.refreshGeneration;
     }
 
+    private hasSameSelection(preparedSelectors: {
+        selectedRepositoryPaths: string[];
+        selectedBranches: string[];
+    }): boolean {
+        const sameValues = (left: readonly string[], right: readonly string[]) => left.length === right.length
+            && left.every(value => right.includes(value));
+        return sameValues(this.selectedRepositoryPaths, preparedSelectors.selectedRepositoryPaths)
+            && sameValues(this.selectedBranches, preparedSelectors.selectedBranches);
+    }
+
     // 仅仓库集合可能变化时才重新发现仓库与子模块。
-    async refresh(reloadSelectors = true): Promise<void> {
+    async refresh(reloadSelectors = true, forceCommitReload = false): Promise<void> {
         const generation = ++this.refreshGeneration;
         this.refreshAbortController?.abort();
-        this.searchAbortController?.abort();
-        this.commitFilesAbortController?.abort();
-        this.loadMoreAbortController?.abort();
         const abortController = new AbortController();
         this.refreshAbortController = abortController;
         try {
-            await this.refreshInternal(generation, abortController.signal, reloadSelectors);
+            await this.refreshInternal(generation, abortController.signal, reloadSelectors, forceCommitReload);
         } catch (error) {
             if (!this.isAbortError(error)) { throw error; }
         } finally {
@@ -525,9 +551,45 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
         this.repositoryStateDebounceTimer = setTimeout(() => {
             this.repositoryStateDebounceTimer = undefined;
-            // 工作树、暂存区和 refs 变化不改变仓库集合，禁止重扫子模块。
-            void this.refresh(false);
+            void this.refreshOnRepositoryStateChanged();
         }, 300);
+    }
+
+    // 自身的 git status / diff 会回写 .git/index 的 stat 缓存并触发 watcher。
+    // 首次初始化期间一律忽略，其余情况按 HEAD + refs 内容签名判定是否真的变了。
+    private async refreshOnRepositoryStateChanged(): Promise<void> {
+        // 视图初始化中或首次加载尚未产出提交时，一律不打断当前加载。
+        if (this.initializingViewGeneration === this.viewGeneration) { return; }
+        if (this.refreshAbortController && this.commits.length === 0) { return; }
+        const rootUri = this.getRepoRootUri();
+        if (!rootUri) {
+            invalidateGitRefsCache();
+            void this.refresh(false);
+            return;
+        }
+        const signature = await this.readRepositoryStateSignature(rootUri);
+        if (signature && signature === this.repositoryStateSignature) { return; }
+        this.repositoryStateSignature = signature;
+        invalidateGitRefsCache(rootUri);
+        // 工作树、暂存区和 refs 变化不改变仓库集合，禁止重扫子模块。
+        void this.refresh(false);
+    }
+
+    private async captureRepositoryStateSignature(): Promise<void> {
+        const rootUri = this.getRepoRootUri();
+        if (!rootUri) { return; }
+        const signature = await this.readRepositoryStateSignature(rootUri);
+        if (signature) { this.repositoryStateSignature = signature; }
+    }
+
+    private async readRepositoryStateSignature(rootUri: vscode.Uri): Promise<string | undefined> {
+        try {
+            const state = await getGitRepositoryState(rootUri);
+            return [state.head, state.branch, state.refs, state.status].join('\u0000');
+        } catch {
+            // 读取失败时不做抑制，交由正常刷新兜底。
+            return undefined;
+        }
     }
 
     private queueHeadChangeRefresh(): void {
@@ -554,23 +616,23 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.refreshAbortController = abortController;
         const signal = abortController.signal;
         const generation = ++this.commitPageGeneration;
-        this.setLoading(true);
+        this.setLoading(true, '切换当前分支...');
         try {
             this.view?.webview.postMessage({ type: 'branchesLoading' });
             store.setState({ branchesLoading: true });
-            this.view?.webview.postMessage({ type: 'loadingProgress', phase: 'branch', message: '切换当前分支...', current: 0, total: 1 });
-            const branches = await this.loadBranchesWithVirtualCommits(rootUri, signal, headHash);
+            this.postLoadingProgress('branch', '切换当前分支...', 0, 1);
+            const branches = await getGitBranches(rootUri, signal);
             if (signal.aborted || generation !== this.commitPageGeneration) { return; }
             const currentBranch = branches.find(branch => branch.kind === 'current');
             if (!currentBranch) {
                 await this.refresh(false);
                 return;
             }
-            this.view?.webview.postMessage({ type: 'loadingProgress', phase: 'branch', message: '切换当前分支...', current: 1, total: 1 });
-            this.view?.webview.postMessage({ type: 'loadingProgress', phase: 'commit', message: '正在读取当前分支提交历史...', current: 0, total: 0 });
+            this.postLoadingProgress('branch', '切换当前分支...', 1, 1);
+            this.postLoadingProgress('commit', '正在读取当前分支提交历史...', 0, 0);
             const selectedBranches = [currentBranch.name];
             const page = await getGitCommits(rootUri, COMMIT_PAGE_REQUEST_SIZE, selectedBranches, 0, (current, total) => {
-                this.view?.webview.postMessage({ type: 'loadingProgress', phase: 'commit', message: current === 0 ? '正在解析分支指向的提交...' : '正在读取提交历史...', current, total });
+                this.postLoadingProgress('commit', current === 0 ? '正在解析分支指向的提交...' : '正在读取提交历史...', current, total);
             }, signal);
             if (signal.aborted || generation !== this.commitPageGeneration) { return; }
             const rawCommits = page.slice(0, COMMIT_PAGE_SIZE);
@@ -584,10 +646,17 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.hasMoreCommits = page.length > COMMIT_PAGE_SIZE;
                 this.isLoadingMoreCommits = false;
                 this.commitPageError = '';
-                this.stagedFiles = currentBranch.virtualCommits?.find(commit => commit.mode === 'staged')?.files ?? [];
-                this.changeFiles = currentBranch.virtualCommits?.find(commit => commit.mode === 'changes')?.files ?? [];
                 store.setState({ branchesLoading: false });
             });
+            if (page.length > COMMIT_PAGE_SIZE) {
+                this.prefetchNextCommitPage(rootUri, selectedBranches, COMMIT_PAGE_SIZE);
+            }
+            this.loadVirtualCommits(rootUri, branches, () => {
+                const activeBranch = this.branches.find(branch => branch.kind === 'current');
+                return generation === this.commitPageGeneration
+                    && activeBranch?.name === currentBranch.name
+                    && activeBranch.hash === currentBranch.hash;
+            }, headHash);
             const selectedCommit = commits.find(commit => commit.hash === headHash && commit.repositoryPath === rootUri.toString()) ?? commits[0];
             if (selectedCommit) { await this.selectCommit(selectedCommit.hash, selectedCommit.repositoryPath); }
         } catch (error) {
@@ -603,18 +672,23 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async refreshInternal(refreshGen: number, signal?: AbortSignal, reloadSelectors = true): Promise<void> {
+    private async refreshInternal(refreshGen: number, signal?: AbortSignal, reloadSelectors = true, forceCommitReload = false): Promise<void> {
         if (signal?.aborted) { return; }
-        const isInitialRepositoryDiscovery = !this.hasRepositorySelection;
-        if (!isInitialRepositoryDiscovery) {
-            this.setLoading(true);
+        if (!this.hasRepositorySelection) {
+            this.postLoadingProgress('start', '初始化环境...', 0, 0);
         }
-        if (isInitialRepositoryDiscovery) {
-            this.view?.webview.postMessage({ type: 'loadingProgress', phase: 'start', message: '初始化环境...', current: 0, total: 0 });
+        this.setLoading(true, '正在刷新提交历史...');
+        const isInitialLoad = reloadSelectors && !this.hasRepositorySelection;
+        if (isInitialLoad) {
+            await this.startInitialRepositoryLoad(refreshGen, signal);
+            if (!signal?.aborted && this.isRefreshCurrent(refreshGen)) {
+                await this.refreshInitialSelectorsInBackground(refreshGen, signal);
+            }
+            return;
         }
         let preparedSelectors: Awaited<ReturnType<typeof this.refreshSelectors>>;
         try {
-            preparedSelectors = await this.refreshSelectors(signal, reloadSelectors);
+            preparedSelectors = await this.refreshSelectors(signal, reloadSelectors, forceCommitReload);
         } catch (error) {
             if (this.isRefreshCurrent(refreshGen)) {
                 this.setLoading(false);
@@ -625,7 +699,23 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             }
             return;
         }
-        if (!preparedSelectors || !this.isRefreshCurrent(refreshGen)) { return; }
+        if (!preparedSelectors || signal?.aborted || !this.isRefreshCurrent(refreshGen)) { return; }
+        if (this.commits.length > 0 && this.hasSameSelection(preparedSelectors)) {
+            const previousVirtualCommits = this.branches.find(branch => branch.kind === 'current')?.virtualCommits;
+            const branches = preparedSelectors.branches.map(branch => branch.kind === 'current' && previousVirtualCommits
+                ? { ...branch, virtualCommits: previousVirtualCommits }
+                : branch);
+            store.batch(() => {
+                this.repositories = preparedSelectors.repositories;
+                this.branches = branches;
+                store.setState({ reposLoading: false, branchesLoading: false });
+            });
+            this.setLoading(false);
+            void this.captureRepositoryStateSignature();
+            this.updateViewVisible();
+            this.updateWorkingTreePresencePolling();
+            return;
+        }
         if (preparedSelectors.repositories.length === 0) {
             this.setLoading(false);
             store.batch(() => { this.isLoading = true; this.loadingMessage = '当前工作区未找到 Git 仓库'; });
@@ -644,8 +734,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.rawCommits = [];
                 this.hasMoreCommits = false;
                 this.isLoadingMoreCommits = false;
-                this.stagedFiles = [];
-                this.changeFiles = [];
                 store.setState({ reposLoading: false, branchesLoading: false });
             });
             ++this.commitPageGeneration;
@@ -654,7 +742,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
         const totalRepos = rootUris.length;
         let commitProgress = 0;
-        this.view?.webview.postMessage({ type: 'loadingProgress', phase: 'commit', message: totalRepos === 1 ? '正在读取提交历史...' : `正在读取 ${totalRepos} 个仓库的提交历史...`, current: 0, total: 0 });
+        this.postLoadingProgress('commit', totalRepos === 1 ? '正在读取提交历史...' : `正在读取 ${totalRepos} 个仓库的提交历史...`, 0, 0);
         const commitPageGeneration = ++this.commitPageGeneration;
         try {
             const isSingleRepository = rootUris.length === 1;
@@ -662,12 +750,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 const refs = isSingleRepository && preparedSelectors.hasBranchSelection ? preparedSelectors.selectedBranches : [];
                 const raw = await getGitCommits(rootUri, COMMIT_PAGE_REQUEST_SIZE, refs, 0, (current, total) => {
                     if (totalRepos === 1) {
-                        this.view?.webview.postMessage({ type: 'loadingProgress', phase: 'commit', message: current === 0 ? '正在解析分支指向的提交...' : '正在读取提交历史...', current, total });
+                        this.postLoadingProgress('commit', current === 0 ? '正在解析分支指向的提交...' : '正在读取提交历史...', current, total);
                     }
                 }, signal);
                 commitProgress++;
                 if (totalRepos > 1) {
-                    this.view?.webview.postMessage({ type: 'loadingProgress', phase: 'commit', message: `已读取 ${commitProgress} / ${totalRepos} 个仓库的提交历史...`, current: commitProgress, total: totalRepos });
+                    this.postLoadingProgress('commit', `已读取 ${commitProgress} / ${totalRepos} 个仓库的提交历史...`, commitProgress, totalRepos);
                 }
                 return { rootUri, raw };
             }));
@@ -679,9 +767,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 const failureMessages = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected').map(result => result.reason instanceof Error ? result.reason.message : String(result.reason));
                 throw new Error(failureMessages[0] || '当前分支暂无可显示的提交');
             }
-            const currentBranchFiles = isSingleRepository
-                ? this.getCurrentBranchWorkingTreeFiles(preparedSelectors.branches)
-                : { staged: [], changes: [] };
             store.batch(() => {
                 this.repositories = preparedSelectors.repositories;
                 this.branches = preparedSelectors.branches;
@@ -693,12 +778,26 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.hasMoreCommits = isSingleRepository && (successful[0]?.raw.length ?? 0) > COMMIT_PAGE_SIZE;
                 this.isLoadingMoreCommits = false;
                 this.commits = commits;
-                this.stagedFiles = currentBranchFiles.staged;
-                this.changeFiles = currentBranchFiles.changes;
                 store.setState({ reposLoading: false, branchesLoading: false });
             });
+            if (isSingleRepository && (successful[0]?.raw.length ?? 0) > COMMIT_PAGE_SIZE) {
+                this.prefetchNextCommitPage(rootUris[0], preparedSelectors.selectedBranches, COMMIT_PAGE_SIZE);
+            }
+            if (isSingleRepository) {
+                const currentBranch = preparedSelectors.branches.find(branch => branch.kind === 'current');
+                if (currentBranch) {
+                    this.loadVirtualCommits(rootUris[0], preparedSelectors.branches, () => {
+                        const activeBranch = this.branches.find(branch => branch.kind === 'current');
+                        return commitPageGeneration === this.commitPageGeneration
+                            && activeBranch?.name === currentBranch.name
+                            && activeBranch.hash === currentBranch.hash;
+                    });
+                }
+            }
             const selectedCommit = this.commits.find(commit => commit.hash === this.currentHash && commit.repositoryPath === this.currentRepositoryPath) ?? this.commits[0];
             this.setLoading(false);
+            // 记录基线，使本轮加载自身写入 .git/index 引发的 watcher 事件不再触发重复刷新。
+            void this.captureRepositoryStateSignature();
             if (selectedCommit) { void this.selectCommit(selectedCommit.hash, selectedCommit.repositoryPath); }
         } catch (error) {
             if (this.isRefreshCurrent(refreshGen)) {
@@ -721,23 +820,22 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.refreshAbortController = abortController;
         const signal = abortController.signal;
         const generation = ++this.commitPageGeneration;
-        this.setLoading(true);
+        this.setLoading(true, '刷新分支...');
         try {
-            this.view?.webview.postMessage({ type: 'loadingProgress', phase: 'branch', message: '刷新分支...', current: 0, total: 1 });
-            const branches = await this.loadBranchesWithVirtualCommits(rootUri, signal);
+            this.postLoadingProgress('branch', '刷新分支...', 0, 1);
+            const branches = await getGitBranches(rootUri, signal);
             if (signal.aborted || generation !== this.commitPageGeneration) { return; }
-            this.view?.webview.postMessage({ type: 'loadingProgress', phase: 'branch', message: '刷新分支...', current: 1, total: 1 });
+            this.postLoadingProgress('branch', '刷新分支...', 1, 1);
             const selectedBranches = this.selectedBranches.filter(name => branches.some(branch => branch.name === name));
-            this.view?.webview.postMessage({ type: 'loadingProgress', phase: 'commit', message: '正在读取提交历史...', current: 0, total: 0 });
+            this.postLoadingProgress('commit', '正在读取提交历史...', 0, 0);
             const page = selectedBranches.length > 0
                 ? await getGitCommits(rootUri, COMMIT_PAGE_REQUEST_SIZE, selectedBranches, 0, (current, total) => {
-                    this.view?.webview.postMessage({ type: 'loadingProgress', phase: 'commit', message: current === 0 ? '正在解析分支指向的提交...' : '正在读取提交历史...', current, total });
+                    this.postLoadingProgress('commit', current === 0 ? '正在解析分支指向的提交...' : '正在读取提交历史...', current, total);
                 }, signal)
                 : [];
             if (signal.aborted || generation !== this.commitPageGeneration) { return; }
             const rawCommits = page.slice(0, COMMIT_PAGE_SIZE);
             const commits = buildGraph(rawCommits).map(commit => ({ ...commit, repositoryPath: rootUri.toString() }));
-            const currentBranchFiles = this.getCurrentBranchWorkingTreeFiles(branches);
             store.batch(() => {
                 this.branches = branches;
                 this.selectedBranches = selectedBranches;
@@ -747,10 +845,20 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.hasMoreCommits = page.length > COMMIT_PAGE_SIZE;
                 this.isLoadingMoreCommits = false;
                 this.commitPageError = '';
-                this.stagedFiles = currentBranchFiles.staged;
-                this.changeFiles = currentBranchFiles.changes;
                 store.setState({ branchesLoading: false });
             });
+            if (page.length > COMMIT_PAGE_SIZE) {
+                this.prefetchNextCommitPage(rootUri, selectedBranches, COMMIT_PAGE_SIZE);
+            }
+            const currentBranch = branches.find(branch => branch.kind === 'current');
+            if (currentBranch) {
+                this.loadVirtualCommits(rootUri, branches, () => {
+                    const activeBranch = this.branches.find(branch => branch.kind === 'current');
+                    return generation === this.commitPageGeneration
+                        && activeBranch?.name === currentBranch.name
+                        && activeBranch.hash === currentBranch.hash;
+                });
+            }
             const selectedCommit = commits.find(commit => commit.hash === this.currentHash && commit.repositoryPath === this.currentRepositoryPath) ?? commits[0];
             if (selectedCommit) { await this.selectCommit(selectedCommit.hash, selectedCommit.repositoryPath); }
         } catch (error) {
@@ -764,6 +872,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.setLoading(false);
             }
         }
+    }
+
+    private prefetchNextCommitPage(rootUri: vscode.Uri, refs: readonly string[], skip: number): void {
+        void getGitCommits(rootUri, COMMIT_PAGE_REQUEST_SIZE, refs, skip).catch(() => undefined);
     }
 
     // 保留分页体验；每一页返回后从完整当前分页快照重建图，避免增量图状态。
@@ -788,6 +900,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.hasMoreCommits = page.length > COMMIT_PAGE_SIZE;
                 this.commitPageError = '';
             });
+            if (page.length > COMMIT_PAGE_SIZE) {
+                this.prefetchNextCommitPage(rootUri, this.selectedBranches, rawCommits.length);
+            }
         } catch (error) {
             if (!this.isAbortError(error) && generation === this.commitPageGeneration) {
                 this.commitPageError = `无法加载更多提交: ${error instanceof Error ? error.message : String(error)}`;
@@ -798,14 +913,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private withCurrentBranchVirtualCommits(branches: GitBranchOption[], changes: { staged: CommitFile[]; changes: CommitFile[] }, headHash?: string): GitBranchOption[] {
-        const virtualCommits: GitBranchVirtualCommit[] = [];
-        if (changes.changes.length > 0) {
-            virtualCommits.push({ mode: 'changes', hash: VIRTUAL_CHANGES_HASH, label: 'Changes', files: changes.changes });
-        }
-        if (changes.staged.length > 0) {
-            virtualCommits.push({ mode: 'staged', hash: VIRTUAL_STAGED_HASH, label: 'Staged Changes', files: changes.staged });
-        }
+    private withCurrentBranchVirtualCommitPresence(branches: GitBranchOption[], presence: { staged: boolean; changes: boolean }, headHash?: string): GitBranchOption[] {
+        const virtualCommits: GitBranchVirtualCommit[] = [
+            { mode: 'changes', hash: VIRTUAL_CHANGES_HASH, label: 'Changes', enabled: presence.changes },
+            { mode: 'staged', hash: VIRTUAL_STAGED_HASH, label: 'Staged Changes', enabled: presence.staged },
+        ];
         const currentBranch = (headHash ? branches.find(branch => branch.hash === headHash) : undefined)
             ?? branches.find(branch => branch.kind === 'current');
         if (!currentBranch) { return branches.map(branch => ({ ...branch, virtualCommits: undefined })); }
@@ -814,20 +926,162 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             : { ...branch, kind: branch.kind === 'current' ? 'local' : branch.kind, virtualCommits: undefined });
     }
 
-    private async loadBranchesWithVirtualCommits(rootUri: vscode.Uri, signal?: AbortSignal, headHash?: string): Promise<GitBranchOption[]> {
-        const [branches, changes] = await Promise.all([getGitBranches(rootUri, signal), getWorkingTreeChanges(rootUri, signal)]);
-        return this.withCurrentBranchVirtualCommits(branches, changes, headHash);
+    private loadVirtualCommits(
+        rootUri: vscode.Uri,
+        branches: GitBranchOption[],
+        isCurrent: () => boolean,
+        headHash?: string,
+    ): void {
+        if (isCurrent()) {
+            this.branches = this.withCurrentBranchVirtualCommitPresence(branches, { staged: false, changes: false }, headHash);
+        }
+        void getWorkingTreeChangePresence(rootUri).then(presence => {
+            if (!isCurrent()) { return; }
+            const branchesWithVirtualCommits = this.withCurrentBranchVirtualCommitPresence(branches, presence, headHash);
+            this.branches = branchesWithVirtualCommits;
+        }).catch(error => {
+            if (!this.isAbortError(error) && isCurrent()) {
+                console.error('无法读取工作区虚拟提交:', error);
+            }
+        });
     }
 
-    private getCurrentBranchWorkingTreeFiles(branches: GitBranchOption[]): { staged: CommitFile[]; changes: CommitFile[] } {
-        const currentBranch = branches.find(branch => branch.kind === 'current');
-        return {
-            staged: currentBranch?.virtualCommits?.find(commit => commit.mode === 'staged')?.files ?? [],
-            changes: currentBranch?.virtualCommits?.find(commit => commit.mode === 'changes')?.files ?? [],
-        };
+    private async startInitialRepositoryLoad(generation: number, signal?: AbortSignal): Promise<void> {
+        const repositoryPath = await getFirstRepoPath();
+        if (!repositoryPath || signal?.aborted || !this.isRefreshCurrent(generation) || this.hasRepositorySelection) { return; }
+        const repositoryUri = vscode.Uri.parse(repositoryPath);
+        await this.publishInitialRepositorySelection([{
+            path: repositoryPath,
+            label: path.basename(repositoryUri.fsPath) || repositoryUri.fsPath,
+            description: 'repo',
+            hasSubmodules: false,
+        }], generation, signal);
     }
 
-    private async refreshSelectors(signal?: AbortSignal, reloadRepositories = true): Promise<{
+    private async publishInitialRepositorySelection(
+        repositories: GitRepositoryOption[],
+        generation: number,
+        signal?: AbortSignal,
+    ): Promise<void> {
+        if (this.hasRepositorySelection || signal?.aborted || !this.isRefreshCurrent(generation)) { return; }
+        const repository = repositories.find(item => item.description !== 'subrepo') ?? repositories[0];
+        if (!repository) { return; }
+        const rootUri = vscode.Uri.parse(repository.path);
+        // 先同步选中默认仓库，确保选择器立即显示仓库名。
+        store.batch(() => {
+            this.repositories = [repository];
+            this.selectedRepositoryPaths = [repository.path];
+            this.hasRepositorySelection = true;
+        });
+        this.view?.webview.postMessage({
+            type: 'initialSelection',
+            repository: { label: repository.label, path: repository.path, hasSubmodules: Boolean(repository.hasSubmodules) },
+        });
+        const [branchName, headHash] = await Promise.all([
+            getCurrentGitBranch(rootUri),
+            getCurrentGitHeadHash(rootUri, signal),
+        ]);
+        if (signal?.aborted || !this.isRefreshCurrent(generation) || this.selectedRepositoryPath !== repository.path) { return; }
+        const branch = branchName && headHash ? {
+            name: branchName,
+            label: branchName.replace(/^refs\/heads\//, ''),
+            hash: headHash,
+            kind: 'current' as const,
+        } : undefined;
+        store.batch(() => {
+            this.branches = branch ? [branch] : [];
+            this.selectedBranches = branch ? [branch.name] : [];
+            this.hasBranchSelection = Boolean(branch);
+        });
+        this.view?.webview.postMessage({
+            type: 'initialSelection',
+            branch: branch ? { label: branch.label, name: branch.name } : undefined,
+        });
+        await this.loadInitialBranchCommits(rootUri, repository.path, branch, generation, signal);
+    }
+
+    private async loadInitialBranchCommits(
+        rootUri: vscode.Uri,
+        repositoryPath: string,
+        branch: GitBranchOption | undefined,
+        refreshGen: number,
+        signal?: AbortSignal,
+    ): Promise<void> {
+        const commitPageGeneration = ++this.commitPageGeneration;
+        this.postLoadingProgress('commit', '正在读取当前分支提交历史...', 0, 0);
+        try {
+            const page = await getGitCommits(rootUri, COMMIT_PAGE_REQUEST_SIZE, branch ? [branch.name] : [], 0, (current, total) => {
+                this.postLoadingProgress('commit', current === 0 ? '正在解析当前分支提交...' : '正在读取当前分支提交历史...', current, total);
+            }, signal);
+            if (signal?.aborted || !this.isRefreshCurrent(refreshGen) || commitPageGeneration !== this.commitPageGeneration) { return; }
+            const rawCommits = page.slice(0, COMMIT_PAGE_SIZE);
+            const commits = buildGraph(rawCommits).map(commit => ({ ...commit, repositoryPath }));
+            if (commits.length === 0) { return; }
+            store.batch(() => {
+                this.rawCommits = rawCommits;
+                this.commits = commits;
+                this.hasMoreCommits = page.length > COMMIT_PAGE_SIZE;
+                this.isLoadingMoreCommits = false;
+                this.commitPageError = '';
+            });
+            if (page.length > COMMIT_PAGE_SIZE) {
+                this.prefetchNextCommitPage(rootUri, branch ? [branch.name] : [], COMMIT_PAGE_SIZE);
+            }
+            if (branch) {
+                this.loadVirtualCommits(rootUri, this.branches, () => {
+                    const activeBranch = this.branches.find(item => item.kind === 'current');
+                    return commitPageGeneration === this.commitPageGeneration
+                        && activeBranch?.name === branch.name
+                        && activeBranch.hash === branch.hash;
+                }, branch.hash);
+            }
+            this.setLoading(false);
+            void this.captureRepositoryStateSignature();
+            const selectedCommit = commits.find(commit => commit.hash === this.currentHash && commit.repositoryPath === this.currentRepositoryPath) ?? commits[0];
+            if (selectedCommit) { void this.selectCommit(selectedCommit.hash, selectedCommit.repositoryPath); }
+        } catch (error) {
+            if (!this.isAbortError(error) && this.isRefreshCurrent(refreshGen) && commitPageGeneration === this.commitPageGeneration) {
+                console.warn('[vscode-gitk] 无法预加载当前分支提交:', error);
+            }
+        }
+    }
+
+    private async refreshInitialSelectorsInBackground(refreshGen: number, signal?: AbortSignal): Promise<void> {
+        try {
+            const preparedSelectors = await this.refreshSelectors(signal, true);
+            if (!preparedSelectors || signal?.aborted || !this.isRefreshCurrent(refreshGen)) { return; }
+            const previousVirtualCommits = this.branches.find(branch => branch.kind === 'current')?.virtualCommits;
+            const branches = preparedSelectors.branches.map(branch => branch.kind === 'current' && previousVirtualCommits
+                ? { ...branch, virtualCommits: previousVirtualCommits }
+                : branch);
+            store.batch(() => {
+                this.repositories = preparedSelectors.repositories;
+                this.branches = branches;
+                this.selectedRepositoryPaths = preparedSelectors.selectedRepositoryPaths;
+                this.selectedBranches = preparedSelectors.selectedBranches;
+                this.hasRepositorySelection = preparedSelectors.hasRepositorySelection;
+                this.hasBranchSelection = preparedSelectors.hasBranchSelection;
+                store.setState({ reposLoading: false, branchesLoading: false });
+            });
+            if (this.commits.length > 0) {
+                this.setLoading(false);
+                void this.captureRepositoryStateSignature();
+                this.updateViewVisible();
+                this.updateWorkingTreePresencePolling();
+            }
+        } catch (error) {
+            if (!this.isAbortError(error) && this.isRefreshCurrent(refreshGen)) {
+                store.setState({ reposLoading: false, branchesLoading: false });
+                console.warn('[vscode-gitk] 无法后台补全仓库选择器:', error);
+            }
+        }
+    }
+
+    private async refreshSelectors(
+        signal?: AbortSignal,
+        reloadRepositories = true,
+        selectCurrentBranch = false,
+    ): Promise<{
         repositories: GitRepositoryOption[];
         selectedRepositoryPaths: string[];
         branches: GitBranchOption[];
@@ -846,7 +1100,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             // 2. 初始化仓库 + 3. 扫描子模块 (getGitRepositories 内部投递进度)
             repositories = await getGitRepositories((current, total, message) => {
                 if (!signal?.aborted && this.isRefreshCurrent(generation)) {
-                    this.view?.webview.postMessage({ type: 'loadingProgress', phase: 'repository', message: message || '初始化仓库...', current, total });
+                    this.postLoadingProgress('repository', message || '初始化仓库...', current, total);
                 }
             }, signal);
             if (signal?.aborted || !this.isRefreshCurrent(generation)) { if (this.isRefreshCurrent(generation)) { store.setState({ reposLoading: false, branchesLoading: false }); } return undefined; }
@@ -861,23 +1115,24 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         // 4. 加载分支
         this.view?.webview.postMessage({ type: 'branchesLoading' });
         store.setState({ branchesLoading: true });
-        this.view?.webview.postMessage({ type: 'loadingProgress', phase: 'branch', message: '加载分支...', current: 0, total: 1 });
+        this.postLoadingProgress('branch', '加载分支...', 0, 1);
         const rootUri = selectedRepositoryPaths[0] ? vscode.Uri.parse(selectedRepositoryPaths[0]) : undefined;
-        const loadedBranches = rootUri ? await this.loadBranchesWithVirtualCommits(rootUri, signal) : [];
+        const loadedBranches = rootUri ? await getGitBranches(rootUri, signal) : [];
         if (signal?.aborted || !this.isRefreshCurrent(generation)) { if (this.isRefreshCurrent(generation)) { store.setState({ branchesLoading: false }); } return undefined; }
-        this.view?.webview.postMessage({ type: 'loadingProgress', phase: 'branch', message: '加载分支...', current: 1, total: 1 });
+        this.postLoadingProgress('branch', '加载分支...', 1, 1);
         const branches = selectedRepositoryPaths.length === 1 ? loadedBranches : [];
+        const currentBranch = branches.find(branch => branch.kind === 'current');
         let selectedBranches = this.selectedBranches.filter(name => branches.some(branch => branch.name === name));
-        if (!this.hasBranchSelection) {
-            selectedBranches = branches.map(branch => branch.name);
+        if (selectedBranches.length === 0 && (selectCurrentBranch || !this.hasBranchSelection)) {
+            selectedBranches = currentBranch ? [currentBranch.name] : [];
         }
         return {
             repositories,
             selectedRepositoryPaths,
             branches,
             selectedBranches,
-            hasRepositorySelection: true,
-            hasBranchSelection: true,
+            hasRepositorySelection: selectedRepositoryPaths.length > 0,
+            hasBranchSelection: selectedBranches.length > 0,
         };
     }
 
@@ -890,7 +1145,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const rootUri = this.getRepoRootUri();
         if (!rootUri || this.searchKeywords.length === 0) { return; }
         store.setState({ isLoading: true, loadingMessage: '搜索提交...' });
-        this.view?.webview.postMessage({ type: 'loadingProgress', phase: 'search', message: '搜索提交...', current: 0, total: 0 });
+        this.postLoadingProgress('search', '搜索提交...', 0, 0);
         try {
             const refs = this.selectedBranches.length > 0 ? this.selectedBranches : [];
             const results = await searchCommits(rootUri, this.searchKeywords, refs, signal);
@@ -949,8 +1204,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.hasMoreCommits = false;
             this.isLoadingMoreCommits = false;
             this.files = [];
-            this.stagedFiles = [];
-            this.changeFiles = [];
             this.currentHash = '';
             this.currentRepositoryPath = undefined;
             this.selectedPath = '';
@@ -958,12 +1211,77 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.isLoading = true;
             this.loadingMessage = message;
         });
-        this.view?.webview.postMessage({ type: 'loadingProgress', phase: 'start', message, current: 0, total: 0 });
+        this.postLoadingProgress('start', message, 0, 0);
     }
 
-    private async selectRepositories(_paths: string[]): Promise<void> {
+    private async publishCurrentBranchLoading(repositoryPath: string): Promise<void> {
+        const rootUri = vscode.Uri.parse(repositoryPath);
+        const [branchName, headHash] = await Promise.all([
+            getCurrentGitBranch(rootUri),
+            getCurrentGitHeadHash(rootUri),
+        ]);
+        if (repositoryPath !== this.selectedRepositoryPath || !branchName || !headHash) { return; }
+        store.batch(() => {
+            this.branches = [{
+                name: branchName,
+                label: branchName.replace(/^refs\/heads\//, ''),
+                hash: headHash,
+                kind: 'current',
+            }];
+            this.selectedBranches = [branchName];
+            this.hasBranchSelection = true;
+        });
+        await this.loadBranchCommitsNow(rootUri, repositoryPath, branchName, this.refreshGeneration);
+    }
+
+    private async selectRepositories(paths: string[]): Promise<void> {
         this.beginCommitReload('正在加载...');
-        await this.refresh();
+        store.setState({ branchesLoading: true });
+        this.view?.webview.postMessage({ type: 'branchesLoading' });
+        const repositoryPath = paths.length === 1 ? paths[0] : undefined;
+        if (repositoryPath) {
+            await this.publishCurrentBranchLoading(repositoryPath).catch(() => undefined);
+        }
+        await this.refresh(false, true);
+    }
+
+    // 立即按已选仓库与当前分支读取提交历史，不等子模块扫描或完整分支列表。
+    private async loadBranchCommitsNow(
+        rootUri: vscode.Uri,
+        repositoryPath: string,
+        branchName: string,
+        refreshGen: number,
+        signal?: AbortSignal,
+    ): Promise<void> {
+        const commitPageGeneration = ++this.commitPageGeneration;
+        this.postLoadingProgress('commit', '正在读取当前分支提交历史...', 0, 0);
+        try {
+            const page = await getGitCommits(rootUri, COMMIT_PAGE_REQUEST_SIZE, [branchName], 0, (current, total) => {
+                if (!signal?.aborted && this.isRefreshCurrent(refreshGen)) {
+                    this.postLoadingProgress('commit', current === 0 ? '正在解析分支指向的提交...' : '正在读取当前分支提交历史...', current, total);
+                }
+            }, signal);
+            if (signal?.aborted || !this.isRefreshCurrent(refreshGen) || commitPageGeneration !== this.commitPageGeneration) { return; }
+            const rawCommits = page.slice(0, COMMIT_PAGE_SIZE);
+            const commits = buildGraph(rawCommits).map(commit => ({ ...commit, repositoryPath }));
+            if (commits.length === 0) { return; }
+            store.batch(() => {
+                this.rawCommits = rawCommits;
+                this.commits = commits;
+                this.hasMoreCommits = page.length > COMMIT_PAGE_SIZE;
+                this.isLoadingMoreCommits = false;
+                this.commitPageError = '';
+            });
+            if (page.length > COMMIT_PAGE_SIZE) {
+                this.prefetchNextCommitPage(rootUri, [branchName], COMMIT_PAGE_SIZE);
+            }
+            const selectedCommit = commits[0];
+            if (selectedCommit) { await this.selectCommit(selectedCommit.hash, repositoryPath); }
+        } catch (error) {
+            if (!this.isAbortError(error) && this.isRefreshCurrent(refreshGen)) {
+                console.warn('[vscode-gitk] 无法读取当前分支提交:', error);
+            }
+        }
     }
 
     private onMessage(message: unknown): void {
@@ -1106,12 +1424,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private async completeChangedFilesSelection(generation: number, signal?: AbortSignal): Promise<void> {
         if (this.files.length === 0 || !this.currentHash) { return; }
         const selectedPath = this.resolveSelectedChangedFile();
+        const openingDiff = this.canShowMultiDiff() ? this.openDiff(selectedPath) : undefined;
         await this.loadDiffData();
         if (generation !== this.commitFilesGeneration || signal?.aborted) { return; }
         this.filesLoading = false;
-        if (this.canShowMultiDiff()) {
-            await this.openDiff(selectedPath);
-        }
+        await openingDiff;
     }
 
     private resolveSelectedChangedFile(preferredPath?: string): string | undefined {
@@ -1192,6 +1509,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .dropdown { position: relative; flex: 0 1 auto; min-width: 0; }
   #repositoryDropdown, #branchDropdown { width: 20ch; }
   .dropdown-current { display: flex; align-items: center; gap: 6px; width: 100%; height: 26px; padding: 0 7px; color: var(--vscode-dropdown-foreground, var(--vscode-foreground)); background: var(--vscode-dropdown-background, var(--vscode-editorWidget-background)); border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border)); border-radius: 4px; font: inherit; font-size: 11px; text-align: left; cursor: pointer; }
+  .dropdown-current:has(.dropdown-spinner) { gap: 2px; }
+  .dropdown-label:has(.dropdown-spinner) { display: inline-flex; align-items: center; flex: 1 1 auto; gap: 4px; }
+  .dropdown-label .dropdown-spinner { margin-left: auto; margin-right: 0; }
   .dropdown-current:hover:not(:disabled), .dropdown.open .dropdown-current { background: var(--vscode-toolbar-hoverBackground); border-color: var(--vscode-focusBorder); }
   .dropdown-current:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .dropdown-current:disabled { cursor: default; opacity: .6; }
@@ -1209,6 +1529,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .dropdown-filter { width: 100%; height: 25px; flex: 0 0 auto; margin-bottom: 4px; padding: 0 6px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); border-radius: 3px; font: inherit; font-size: 11px; }
   .dropdown-filter:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .dropdown-options { min-height: 0; flex: 1 1 auto; overflow-y: auto; }
+  .dropdown-progress { position: absolute; top: 0; right: 0; left: 0; z-index: 2; height: 2px; overflow: hidden; background: var(--vscode-editorWidget-border, var(--vscode-panel-border)); }
+  .dropdown-progress::before { content: ''; display: block; width: 35%; height: 100%; background: var(--vscode-progressBar-background); animation: dropdown-progress 1.1s ease-in-out infinite; }
+  @keyframes dropdown-progress { from { transform: translateX(-110%); } to { transform: translateX(310%); } }
   .dropdown-option, .dropdown-group { width: 100%; min-height: 24px; padding: 4px 7px; overflow: hidden; border: 0; border-radius: 3px; font: inherit; font-size: 11px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
   .dropdown-option { color: inherit; background: transparent; cursor: pointer; }
   .dropdown-option:hover, .dropdown-option:focus-visible { color: var(--vscode-menu-selectionForeground); background: var(--vscode-menu-selectionBackground); outline: none; }
@@ -1293,6 +1616,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .commit-row.located { animation: locate-commit 900ms ease-out; }
   @keyframes locate-commit { 0% { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; } 100% { outline-color: transparent; outline-offset: -4px; } }
   .commit-row.working-tree:hover { background: var(--vscode-list-hoverBackground); }
+  .commit-row.working-tree.disabled { color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground)); cursor: default; pointer-events: none; }
+  .commit-row.working-tree.disabled:hover { background: transparent; }
+  .commit-row.working-tree.disabled .working-tree-label, .commit-row.working-tree.disabled .working-tree-count { color: inherit; }
   .working-tree-label { color: var(--vscode-textLink-foreground); font-weight: 600; }
   .working-tree-count { color: var(--vscode-descriptionForeground); }
   .commit-header > div { position: relative; min-width: 0; padding: 5px 14px 5px 0; overflow: hidden; white-space: nowrap; text-align: left; }
@@ -1387,6 +1713,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   let isLoadingMoreCommits = false;
   let commitPageError = '';
   let commitLoadObserver = null;
+  let repositoryLoadingProgress = { message: '加载仓库...', current: 0, total: 0 };
+  let repositoryEntries = [];
+  let selectedRepositoryPaths = [];
+  let branchLoadingProgress = { message: '加载分支...', current: 0, total: 0 };
+  let initialRepositoryDisplay = null;
+  let initialBranchDisplay = null;
   const collapsedFolders = new Set();
   const columnWidths = {};
   const columnWidthChars = { hash: 0, author: 0, date: 0 };
@@ -1420,14 +1752,53 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     });
   });
 
-  function setRepositoryLoading() {
-    closeDropdowns();
-    repositoryDropdown.current.disabled = true;
-    repositoryDropdown.label.innerHTML = '<span class="dropdown-spinner"></span>加载仓库...';
-    repositoryDropdown.options.innerHTML = '';
-    branchDropdown.current.disabled = true;
-    branchDropdown.label.innerHTML = '<span class="dropdown-spinner"></span>加载分支...';
-    branchDropdown.options.innerHTML = '';
+  function setRepositoryLoading(message, current, total) {
+    repositoryLoadingProgress = { message: message || '加载仓库...', current: current || 0, total: total || 0 };
+    var selectedRepository = repositoryEntries.find(function(entry) {
+      return selectedRepositoryPaths.includes(entry.value);
+    }) || initialRepositoryDisplay;
+    // 仓库显示栏仅展示当前仓库；加载状态仅在下拉列表中展示。
+    repositoryDropdown.current.disabled = false;
+    if (selectedRepository) {
+      repositoryDropdown.label.innerHTML = repositoryIcon(selectedRepository.hasSubmodules)
+        + escapeHtml(selectedRepository.label) + '<span class="dropdown-spinner" aria-label="正在加载仓库列表"></span>';
+      repositoryDropdown.current.title = selectedRepository.path || selectedRepository.title || selectedRepository.label;
+    } else {
+      repositoryDropdown.label.textContent = '未选择仓库';
+      repositoryDropdown.current.title = '未选择仓库';
+    }
+    repositoryDropdown.options.innerHTML = '<div class="dropdown-progress" aria-label="正在加载仓库"></div>';
+    if (selectedRepository) {
+      repositoryDropdown.options.innerHTML += '<label class="dropdown-option selected"><input type="radio" checked disabled>'
+        + repositoryIcon(selectedRepository.hasSubmodules) + escapeHtml(selectedRepository.label)
+        + '<span class="dropdown-spinner" aria-label="正在加载仓库列表"></span></label>';
+    } else {
+      repositoryDropdown.options.innerHTML += '<div class="dropdown-empty dropdown-loading"><span class="dropdown-spinner"></span>加载仓库...</div>';
+    }
+  }
+  function setBranchLoading(message, current, total) {
+    branchLoadingProgress = { message: message || '加载分支...', current: current || 0, total: total || 0 };
+    var selectedBranch = branches.find(function(branch) { return selectedBranches.includes(branch.name); })
+      || branches.find(function(branch) { return branch.kind === 'current'; });
+    branchDropdown.current.disabled = false;
+    if (selectedBranch) {
+      branchDropdown.label.innerHTML = escapeHtml(selectedBranch.label) + '<span class="dropdown-spinner" aria-label="正在加载分支列表"></span>';
+      branchDropdown.current.title = selectedBranch.name;
+    } else if (initialBranchDisplay) {
+      branchDropdown.label.innerHTML = escapeHtml(initialBranchDisplay.label) + '<span class="dropdown-spinner" aria-label="正在加载分支列表"></span>';
+      branchDropdown.current.title = initialBranchDisplay.name;
+    } else {
+      branchDropdown.label.innerHTML = '<span class="dropdown-spinner"></span>加载分支...';
+      branchDropdown.current.title = '加载分支...';
+    }
+    var branchDisplay = selectedBranch || initialBranchDisplay;
+    branchDropdown.options.innerHTML = '<div class="dropdown-progress" aria-label="正在加载分支"></div>';
+    if (branchDisplay) {
+      branchDropdown.options.innerHTML += '<label class="dropdown-option selected"><input type="checkbox" checked disabled>'
+        + escapeHtml(branchDisplay.label) + '<span class="dropdown-spinner" aria-label="正在加载分支列表"></span></label>';
+    } else {
+      branchDropdown.options.innerHTML += '<div class="dropdown-empty dropdown-loading"><span class="dropdown-spinner"></span>加载分支...</div>';
+    }
   }
   function showLoadingProgress(phase, message, current, total) {
     if (message) document.getElementById('loadingText').textContent = message;
@@ -1648,6 +2019,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       files = state.files || [];
       filesMode = state.filesMode || 'tree';
       filesLoading = Boolean(state.filesLoading);
+      var diffProgress = state.diffProgress || { completed: 0, total: 0 };
+      var diffLoading = Boolean(state.diffLoading);
       selectedPath = state.selectedPath || '';
       selectedCommitHash = state.selectedCommit ? state.selectedCommit.hash : '';
       selectedCommitRepositoryPath = state.selectedCommit ? state.selectedCommit.repositoryPath : '';
@@ -1674,8 +2047,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         updateCountLabel();
       }
       updateFilesCommitHash();
-      if (filesLoading) {
-        document.getElementById('filesList').innerHTML = '<div id="filesEmpty"><span class="files-loading-spinner"></span><span>正在加载变更文件...</span></div>';
+      if (filesLoading || diffLoading) {
+        var progressText = diffProgress.total > 0 ? '（已加载 ' + diffProgress.completed + ' / ' + diffProgress.total + '）' : '';
+        document.getElementById('filesList').innerHTML = '<div id="filesEmpty"><span class="files-loading-spinner"></span><span>正在加载变更文件' + progressText + '...</span></div>';
       } else {
         renderFiles();
       }
@@ -1685,19 +2059,34 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         document.getElementById('loading').style.display = 'none';
         document.getElementById('commitList').style.display = 'block';
       }
+    } else if (msg.type === 'initialSelection') {
+      if (msg.repository) initialRepositoryDisplay = msg.repository;
+      if (msg.branch !== undefined) initialBranchDisplay = msg.branch;
+      if (initialRepositoryDisplay) {
+        repositoryDropdown.current.disabled = false;
+        repositoryDropdown.label.innerHTML = repositoryIcon(initialRepositoryDisplay.hasSubmodules)
+          + escapeHtml(initialRepositoryDisplay.label);
+        repositoryDropdown.current.title = initialRepositoryDisplay.path;
+        repositoryDropdown.options.innerHTML = '<div class="dropdown-progress" aria-label="正在加载仓库"></div>'
+          + '<label class="dropdown-option selected"><input type="radio" checked disabled>'
+          + repositoryIcon(initialRepositoryDisplay.hasSubmodules) + escapeHtml(initialRepositoryDisplay.label)
+          + '<span class="dropdown-spinner" aria-label="正在加载仓库列表"></span></label>';
+      }
+      if (initialBranchDisplay) {
+        branchDropdown.current.disabled = false;
+        branchDropdown.label.innerHTML = escapeHtml(initialBranchDisplay.label) + '<span class="dropdown-spinner" aria-label="正在加载分支列表"></span>';
+        branchDropdown.current.title = initialBranchDisplay.name;
+      }
     } else if (msg.type === 'reposLoading') {
-      closeDropdown(repositoryDropdown);
-      repositoryDropdown.current.disabled = true;
-      repositoryDropdown.label.innerHTML = '<span class="dropdown-spinner"></span>加载仓库...';
-      repositoryDropdown.current.title = '加载仓库...';
-      repositoryDropdown.options.innerHTML = '';
+      setRepositoryLoading('加载仓库...', 0, 0);
     } else if (msg.type === 'branchesLoading') {
-      closeDropdown(branchDropdown);
-      branchDropdown.current.disabled = true;
-      branchDropdown.label.innerHTML = '<span class="dropdown-spinner"></span>加载分支...';
-      branchDropdown.current.title = '加载分支...';
-      branchDropdown.options.innerHTML = '';
+      setBranchLoading('加载分支...', 0, 0);
     } else if (msg.type === 'loadingProgress') {
+      if (msg.phase === 'repository') {
+        setRepositoryLoading(msg.message || '加载仓库...', msg.current, msg.total);
+      } else if (msg.phase === 'branch') {
+        setBranchLoading(msg.message || '加载分支...', msg.current, msg.total);
+      }
       showLoadingProgress(msg.phase || 'start', msg.message || '加载中...', msg.current, msg.total);
     } else if (msg.type === 'refreshing') {
       showLoadingProgress('start', msg.message || '正在刷新...', 0, 0);
@@ -1741,17 +2130,19 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       ? '<span class="repository-icon has-submodules" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2 4.5h4.5L8 6h6v5.5H2z"/><rect x="5" y="7.5" width="6" height="3.5" rx="0.5"/></svg></span>'
       : '<span class="repository-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2 4.5h4.5L8 6h6v5.5H2z"/></svg></span>';
   }
-  function setRepositoryLabel(entry) {
-    repositoryDropdown.label.innerHTML = entry ? repositoryIcon(entry.hasSubmodules) + escapeHtml(entry.label) : '未选择仓库';
+  function setRepositoryLabel(entry, loading) {
+    repositoryDropdown.label.innerHTML = entry
+      ? repositoryIcon(entry.hasSubmodules) + escapeHtml(entry.label) + (loading ? '<span class="dropdown-spinner" aria-label="正在加载分支"></span>' : '')
+      : '未选择仓库';
     repositoryDropdown.current.title = entry ? (entry.title || entry.label) : '未选择仓库';
   }
-  function renderRepositoryOptions(entries, selectedValues) {
+  function renderRepositoryOptions(entries, selectedValues, loading) {
     const selectedValue = (selectedValues || []).find(function(value) {
       return entries.some(function(entry) { return entry.value === value; });
     }) || '';
     repositoryDropdown.current.disabled = entries.length === 0;
     const selectedEntry = entries.find(function(entry) { return entry.value === selectedValue; });
-    setRepositoryLabel(selectedEntry);
+    setRepositoryLabel(selectedEntry, loading);
     repositoryDropdown.options.innerHTML = '';
     entries.forEach(function(entry) {
       const option = document.createElement('label');
@@ -1802,8 +2193,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     branchDropdown.current.disabled = options.length === 0;
     function updateSelectionUi() {
       const hasSelection = selected.size > 0;
-      branchDropdown.label.textContent = hasSelection ? selectedLabel(options, selected, '未选择分支', '全部分支') : '未选择分支';
-      branchDropdown.current.title = hasSelection ? selectedTitle(options, selected, '未选择分支') : '未选择分支';
+      const showingInitialCurrentBranch = initialBranchDisplay
+        && selected.size === 1
+        && selected.has(initialBranchDisplay.name);
+      branchDropdown.label.textContent = showingInitialCurrentBranch
+        ? initialBranchDisplay.label
+        : (hasSelection ? selectedLabel(options, selected, '未选择分支', '全部分支') : '未选择分支');
+      branchDropdown.current.title = showingInitialCurrentBranch
+        ? initialBranchDisplay.name
+        : (hasSelection ? selectedTitle(options, selected, '未选择分支') : '未选择分支');
       branchDropdown.options.querySelectorAll('input').forEach(function(checkbox) {
         checkbox.checked = selected.has(checkbox.value);
         checkbox.parentElement.classList.toggle('selected', checkbox.checked);
@@ -1880,28 +2278,26 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   }
 
   function renderSelectors(msg) {
+    repositoryEntries = (msg.repositories || []).map(function(repo) {
+      return { value: repo.path, label: repo.label, title: repo.path, path: repo.path, hasSubmodules: Boolean(repo.hasSubmodules) };
+    });
+    selectedRepositoryPaths = msg.selectedRepositoryPaths || [];
     if (msg.reposLoading) {
-      closeDropdown(repositoryDropdown);
-      repositoryDropdown.current.disabled = true;
-      repositoryDropdown.label.innerHTML = '<span class="dropdown-spinner"></span>加载仓库...';
-      repositoryDropdown.current.title = '加载仓库...';
-      repositoryDropdown.options.innerHTML = '';
+      setRepositoryLoading(repositoryLoadingProgress.message, repositoryLoadingProgress.current, repositoryLoadingProgress.total);
     } else {
+      repositoryLoadingProgress = { message: '加载仓库...', current: 0, total: 0 };
       const repositories = msg.repositories || [];
       renderRepositoryOptions(repositories.map(function(repo) {
         return { value: repo.path, label: repo.label, title: repo.path, hasSubmodules: Boolean(repo.hasSubmodules) };
-      }), msg.selectedRepositoryPaths || []);
+      }), msg.selectedRepositoryPaths || [], false);
     }
 
     if (msg.branchesLoading) {
-      closeDropdown(branchDropdown);
-      branchDropdown.current.disabled = true;
-      branchDropdown.label.innerHTML = '<span class="dropdown-spinner"></span>加载分支...';
-      branchDropdown.current.title = '加载分支...';
-      branchDropdown.options.innerHTML = '';
+      setBranchLoading(branchLoadingProgress.message, branchLoadingProgress.current, branchLoadingProgress.total);
       return;
     }
 
+    branchLoadingProgress = { message: '加载分支...', current: 0, total: 0 };
     const branches = msg.branches || [];
     branchDropdown.root.hidden = false;
     const currentBranches = branches.filter(function(branch) { return branch.kind === 'current'; });
@@ -2175,6 +2571,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       drawSvg(svg, idx, graphW, ROW_H, LANE_W, DOT_R, rowRefX(commits[idx]));
     }
     row.addEventListener('click', function(event) {
+      if (row.classList.contains('disabled')) return;
       if (event.target && event.target.closest('.commit-description')) return;
       var hash = row.getAttribute('data-hash');
       var repositoryPath = row.getAttribute('data-repository-path');
@@ -2244,11 +2641,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     label.textContent = '—/' + total + ' 条提交';
   }
 
-  function workingTreeRowHTML(hash, label, count) {
+  function workingTreeRowHTML(hash, label, enabled) {
     const selected = selectedCommitHash === hash ? ' selected' : '';
-    return '<div class="commit-row working-tree' + selected + '" data-hash="' + hash + '">' +
+    const disabled = enabled ? '' : ' disabled';
+    return '<div class="commit-row working-tree' + selected + disabled + '" data-hash="' + hash + '" aria-disabled="' + String(!enabled) + '">' +
       '<div class="col-graph"></div><div class="col-message working-tree-label">' + label + '</div>' +
-      '<div class="col-author working-tree-count">' + count + ' 个文件</div><div class="col-hash">—</div><div class="col-date"></div></div>';
+      '<div class="col-author"></div><div class="col-hash">—</div><div class="col-date"></div></div>';
   }
 
   function getCurrentBranchVirtualCommits() {
@@ -2263,7 +2661,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     list.querySelectorAll('.working-tree').forEach(function(row) { row.remove(); });
     var virtualCommits = getCurrentBranchVirtualCommits();
     var html = virtualCommits.map(function(commit) {
-      return workingTreeRowHTML(commit.hash, commit.label, commit.files.length);
+      return workingTreeRowHTML(commit.hash, commit.label, commit.enabled);
     }).join('');
     if (!html) return;
     list.insertAdjacentHTML('afterbegin', html);
@@ -2298,7 +2696,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       headerCell('作者', 'author') + headerCell('Commit ID', 'hash') + headerCell('时间', 'date');
     var html = '';
     getCurrentBranchVirtualCommits().forEach(function(commit) {
-      html += workingTreeRowHTML(commit.hash, commit.label, commit.files.length);
+      html += workingTreeRowHTML(commit.hash, commit.label, commit.enabled);
     });
     for (let i = 0; i < commits.length; i++) {
       html += buildCommitRowHTML(i, graphW);

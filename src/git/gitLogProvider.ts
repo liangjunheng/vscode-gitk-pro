@@ -54,6 +54,38 @@ function throwIfAborted(signal?: AbortSignal): void {
     throw error;
 }
 
+interface RepositoryRecord {
+    rootPath: string;
+    parentPath?: string;
+}
+
+function isNestedRepository(childPath: string, parentPath: string): boolean {
+    const relative = path.relative(parentPath, childPath);
+    return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
+}
+
+function getTopLevelRepositories(repositories: RepositoryRecord[]): RepositoryRecord[] {
+    return repositories.filter(repository => !repositories.some(candidate =>
+        repositoryKey(candidate.rootPath) !== repositoryKey(repository.rootPath)
+        && isNestedRepository(repository.rootPath, candidate.rootPath)
+    ));
+}
+
+function toGitRepositoryOptions(repositories: Iterable<RepositoryRecord>): GitRepositoryOption[] {
+    const entries = [...repositories];
+    const parentPaths = new Set(entries.flatMap(repository => repository.parentPath ? [repositoryKey(repository.parentPath)] : []));
+    return entries.map(repository => ({
+        path: vscode.Uri.file(repository.rootPath).toString(),
+        label: path.basename(repository.rootPath) || repository.rootPath,
+        description: repository.parentPath ? 'subrepo' : 'repo',
+        hasSubmodules: parentPaths.has(repositoryKey(repository.rootPath)),
+    })).sort((left, right) => {
+        const leftSubrepository = left.description === 'subrepo';
+        const rightSubrepository = right.description === 'subrepo';
+        return Number(leftSubrepository) - Number(rightSubrepository) || left.label.localeCompare(right.label);
+    });
+}
+
 async function getInitializedSubmodulePaths(rootPath: string, signal?: AbortSignal): Promise<string[]> {
     try {
         const { stdout } = await execFileAsync('git', [
@@ -73,23 +105,7 @@ async function getInitializedSubmodulePaths(rootPath: string, signal?: AbortSign
     }
 }
 
-interface RepositoryRecord {
-    rootPath: string;
-    parentPath?: string;
-}
-
-function isNestedRepository(childPath: string, parentPath: string): boolean {
-    const relative = path.relative(parentPath, childPath);
-    return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
-}
-
-function getTopLevelRepositories(repositories: RepositoryRecord[]): RepositoryRecord[] {
-    return repositories.filter(repository => !repositories.some(candidate =>
-        repositoryKey(candidate.rootPath) !== repositoryKey(repository.rootPath)
-        && isNestedRepository(repository.rootPath, candidate.rootPath)
-    ));
-}
-
+// 递归任务调度: 同层验证并行，只有实际初始化的子模块才扫描下一层
 async function collectSubmoduleRepositories(
     initialRepositories: RepositoryRecord[],
     onDiscovered?: (count: number) => void,
@@ -100,27 +116,31 @@ async function collectSubmoduleRepositories(
     for (const repository of batch) {
         repositories.set(repositoryKey(repository.rootPath), repository);
     }
-    // BFS: 通过 git rev-parse 递归解析已初始化子模块。
-    let currentLevel = initialRepositories.slice();
-    while (currentLevel.length > 0) {
-        const levelResults = await Promise.all(currentLevel.map(async repo => {
-            const submodulePaths = await getInitializedSubmodulePaths(repo.rootPath, signal);
-            const roots = await Promise.all(submodulePaths.map(submodulePath => resolveRepositoryRoot(submodulePath, signal)));
-            return { repo, roots };
-        }));
-        throwIfAborted(signal);
-        currentLevel = [];
-        for (const { repo, roots } of levelResults) {
-            for (const rootPath of roots) {
-                if (!rootPath || repositories.has(repositoryKey(rootPath))) { continue; }
-                const child = { rootPath, parentPath: repo.rootPath };
-                repositories.set(repositoryKey(rootPath), child);
-                batch.push(child);
-                currentLevel.push(child);
-                onDiscovered?.(batch.length - initialRepositories.length);
-            }
-        }
-    }
+    const scanTasks = new Map<string, Promise<void>>();
+    const scanRepository = (repository: RepositoryRecord): Promise<void> => {
+        const key = repositoryKey(repository.rootPath);
+        const existing = scanTasks.get(key);
+        if (existing) { return existing; }
+        const task = (async () => {
+            const submodulePaths = await getInitializedSubmodulePaths(repository.rootPath, signal);
+            const childTasks = submodulePaths.map(submodulePath =>
+                resolveRepositoryRoot(submodulePath, signal).then(rootPath => {
+                    if (!rootPath) { return undefined; }
+                    const childKey = repositoryKey(rootPath);
+                    if (repositories.has(childKey)) { return undefined; }
+                    const child = { rootPath, parentPath: repository.rootPath };
+                    repositories.set(childKey, child);
+                    batch.push(child);
+                    onDiscovered?.(batch.length - initialRepositories.length);
+                    return scanRepository(child);
+                })
+            );
+            await Promise.all(childTasks);
+        })();
+        scanTasks.set(key, task);
+        return task;
+    };
+    await Promise.all(initialRepositories.map(scanRepository));
     return batch;
 }
 
@@ -137,10 +157,27 @@ async function resolveRepositoryRoot(directory: string, signal?: AbortSignal): P
     }
 }
 
-// 仓库列表缓存与单飞扫描, 避免首次重入时重复扫描子模块
-let repositoriesCache: { repos: GitRepositoryOption[]; sourceKeys: string; timestamp: number } | null = null;
-let repositoriesInFlight: Promise<GitRepositoryOption[]> | undefined;
-const REPOSITORIES_CACHE_TTL = 10000;
+// 仓库列表按工作区拓扑缓存；仅由工作区或 .gitmodules 变化主动失效。
+let repositoriesCache: { repos: GitRepositoryOption[]; sourceKeys: string } | null = null;
+const repositoriesInFlight = new Map<string, Promise<GitRepositoryOption[]>>();
+let repositoriesCacheVersion = 0;
+
+function awaitWithAbort<T>(request: Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (!signal) { return request; }
+    throwIfAborted(signal);
+    return new Promise<T>((resolve, reject) => {
+        const onAbort = () => {
+            const error = new Error('请求已取消');
+            error.name = 'AbortError';
+            reject(error);
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        void request.then(
+            value => { signal.removeEventListener('abort', onAbort); resolve(value); },
+            error => { signal.removeEventListener('abort', onAbort); reject(error); },
+        );
+    });
+}
 
 function getWorkspaceSourceKeys(): string {
     return (vscode.workspace.workspaceFolders ?? [])
@@ -151,46 +188,73 @@ function getWorkspaceSourceKeys(): string {
 
 export function invalidateGitRepositoriesCache(): void {
     repositoriesCache = null;
+    repositoriesCacheVersion++;
+    repositoriesInFlight.clear();
 }
 
 export function invalidateGitRefsCache(rootUri?: vscode.Uri): void {
+    const invalidateCommitPages = (rootKey: string): void => {
+        commitPagesVersions.set(rootKey, (commitPagesVersions.get(rootKey) ?? 0) + 1);
+        for (const key of commitPagesCache.keys()) {
+            if (key.startsWith(`${rootKey}\0`)) { commitPagesCache.delete(key); }
+        }
+    };
     if (rootUri) {
         const key = rootUri.fsPath;
-        refsCache.delete(key);
-        refsCacheVersions.set(key, (refsCacheVersions.get(key) ?? 0) + 1);
+        branchesCache.delete(key);
+        branchesCacheVersions.set(key, (branchesCacheVersions.get(key) ?? 0) + 1);
+        invalidateCommitPages(key);
     } else {
-        for (const key of new Set([...refsCache.keys(), ...refsInFlight.keys(), ...refsCacheVersions.keys()])) {
-            refsCacheVersions.set(key, (refsCacheVersions.get(key) ?? 0) + 1);
+        const keys = new Set([
+            ...branchesCache.keys(), ...branchesInFlight.keys(), ...branchesCacheVersions.keys(),
+            ...commitPagesVersions.keys(),
+        ]);
+        for (const key of keys) {
+            branchesCacheVersions.set(key, (branchesCacheVersions.get(key) ?? 0) + 1);
+            invalidateCommitPages(key);
         }
-        refsCache.clear();
+        branchesCache.clear();
     }
 }
 
-export async function getGitRepositories(onProgress?: (current: number, total: number, message?: string) => void, signal?: AbortSignal): Promise<GitRepositoryOption[]> {
+export async function getGitRepositories(
+    onProgress?: (current: number, total: number, message?: string) => void,
+    signal?: AbortSignal,
+    onInitialRepositories?: (repositories: GitRepositoryOption[]) => void,
+): Promise<GitRepositoryOption[]> {
     throwIfAborted(signal);
     const sourceKeys = getWorkspaceSourceKeys();
-    if (repositoriesCache
-        && repositoriesCache.sourceKeys === sourceKeys
-        && Date.now() - repositoriesCache.timestamp < REPOSITORIES_CACHE_TTL) {
+    if (repositoriesCache?.sourceKeys === sourceKeys) {
+        onInitialRepositories?.(repositoriesCache.repos);
         return repositoriesCache.repos;
     }
-    if (!signal && repositoriesInFlight) {
+
+    let scan = repositoriesInFlight.get(sourceKeys);
+    if (!scan) {
+        const cacheVersion = repositoriesCacheVersion;
+        scan = getGitRepositoriesInternal(sourceKeys, onProgress, undefined, onInitialRepositories).then(repositories => {
+            if (repositoriesCacheVersion === cacheVersion) {
+                repositoriesCache = { repos: repositories, sourceKeys };
+            }
+            return repositories;
+        });
+        repositoriesInFlight.set(sourceKeys, scan);
+        void scan.then(
+            () => { if (repositoriesInFlight.get(sourceKeys) === scan) { repositoriesInFlight.delete(sourceKeys); } },
+            () => { if (repositoriesInFlight.get(sourceKeys) === scan) { repositoriesInFlight.delete(sourceKeys); } },
+        );
+    } else {
         onProgress?.(0, 0, '正在等待子模块扫描完成...');
-        return repositoriesInFlight;
     }
-    const scan = getGitRepositoriesInternal(sourceKeys, onProgress, signal);
-    if (signal) { return scan; }
-    repositoriesInFlight = scan;
-    try {
-        const repositories = await scan;
-        repositoriesCache = { repos: repositories, sourceKeys, timestamp: Date.now() };
-        return repositories;
-    } finally {
-        if (repositoriesInFlight === scan) { repositoriesInFlight = undefined; }
-    }
+    return awaitWithAbort(scan, signal);
 }
 
-async function getGitRepositoriesInternal(sourceKeys: string, onProgress?: (current: number, total: number, message?: string) => void, signal?: AbortSignal): Promise<GitRepositoryOption[]> {
+async function getGitRepositoriesInternal(
+    sourceKeys: string,
+    onProgress?: (current: number, total: number, message?: string) => void,
+    signal?: AbortSignal,
+    onInitialRepositories?: (repositories: GitRepositoryOption[]) => void,
+): Promise<GitRepositoryOption[]> {
     throwIfAborted(signal);
 
     const repositories = new Map<string, RepositoryRecord>();
@@ -213,6 +277,7 @@ async function getGitRepositoriesInternal(sourceKeys: string, onProgress?: (curr
             repositories.set(key, repository);
         }
     }
+    onInitialRepositories?.(toGitRepositoryOptions(repositories.values()));
 
     // 3. 只从顶层仓库扫描，已登记的嵌套仓库不会重复递归。
     if (onProgress) { onProgress(0, 0, '正在扫描子模块...'); }
@@ -235,25 +300,7 @@ async function getGitRepositoriesInternal(sourceKeys: string, onProgress?: (curr
         repositories.set(repositoryKey(repository.rootPath), repository);
     }
 
-    // 计算哪些仓库包含子模块 (有子模块的仓库用不同图标)
-    const parentPaths = new Set<string>();
-    for (const repository of allRepositories) {
-        if (repository.parentPath) {
-            parentPaths.add(repositoryKey(repository.parentPath));
-        }
-    }
-
-    const result = [...repositories.values()].map(repository => ({
-        path: vscode.Uri.file(repository.rootPath).toString(),
-        label: path.basename(repository.rootPath) || repository.rootPath,
-        description: repository.parentPath ? 'subrepo' : 'repo',
-        hasSubmodules: parentPaths.has(repositoryKey(repository.rootPath)),
-    })).sort((left, right) => {
-        const leftSubrepository = left.description === 'subrepo';
-        const rightSubrepository = right.description === 'subrepo';
-        return Number(leftSubrepository) - Number(rightSubrepository) || left.label.localeCompare(right.label);
-    });
-    return result;
+    return toGitRepositoryOptions(repositories.values());
 }
 
 interface GitRefRecord {
@@ -262,61 +309,7 @@ interface GitRefRecord {
     label: string;
 }
 
-// refs 缓存与单飞请求，避免分支、提交和预取并发重复扫描全部 refs。
-const refsCache = new Map<string, { refs: GitRefRecord[]; timestamp: number }>();
-const refsInFlight = new Map<string, Promise<GitRefRecord[]>>();
-const refsCacheVersions = new Map<string, number>();
-const REFS_CACHE_TTL = 5000;
-const REFS_CACHE_MAX = 20;
-
-async function getGitRefs(rootUri: vscode.Uri, signal?: AbortSignal): Promise<GitRefRecord[]> {
-    const key = rootUri.fsPath;
-    const cached = refsCache.get(key);
-    if (cached && Date.now() - cached.timestamp < REFS_CACHE_TTL) { return cached.refs; }
-    if (!signal) {
-        const inFlight = refsInFlight.get(key);
-        if (inFlight) { return inFlight; }
-    }
-    const requestVersion = refsCacheVersions.get(key) ?? 0;
-    const request = (async () => {
-        const refs = await readRefsFromCli(rootUri, signal);
-        if (refsCache.size >= REFS_CACHE_MAX) {
-            let oldestKey: string | undefined;
-            let oldestTime = Infinity;
-            for (const [cacheKey, value] of refsCache) {
-                if (value.timestamp < oldestTime) { oldestTime = value.timestamp; oldestKey = cacheKey; }
-            }
-            if (oldestKey) { refsCache.delete(oldestKey); }
-        }
-        if ((refsCacheVersions.get(key) ?? 0) === requestVersion) {
-            refsCache.set(key, { refs, timestamp: Date.now() });
-        }
-        return refs;
-    })();
-    if (signal) { return request; }
-    refsInFlight.set(key, request);
-    try {
-        return await request;
-    } finally {
-        if (refsInFlight.get(key) === request) { refsInFlight.delete(key); }
-    }
-}
-
-// 从 git CLI 读 refs
-async function readRefsFromCli(rootUri: vscode.Uri, signal?: AbortSignal): Promise<GitRefRecord[]> {
-    const { stdout } = await execFileAsync('git', [
-        '-C', rootUri.fsPath,
-        'for-each-ref', '--format=%(objectname)%09%(refname:short)%09%(refname)', 'refs/heads', 'refs/remotes', 'refs/tags',
-    ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
-    return stdout.split(/\r?\n/).flatMap(line => {
-        if (!line) { return []; }
-        const [hash, label, name] = line.split('\t');
-        if (!hash || !label || !name || label.endsWith('/HEAD')) { return []; }
-        return [{ hash, label, name }];
-    });
-}
-
-// 批量解析 ref -> commit hash, 单次 git rev-parse 调用
+// 分支缓存与单飞请求；分支变更沿用 invalidateGitRefsCache 主动失效。// 批量解析 ref -> commit hash, 单次 git rev-parse 调用
 async function resolveCommitRefs(rootUri: vscode.Uri, refs: readonly string[], signal?: AbortSignal): Promise<string[]> {
     if (refs.length === 0) { return []; }
     const hashPattern = /^[0-9a-f]{40}$/i;
@@ -360,31 +353,82 @@ async function getCommitAuthorDetails(rootUri: vscode.Uri, hashes: readonly stri
     }
 }
 
+async function readBranchRefsFromCli(rootUri: vscode.Uri, signal?: AbortSignal): Promise<{ currentBranch?: string; local: GitRefRecord[]; remote: GitRefRecord[] }> {
+    const parseRefs = (stdout: string) => stdout.split(/\r?\n/).flatMap(line => {
+        if (!line) { return []; }
+        const [hash, label, name] = line.split('\t');
+        if (!hash || !label || !name || label.endsWith('/HEAD')) { return []; }
+        return [{ hash, label, name }];
+    });
+    const [currentResult, refsResult] = await Promise.all([
+        execFileAsync('git', ['-C', rootUri.fsPath, 'symbolic-ref', '--quiet', '--short', 'HEAD'], { windowsHide: true, signal }).catch(error => {
+            if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
+            return { stdout: '' };
+        }),
+        execFileAsync('git', [
+            '-C', rootUri.fsPath,
+            'for-each-ref', '--format=%(objectname)%09%(refname:short)%09%(refname)', 'refs/heads', 'refs/remotes',
+        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
+    ]);
+    const refs = parseRefs(refsResult.stdout);
+    const currentName = currentResult.stdout.trim();
+    return {
+        currentBranch: currentName ? `refs/heads/${currentName}` : undefined,
+        local: refs.filter(ref => ref.name.startsWith('refs/heads/')),
+        remote: refs.filter(ref => ref.name.startsWith('refs/remotes/')),
+    };
+}
+
+// 分支缓存与单飞请求；分支变更沿用 invalidateGitRefsCache 主动失效。
+const branchesCache = new Map<string, GitBranchOption[]>();
+const branchesInFlight = new Map<string, Promise<GitBranchOption[]>>();
+const branchesCacheVersions = new Map<string, number>();
+const BRANCHES_CACHE_MAX = 20;
+
 export async function getGitBranches(rootUri: vscode.Uri, signal?: AbortSignal): Promise<GitBranchOption[]> {
-    try {
-        const [refs, currentBranch, currentHash] = await Promise.all([
-            getGitRefs(rootUri, signal),
-            getCurrentGitBranch(rootUri),
-            getCurrentGitHeadHash(rootUri, signal),
-        ]);
-        const branchRefs = refs.filter(ref => !ref.name.startsWith('refs/tags/'));
-        const currentRef = currentBranch ? branchRefs.find(ref => ref.name === currentBranch) : undefined;
-        const current = currentHash ? [{
-            name: currentBranch ?? currentHash,
-            label: currentRef?.label ?? `HEAD (${currentHash.slice(0, 8)})`,
-            hash: currentHash,
-            kind: 'current' as const,
-        }] : [];
-        const branches = branchRefs.map(ref => ({
-            name: ref.name,
-            label: ref.label,
-            hash: ref.hash,
-            kind: ref.name.startsWith('refs/remotes/') ? 'remote' as const : 'local' as const,
-        })).sort((left, right) => Number(left.kind === 'remote') - Number(right.kind === 'remote') || left.label.localeCompare(right.label));
-        return [...current, ...branches];
-    } catch (error) {
-        throw new Error(`无法读取分支: ${error instanceof Error ? error.message : String(error)}`);
+    throwIfAborted(signal);
+    const key = rootUri.fsPath;
+    const cached = branchesCache.get(key);
+    if (cached) { return cached; }
+    let request = branchesInFlight.get(key);
+    if (!request) {
+        const requestVersion = branchesCacheVersions.get(key) ?? 0;
+        request = (async () => {
+            try {
+                const { currentBranch, local, remote } = await readBranchRefsFromCli(rootUri);
+                const branchRefs = [...local, ...remote];
+                const currentRef = currentBranch ? local.find(ref => ref.name === currentBranch) : undefined;
+                const current = currentRef ? [{
+                    name: currentRef.name,
+                    label: currentRef.label,
+                    hash: currentRef.hash,
+                    kind: 'current' as const,
+                }] : [];
+                const branches = branchRefs.map(ref => ({
+                    name: ref.name,
+                    label: ref.label,
+                    hash: ref.hash,
+                    kind: ref.name.startsWith('refs/remotes/') ? 'remote' as const : 'local' as const,
+                })).sort((left, right) => Number(left.kind === 'remote') - Number(right.kind === 'remote') || left.label.localeCompare(right.label));
+                const result = [...current, ...branches];
+                if ((branchesCacheVersions.get(key) ?? 0) === requestVersion) {
+                    if (branchesCache.size >= BRANCHES_CACHE_MAX) {
+                        branchesCache.delete(branchesCache.keys().next().value!);
+                    }
+                    branchesCache.set(key, result);
+                }
+                return result;
+            } catch (error) {
+                throw new Error(`无法读取分支: ${error instanceof Error ? error.message : String(error)}`);
+            }
+        })();
+        branchesInFlight.set(key, request);
+        void request.then(
+            () => { if (branchesInFlight.get(key) === request) { branchesInFlight.delete(key); } },
+            () => { if (branchesInFlight.get(key) === request) { branchesInFlight.delete(key); } },
+        );
     }
+    return awaitWithAbort(request, signal);
 }
 
 export async function getCurrentGitBranch(rootUri: vscode.Uri): Promise<string | undefined> {
@@ -507,9 +551,9 @@ export async function runGitCommand(rootUri: vscode.Uri, args: string[]): Promis
 }
 
 // 解析 git log --format 输出
-function parseLogOutput(stdout: string, refsByCommit: Map<string, string[]>): GitCommit[] {
+function parseLogOutput(stdout: string): GitCommit[] {
     return stdout.split('\x1e').flatMap(record => {
-        const [hash, parentText, author, authorEmail, committer, committerEmail, dateText, subject, body] = record.trim().split('\x1f');
+        const [hash, parentText, author, authorEmail, committer, committerEmail, dateText, subject, body, decorations] = record.trim().split('\x1f');
         if (!hash) { return []; }
         const authorDate = new Date(dateText);
         return [{
@@ -524,41 +568,61 @@ function parseLogOutput(stdout: string, refsByCommit: Map<string, string[]>): Gi
             authorDateLabel: formatDateLabel(authorDate),
             message: subject || '',
             body: body || '',
-            refs: refsByCommit.get(hash) || [],
+            refs: decorations ? decorations.split(', ').map(ref => ref.replace(/^HEAD -> /, '')).filter(Boolean) : [],
         }];
     });
 }
 
-function buildRefsByCommit(gitRefs: GitRefRecord[]): Map<string, string[]> {
-    const refsByCommit = new Map<string, string[]>();
-    for (const ref of gitRefs) {
-        const name = ref.name.startsWith('refs/tags/') ? `tag: ${ref.label}` : ref.label;
-        const names = refsByCommit.get(ref.hash) || [];
-        names.push(name);
-        refsByCommit.set(ref.hash, names);
-    }
-    return refsByCommit;
-}
-
 async function readCommitsFromCli(rootUri: vscode.Uri, limit: number, refs: readonly string[], skip: number, signal?: AbortSignal): Promise<GitCommit[]> {
     const commitRefs = refs.length > 0 ? [...refs] : ['HEAD'];
-    const [logResult, gitRefs] = await Promise.all([
-        execFileAsync('git', [
-            '-C', rootUri.fsPath, 'log', '--topo-order', `--max-count=${limit}`, ...(skip > 0 ? [`--skip=${skip}`] : []),
-            '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1e', ...commitRefs,
-        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
-        getGitRefs(rootUri, signal).catch(error => {
-            if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
-            return [];
-        }),
-    ]);
-    return parseLogOutput(logResult.stdout, buildRefsByCommit(gitRefs));
+    const { stdout } = await execFileAsync('git', [
+        '-C', rootUri.fsPath, 'log', '--topo-order', `--max-count=${limit}`, ...(skip > 0 ? [`--skip=${skip}`] : []),
+        '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1f%D%x1e', ...commitRefs,
+    ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
+    return parseLogOutput(stdout);
+}
+
+// 提交页缓存与单飞请求；HEAD 或 refs 变化时由 invalidateGitRefsCache 失效。
+const commitPagesCache = new Map<string, GitCommit[]>();
+const commitPagesInFlight = new Map<string, Promise<GitCommit[]>>();
+const commitPagesVersions = new Map<string, number>();
+const COMMIT_PAGES_CACHE_MAX = 20;
+
+function getCommitPageCacheKey(rootUri: vscode.Uri, limit: number, refs: readonly string[], skip: number): string {
+    return `${rootUri.fsPath}\0${refs.slice().sort().join('\0')}\0${skip}\0${limit}`;
 }
 
 // 获取仓库提交列表
 export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, refs: readonly string[] = [], skip: number = 0, onProgress?: (current: number, total: number) => void, signal?: AbortSignal): Promise<GitCommit[]> {
+    throwIfAborted(signal);
     if (onProgress) { onProgress(0, 1); }
-    const commits = await readCommitsFromCli(rootUri, limit, refs, skip, signal);
+    const rootKey = rootUri.fsPath;
+    const cacheKey = getCommitPageCacheKey(rootUri, limit, refs, skip);
+    const cached = commitPagesCache.get(cacheKey);
+    if (cached) {
+        if (onProgress) { onProgress(1, 1); }
+        return cached;
+    }
+    let request = commitPagesInFlight.get(cacheKey);
+    if (!request) {
+        const requestVersion = commitPagesVersions.get(rootKey) ?? 0;
+        commitPagesVersions.set(rootKey, requestVersion);
+        request = readCommitsFromCli(rootUri, limit, refs, skip).then(commits => {
+            if ((commitPagesVersions.get(rootKey) ?? 0) === requestVersion) {
+                if (commitPagesCache.size >= COMMIT_PAGES_CACHE_MAX) {
+                    commitPagesCache.delete(commitPagesCache.keys().next().value!);
+                }
+                commitPagesCache.set(cacheKey, commits);
+            }
+            return commits;
+        });
+        commitPagesInFlight.set(cacheKey, request);
+        void request.then(
+            () => { if (commitPagesInFlight.get(cacheKey) === request) { commitPagesInFlight.delete(cacheKey); } },
+            () => { if (commitPagesInFlight.get(cacheKey) === request) { commitPagesInFlight.delete(cacheKey); } },
+        );
+    }
+    const commits = await awaitWithAbort(request, signal);
     if (onProgress) { onProgress(1, 1); }
     return commits;
 }
@@ -567,18 +631,11 @@ export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, re
 export async function searchCommits(rootUri: vscode.Uri, keywords: string[], refs: readonly string[] = [], signal?: AbortSignal): Promise<GitCommit[]> {
     if (keywords.length === 0) { return []; }
     const commitRefs = refs.length > 0 ? [...refs] : ['HEAD'];
-    const [logResult, gitRefs] = await Promise.all([
-        execFileAsync('git', [
-            '-C', rootUri.fsPath, 'log', '--topo-order',
-            '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1e', ...commitRefs,
-        ], { windowsHide: true, maxBuffer: 64 * 1024 * 1024, signal }),
-        getGitRefs(rootUri, signal).catch(error => {
-            if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
-            return [];
-        }),
-    ]);
-    const refsByCommit = buildRefsByCommit(gitRefs);
-    const allCommits = parseLogOutput(logResult.stdout, refsByCommit);
+    const { stdout } = await execFileAsync('git', [
+        '-C', rootUri.fsPath, 'log', '--topo-order',
+        '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1f%D%x1e', ...commitRefs,
+    ], { windowsHide: true, maxBuffer: 64 * 1024 * 1024, signal });
+    const allCommits = parseLogOutput(stdout);
     const lowerKeywords = keywords.map(k => k.toLowerCase());
     return allCommits.filter(c => {
         const fields = [

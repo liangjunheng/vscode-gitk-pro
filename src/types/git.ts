@@ -39,7 +39,7 @@ export interface GitBranchVirtualCommit {
     mode: Exclude<ChangeSetMode, 'commit'>;
     hash: string;
     label: string;
-    files: CommitFile[];
+    enabled: boolean;
 }
 
 export type GitBranchKind = 'current' | 'local' | 'remote';

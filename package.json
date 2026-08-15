@@ -14,6 +14,7 @@
   "activationEvents": [
     "*"
   ],
+  "icon": "media/gitk-logo.png",
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
@@ -39,7 +40,7 @@
         {
           "id": "vscode-gitk",
           "title": "Gitk",
-          "icon": "media/gitk-logo.png"
+          "icon": "media/gitk-icon.svg"
         }
       ]
     },
@@ -49,6 +50,7 @@
           "type": "webview",
           "id": "vscode-gitk.panelView",
           "name": "Gitk",
+          "icon": "media/gitk-icon.svg",
           "contextualTitle": "Gitk",
           "when": "gitk:hasRepository"
         }

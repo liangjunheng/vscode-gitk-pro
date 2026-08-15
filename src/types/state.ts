@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ChangeSetMode, ChangedFile, CommitFile, GitBranchOption, GitCommit, GitRepositoryOption, RepositoryCommit } from './git';
+import { ChangeSetMode, ChangedFile, GitBranchOption, GitCommit, GitRepositoryOption, RepositoryCommit } from './git';
 
 export type GitSyncAction = 'fetch' | 'pull' | 'push';
 
@@ -45,10 +45,6 @@ export interface AppState {
     selectedPath: string | undefined;
     displayMode: 'tree' | 'flat';
 
-    // 工作区变更
-    stagedFiles: CommitFile[];
-    changeFiles: CommitFile[];
-
     // 搜索
     searchKeywords: string[];
 
@@ -89,9 +85,6 @@ export function createInitialState(): AppState {
         filesLoading: false,
         selectedPath: undefined,
         displayMode: 'flat',
-
-        stagedFiles: [],
-        changeFiles: [],
 
         searchKeywords: [],
 

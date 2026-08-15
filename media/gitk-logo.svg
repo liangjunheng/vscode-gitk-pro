@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Gitk Pro">
+  <!-- 透明底: 节点抠边不能再用背景色垫圆, 改为 mask 从连线上挖空 -->
+  <mask id="node-knockout">
+    <rect width="128" height="128" fill="#FFFFFF"/>
+    <circle cx="32" cy="32" r="11.75" fill="#000000"/>
+    <circle cx="32" cy="96" r="9.25" fill="#000000"/>
+    <circle cx="68" cy="64" r="9.25" fill="#000000"/>
+  </mask>
+
+  <!-- 提交行文本占位条, 与三行提交对齐 -->
+  <g fill="#5C6370">
+    <rect x="84" y="29" width="30" height="6" rx="3"/>
+    <rect x="84" y="61" width="24" height="6" rx="3"/>
+    <rect x="84" y="93" width="28" height="6" rx="3"/>
+  </g>
+
+  <!-- lane 连线: stroke-width 与 drawSvg 的 1.5 等比放大 -->
+  <g mask="url(#node-knockout)" fill="none" stroke-linecap="round" stroke-width="3.5">
+    <path stroke="#E06C75" d="M32 32V108"/>
+    <path stroke="#61AFEF" d="M68 64C68 48 50 32 32 32"/>
+    <path stroke="#61AFEF" d="M68 64c0 16-18 32-36 32"/>
+  </g>
+
+  <!-- 提交节点: HEAD 用 join-dot 双环, 其余为实心点 -->
+  <circle cx="32" cy="32" r="10" fill="none" stroke="#E06C75" stroke-width="3.5"/>
+  <circle cx="32" cy="32" r="4.5" fill="#E06C75"/>
+  <circle cx="32" cy="96" r="8" fill="#E06C75"/>
+  <circle cx="68" cy="64" r="8" fill="#61AFEF"/>
+</svg>

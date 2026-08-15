@@ -64,8 +64,6 @@ export class Store {
                 partial = {
                     selectedRepositoryPaths: paths,
                     hasRepositorySelection: true,
-                    selectedBranches: [],
-                    hasBranchSelection: false,
                     currentHash: undefined,
                     currentRepositoryPath: undefined,
                     selectedPath: undefined,
