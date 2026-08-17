@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import type { ChangeSetMode, ChangedFile, CommitFile, GitBranchOption, GitBranchVirtualCommit, GitCommit, GitkIntent, GitRepositoryOption, RepositoryCommit } from '../types';
-import { getCommitFilesWithLineStats, getFirstRepoPath, getGitRepositoryState, getWorkingTreeChangePresence, getWorkingTreeChanges, buildGraph, getCurrentGitBranch, getCurrentGitHeadHash, getGitBranches, getGitCommits, getGitRepositories, invalidateGitRefsCache, invalidateGitRepositoriesCache, searchCommits } from '../git/gitLogProvider';
-import { CustomDiffPanel } from './customDiffPanel';
+import type { ChangeSetMode, ChangedFile, GitBranchOption, GitBranchVirtualCommit, GitCommit, GitkIntent, GitRepositoryOption, RepositoryCommit } from '../types';
+import { getCommitFiles, getFirstRepoPath, getGitRepositoryState, getWorkingTreeChangePresence, getWorkingTreeChanges, buildGraph, getCurrentGitBranch, getCurrentGitHeadHash, getGitBranches, getGitCommits, getGitRepositories, invalidateGitRefsCache, invalidateGitRepositoriesCache, searchCommits } from '../git/gitLogProvider';
+import { MultiDiffPanel } from './multiDiffPanel';
 import { DiffReader } from '../git/diffReader';
 import { GitActionRunner } from '../services/gitActions';
 import { store, type StoreEffect } from '../state/store';
@@ -11,6 +11,11 @@ const COMMIT_PAGE_SIZE = 50;
 const COMMIT_PAGE_REQUEST_SIZE = COMMIT_PAGE_SIZE + 1;
 const VIRTUAL_STAGED_HASH = 'staged';
 const VIRTUAL_CHANGES_HASH = 'changes';
+
+// 归一化行尾, 消除 core.autocrlf 造成的 CRLF/LF 差异后再比较文本内容。
+function normalizeEol(text: string): string {
+    return text.replace(/\r\n/g, '\n');
+}
 
 // Webview 视图提供器: 渲染 gitk 风格的提交图 (div flex 布局, 避免 table 高度塌陷)
 export class GitkViewProvider implements vscode.WebviewViewProvider {
@@ -21,6 +26,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private searchAbortController?: AbortController;
     private commitFilesAbortController?: AbortController;
     private commitFilesGeneration = 0;
+    // 等待 Diff 渲染完成后再显示 Changed Files 列表的代次标记。
+    private pendingFilesRevealGeneration?: number;
     private loadMoreAbortController?: AbortController;
     private commitPageGeneration = 0;
     private refreshGeneration = 0;
@@ -41,7 +48,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private storeUnsubscribe?: () => void;
     private pushStatePending = false;
     private gitWatchDisposables: vscode.Disposable[] = [];
-    private readonly customDiffPanel: CustomDiffPanel;
+    private readonly multiDiffPanel: MultiDiffPanel;
     private readonly diffReader: DiffReader;
     private readonly gitActions: GitActionRunner;
 
@@ -147,8 +154,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     constructor(private readonly context: vscode.ExtensionContext) {
         this.displayMode = context.workspaceState.get<'tree' | 'flat'>('gitk.filesDisplayMode', 'flat');
-        this.customDiffPanel = new CustomDiffPanel(
+        // Diff 面板顶部卡片变化时回写 selectedPath，驱动 Changed Files 高亮。
+        this.multiDiffPanel = new MultiDiffPanel(
             (path, generation) => this.syncFileHighlightFromDiffPanel(path, generation),
+            () => this.handleDiffRendered(),
+            (path, line, column) => void this.openWorkspaceFileAtLine(path, line, column),
+            (path, content) => void this.saveWorkspaceFile(path, content),
         );
         this.diffReader = new DiffReader();
         this.gitActions = new GitActionRunner(
@@ -167,7 +178,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         );
         context.subscriptions.push(
             this.onDidChangeDiffAvailabilityEmitter,
-            this.customDiffPanel,
+            this.multiDiffPanel,
             new vscode.Disposable(() => {
                 this.storeUnsubscribe?.();
                 this.storeUnsubscribe = undefined;
@@ -196,18 +207,22 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     async selectCommit(hash: string, repositoryPath?: string): Promise<void> {
         const generation = ++this.commitFilesGeneration;
+        this.pendingFilesRevealGeneration = undefined;
+        // 先废弃在途请求的数据: 推进各 generation 使回程结果被丢弃; abort 只做通知不阻塞。
         this.commitFilesAbortController?.abort();
         this.diffReader.stop();
-        this.customDiffPanel.cancelPending();
-        // 清空数据, changefiles 和 multi-diff 同时进入加载态
-        store.batch(() => {
-            this.currentRepositoryPath = repositoryPath;
-            this.currentChangeSet = 'commit';
-            this.currentHash = hash;
-            this.selectedPath = undefined;
-            this.files = [];
-            this.filesLoading = true;
-            store.setState({ diffProgress: { completed: 0, total: 0 } });
+        this.multiDiffPanel.cancelPending();
+        // 一次性用新对象整体替换选中态与数据, 避免"先空后填"的中间态快照。
+        store.setState({
+            currentRepositoryPath: repositoryPath,
+            currentChangeSet: 'commit',
+            currentHash: hash,
+            selectedPath: undefined,
+            files: [],
+            filesLoading: true,
+            diffLoading: true,
+            diffError: undefined,
+            diffProgress: { completed: 0, total: 0 },
         });
         if (generation !== this.commitFilesGeneration) { return; }
         const abortController = new AbortController();
@@ -228,16 +243,21 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const currentBranch = this.branches.find(branch => branch.kind === 'current');
         if (!currentBranch?.virtualCommits?.find(commit => commit.mode === mode)?.enabled) { return; }
         const generation = ++this.commitFilesGeneration;
+        this.pendingFilesRevealGeneration = undefined;
+        // 先废弃在途请求的数据; abort 只做通知不阻塞。
         this.commitFilesAbortController?.abort();
         this.diffReader.stop();
-        this.customDiffPanel.cancelPending();
-        store.batch(() => {
-            this.currentChangeSet = mode;
-            this.currentHash = mode;
-            this.selectedPath = undefined;
-            this.files = [];
-            this.filesLoading = true;
-            store.setState({ diffProgress: { completed: 0, total: 0 } });
+        this.multiDiffPanel.cancelPending();
+        // 一次性用新对象整体替换选中态与数据, 避免"先空后填"的中间态快照。
+        store.setState({
+            currentChangeSet: mode,
+            currentHash: mode,
+            selectedPath: undefined,
+            files: [],
+            filesLoading: true,
+            diffLoading: true,
+            diffError: undefined,
+            diffProgress: { completed: 0, total: 0 },
         });
         const rootUri = this.getRepoRootUri();
         if (!rootUri) {
@@ -259,7 +279,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             await this.completeChangedFilesSelection(generation, abortController.signal);
             if (generation !== this.commitFilesGeneration || abortController.signal.aborted) { return; }
             if (this.files.length === 0) {
-                this.customDiffPanel.hide();
+                this.multiDiffPanel.hide();
                 store.batch(() => {
                     this.filesLoading = false;
                     store.setState({ diffLoading: false });
@@ -324,11 +344,16 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     private updateMultiDiffVisibility(): void {
         if (!this.view?.visible) {
-            this.customDiffPanel.hide();
+            this.multiDiffPanel.hide();
+            // 面板隐藏后不会再有渲染完成信号, 立即放行 Changed Files 列表。
+            if (this.pendingFilesRevealGeneration !== undefined) {
+                this.pendingFilesRevealGeneration = undefined;
+                this.filesLoading = false;
+            }
             return;
         }
         if (!this.isLoading && this.currentHash && this.files.length > 0) {
-            void this.openDiff(this.selectedPath);
+            this.openDiff(this.selectedPath);
         }
     }
 
@@ -1197,7 +1222,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.commitFilesAbortController?.abort();
         this.searchGeneration++;
         this.diffReader.stop();
-        this.customDiffPanel.cancelPending();
+        this.multiDiffPanel.cancelPending();
         store.batch(() => {
             this.commits = [];
             this.rawCommits = [];
@@ -1342,7 +1367,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 break;
             case 'selectFile':
                 if (typeof effect.path === 'string') {
-                    void this.selectChangedFile(effect.path);
+                    this.selectChangedFile(effect.path);
                 }
                 break;
             case 'copyFilePath':
@@ -1394,22 +1419,25 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             });
         };
         try {
-            const files = await getCommitFilesWithLineStats(rootUri, hash, signal, reportProgress);
+            // 仅取 --raw 变更文件清单 (不含行数统计), 拿到即启动 Diff 正文读取。
+            const files = await getCommitFiles(rootUri, hash, signal, reportProgress);
             if (signal?.aborted || generation !== this.commitFilesGeneration) { return; }
             this.files = files;
-            await this.completeChangedFilesSelection(generation, signal);
-            if (generation !== this.commitFilesGeneration || signal?.aborted) { return; }
             if (files.length === 0) {
                 // 无文件, 直接移除两边 loading
-                this.customDiffPanel.hide();
+                this.multiDiffPanel.hide();
+                this.pendingFilesRevealGeneration = undefined;
                 store.batch(() => {
                     this.filesLoading = false;
                     store.setState({ diffLoading: false });
                 });
+                return;
             }
+            await this.completeChangedFilesSelection(generation, signal);
         } catch (error: any) {
             if (!this.isAbortError(error) && generation === this.commitFilesGeneration) {
                 this.view?.webview.postMessage({ type: 'filesError', hash, repositoryPath, message: error instanceof Error ? error.message : String(error) });
+                this.pendingFilesRevealGeneration = undefined;
                 store.batch(() => {
                     this.filesLoading = false;
                     store.setState({
@@ -1424,11 +1452,27 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private async completeChangedFilesSelection(generation: number, signal?: AbortSignal): Promise<void> {
         if (this.files.length === 0 || !this.currentHash) { return; }
         const selectedPath = this.resolveSelectedChangedFile();
-        const openingDiff = this.canShowMultiDiff() ? this.openDiff(selectedPath) : undefined;
+        const willRenderDiff = this.canShowMultiDiff();
+        if (willRenderDiff) { this.openDiff(selectedPath); }
         await this.loadDiffData();
         if (generation !== this.commitFilesGeneration || signal?.aborted) { return; }
+        // Changed Files 列表放到 Diff 内容渲染完成之后再显示; 面板不渲染时立即放行避免一直 loading。
+        if (willRenderDiff && this.view?.visible) {
+            this.pendingFilesRevealGeneration = generation;
+        } else {
+            this.filesLoading = false;
+        }
+    }
+
+    // 收到 Diff 面板渲染完成信号后放行 Changed Files 列表。
+    private handleDiffRendered(): void {
+        if (this.pendingFilesRevealGeneration === undefined) { return; }
+        if (this.pendingFilesRevealGeneration !== this.commitFilesGeneration) {
+            this.pendingFilesRevealGeneration = undefined;
+            return;
+        }
+        this.pendingFilesRevealGeneration = undefined;
         this.filesLoading = false;
-        await openingDiff;
     }
 
     private resolveSelectedChangedFile(preferredPath?: string): string | undefined {
@@ -1440,10 +1484,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         return resolvedPath;
     }
 
-    private async selectChangedFile(filePath: string): Promise<void> {
-        const selectedPath = this.resolveSelectedChangedFile(filePath);
-        if (!selectedPath || selectedPath !== filePath || !this.canShowMultiDiff()) { return; }
-        await this.openDiff(selectedPath);
+    // 点击 Changed Files 文件: Store dispatch 已校验路径并写好 selectedPath, 这里只需定位。
+    // Changed Files 列表在 Diff 渲染完成后才显示, 因此面板必然已就绪, 直接轻量 reveal;
+    // 面板被手动关闭等异常情形回退到 openDiff 重建。
+    private selectChangedFile(filePath: string): void {
+        if (!this.canShowMultiDiff() || !this.view?.visible) { return; }
+        if (this.multiDiffPanel.revealFile(filePath)) { return; }
+        this.openDiff(filePath);
     }
 
     // 后台加载 diff 数据到 Store (单一数据源), 不依赖面板可见性
@@ -1465,20 +1512,72 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         await this.diffReader.prepare(rootUri, this.currentHash, this.files, this.currentChangeSet, generation);
     }
 
-    private async openDiff(filePath?: string): Promise<void> {
+    private openDiff(filePath?: string): void {
         if (!this.view?.visible) {
-            this.customDiffPanel.hide();
+            this.multiDiffPanel.hide();
             return;
         }
         if (this.isLoading || !this.currentHash) {
-            this.customDiffPanel.cancelPending();
+            this.multiDiffPanel.cancelPending();
             return;
         }
+        if (!this.getRepoRootUri()) { return; }
+        // 只显示面板, 数据由 loadDiffData() 在后台加载到 Store
+        this.multiDiffPanel.show(this.currentHash, filePath);
+    }
+
+    // changes 虚拟提交右侧编辑后回写工作区文件; 仅在 changes 模式下接受写入。
+    private async saveWorkspaceFile(filePath: string, content: string): Promise<void> {
+        if (this.currentChangeSet !== 'changes') { return; }
         const rootUri = this.getRepoRootUri();
         if (!rootUri) { return; }
-        if (filePath) { this.selectedPath = filePath; }
-        // 只显示面板, 数据由 loadDiffData() 在后台加载到 Store
-        await this.customDiffPanel.show(rootUri, this.currentHash, this.files, filePath, this.currentChangeSet);
+        const fileUri = vscode.Uri.joinPath(rootUri, ...filePath.split('/'));
+        try {
+            // 保留磁盘原有行尾: Monaco 传回的是 LF, 若原文件是 CRLF 直接写会让整个文件变成全量差异。
+            const existing = Buffer.from(await vscode.workspace.fs.readFile(fileUri)).toString('utf8');
+            const useCrlf = /\r\n/.test(existing);
+            const normalized = normalizeEol(content);
+            const output = useCrlf ? normalized.replace(/\n/g, '\r\n') : normalized;
+            if (output === existing) { return; }
+            await vscode.workspace.fs.writeFile(fileUri, Buffer.from(output, 'utf8'));
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            void vscode.window.showWarningMessage(`无法保存文件 ${filePath}: ${message}`);
+        }
+    }
+
+    // 打开工作区文件。传入 line 时(Ctrl/Cmd + 左键)需先确认磁盘内容与 Diff 右侧一致,
+    // 否则行号已失去意义, 直接提示并放弃跳转; 不传 line 时(标题栏按钮)只打开文件。
+    private async openWorkspaceFileAtLine(filePath: string, line?: number, column?: number): Promise<void> {
+        const rootUri = this.getRepoRootUri();
+        if (!rootUri) { return; }
+        const fileUri = vscode.Uri.joinPath(rootUri, ...filePath.split('/'));
+        try {
+            const document = await vscode.workspace.openTextDocument(fileUri);
+            let selection: vscode.Range | undefined;
+            if (typeof line === 'number' && line > 0) {
+                const expected = this.files.find(file => file.path === filePath);
+                const expectedContent = expected && 'modified' in expected ? expected.modified : undefined;
+                // git cat-file 读的是对象库原始内容(LF), 工作区在 core.autocrlf=true 下是 CRLF,
+                // 直接全等比较会把所有文本文件都误判为已修改, 故先归一化行尾再比对。
+                if (typeof expectedContent === 'string'
+                    && normalizeEol(document.getText()) !== normalizeEol(expectedContent)) {
+                    void vscode.window.showWarningMessage(`${filePath} 与当前提交的内容已不一致（文件已被修改），无法定位到对应行。`);
+                    return;
+                }
+                const position = document.validatePosition(new vscode.Position(Math.max(0, line - 1), Math.max(0, (column ?? 1) - 1)));
+                selection = new vscode.Range(position, position);
+            }
+            await vscode.window.showTextDocument(document, {
+                viewColumn: vscode.ViewColumn.Active,
+                selection,
+                preserveFocus: false,
+                preview: false,
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            void vscode.window.showWarningMessage(`无法打开文件 ${filePath}: ${message}`);
+        }
     }
 
     private syncFileHighlightFromDiffPanel(filePath: string, generation: number): void {
@@ -1595,9 +1694,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .file-status-A { color: var(--vscode-gitDecoration-addedResourceForeground, #73c991); }
   .file-status-M { color: var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d); }
   .file-status-D { color: var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c); }
-  .file-line-counts { display: inline-flex; flex: 0 0 auto; gap: 4px; font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; font-variant-numeric: tabular-nums; }
-  .file-lines-added { color: var(--vscode-gitDecoration-addedResourceForeground, #73c991); }
-  .file-lines-removed { color: var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c); }
   .file-path { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .file-folder { opacity: 0.55; }
   #filesEmpty { padding: 8px 10px; color: var(--vscode-descriptionForeground); }
@@ -2342,11 +2438,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  function lineCountHtml(file) {
-    if (typeof file.addedLines !== 'number' || typeof file.removedLines !== 'number') return '';
-    return '<span class="file-line-counts"><span class="file-lines-added">+' + file.addedLines + '</span><span class="file-lines-removed">−' + file.removedLines + '</span></span>';
-  }
-
   function renderFiles() {
     const list = document.getElementById('filesList');
     const modeButton = document.getElementById('filesModeBtn');
@@ -2380,7 +2471,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
           const lastSlash = file.path.lastIndexOf('/');
           const name = lastSlash >= 0 ? file.path.slice(lastSlash + 1) : file.path;
           html += '<div class="file-item' + (file.path === selectedPath ? ' selected' : '') + '" data-path="' + escapeAttr(file.path) + '" style="padding-left:' + (folder ? 30 : 10) + 'px" title="' + escapeAttr(file.path) + '">';
-          html += '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span>' + lineCountHtml(file) + '<span class="file-path">' + escapeHtml(name) + '</span></div>';
+          html += '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span><span class="file-path">' + escapeHtml(name) + '</span></div>';
         });
       });
     } else {
@@ -2390,7 +2481,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const name = lastSlash >= 0 ? file.path.slice(lastSlash + 1) : file.path;
         html += '<div class="file-item' + (file.path === selectedPath ? ' selected' : '') + '" data-path="' + escapeAttr(file.path) + '" title="' + escapeAttr(file.path) + '">';
         html += '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span>';
-        html += lineCountHtml(file) + '<span class="file-path"><span class="file-folder">' + escapeHtml(folder) + '</span>' + escapeHtml(name) + '</span></div>';
+        html += '<span class="file-path"><span class="file-folder">' + escapeHtml(folder) + '</span>' + escapeHtml(name) + '</span></div>';
       }
     }
     list.innerHTML = html;

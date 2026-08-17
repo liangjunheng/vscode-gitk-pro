@@ -60,8 +60,6 @@ export interface CommitFile {
     newObjectId?: string;
     oldMode?: string;
     newMode?: string;
-    addedLines?: number;
-    removedLines?: number;
     isBinary?: boolean;
 }
 

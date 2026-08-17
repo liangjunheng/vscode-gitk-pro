@@ -4,50 +4,72 @@ import * as path from 'path';
 import { ChangeSetMode, CommitFile, DiffPayload } from '../types';
 import { store } from '../state/store';
 
+// git cat-file 已把内容解码为 utf8 字符串, 二进制内容会含 NUL 字符; 只探测前若干字符即可判定。
+function containsNul(text: string | undefined): boolean {
+    if (!text) { return false; }
+    const limit = Math.min(text.length, 8000);
+    for (let i = 0; i < limit; i++) {
+        if (text.charCodeAt(i) === 0) { return true; }
+    }
+    return false;
+}
+
 /**
  * Diff 读取器: 负责从 Git 仓库读取文件内容并写入 Store (单一数据源)
  *
  * 流程:
- * 1. prepare() 分批读取 (首批 128 个, 后续 128 个/批)
- * 2. 每批通过 readDiffs() 获取 DiffPayload[]
- * 3. 以完整 DiffPayload 写回 store.files，Changed Files 与 CustomDiffPanel 共用
+ * 1. prepare() 按 128 个/批切分，所有批次经 Promise.all 并发读取
+ * 2. 每批通过 readDiffs() 获取 DiffPayload[]，完成即累加 diffProgress
+ * 3. 全部批次结束后按 index 排序，以完整 DiffPayload 一次性写回 store.files
  * 4. 完成后 store.diffLoading = false 通知渲染完毕
  */
 export class DiffReader {
-    private childProcess?: ChildProcess;
+    // 批次并发读取，同时可能存在多个 git cat-file 子进程。
+    private childProcesses = new Set<ChildProcess>();
     private requestGeneration = 0;
 
     constructor() {}
 
-    /** 终止正在运行的 git cat-file 子进程 */
+    /** 终止所有正在运行的 git cat-file 子进程 */
     stop(): void {
         this.requestGeneration++;
-        if (this.childProcess) {
-            try { this.childProcess.kill(); } catch { /* 已退出 */ }
-            this.childProcess = undefined;
+        for (const child of this.childProcesses) {
+            try { child.kill(); } catch { /* 已退出 */ }
         }
+        this.childProcesses.clear();
     }
 
-    /** 分批读取 Diff 并写入 Store */
+    /** 分批并发读取 Diff，全部完成后一次性写入 Store */
     async prepare(rootUri: vscode.Uri, hash: string, files: CommitFile[], changeSetMode: ChangeSetMode, generation: number): Promise<void> {
         const readerGeneration = ++this.requestGeneration;
         const isCurrent = () => readerGeneration === this.requestGeneration && generation === store.getState().diffGeneration;
         const batchSize = 128;
         const total = files.length;
         try {
-            const data: DiffPayload[] = [];
             store.setState({ diffProgress: { completed: 0, total } });
-            for (let start = 0; start < total;) {
-                const batch = files.slice(start, start + batchSize);
-                const diffs = await this.readDiffs(rootUri, hash, batch, changeSetMode, start);
+            // 单批（含小仓库常见情形）直接读取，避免多余的切批与并发调度开销。
+            if (total <= batchSize) {
+                const diffs = await this.readDiffs(rootUri, hash, files, changeSetMode, 0);
                 if (!isCurrent()) { return; }
-                data.push(...diffs);
-                const completed = Math.min(start + batch.length, total);
-                store.setState({ diffProgress: { completed, total } });
-                start += batch.length;
+                store.setState({ diffProgress: { completed: total, total }, files: diffs, diffLoading: false });
+                return;
             }
+            // 多批时并发读取；每批完成即累加进度，全部结束后才一次性写回 files。
+            const batches: { start: number; files: CommitFile[] }[] = [];
+            for (let start = 0; start < total; start += batchSize) {
+                batches.push({ start, files: files.slice(start, start + batchSize) });
+            }
+            let completed = 0;
+            const results = await Promise.all(batches.map(async batch => {
+                const diffs = await this.readDiffs(rootUri, hash, batch.files, changeSetMode, batch.start);
+                if (!isCurrent()) { return diffs; }
+                completed = Math.min(completed + batch.files.length, total);
+                store.setState({ diffProgress: { completed, total } });
+                return diffs;
+            }));
             if (!isCurrent()) { return; }
-            // 完整 Diff 就绪后一次性替换共享文件数据，避免两个视图读取不同快照。
+            // 完整 Diff 就绪后一次性替换共享文件数据；并发完成序不定，按 index 恢复文件顺序。
+            const data = results.flat().sort((left, right) => left.index - right.index);
             store.setState({ files: data, diffLoading: false });
         } catch (error) {
             if (!isCurrent()) { return; }
@@ -72,8 +94,13 @@ export class DiffReader {
             const modifiedObject = file.isBinary || file.status === 'D' ? undefined : `${hash}:${file.path}`;
             const original = originalObject ? contents.get(originalObject) : '';
             const modified = modifiedObject ? contents.get(modifiedObject) : '';
+            // 已移除 numstat, isBinary 全部靠内容侧 NUL 探测判定, 避免把二进制当文本渲染。
+            const isBinary = file.isBinary || containsNul(original) || containsNul(modified);
+            if (isBinary) {
+                return { index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isBinary: true, original: '', modified: '', error: undefined };
+            }
             const missing = [originalObject, modifiedObject].find(object => object && !contents.has(object));
-            return { index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, addedLines: file.addedLines, removedLines: file.removedLines, isBinary: file.isBinary, original: original || '', modified: modified || '', error: missing ? `无法读取 Git 对象：${missing}` : undefined };
+            return { index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isBinary: false, original: original || '', modified: modified || '', error: missing ? `无法读取 Git 对象：${missing}` : undefined };
         });
     }
 
@@ -96,7 +123,12 @@ export class DiffReader {
             const modified = changeSetMode === 'staged'
                 ? (modifiedObject ? contents.get(modifiedObject) || '' : '')
                 : workingTreeFile.content;
-            return { index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, addedLines: file.addedLines, removedLines: file.removedLines, isBinary: file.isBinary, original, modified, error: workingTreeFile.error };
+            // 已移除 numstat, isBinary 靠内容侧 NUL 探测判定。
+            const isBinary = file.isBinary || containsNul(original) || containsNul(modified);
+            if (isBinary) {
+                return { index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isBinary: true, original: '', modified: '', error: workingTreeFile.error };
+            }
+            return { index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isBinary: false, original, modified, error: workingTreeFile.error };
         }));
     }
 
@@ -115,17 +147,17 @@ export class DiffReader {
         const uniqueObjects = [...new Set(objects)];
         return new Promise((resolve, reject) => {
             const child = spawn('git', ['-C', rootUri.fsPath, 'cat-file', '--batch'], { windowsHide: true });
-            this.childProcess = child;
+            this.childProcesses.add(child);
             const chunks: Buffer[] = [];
             let stderr = '';
             child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
             child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
             child.on('error', err => {
-                if (this.childProcess === child) { this.childProcess = undefined; }
+                this.childProcesses.delete(child);
                 reject(err);
             });
             child.on('close', code => {
-                if (this.childProcess === child) { this.childProcess = undefined; }
+                this.childProcesses.delete(child);
                 if (code !== 0) { reject(new Error(stderr || `git cat-file 失败（退出码 ${code}）`)); return; }
                 try {
                     const output = Buffer.concat(chunks);

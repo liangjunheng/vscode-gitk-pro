@@ -704,12 +704,8 @@ export async function isGitRepo(rootUri: vscode.Uri): Promise<boolean> {
     return !!await resolveRepositoryRoot(rootUri.fsPath);
 }
 
-// 通过 git 命令获取指定提交的变更文件列表
-export async function getCommitFiles(rootUri: vscode.Uri, hash: string, signal?: AbortSignal): Promise<CommitFile[]> {
-    return getCommitFilesWithLineStats(rootUri, hash, signal);
-}
-
-export async function getCommitFilesWithLineStats(rootUri: vscode.Uri, hash: string, signal?: AbortSignal, onProgress?: (current: number, total: number) => void): Promise<CommitFile[]> {
+// 通过 git 命令获取指定提交的变更文件列表 (仅 --raw 清单, 不含行数统计)
+export async function getCommitFiles(rootUri: vscode.Uri, hash: string, signal?: AbortSignal, onProgress?: (current: number, total: number) => void): Promise<CommitFile[]> {
     const cacheKey = `${rootUri.fsPath}\0${hash}`;
     const cached = completeCommitFilesCache.get(cacheKey);
     if (cached) {
@@ -719,19 +715,13 @@ export async function getCommitFilesWithLineStats(rootUri: vscode.Uri, hash: str
     // 可取消的前台请求不能复用预加载请求，避免旧调用者取消当前选择。
     const pending = signal ? undefined : completeCommitFilesInFlight.get(cacheKey);
     if (pending) { return pending; }
+    onProgress?.(0, 0);
     const request = (async () => {
-        onProgress?.(0, 0);
-        const [rawResult, numStatResult] = await Promise.all([
-            execFileAsync('git', [
-                '-C', rootUri.fsPath,
-                'diff-tree', '--root', '--no-commit-id', '--raw', '-z', '-M', '-C', '-r', hash,
-            ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
-            execFileAsync('git', [
-                '-C', rootUri.fsPath,
-                'diff-tree', '--root', '--no-commit-id', '--numstat', '-z', '-M', '-C', '-r', hash,
-            ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
-        ]);
-        const files = applyNumStat(parseRawStatus(rawResult.stdout), numStatResult.stdout);
+        const rawResult = await execFileAsync('git', [
+            '-C', rootUri.fsPath,
+            'diff-tree', '--root', '--no-commit-id', '--raw', '-z', '-M', '-C', '-r', hash,
+        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
+        const files = parseRawStatus(rawResult.stdout);
         completeCommitFilesCache.set(cacheKey, files);
         if (completeCommitFilesCache.size > maxCommitFilesCacheEntries) {
             completeCommitFilesCache.delete(completeCommitFilesCache.keys().next().value!);
@@ -867,11 +857,8 @@ function porcelainStatus(status: string): FileStatus {
 }
 
 async function readDiffMetadata(rootUri: vscode.Uri, args: string[], signal?: AbortSignal): Promise<CommitFile[]> {
-    const [rawResult, numStatResult] = await Promise.all([
-        execFileAsync('git', ['-C', rootUri.fsPath, ...args, '--raw', '-z', '-M', '-C'], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
-        execFileAsync('git', ['-C', rootUri.fsPath, ...args, '--numstat', '-z', '-M', '-C'], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
-    ]);
-    return applyNumStat(parseRawStatus(rawResult.stdout), numStatResult.stdout);
+    const rawResult = await execFileAsync('git', ['-C', rootUri.fsPath, ...args, '--raw', '-z', '-M', '-C'], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
+    return parseRawStatus(rawResult.stdout);
 }
 
 function mergeDiffMetadata(files: CommitFile[], metadata: CommitFile[]): CommitFile[] {
@@ -902,24 +889,3 @@ function parseRawStatus(output: string): CommitFile[] {
     return files;
 }
 
-function applyNumStat(files: CommitFile[], output: string): CommitFile[] {
-    const stats = new Map<string, { addedLines: number; removedLines: number; isBinary: boolean }>();
-    const fields = output.split('\0');
-    for (let index = 0; index < fields.length;) {
-        const entry = fields[index++];
-        if (!entry) { continue; }
-        const match = /^(\d+|-)\t(\d+|-)\t(.*)$/.exec(entry);
-        if (!match) { continue; }
-        const path = match[3] || fields[index + 1];
-        if (!path) { continue; }
-        if (!match[3]) { index += 2; }
-        const isBinary = match[1] === '-' && match[2] === '-';
-        const addedLines = match[1] === '-' ? 0 : Number(match[1]);
-        const removedLines = match[2] === '-' ? 0 : Number(match[2]);
-        stats.set(path, { addedLines, removedLines, isBinary });
-    }
-    return files.map(file => {
-        const stat = stats.get(file.path);
-        return stat ? { ...file, ...stat } : file;
-    });
-}

@@ -68,8 +68,8 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
+    "compile": "node scripts/copy-monaco.cjs && tsc -p ./",
+    "watch": "node scripts/copy-monaco.cjs && tsc -watch -p ./",
     "lint": "eslint src --ext ts"
   },
   "devDependencies": {
@@ -79,11 +79,12 @@
     "typescript": "^5.1.0"
   },
   "dependencies": {
-    "@vscode/codicons": "^0.0.36"
+    "@vscode/codicons": "^0.0.36",
+    "monaco-editor": "^0.52.2"
   },
   "repository": {
-      "type": "git",
-      "url": "https://github.com/liangjunheng/vscode-gitk-pro.git"
+    "type": "git",
+    "url": "https://github.com/liangjunheng/vscode-gitk-pro.git"
   },
   "homepage": "https://github.com/liangjunheng/vscode-gitk-pro"
 }
