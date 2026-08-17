@@ -8,7 +8,7 @@ import { store } from '../state/store';
  * Diff 读取器: 负责从 Git 仓库读取文件内容并写入 Store (单一数据源)
  *
  * 流程:
- * 1. prepare() 分批读取 (首批 1 个, 后续 8 个/批)
+ * 1. prepare() 分批读取 (首批 128 个, 后续 128 个/批)
  * 2. 每批通过 readDiffs() 获取 DiffPayload[]
  * 3. 以完整 DiffPayload 写回 store.files，Changed Files 与 CustomDiffPanel 共用
  * 4. 完成后 store.diffLoading = false 通知渲染完毕
@@ -32,14 +32,13 @@ export class DiffReader {
     async prepare(rootUri: vscode.Uri, hash: string, files: CommitFile[], changeSetMode: ChangeSetMode, generation: number): Promise<void> {
         const readerGeneration = ++this.requestGeneration;
         const isCurrent = () => readerGeneration === this.requestGeneration && generation === store.getState().diffGeneration;
-        const batchSize = 8;
+        const batchSize = 128;
         const total = files.length;
         try {
             const data: DiffPayload[] = [];
             store.setState({ diffProgress: { completed: 0, total } });
             for (let start = 0; start < total;) {
-                const size = start === 0 ? 1 : batchSize;
-                const batch = files.slice(start, start + size);
+                const batch = files.slice(start, start + batchSize);
                 const diffs = await this.readDiffs(rootUri, hash, batch, changeSetMode, start);
                 if (!isCurrent()) { return; }
                 data.push(...diffs);
