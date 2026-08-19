@@ -705,10 +705,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.setLoading(true, '正在刷新提交历史...');
         const isInitialLoad = reloadSelectors && !this.hasRepositorySelection;
         if (isInitialLoad) {
+            // 先异步刷新完整仓库和分支列表，再快速确定当前选中仓库和分支。
+            void this.refreshInitialSelectorsInBackground(refreshGen, signal);
             await this.startInitialRepositoryLoad(refreshGen, signal);
-            if (!signal?.aborted && this.isRefreshCurrent(refreshGen)) {
-                await this.refreshInitialSelectorsInBackground(refreshGen, signal);
-            }
             return;
         }
         let preparedSelectors: Awaited<ReturnType<typeof this.refreshSelectors>>;
@@ -1082,10 +1081,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             store.batch(() => {
                 this.repositories = preparedSelectors.repositories;
                 this.branches = branches;
-                this.selectedRepositoryPaths = preparedSelectors.selectedRepositoryPaths;
-                this.selectedBranches = preparedSelectors.selectedBranches;
-                this.hasRepositorySelection = preparedSelectors.hasRepositorySelection;
-                this.hasBranchSelection = preparedSelectors.hasBranchSelection;
+                // 后台刷新只替换候选列表，不覆盖当前选中仓库和分支。
                 store.setState({ reposLoading: false, branchesLoading: false });
             });
             if (this.commits.length > 0) {
@@ -1122,10 +1118,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.view?.webview.postMessage({ type: 'reposLoading' });
             this.view?.webview.postMessage({ type: 'branchesLoading' });
             store.setState({ reposLoading: true, branchesLoading: true });
-            // 2. 初始化仓库 + 3. 扫描子模块 (getGitRepositories 内部投递进度)
+            // 2. 异步读取工作区仓库 + 3. 异步读取仓库中的子模块
             repositories = await getGitRepositories((current, total, message) => {
                 if (!signal?.aborted && this.isRefreshCurrent(generation)) {
-                    this.postLoadingProgress('repository', message || '初始化仓库...', current, total);
+                    this.postLoadingProgress('repository', message || '异步读取工作区仓库...', current, total);
                 }
             }, signal);
             if (signal?.aborted || !this.isRefreshCurrent(generation)) { if (this.isRefreshCurrent(generation)) { store.setState({ reposLoading: false, branchesLoading: false }); } return undefined; }

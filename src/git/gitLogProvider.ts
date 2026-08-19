@@ -261,8 +261,8 @@ async function getGitRepositoriesInternal(
     const workspaceFolders = vscode.workspace.workspaceFolders || [];
     const pending: RepositoryRecord[] = [];
 
-    // 2. 初始化仓库 (并行 git rev-parse)
-    if (workspaceFolders.length > 0 && onProgress) { onProgress(0, 0, '初始化仓库...'); }
+    // 2. 异步读取工作区仓库 (并行 git rev-parse)
+    if (workspaceFolders.length > 0 && onProgress) { onProgress(0, 0, '异步读取工作区仓库...'); }
     const folderRoots = await Promise.all(workspaceFolders.map(folder => resolveRepositoryRoot(folder.uri.fsPath, signal)));
     throwIfAborted(signal);
     for (const rootPath of folderRoots) {
@@ -279,8 +279,8 @@ async function getGitRepositoriesInternal(
     }
     onInitialRepositories?.(toGitRepositoryOptions(repositories.values()));
 
-    // 3. 只从顶层仓库扫描，已登记的嵌套仓库不会重复递归。
-    if (onProgress) { onProgress(0, 0, '正在扫描子模块...'); }
+    // 3. 只从顶层仓库读取其子模块，已登记的嵌套仓库不会重复递归。
+    if (onProgress) { onProgress(0, 0, '异步读取仓库中的子模块...'); }
     const scanRoots = getTopLevelRepositories(pending);
     const scanTaskResults = new Map<string, Promise<RepositoryRecord[]>>();
     const scanRoot = (root: RepositoryRecord): Promise<RepositoryRecord[]> => {
@@ -288,7 +288,7 @@ async function getGitRepositoriesInternal(
         let task = scanTaskResults.get(key);
         if (!task) {
             task = collectSubmoduleRepositories([root], discovered => {
-                if (onProgress) { onProgress(0, 0, `已扫描到子模块 ${discovered} 个...`); }
+                if (onProgress) { onProgress(0, 0, `已读取仓库中的子模块 ${discovered} 个...`); }
             }, signal);
             scanTaskResults.set(key, task);
         }
