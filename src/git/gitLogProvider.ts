@@ -353,14 +353,14 @@ async function getCommitAuthorDetails(rootUri: vscode.Uri, hashes: readonly stri
     }
 }
 
-async function readBranchRefsFromCli(rootUri: vscode.Uri, signal?: AbortSignal): Promise<{ currentBranch?: string; local: GitRefRecord[]; remote: GitRefRecord[] }> {
+async function readBranchRefsFromCli(rootUri: vscode.Uri, signal?: AbortSignal): Promise<{ currentBranch?: string; detachedHead?: string; local: GitRefRecord[]; remote: GitRefRecord[] }> {
     const parseRefs = (stdout: string) => stdout.split(/\r?\n/).flatMap(line => {
         if (!line) { return []; }
         const [hash, label, name] = line.split('\t');
         if (!hash || !label || !name || label.endsWith('/HEAD')) { return []; }
         return [{ hash, label, name }];
     });
-    const [currentResult, refsResult] = await Promise.all([
+    const [currentResult, refsResult, headResult] = await Promise.all([
         execFileAsync('git', ['-C', rootUri.fsPath, 'symbolic-ref', '--quiet', '--short', 'HEAD'], { windowsHide: true, signal }).catch(error => {
             if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
             return { stdout: '' };
@@ -369,13 +369,30 @@ async function readBranchRefsFromCli(rootUri: vscode.Uri, signal?: AbortSignal):
             '-C', rootUri.fsPath,
             'for-each-ref', '--format=%(objectname)%09%(refname:short)%09%(refname)', 'refs/heads', 'refs/remotes',
         ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
+        // detached HEAD 时用裸 hash 兜底当前项；空仓库解析失败按无 HEAD 处理。
+        execFileAsync('git', ['-C', rootUri.fsPath, 'rev-parse', 'HEAD'], { windowsHide: true, signal }).catch(error => {
+            if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
+            return { stdout: '' };
+        }),
     ]);
     const refs = parseRefs(refsResult.stdout);
     const currentName = currentResult.stdout.trim();
+    const headHash = headResult.stdout.trim();
     return {
         currentBranch: currentName ? `refs/heads/${currentName}` : undefined,
+        detachedHead: !currentName && headHash ? headHash : undefined,
         local: refs.filter(ref => ref.name.startsWith('refs/heads/')),
         remote: refs.filter(ref => ref.name.startsWith('refs/remotes/')),
+    };
+}
+
+// detached HEAD 的当前项：以裸 hash 作为 ref 名，git log 可直接接受。
+export function buildDetachedHeadBranch(headHash: string): GitBranchOption {
+    return {
+        name: headHash,
+        label: headHash.slice(0, 8),
+        hash: headHash,
+        kind: 'current',
     };
 }
 
@@ -395,7 +412,7 @@ export async function getGitBranches(rootUri: vscode.Uri, signal?: AbortSignal):
         const requestVersion = branchesCacheVersions.get(key) ?? 0;
         request = (async () => {
             try {
-                const { currentBranch, local, remote } = await readBranchRefsFromCli(rootUri);
+                const { currentBranch, detachedHead, local, remote } = await readBranchRefsFromCli(rootUri);
                 const branchRefs = [...local, ...remote];
                 const currentRef = currentBranch ? local.find(ref => ref.name === currentBranch) : undefined;
                 const current = currentRef ? [{
@@ -403,7 +420,7 @@ export async function getGitBranches(rootUri: vscode.Uri, signal?: AbortSignal):
                     label: currentRef.label,
                     hash: currentRef.hash,
                     kind: 'current' as const,
-                }] : [];
+                }] : detachedHead ? [buildDetachedHeadBranch(detachedHead)] : [];
                 const branches = branchRefs.map(ref => ({
                     name: ref.name,
                     label: ref.label,
@@ -431,14 +448,20 @@ export async function getGitBranches(rootUri: vscode.Uri, signal?: AbortSignal):
     return awaitWithAbort(request, signal);
 }
 
-export async function getCurrentGitBranch(rootUri: vscode.Uri): Promise<string | undefined> {
+export async function getCurrentGitBranch(rootUri: vscode.Uri, signal?: AbortSignal): Promise<string | undefined> {
     try {
         const { stdout } = await execFileAsync('git', ['-C', rootUri.fsPath, 'symbolic-ref', '--quiet', '--short', 'HEAD'], {
             windowsHide: true,
+            signal,
         });
         const label = stdout.trim();
         return label ? `refs/heads/${label}` : undefined;
-    } catch {
+    } catch (error) {
+        // 中止需向上传播，避免被当成 detached HEAD 处理。
+        if ((error as { name?: string; code?: string })?.name === 'AbortError'
+            || (error as { name?: string; code?: string })?.code === 'ABORT_ERR') {
+            throw error;
+        }
         // Detached HEAD 时 symbolic-ref 按 Git 约定返回非零。
         return undefined;
     }
