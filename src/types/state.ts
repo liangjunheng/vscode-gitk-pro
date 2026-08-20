@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ChangeSetMode, ChangedFile, GitBranchOption, GitCommit, GitRepositoryOption, RepositoryCommit } from './git';
+import { ChangeSetMode, ChangedFile, GitCommit, RepositoryCommit } from './git';
 
 export type GitSyncAction = 'fetch' | 'pull' | 'push';
 
@@ -20,15 +20,9 @@ export type GitkIntent =
     | { type: 'search'; keywords: unknown };
 
 // 单一数据源: 应用全局状态
+// 仓库维度状态 (totalRepoList / selectedRepoList / scanning) 由 GitRepoController 独占持有, 不入 Store。
+// 分支维度状态 (branchesMap / selectedBranches / loadingRepos) 由 GitBranchesController 独占持有, 不入 Store。
 export interface AppState {
-    // 仓库/分支选择
-    repositories: GitRepositoryOption[];
-    selectedRepositoryPaths: string[];
-    hasRepositorySelection: boolean;
-    branches: GitBranchOption[];
-    selectedBranches: string[];
-    hasBranchSelection: boolean;
-
     // 提交数据
     commits: RepositoryCommit[];
     rawCommits: GitCommit[];
@@ -53,8 +47,6 @@ export interface AppState {
     loadingMessage: string | undefined;
     isFocused: boolean;
     isViewVisible: boolean;
-    reposLoading: boolean;
-    branchesLoading: boolean;
 
     // Multi-Diff 面板状态；Diff 正文复用 files。
     diffLoading: boolean;
@@ -65,13 +57,6 @@ export interface AppState {
 
 export function createInitialState(): AppState {
     return {
-        repositories: [],
-        selectedRepositoryPaths: [],
-        hasRepositorySelection: false,
-        branches: [],
-        selectedBranches: [],
-        hasBranchSelection: false,
-
         commits: [],
         rawCommits: [],
         hasMoreCommits: false,
@@ -92,8 +77,6 @@ export function createInitialState(): AppState {
         loadingMessage: undefined,
         isFocused: false,
         isViewVisible: false,
-        reposLoading: false,
-        branchesLoading: false,
 
         // Multi-Diff 面板状态
         diffLoading: false,

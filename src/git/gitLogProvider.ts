@@ -11,22 +11,6 @@ const completeCommitFilesCache = new Map<string, CommitFile[]>();
 const completeCommitFilesInFlight = new Map<string, Promise<CommitFile[]>>();
 const maxCommitFilesCacheEntries = 100;
 
-// 颜色池
-const LANE_COLORS = [
-    '#e06c75', '#61afef', '#98c379', '#c678dd', '#e5c07b',
-    '#56b6c2', '#ff7a7a', '#a6e22e', '#fd971f', '#ae81ff',
-];
-
-// 快速获取首个仓库路径
-export async function getFirstRepoPath(): Promise<string | undefined> {
-    const workspaceFolders = vscode.workspace.workspaceFolders || [];
-    for (const folder of workspaceFolders) {
-        const rootPath = await resolveRepositoryRoot(folder.uri.fsPath);
-        if (rootPath) { return vscode.Uri.file(rootPath).toString(); }
-    }
-    return undefined;
-}
-
 // 格式化日期
 function formatDateLabel(date: Date | string): string {
     const raw = date instanceof Date ? date : new Date(date);
@@ -57,33 +41,6 @@ function throwIfAborted(signal?: AbortSignal): void {
 interface RepositoryRecord {
     rootPath: string;
     parentPath?: string;
-}
-
-function isNestedRepository(childPath: string, parentPath: string): boolean {
-    const relative = path.relative(parentPath, childPath);
-    return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
-}
-
-function getTopLevelRepositories(repositories: RepositoryRecord[]): RepositoryRecord[] {
-    return repositories.filter(repository => !repositories.some(candidate =>
-        repositoryKey(candidate.rootPath) !== repositoryKey(repository.rootPath)
-        && isNestedRepository(repository.rootPath, candidate.rootPath)
-    ));
-}
-
-function toGitRepositoryOptions(repositories: Iterable<RepositoryRecord>): GitRepositoryOption[] {
-    const entries = [...repositories];
-    const parentPaths = new Set(entries.flatMap(repository => repository.parentPath ? [repositoryKey(repository.parentPath)] : []));
-    return entries.map(repository => ({
-        path: vscode.Uri.file(repository.rootPath).toString(),
-        label: path.basename(repository.rootPath) || repository.rootPath,
-        description: repository.parentPath ? 'subrepo' : 'repo',
-        hasSubmodules: parentPaths.has(repositoryKey(repository.rootPath)),
-    })).sort((left, right) => {
-        const leftSubrepository = left.description === 'subrepo';
-        const rightSubrepository = right.description === 'subrepo';
-        return Number(leftSubrepository) - Number(rightSubrepository) || left.label.localeCompare(right.label);
-    });
 }
 
 async function getInitializedSubmodulePaths(rootPath: string, signal?: AbortSignal): Promise<string[]> {
@@ -157,11 +114,6 @@ async function resolveRepositoryRoot(directory: string, signal?: AbortSignal): P
     }
 }
 
-// 仓库列表按工作区拓扑缓存；仅由工作区或 .gitmodules 变化主动失效。
-let repositoriesCache: { repos: GitRepositoryOption[]; sourceKeys: string } | null = null;
-const repositoriesInFlight = new Map<string, Promise<GitRepositoryOption[]>>();
-let repositoriesCacheVersion = 0;
-
 function awaitWithAbort<T>(request: Promise<T>, signal?: AbortSignal): Promise<T> {
     if (!signal) { return request; }
     throwIfAborted(signal);
@@ -177,19 +129,6 @@ function awaitWithAbort<T>(request: Promise<T>, signal?: AbortSignal): Promise<T
             error => { signal.removeEventListener('abort', onAbort); reject(error); },
         );
     });
-}
-
-function getWorkspaceSourceKeys(): string {
-    return (vscode.workspace.workspaceFolders ?? [])
-        .map(folder => repositoryKey(folder.uri.fsPath))
-        .sort()
-        .join('\0');
-}
-
-export function invalidateGitRepositoriesCache(): void {
-    repositoriesCache = null;
-    repositoriesCacheVersion++;
-    repositoriesInFlight.clear();
 }
 
 export function invalidateGitRefsCache(rootUri?: vscode.Uri): void {
@@ -215,92 +154,6 @@ export function invalidateGitRefsCache(rootUri?: vscode.Uri): void {
         }
         branchesCache.clear();
     }
-}
-
-export async function getGitRepositories(
-    onProgress?: (current: number, total: number, message?: string) => void,
-    signal?: AbortSignal,
-    onInitialRepositories?: (repositories: GitRepositoryOption[]) => void,
-): Promise<GitRepositoryOption[]> {
-    throwIfAborted(signal);
-    const sourceKeys = getWorkspaceSourceKeys();
-    if (repositoriesCache?.sourceKeys === sourceKeys) {
-        onInitialRepositories?.(repositoriesCache.repos);
-        return repositoriesCache.repos;
-    }
-
-    let scan = repositoriesInFlight.get(sourceKeys);
-    if (!scan) {
-        const cacheVersion = repositoriesCacheVersion;
-        scan = getGitRepositoriesInternal(sourceKeys, onProgress, undefined, onInitialRepositories).then(repositories => {
-            if (repositoriesCacheVersion === cacheVersion) {
-                repositoriesCache = { repos: repositories, sourceKeys };
-            }
-            return repositories;
-        });
-        repositoriesInFlight.set(sourceKeys, scan);
-        void scan.then(
-            () => { if (repositoriesInFlight.get(sourceKeys) === scan) { repositoriesInFlight.delete(sourceKeys); } },
-            () => { if (repositoriesInFlight.get(sourceKeys) === scan) { repositoriesInFlight.delete(sourceKeys); } },
-        );
-    } else {
-        onProgress?.(0, 0, '正在等待子模块扫描完成...');
-    }
-    return awaitWithAbort(scan, signal);
-}
-
-async function getGitRepositoriesInternal(
-    sourceKeys: string,
-    onProgress?: (current: number, total: number, message?: string) => void,
-    signal?: AbortSignal,
-    onInitialRepositories?: (repositories: GitRepositoryOption[]) => void,
-): Promise<GitRepositoryOption[]> {
-    throwIfAborted(signal);
-
-    const repositories = new Map<string, RepositoryRecord>();
-    const workspaceFolders = vscode.workspace.workspaceFolders || [];
-    const pending: RepositoryRecord[] = [];
-
-    // 2. 异步读取工作区仓库 (并行 git rev-parse)
-    if (workspaceFolders.length > 0 && onProgress) { onProgress(0, 0, '异步读取工作区仓库...'); }
-    const folderRoots = await Promise.all(workspaceFolders.map(folder => resolveRepositoryRoot(folder.uri.fsPath, signal)));
-    throwIfAborted(signal);
-    for (const rootPath of folderRoots) {
-        if (rootPath && !pending.some(repository => repositoryKey(repository.rootPath) === repositoryKey(rootPath))) {
-            pending.push({ rootPath });
-        }
-    }
-
-    for (const repository of pending) {
-        const key = repositoryKey(repository.rootPath);
-        if (!repositories.has(key)) {
-            repositories.set(key, repository);
-        }
-    }
-    onInitialRepositories?.(toGitRepositoryOptions(repositories.values()));
-
-    // 3. 只从顶层仓库读取其子模块，已登记的嵌套仓库不会重复递归。
-    if (onProgress) { onProgress(0, 0, '异步读取仓库中的子模块...'); }
-    const scanRoots = getTopLevelRepositories(pending);
-    const scanTaskResults = new Map<string, Promise<RepositoryRecord[]>>();
-    const scanRoot = (root: RepositoryRecord): Promise<RepositoryRecord[]> => {
-        const key = repositoryKey(root.rootPath);
-        let task = scanTaskResults.get(key);
-        if (!task) {
-            task = collectSubmoduleRepositories([root], discovered => {
-                if (onProgress) { onProgress(0, 0, `已读取仓库中的子模块 ${discovered} 个...`); }
-            }, signal);
-            scanTaskResults.set(key, task);
-        }
-        return task;
-    };
-    const allRepositories = (await Promise.all(scanRoots.map(scanRoot))).flat();
-    throwIfAborted(signal);
-    for (const repository of allRepositories) {
-        repositories.set(repositoryKey(repository.rootPath), repository);
-    }
-
-    return toGitRepositoryOptions(repositories.values());
 }
 
 interface GitRefRecord {
@@ -672,54 +525,6 @@ export async function searchCommits(rootUri: vscode.Uri, keywords: string[], ref
         ].map(f => (f || '').toLowerCase());
         return lowerKeywords.some(kw => fields.some(f => f.includes(kw)));
     });
-}
-
-// 图形布局：按 VS Code SCM History 的 inputSwimlanes → outputSwimlanes 状态机转换。
-export function buildGraph(commits: GitCommit[]): GitCommit[] {
-    interface Swimlane { hash: string; color: string; }
-    let outputSwimlanes: Swimlane[] = [];
-    let nextColor = 0;
-    const createSwimlane = (hash: string, color?: string): Swimlane => ({
-        hash,
-        color: color ?? LANE_COLORS[nextColor++ % LANE_COLORS.length],
-    });
-
-    for (const commit of commits) {
-        const inputSwimlanes = outputSwimlanes.map(lane => ({ ...lane }));
-        const inputIndex = inputSwimlanes.findIndex(lane => lane.hash === commit.hash);
-        const lane = inputIndex >= 0 ? inputIndex : inputSwimlanes.length;
-        const nextSwimlanes: Swimlane[] = [];
-        let firstParentAdded = false;
-
-        // 首个命中 lane 是当前提交主轨；同 hash 的其余 lane 在此汇入，不再向下延续。
-        for (let index = 0; index < inputSwimlanes.length; index++) {
-            const inputLane = inputSwimlanes[index];
-            if (inputLane.hash === commit.hash) {
-                if (index === inputIndex && commit.parents.length > 0) {
-                    nextSwimlanes.push(createSwimlane(commit.parents[0], inputLane.color));
-                    firstParentAdded = true;
-                }
-                continue;
-            }
-            nextSwimlanes.push({ ...inputLane });
-        }
-
-        // 与 VS Code 一致：第一父原位替换当前轨道；其他父始终追加独立泳道。
-        // 即使父提交已在别的泳道中也不能去重，否则 merge 与多轮分支的起点会丢失。
-        for (let index = firstParentAdded ? 1 : 0; index < commit.parents.length; index++) {
-            nextSwimlanes.push(createSwimlane(commit.parents[index]));
-        }
-
-        commit.lane = lane;
-        commit.laneColor = inputIndex >= 0
-            ? inputSwimlanes[inputIndex].color
-            : nextSwimlanes[lane]?.color ?? LANE_COLORS[nextColor % LANE_COLORS.length];
-        commit.laneStartsHere = inputIndex < 0;
-        commit.inputSwimlanes = inputSwimlanes;
-        commit.outputSwimlanes = nextSwimlanes;
-        outputSwimlanes = nextSwimlanes;
-    }
-    return commits;
 }
 
 // 判断是否 git 仓库

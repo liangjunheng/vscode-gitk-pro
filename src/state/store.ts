@@ -3,7 +3,7 @@ import { AppState, createInitialState, GitkIntent } from '../types';
 export type StoreEffect =
     | { type: 'refresh' }
     | { type: 'selectRepositories'; paths: unknown }
-    | { type: 'reloadBranches' }
+    | { type: 'selectBranches'; names: string[] }
     | { type: 'loadMoreCommits' }
     | { type: 'gitSync'; action: unknown }
     | { type: 'commitAction'; action: unknown; hash: unknown; repositoryPath: unknown }
@@ -57,25 +57,16 @@ export class Store {
             case 'refresh':
                 effects = [{ type: 'refresh' }];
                 break;
-            case 'selectRepositories':
-                if (!Array.isArray(intent.paths) || !intent.paths.every(path => typeof path === 'string' && this.state.repositories.some(repo => repo.path === path))) { break; }
-                const paths = [...new Set(intent.paths)];
-                if (paths.length === this.state.selectedRepositoryPaths.length && paths.every(path => this.state.selectedRepositoryPaths.includes(path))) { break; }
-                partial = {
-                    selectedRepositoryPaths: paths,
-                    hasRepositorySelection: true,
-                    currentHash: undefined,
-                    currentRepositoryPath: undefined,
-                    selectedPath: undefined,
-                };
-                effects = [{ type: 'selectRepositories', paths }];
+            // 仓库选择由 GitRepoController 独占写入; Store 只做类型过滤后转发意图。
+            case 'selectRepositories': {
+                if (!Array.isArray(intent.paths) || !intent.paths.every(path => typeof path === 'string')) { break; }
+                effects = [{ type: 'selectRepositories', paths: [...new Set(intent.paths)] }];
                 break;
+            }
+            // 分支选择由 GitBranchesController 独占写入; Store 只做类型过滤后转发意图。
             case 'selectBranches': {
-                if (!Array.isArray(intent.names) || !intent.names.every(name => typeof name === 'string' && this.state.branches.some(branch => branch.name === name))) { break; }
-                const names = [...new Set(intent.names)];
-                if (names.length === this.state.selectedBranches.length && names.every(name => this.state.selectedBranches.includes(name))) { break; }
-                partial = { selectedBranches: names, hasBranchSelection: names.length > 0 };
-                effects = [{ type: 'reloadBranches' }];
+                if (!Array.isArray(intent.names) || !intent.names.every(name => typeof name === 'string')) { break; }
+                effects = [{ type: 'selectBranches', names: [...new Set(intent.names)] }];
                 break;
             }
             case 'loadMoreCommits':

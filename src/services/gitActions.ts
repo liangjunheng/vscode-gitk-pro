@@ -4,7 +4,6 @@ import {
     runGitSync,
     updateGitSubmodules,
     invalidateGitRefsCache,
-    invalidateGitRepositoriesCache,
 } from '../git/gitLogProvider';
 
 /**
@@ -112,8 +111,8 @@ export class GitActionRunner {
                         await updateGitSubmodules(rootUri, message => progress.report({ message }));
                     }
                     if (result.submoduleTopologyChanged) {
+                        // 仓库集合变化由调用方转交 GitRepoController 重扫。
                         progress.report({ message: '检测到 Submodule 模块新增或删除，正在刷新仓库信息...' });
-                        invalidateGitRepositoriesCache();
                     } else {
                         progress.report({ message: '正在刷新提交记录...' });
                     }

@@ -78,7 +78,11 @@ export class DiffReader {
         }
     }
 
-    private async readDiffs(rootUri: vscode.Uri, hash: string, files: CommitFile[], changeSetMode: ChangeSetMode, indexOffset = 0): Promise<DiffPayload[]> {
+    /**
+     * 纯读取: 组装 DiffPayload[] 并返回, 不写 Store 不做代次判断。
+     * prepare() 在此之上加了分批/进度/写 Store, 需要副作用时才用 prepare。
+     */
+    async readDiffs(rootUri: vscode.Uri, hash: string, files: CommitFile[], changeSetMode: ChangeSetMode, indexOffset = 0): Promise<DiffPayload[]> {
         if (changeSetMode !== 'commit') {
             return this.readWorkingTreeDiffs(rootUri, files, changeSetMode, indexOffset);
         }

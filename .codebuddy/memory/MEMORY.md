@@ -71,6 +71,11 @@ VS Code 扩展, 在活动栏提供 gitk 风格的提交图面板。
 - code 命令不在 PATH 中
 - OneDrive 占位文件可能阻塞读取 (vscode-filter-line 项目因 offline 属性无法读)
 
+### 严禁用 PowerShell 处理源码文本 (2026-08-20 事故)
+- `[System.IO.File]::ReadAllLines($p)` / `ReadAllText($p)` **不指定编码时按本地代码页解码**, 在中文 Windows 上会把 UTF-8 源码的中文全部损坏成 U+FFFD, 不可逆。
+- 一次按行号删除方法块的操作损坏了 gitkViewProvider.ts 的 1726 处中文, 只能 `git checkout` 恢复, 导致该文件本轮全部改动 (仓库/分支控制器接线) 丢失并需重做。
+- **规则: 源码增删改一律用 replace_in_file / write_to_file 编辑工具**, 即使为了避开长字符串匹配也不得走 PowerShell 捷径。确需脚本时必须显式传 `[System.Text.Encoding]::UTF8` 并先在副本上验证。
+
 ### 用户规则
 - 必须用英语回答; 中文提问最后一句给英文写法提示, 英文提问先纠正语法
 - 必需通过项目代码论证
