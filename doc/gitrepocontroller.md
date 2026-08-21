@@ -11,11 +11,11 @@
 | 字段                 | 含义                         | 写入者                            |
 | -------------------- | ---------------------------- | --------------------------------- |
 | `totalRepoList`    | 全部仓库与子模块（递归展开） | 仅控制器内部扫描流程              |
-| `selectedRepoList` | 用户已选仓库与子模块         | 仅用户操作，或规则 4.3 的失效剔除 |
-| `scanning`         | 子模块扫描是否在途           | 仅扫描流程，见第 5 节             |
+| `selectedRepoList` | 用户已选仓库与子模块         | 仅用户操作 |
+| `isLoading`        | 仓库与子模块加载是否在途     | 仅仓库加载流程，见第 5 节         |
 | `hasUserSelection` | 用户是否显式改过选择         | 仅用户操作                        |
 
-`hasUserSelection` 必须存在。「用户改动后就算 `totalRepoList` 变化也不可修改选择」这条规则需要一个标记来区分「默认选中当前仓库」和「用户显式选择」，否则无法判断该不该跟随默认值变化。
+`hasUserSelection` 用于区分初始化默认选择和用户显式选择。扫描完成后仅初始化场景会在列表非空时默认选择第一个仓库。
 
 ### 状态机
 
@@ -23,19 +23,17 @@
 stateDiagram-v2
     [*] --> Idle: 构造
     Idle --> Scanning: initialize() / rescan()
-    Scanning --> Scanning: 增量发现子模块<br/>追加 totalRepoList 并通知
-    Scanning --> Converging: 扫描完成
-    Converging --> Idle: 按第 4 节收敛<br/>scanning = false
+    Scanning --> Idle: 扫描完成<br/>整体替换 totalRepoList<br/>isLoading = false
     Scanning --> Scanning: rescan() 被丢弃<br/>(规则 6.1)
     Idle --> Idle: selectRepositories()<br/>hasUserSelection = true
     Scanning --> Scanning: selectRepositories()<br/>用户选择立即生效
 ```
 
-关键点：`Scanning` 态下 `selectRepositories` 依然生效，用户操作不被扫描阻塞；而 `rescan` 被直接丢弃，不排队、不打断。
+关键点：`Scanning` 态下 `selectRepositories` 依然生效，用户操作不被扫描阻塞；扫描完成后只替换 `totalRepoList`，不处理 `selectedRepoList`；而 `rescan` 被直接丢弃，不排队、不打断。
 
-## 1.1 GitRepositoryOption 不可变约束
+## 1.1 GitRepositoryOption
 
-`GitRepositoryOption` 的**所有属性禁止修改**，全部声明为 `readonly`。需要改某个属性时不得原地赋值，只能通过 `copy` 方法创建一份新对象，并用新对象整体替换原对象。
+仓库扫描和选择流程统一使用 `GitRepositoryOption`。控制器直接构造扫描结果，扫描完成后一次性替换 `totalRepoList`。
 
 **属性全部相同的两个 `GitRepositoryOption` 视为同一个对象。** 判等一律走值相等（`equals`），禁止使用引用相等（`===`）判断是否为同一仓库。
 
@@ -59,21 +57,19 @@ function equalsRepositoryOption(left: GitRepositoryOption, right: GitRepositoryO
 
 由此带来的连带要求：
 
-1. 控制器内部的 `totalRepoList` / `selectedRepoList` 元素一经创建即不可改。扫描中途要更新某个仓库的 `hasSubmodules`，必须 `copy` 出新对象替换数组中的旧对象。
-2. 判断「已选项是否仍在 `totalRepoList` 中」（规则 4.3）用 `equals`，不用 `===`。同理，规则 7 的「与当前选择完全相同」也用 `equals` 逐项比较。
-3. `copy` 出的新对象若与原对象属性全同，视为同一对象，**不得**触发变更通知。这与第 3 节「禁止无意义中间态」一致：值没变就不该让 UI 重渲染。
+1. 控制器内部的 `totalRepoList` / `selectedRepoList` 元素由 `GitRepositoryOption` 直接承载，扫描完成后整体替换列表。
 
 理由：仓库选项会同时存在于 `totalRepoList`、`selectedRepoList` 和已推给 Webview 的历史帧中。若允许原地改属性，同一对象被多处持有时的修改会隐式串改其他持有者看到的值，且无法判断「这一帧到底变了没有」。改为不可变 + 值判等后，任何变化都表现为「数组里换了一个新对象」，可被显式检测。
 
-## 2. 初始化流程
+## 2. 扫描流程
 
-1. 同步取当前仓库（工作区第一个 git 仓库），写入 `totalRepoList`，`selectedRepoList` 默认为它，`hasUserSelection = false`。
-2. 立即通知前端一次，让仓库选择器马上有内容。
-3. 置 `scanning = true` 并通知，发起递归子模块扫描（子模块的子模块也要扫）。
-4. 扫描过程中每发现一批就增量合并进 `totalRepoList` 并通知，不必等全部完成。
-5. 扫描结束后按第 4 节规则收敛，置 `scanning = false`。
+1. `initialize()` 或 `rescan()` 进入 loading 状态。
+2. 解析工作区仓库并递归扫描全部子模块。
+3. 等待扫描完成后排序结果，并通过 `applyTotal()` 一次性替换 `totalRepoList`。
+4. 初始化且没有用户选择时，从完整列表选择第一项。
+5. 扫描结束后置 `isLoading = false`。
 
-第 4 步的增量合并对应现有 `getGitRepositories` 的 `onInitialRepositories` 回调机制。
+扫描流程不发布中间结果，等待完整扫描结束后一次性替换 `totalRepoList`。
 
 ```mermaid
 sequenceDiagram
@@ -86,43 +82,26 @@ sequenceDiagram
     Caller->>Ctrl: initialize()
     Ctrl->>Git: 解析工作区当前仓库
     Git-->>Ctrl: 当前仓库
-    Ctrl->>Ctrl: totalRepoList = [当前仓库]<br/>selectedRepoList = [当前仓库]<br/>hasUserSelection = false
-    Ctrl-->>Caller: onDidChange
-    Caller->>UI: 仓库选择器立即可用
-
-    Ctrl->>Ctrl: scanning = true
-    Ctrl-->>Caller: onDidChange
-    Ctrl->>Git: 递归扫描子模块
-
-    loop 每发现一批
-        Git-->>Ctrl: onInitialRepositories(批次)
-        Ctrl->>Ctrl: 增量追加 totalRepoList<br/>禁止清空或收缩
-        Ctrl-->>Caller: onDidChange
-        Caller->>UI: 列表增长
-    end
-
+    Ctrl->>Ctrl: isLoading = true
+    Ctrl-->>Caller: onReposLoadingChanged(true)
+    Ctrl->>Git: 递归扫描全部子模块
     Git-->>Ctrl: 扫描完成 (完整列表)
-    Ctrl->>Ctrl: 按第 4 节收敛
-    Ctrl->>Ctrl: scanning = false
-    Ctrl-->>Caller: onDidChange
+    Ctrl->>Ctrl: 排序并整体替换 totalRepoList
+    Ctrl->>Ctrl: 初始化场景选择第一项
+    Ctrl->>Ctrl: isLoading = false
+    Ctrl-->>Caller: onReposLoadingChanged(false)
     Caller->>UI: 最终列表, 加载态结束
 ```
 
-## 3. 禁止的中间态
+## 3. 列表替换
 
-**扫描期间不得清空或收缩 `totalRepoList`。** 只允许增量追加或整体替换为超集。同理，`selectedRepoList` 在扫描期间不得被清空。
+扫描期间不发布中间仓库列表。扫描完成后直接使用完整结果替换 `totalRepoList`，不处理 `selectedRepoList`。
 
 理由：任何「先清空 → await IO → 再补全」的写法，中间态存在多久就会在 UI 上闪多久。仓库列表在扫描期间本来就不需要清空，当前仓库始终有效。
 
-## 4. 扫描结束后的收敛规则
+## 4. 选择规则
 
-1. `totalRepoList` 整体替换为扫描结果。
-2. `selectedRepoList` 原则上保持不变。
-3. 仅当某个已选项**确实不在**新的 `totalRepoList` 中时，从 `selectedRepoList` 移除该项。
-4. 若移除后 `selectedRepoList` 为空：`hasUserSelection === false` 时回退为当前仓库；`hasUserSelection === true` 时变为未选择仓库。
-5. 若 `hasUserSelection === false` 且当前仓库在扫描后被识别为子模块的父仓库，允许更新默认选中项；`hasUserSelection === true` 时不允许。
-
-规则 3 只对**扫描完成的最终结果**生效。扫描中途的增量结果不参与剔除判断，否则会把还没扫到的子模块误剔除。
+`selectedRepoList` 只由 `selectRepositories()` 和初始化默认选择修改。扫描完成后不会根据新列表重映射、剔除或回退已选仓库。
 
 ```mermaid
 flowchart TD
@@ -146,7 +125,7 @@ flowchart TD
 
 ## 5. 状态所有权（关键约束）
 
-**`scanning` 只能由扫描流程本身置 false，任何其他流程不得触碰。**
+**`isLoading` 只能由扫描流程本身置 false，任何其他流程不得触碰。**
 
 ## 6. 并发与失效控制
 
@@ -164,9 +143,9 @@ flowchart TD
     B -->|true| C[直接丢弃, 不排队]
     B -->|false| D[同步置 scanning = true<br/>必须在任何 await 之前]
     D --> E[发起扫描]
-    E --> F[增量通知]
+    E --> F[等待完整扫描]
     F --> G[扫描完成]
-    G --> H[第 4 节收敛]
+    G --> H[整体替换 totalRepoList]
     H --> I[scanning = false]
     I --> J[后续 rescan 可被接受]
 ```
@@ -187,23 +166,29 @@ interface GitRepoController {
     // 强制重扫，用于 watcher 或手动刷新；scanning 时直接丢弃
     rescan(): Promise<GitRepositoryOption[]>;
 
+  readonly isLoading: boolean;
+
   onSelectedRepoListChanged: Event<GitRepositoryOption[]>;
   ontotalRepoListChanged: Event<GitRepositoryOption[]>;
+  onReposLoadingChanged: Event<boolean>;
 }
 ```
 
-`selectRepositories` 需做两道校验：
+`selectRepositories` 是仓库选择状态的唯一**公开**修改入口。调用后先同步 fire `onReposLoadingChanged(true)`，再直接替换 `selectedRepoList` 并立即 fire `onSelectedRepoListChanged`，最后 fire `onReposLoadingChanged(false)`。扫描完成后不会处理 `selectedRepoList`。`GitkViewProvider` 只能将 Webview 的仓库选择意图转换为候选项后调用该方法；`GitBranchesController`、`GitCommitController` 和任何 Webview 状态消息均不得写入或重建 `selectedRepoList`。控制器内部的初始化默认选择与扫描收敛仍通过 private `applySelected` 完成，它们不属于外部“修改仓库”操作，也不会暴露为其他模块可调用的入口。
 
-1. 路径必须存在于 `totalRepoList`，否则整个调用忽略。
-2. 与当前选择完全相同（按 1.1 节的 `equals` 逐项比较）则直接返回，不触发通知，避免重复点击引发无意义的下游加载。
-
-校验通过后置 `hasUserSelection = true`。该方法在 `scanning === true` 期间同样有效，用户操作不被扫描阻塞。
+`selectRepositories` 不做候选去重、存在性校验或幂等比较，直接使用调用方传入的列表。方法在 loading 期间同样立即生效。
 
 ## 8. 与调用方的职责划分
 
-控制器负责仓库状态；`GitkViewProvider` 负责监听 `onDidChange` 并把状态推给 Webview，以及在选择变化时触发分支/提交加载。
+控制器负责仓库状态；`GitkViewProvider` 负责监听事件并把状态推给 Webview，以及在选择变化时触发分支/提交加载。
 
-控制器**不得**直接 `postMessage`，也不得调用分支或提交相关方法。反过来，`GitkViewProvider` 的刷新流程**不得**回写 `totalRepoList` / `selectedRepoList`，只能读。
+仓库弹窗的总列表数据只能由 `ontotalRepoListChanged` 回调写入。Provider 将该回调转换为专用 `totalRepoListChanged` 消息；通用 `stateUpdate`、`onSelectedRepoListChanged` 和 `onScanningChanged` 只能更新各自状态，禁止携带、清空或重建仓库总列表。视图重建时允许重放快照，但该快照本身也只能在 `ontotalRepoListChanged` 回调中更新。
+
+仓库当前显示栏只能由 `onSelectedRepoListChanged` 回调影响。Provider 在该回调中生成完整显示快照并发送 `selectedRepoDisplayChanged`；总列表变化、扫描 loading、通用状态更新和 Webview 仓库临时勾选都不得直接写显示栏的 label、title 或 disabled。视图重建时只能重放同一回调维护的显示快照。
+
+仓库相关 UI（仓库显示栏与仓库弹窗）的 loading 装饰只能由 `onReposLoadingChanged` 驱动。Provider 将该回调转换为专用 `repoLoadingChanged` 消息；`onBranchesLoadingChanged`、通用 `stateUpdate`、提交进度、仓库临时勾选、总列表和选择回调都不得设置或清除仓库 loading。
+
+控制器**不得**直接 `postMessage`，也不得调用分支或提交相关方法。分支和提交控制器只能订阅 `onSelectedRepoListChanged` 消费仓库选择，不能修改仓库选择；`GitkViewProvider` 的刷新流程也不得回写 `totalRepoList` / `selectedRepoList`，只能读。
 
 ```mermaid
 flowchart LR
@@ -235,12 +220,11 @@ flowchart LR
 | 场景                         | 期望                                                                   |
 | ---------------------------- | ---------------------------------------------------------------------- |
 | 首次打开，无子模块           | 仓库选择器立即显示当前仓库，扫描结束后列表不变                         |
-| 首次打开，有嵌套子模块       | 立即显示当前仓库，随后增量追加子模块，全程不清空                       |
+| 首次打开，有嵌套子模块       | 等待完整扫描结束后一次性显示全部仓库                               |
 | 扫描中途用户切换仓库         | 用户选择立即生效，扫描结果落地后不覆盖用户选择                         |
-| 扫描中途再次`rescan`       | 请求被丢弃，在途扫描不受影响，`scanning` 保持 true                   |
+| 扫描中途再次`rescan`       | 请求被丢弃，在途扫描不受影响，`isLoading` 保持 true                  |
 | 扫描结束后已选子模块已被删除 | 该项从`selectedRepoList` 移除；若为空则按 4.4 分流                   |
 | 用户显式清空选择后扫描结束   | 保持未选择状态，不自动回退当前仓库                                     |
-| 外部刷新被中止               | 扫描不受影响，仍能正常落地，`scanning` 正确收敛为 false              |
-| 扫描过程中抛异常             | `scanning` 仍必须置回 false，`totalRepoList` 保留已发现的部分      |
-| 扫描后某仓库被识别为父仓库   | 用`copy` 生成带新 `hasSubmodules` 的对象替换旧对象，原对象不被改动 |
-| 收敛结果与当前状态属性全同   | 按 1.1 节视为同一对象，不触发变更通知                                  |
+| 外部刷新被中止               | 扫描不受影响，仍能正常落地，`isLoading` 正确收敛为 false             |
+| 扫描过程中抛异常             | `isLoading` 仍必须置回 false，`totalRepoList` 保留已发现的部分     |
+| 扫描后某仓库被识别为父仓库   | 完整扫描结果中的 `hasSubmodules` 随总列表一起替换                     |

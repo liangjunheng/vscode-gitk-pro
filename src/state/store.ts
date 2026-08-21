@@ -1,6 +1,7 @@
 import { AppState, createInitialState, GitkIntent } from '../types';
 
 export type StoreEffect =
+    | { type: 'webviewReady' }
     | { type: 'refresh' }
     | { type: 'selectRepositories'; paths: unknown }
     | { type: 'selectBranches'; names: string[] }
@@ -54,6 +55,9 @@ export class Store {
             case 'blur':
                 partial = { isFocused: false };
                 break;
+            case 'webviewReady':
+                effects = [{ type: 'webviewReady' }];
+                break;
             case 'refresh':
                 effects = [{ type: 'refresh' }];
                 break;
@@ -82,19 +86,6 @@ export class Store {
                 const isWorkingTree = intent.hash === 'staged' || intent.hash === 'changes';
                 const isCommit = typeof intent.hash === 'string' && typeof intent.repositoryPath === 'string';
                 if (!isWorkingTree && !isCommit) { break; }
-                const hash = intent.hash as string;
-                const repositoryPath = isWorkingTree
-                    ? this.state.currentRepositoryPath
-                    : intent.repositoryPath as string;
-                const changeSet: AppState['currentChangeSet'] = isWorkingTree ? hash as 'staged' | 'changes' : 'commit';
-                partial = {
-                    currentHash: hash,
-                    currentRepositoryPath: repositoryPath,
-                    currentChangeSet: changeSet,
-                    selectedPath: undefined,
-                    files: [],
-                    filesLoading: true,
-                };
                 effects = [{ type: 'selectCommit', hash: intent.hash, repositoryPath: intent.repositoryPath }];
                 break;
             }

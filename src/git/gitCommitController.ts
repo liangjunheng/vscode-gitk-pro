@@ -1,17 +1,19 @@
 import * as vscode from 'vscode';
-import type {
-    ChangeSetMode,
-    DiffPayload,
-    GitBranchOption,
-    GitCommit,
-    GitRepositoryOption,
-    RepositoryCommit,
+import {
+    type ChangeSetMode,
+    type DiffPayload,
+    type GitBranchOption,
+    CommitMetadata,
+    GraphLane,
+    type GitRepositoryOption,
 } from '../types';
 import { DiffReader } from './diffReader';
+import { GitBranchesController } from './gitBranchesController';
+import { GitRepoController } from './gitRepoController';
 import {
     getCommitFiles,
     getGitCommits,
-    getWorkingTreeChanges,
+    getWorkingTreeChangeFiles,
     searchCommits,
 } from './gitLogProvider';
 
@@ -29,20 +31,25 @@ const LANE_COLORS = [
  * 只管提交读取/过滤/内容查询, 不涉及仓库发现、分支选择、分页, 也不直接操作 Webview。
  * 关键约束:
  * - 两个刷新入口 (分支变化 / 关键字变化) 走同一条流程, 内容一致则不刷新;
- * - isLoading 在任何 await 之前同步置位, 在途请求一律丢弃, 因此无需代次机制;
- * - 不接受外部 AbortSignal, 读取有效性只取决于自身是否完成;
+ * - 分支选择变化会取消旧提交列表读取，并通过内部 generation 隔离旧结果;
+ * - 搜索与 forceRefresh 仍共用 loading 门禁，不打断当前分支读取;
  * - selectedBranches 只读不写, 任何失败都不改动它;
- * - selectedCommit 仅首次默认取首条, 刷新列表时一律不动;
- * - 两个内容读取方法是纯查询, 不写状态不发事件不受 isLoading 限制。
+ * - selected 仅首次默认取首条, 刷新列表时一律不动;
+ * - 两个内容读取方法是纯查询, 不写状态不发事件不受 loading 限制。
  */
 export class GitCommitController implements vscode.Disposable {
     private branches: GitBranchOption[] = [];
     private repositories: GitRepositoryOption[] = [];
+    private branchesByRepository = new Map<string, GitBranchOption[]>();
     private keywords: string[] = [];
-    private searched: RepositoryCommit[] = [];
-    private total: RepositoryCommit[] = [];
-    private selected?: RepositoryCommit;
-    private loading = false;
+    private searched: CommitMetadata[] = [];
+    private total: CommitMetadata[] = [];
+    private _selectedCommit?: CommitMetadata;
+    private commitReadAbortController?: AbortController;
+    private commitReadGeneration = 0;
+    private repositorySelectionGeneration = 0;
+    private branchRepositorySelectionGeneration = -1;
+    private _isLoading = false;
     private pendingForceRefresh = false;
     /**
      * 内容读取专用实例, 不与 Provider 共用。
@@ -52,67 +59,104 @@ export class GitCommitController implements vscode.Disposable {
      */
     private readonly diffReader = new DiffReader();
 
-    private readonly searchedEmitter = new vscode.EventEmitter<RepositoryCommit[]>();
-    private readonly totalEmitter = new vscode.EventEmitter<RepositoryCommit[]>();
+    private readonly searchedEmitter = new vscode.EventEmitter<CommitMetadata[]>();
+    private readonly totalEmitter = new vscode.EventEmitter<CommitMetadata[]>();
+    private readonly selectedEmitter = new vscode.EventEmitter<CommitMetadata | undefined>();
     private readonly loadingEmitter = new vscode.EventEmitter<boolean>();
+    private readonly repositorySelectionSubscription: vscode.Disposable;
+    private readonly branchSelectionSubscription: vscode.Disposable;
 
     readonly onSearchedCommitsChanged = this.searchedEmitter.event;
     readonly onTotalCommitsChanged = this.totalEmitter.event;
-    readonly onLoadingChanged = this.loadingEmitter.event;
+    readonly onSelectedCommitChanged = this.selectedEmitter.event;
+    readonly onCommitsLoadingChanged = this.loadingEmitter.event;
+
+    constructor(repoController: GitRepoController, branchesController: GitBranchesController) {
+        this.repositorySelectionSubscription = repoController.onSelectedRepoListChanged(repositories => {
+            void this.selectRepositories(repositories);
+        });
+        this.branchSelectionSubscription = branchesController.onSelectedBranchesChanged(branchesMap => {
+            this.selectBranches([...branchesMap.values()].flat());
+        });
+    }
 
     get selectedBranches(): readonly GitBranchOption[] { return this.branches; }
-    get totalCommitList(): readonly RepositoryCommit[] { return this.total; }
-    get searchedCommitList(): readonly RepositoryCommit[] { return this.searched; }
+    get totalCommitList(): readonly CommitMetadata[] { return this.total; }
+    get searchedCommitList(): readonly CommitMetadata[] { return this.searched; }
     get searchKeywords(): readonly string[] { return this.keywords; }
-    get selectedCommit(): RepositoryCommit | undefined { return this.selected; }
-    get isLoading(): boolean { return this.loading; }
+    get selectedCommit(): CommitMetadata | undefined { return this._selectedCommit; }
+
+    findCommit(hash: string, repositoryPath: string): CommitMetadata | undefined {
+        return this.searched.find(commit =>
+            commit.hash === hash && commit.gitBranchOption?.repoOption.path === repositoryPath,
+        );
+    }
+    get isLoading(): boolean { return this._isLoading; }
 
     /**
      * 分支头变化后的强制刷新入口。
      * 不改 selectedBranches；在途时记账，当前刷新收尾后补跑，避免 watcher 事件丢失。
      */
     forceRefresh(): void {
-        if (this.loading) {
+        if (this._isLoading) {
             this.pendingForceRefresh = true;
             return;
         }
         if (this.branches.length === 0 || this.repositories.length === 0) { return; }
-        this.loading = true;
+        this._isLoading = true;
         void this.refresh(true);
     }
 
-    /**
-     * 刷新入口一: 分支选择变化。
-     * 返回是否真的发起了刷新, 便于调用方决定要不要进入加载态。
-     */
-    async selectBranches(branches: readonly GitBranchOption[], repositories: readonly GitRepositoryOption[]): Promise<boolean> {
-        // 在途即丢弃; 置位在任何 await 之前, 确保后续请求必然被拦住。
-        if (this.loading) { return false; }
-        if (this.sameNames(this.branches, branches)) { return false; }
-        this.loading = true;
-        this.branches = [...branches];
+    /** 仓库选择唯一内部入口：仅由 GitRepoController.onSelectedRepoListChanged 调用。 */
+    private async selectRepositories(repositories: readonly GitRepositoryOption[]): Promise<void> {
+        if (this.sameRepositories(this.repositories, repositories)) { return; }
+        this.commitReadAbortController?.abort();
         this.repositories = [...repositories];
-        await this.refresh(true);
-        return true;
+        this.repositorySelectionGeneration++;
+        // 分支事件将携带新仓库对应的分支；强制该次事件按新数据源重新读取。
+    }
+
+    /** 分支选择唯一内部入口：仅由 GitBranchesController.onSelectedBranchesChanged 调用。 */
+    private selectBranches(branches: readonly GitBranchOption[]): void {
+        this.branchesByRepository = new Map();
+        for (const branch of branches) {
+            const repositoryPath = branch.repoOption.path;
+            const list = this.branchesByRepository.get(repositoryPath) ?? [];
+            list.push(branch);
+            this.branchesByRepository.set(repositoryPath, list);
+        }
+        const repositoryChanged = this.branchRepositorySelectionGeneration !== this.repositorySelectionGeneration;
+        if (!repositoryChanged && this.sameNames(this.branches, branches)) { return; }
+        // 新分支或新仓库选择必须立即淘汰旧提交列表读取，不能因 loading 丢弃最新数据源。
+        this.commitReadAbortController?.abort();
+        this._isLoading = true;
+        this.branches = [...branches];
+        this.branchRepositorySelectionGeneration = this.repositorySelectionGeneration;
+        void this.refresh(true);
     }
 
     /** 刷新入口二: 关键字变化; 空数组表示不过滤。 */
-    async search(keywords: readonly string[], repositories: readonly GitRepositoryOption[]): Promise<RepositoryCommit[]> {
-        if (this.loading) { return [...this.searched]; }
+    async search(keywords: readonly string[]): Promise<CommitMetadata[]> {
+        if (this._isLoading) { return [...this.searched]; }
         if (this.sameKeywords(this.keywords, keywords)) { return [...this.searched]; }
-        this.loading = true;
+        this._isLoading = true;
         this.keywords = [...keywords];
-        this.repositories = [...repositories];
         // 关键字变化不影响未过滤的全量列表与工作区状态。
         await this.refresh(false);
         return [...this.searched];
     }
 
-    /** 用户操作入口, 唯一允许主动改 selectedCommit 的公开方法。 */
-    selectCommit(commit: RepositoryCommit): boolean {
-        // 不校验是否在列表中: selectedCommit 允许指向列表外的提交。
-        if (this.isSameCommit(this.selected, commit)) { return false; }
-        this.selected = commit;
+    /** 用户操作入口, 唯一允许主动改 selected 的公开方法。 */
+    selectCommit(commit: CommitMetadata): boolean {
+        // 提交业务身份由仓库路径和 hash 组成；对象重建、图形字段变化不应触发重复选择。
+        if (this._selectedCommit?.gitBranchOption && commit.gitBranchOption
+            && this._selectedCommit.gitBranchOption.equals(commit.gitBranchOption)
+            && this._selectedCommit.hash === commit.hash) {
+            return false;
+        }
+        // 选择提交只改变选择状态，不刷新提交列表；提交内容读取由 Provider 独立管理。
+        this._selectedCommit = commit;
+        this.selectedEmitter.fire(this._selectedCommit);
         return true;
     }
 
@@ -132,43 +176,63 @@ export class GitCommitController implements vscode.Disposable {
         repositoryPath: string,
     ): Promise<DiffPayload[]> {
         const rootUri = vscode.Uri.parse(repositoryPath);
-        const changes = await getWorkingTreeChanges(rootUri);
+        const files = await getWorkingTreeChangeFiles(rootUri, mode);
         // 开关为 false 时不拒绝: 开关是上次刷新的快照, 此刻工作区可能已有新变更。
-        const files = mode === 'staged' ? changes.staged : changes.changes;
         // hash 传空串: 工作区路径比对的是 HEAD/索引/磁盘, readDiffs 在非 commit 模式下不读该参数。
         return this.diffReader.readDiffs(rootUri, '', files, mode);
     }
 
     dispose(): void {
+        this.repositorySelectionSubscription.dispose();
+        this.branchSelectionSubscription.dispose();
+        this.commitReadAbortController?.abort();
         this.diffReader.stop();
         this.searchedEmitter.dispose();
         this.totalEmitter.dispose();
         this.loadingEmitter.dispose();
+        this.selectedEmitter.dispose();
     }
 
     /** 唯一的刷新流程；分支变化时额外刷新 totalCommitList。 */
     private async refresh(branchesChanged: boolean): Promise<void> {
+        const generation = ++this.commitReadGeneration;
+        const abortController = new AbortController();
+        this.commitReadAbortController = abortController;
         this.loadingEmitter.fire(true);
         try {
-            const refs = this.branches.map(branch => branch.name);
-            this.searched = await this.readCommits(refs, this.keywords);
+            const refsByRepository = new Map<string, string[]>();
+            for (const branch of this.branches) {
+                const refs = refsByRepository.get(branch.repoOption.path) ?? [];
+                refs.push(branch.name);
+                refsByRepository.set(branch.repoOption.path, refs);
+            }
+            const searched = await this.readCommits(refsByRepository, this.keywords, abortController.signal);
+            if (abortController.signal.aborted || generation !== this.commitReadGeneration) { return; }
+            this.searched = searched;
             this.searchedEmitter.fire([...this.searched]);
             if (branchesChanged) {
-                // 两个列表不得共享提交对象: buildGraph 原地改图形字段, 共享会互相污染布局。
-                // 关键字为空时内容相同, 仍需独立读取一份而不能直接复用 searched。
-                this.total = await this.readCommits(refs, []);
+                // 无搜索时 searched 就是完整展示列表；复制对象即可隔离 buildGraph 写入，无需重复执行 git log。
+                const total = this.keywords.length === 0
+                    ? this.searched.map(commit => new CommitMetadata({ ...commit }))
+                    : await this.readCommits(refsByRepository, [], abortController.signal);
+                if (abortController.signal.aborted || generation !== this.commitReadGeneration) { return; }
+                this.total = total;
                 this.totalEmitter.fire([...this.total]);
             }
             // 仅首次赋值; 已有选中项一律不动, 即使已不在新列表中。
-            if (!this.selected && this.searched.length > 0) {
-                this.selected = this.searched[0];
+            if (!this._selectedCommit && this.searched.length > 0) {
+                this.selectCommit(this.searched[0]);
             }
         } catch (error) {
-            // 保留 selectedBranches 与已有列表原样, 如实反映失败。
-            console.warn('无法读取提交列表:', error);
+            if (!abortController.signal.aborted) {
+                // 保留 selectedBranches 与已有列表原样, 如实反映失败。
+                console.warn('无法读取提交列表:', error);
+            }
         } finally {
-            // 必须置回, 否则后续请求会被规则 3 全部丢弃。
-            this.loading = false;
+            // 被新分支取消的旧流程不能结束新流程的 loading 或清空新流程控制器。
+            if (generation !== this.commitReadGeneration) { return; }
+            this.commitReadAbortController = undefined;
+            this._isLoading = false;
             this.loadingEmitter.fire(false);
             if (this.pendingForceRefresh) {
                 this.pendingForceRefresh = false;
@@ -178,34 +242,42 @@ export class GitCommitController implements vscode.Disposable {
     }
 
     /** 按仓库并行读取并建图; 关键字非空走搜索, 否则走普通读取。 */
-    private async readCommits(refs: readonly string[], keywords: readonly string[]): Promise<RepositoryCommit[]> {
-        if (this.repositories.length === 0 || refs.length === 0) { return []; }
+    private async readCommits(
+        refsByRepository: ReadonlyMap<string, readonly string[]>,
+        keywords: readonly string[],
+        signal: AbortSignal,
+    ): Promise<CommitMetadata[]> {
+        if (this.repositories.length === 0) { return []; }
         const pages = await Promise.all(this.repositories.map(async repository => {
+            const refs = refsByRepository.get(repository.path) ?? [];
+            if (refs.length === 0) { return []; }
             const rootUri = vscode.Uri.parse(repository.path);
             const commits = keywords.length > 0
-                ? await searchCommits(rootUri, [...keywords], refs)
-                : await getGitCommits(rootUri, COMMIT_LIMIT, refs, 0);
+                ? await searchCommits(rootUri, [...keywords], refs, signal)
+                : await getGitCommits(rootUri, COMMIT_LIMIT, refs, 0, undefined, signal);
             // 每个列表各自建图: buildGraph 原地改图形字段, 共享对象会互相污染。
-            return this.buildGraph(commits).map(commit => ({ ...commit, repositoryPath: repository.path }));
+            return this.buildGraph(commits).map(commit => new CommitMetadata({
+                ...commit,
+                gitBranchOption: this.branchesByRepository.get(repository.path)?.[0]!,
+            }));
         }));
         return pages.flat();
     }
 
     // 图形布局：按 VS Code SCM History 的 inputSwimlanes → outputSwimlanes 状态机转换。
-    private buildGraph(commits: GitCommit[]): GitCommit[] {
-        interface Swimlane { hash: string; color: string; }
-        let outputSwimlanes: Swimlane[] = [];
+    private buildGraph(commits: CommitMetadata[]): CommitMetadata[] {
+        let outputSwimlanes: GraphLane[] = [];
         let nextColor = 0;
-        const createSwimlane = (hash: string, color?: string): Swimlane => ({
+        const createSwimlane = (hash: string, color?: string): GraphLane => new GraphLane({
             hash,
             color: color ?? LANE_COLORS[nextColor++ % LANE_COLORS.length],
         });
 
         for (const commit of commits) {
-            const inputSwimlanes = outputSwimlanes.map(lane => ({ ...lane }));
+            const inputSwimlanes = outputSwimlanes.map(lane => new GraphLane({ ...lane }));
             const inputIndex = inputSwimlanes.findIndex(lane => lane.hash === commit.hash);
             const lane = inputIndex >= 0 ? inputIndex : inputSwimlanes.length;
-            const nextSwimlanes: Swimlane[] = [];
+            const nextSwimlanes: GraphLane[] = [];
             let firstParentAdded = false;
 
             for (let index = 0; index < inputSwimlanes.length; index++) {
@@ -217,7 +289,7 @@ export class GitCommitController implements vscode.Disposable {
                     }
                     continue;
                 }
-                nextSwimlanes.push({ ...inputLane });
+                nextSwimlanes.push(new GraphLane({ ...inputLane }));
             }
 
             for (let index = firstParentAdded ? 1 : 0; index < commit.parents.length; index++) {
@@ -236,17 +308,17 @@ export class GitCommitController implements vscode.Disposable {
         return commits;
     }
 
-    // 提交判等只比 hash + repositoryPath: 图形字段随布局变化, 全属性比较会误判。
-    private isSameCommit(left: RepositoryCommit | undefined, right: RepositoryCommit | undefined): boolean {
-        if (!left || !right) { return left === right; }
-        return left.hash === right.hash && left.repositoryPath === right.repositoryPath;
-    }
-
     // 顺序无关的 name 集合比较: 上游 fire 的数组顺序不稳定, current 分支变更标记不应触发提交重载。
     private sameNames(left: readonly GitBranchOption[], right: readonly GitBranchOption[]): boolean {
         if (left.length !== right.length) { return false; }
         const names = new Set(left.map(branch => branch.name));
         return right.every(branch => names.has(branch.name));
+    }
+
+    private sameRepositories(left: readonly GitRepositoryOption[], right: readonly GitRepositoryOption[]): boolean {
+        if (left.length !== right.length) { return false; }
+        const paths = new Set(left.map(repository => repository.path));
+        return right.every(repository => paths.has(repository.path));
     }
 
     private sameKeywords(left: readonly string[], right: readonly string[]): boolean {

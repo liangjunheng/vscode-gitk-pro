@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { spawn, type ChildProcess } from 'child_process';
 import * as path from 'path';
-import { ChangeSetMode, CommitFile, DiffPayload } from '../types';
+import { DiffPayload, type ChangeSetMode, type CommitFile } from '../types';
 import { store } from '../state/store';
 
 // git cat-file 已把内容解码为 utf8 字符串, 二进制内容会含 NUL 字符; 只探测前若干字符即可判定。
@@ -101,10 +101,10 @@ export class DiffReader {
             // 已移除 numstat, isBinary 全部靠内容侧 NUL 探测判定, 避免把二进制当文本渲染。
             const isBinary = file.isBinary || containsNul(original) || containsNul(modified);
             if (isBinary) {
-                return { index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isBinary: true, original: '', modified: '', error: undefined };
+                return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isBinary: true, original: '', modified: '', error: undefined });
             }
             const missing = [originalObject, modifiedObject].find(object => object && !contents.has(object));
-            return { index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isBinary: false, original: original || '', modified: modified || '', error: missing ? `无法读取 Git 对象：${missing}` : undefined };
+            return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isBinary: false, original: original || '', modified: modified || '', error: missing ? `无法读取 Git 对象：${missing}` : undefined });
         });
     }
 
@@ -130,9 +130,9 @@ export class DiffReader {
             // 已移除 numstat, isBinary 靠内容侧 NUL 探测判定。
             const isBinary = file.isBinary || containsNul(original) || containsNul(modified);
             if (isBinary) {
-                return { index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isBinary: true, original: '', modified: '', error: workingTreeFile.error };
+                return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isBinary: true, original: '', modified: '', error: workingTreeFile.error });
             }
-            return { index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isBinary: false, original, modified, error: workingTreeFile.error };
+            return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isBinary: false, original, modified, error: workingTreeFile.error });
         }));
     }
 

@@ -3,7 +3,6 @@ import {
     runGitCommand,
     runGitSync,
     updateGitSubmodules,
-    invalidateGitRefsCache,
 } from '../git/gitLogProvider';
 
 /**
@@ -81,7 +80,6 @@ export class GitActionRunner {
                     return;
             }
             if (!didMutateRepository) { return; }
-            invalidateGitRefsCache(rootUri);
             await this.onMutated(rootUri);
         } catch (error) {
             void vscode.window.showErrorMessage(`Git 操作失败: ${error instanceof Error ? error.message : String(error)}`);
@@ -116,7 +114,6 @@ export class GitActionRunner {
                     } else {
                         progress.report({ message: '正在刷新提交记录...' });
                     }
-                    invalidateGitRefsCache(rootUri);
                     const shouldRefreshHistory = action === 'push' || (action === 'pull' && result.headChanged);
                     await this.onMutated(
                         rootUri,

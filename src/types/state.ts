@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ChangeSetMode, ChangedFile, GitCommit, RepositoryCommit } from './git';
+import { ChangeSetMode, ChangedFile, CommitMetadata } from './git';
 
 export type GitSyncAction = 'fetch' | 'pull' | 'push';
 
@@ -7,6 +7,7 @@ export type GitSyncAction = 'fetch' | 'pull' | 'push';
 export type GitkIntent =
     | { type: 'focus' }
     | { type: 'blur' }
+    | { type: 'webviewReady' }
     | { type: 'refresh' }
     | { type: 'selectRepositories'; paths: unknown }
     | { type: 'selectBranches'; names: unknown }
@@ -20,12 +21,12 @@ export type GitkIntent =
     | { type: 'search'; keywords: unknown };
 
 // 单一数据源: 应用全局状态
-// 仓库维度状态 (totalRepoList / selectedRepoList / scanning) 由 GitRepoController 独占持有, 不入 Store。
+// 仓库维度状态 (totalRepoList / selectedRepoList / isLoading) 由 GitRepoController 独占持有, 不入 Store。
 // 分支维度状态 (branchesMap / selectedBranches / loadingRepos) 由 GitBranchesController 独占持有, 不入 Store。
 export interface AppState {
     // 提交数据
-    commits: RepositoryCommit[];
-    rawCommits: GitCommit[];
+    commits: Array<CommitMetadata & { key: string }>;
+    rawCommits: CommitMetadata[];
     hasMoreCommits: boolean;
     isLoadingMoreCommits: boolean;
     commitPageError: string;
@@ -35,8 +36,10 @@ export interface AppState {
     currentRepositoryPath: string | undefined;
     currentChangeSet: ChangeSetMode;
     files: ChangedFile[];
+    workingTreeRows: Array<{ hash: 'changes' | 'staged'; label: string; repositoryPath: string }>;
     filesLoading: boolean;
     selectedPath: string | undefined;
+    selectedCommit: { key: string; hash: string; repositoryPath: string; kind: ChangeSetMode } | null;
     displayMode: 'tree' | 'flat';
 
     // 搜索
@@ -53,6 +56,7 @@ export interface AppState {
     diffProgress: { completed: number; total: number };
     diffError: string | undefined;
     diffGeneration: number;
+    commitListRevision: number;
 }
 
 export function createInitialState(): AppState {
@@ -67,8 +71,10 @@ export function createInitialState(): AppState {
         currentRepositoryPath: undefined,
         currentChangeSet: 'commit',
         files: [],
+        workingTreeRows: [],
         filesLoading: false,
         selectedPath: undefined,
+        selectedCommit: null,
         displayMode: 'flat',
 
         searchKeywords: [],
@@ -83,5 +89,6 @@ export function createInitialState(): AppState {
         diffProgress: { completed: 0, total: 0 },
         diffError: undefined,
         diffGeneration: 0,
+        commitListRevision: 0,
     };
 }

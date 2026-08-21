@@ -10,14 +10,16 @@
 
 ## 1. 状态定义
 
-| 字段                    | 含义                                                                        | 写入者                                   |
-| ----------------------- | --------------------------------------------------------------------------- | ---------------------------------------- |
-| `selectedBranches`    | 用户已选分支（已消费的那一份）                                              | 仅`onSelectedBranchesChanged` 处理流程 |
-| `totalCommitList`     | 建图后的完整提交列表（带`repositoryPath`）                                | 仅加载流程                               |
-| `searchedCommitList`  | 建图后的**展示列表**；UI 渲染的就是它                                 | 仅刷新流程（第 3 节）                    |
-| `searchKeywords`      | 当前搜索关键字；空数组表示不过滤                                            | 仅`search()`                           |
-| `selectedCommit`      | 当前选中提交对象；无选中时为`undefined`                                   | 仅用户操作与首次默认（第 6 节）          |
-| `isLoading`           | 提交读取是否在途                                                            | 仅刷新流程，见第 4 节                    |
+| 字段                   | 含义                                         | 写入者                                   |
+| ---------------------- | -------------------------------------------- | ---------------------------------------- |
+| `selectedBranches`   | 用户已选分支（已消费的那一份）               | 仅`onSelectedBranchesChanged` 处理流程 |
+| `totalCommitList`    | 建图后的完整提交列表（带`repositoryPath`） | 仅加载流程                               |
+| `searchedCommitList` | 建图后的**展示列表**；UI 渲染的就是它  | 仅刷新流程（第 3 节）                    |
+| `searchKeywords`     | 当前搜索关键字；空数组表示不过滤             | 仅`search()`                           |
+| `selectedCommit`     | 当前选中提交对象；无选中时为`undefined`    | 仅用户操作与首次默认（第 6 节）          |
+| `isLoading`          | 提交读取是否在途                             | 仅刷新流程，见第 4 节                    |
+
+提交列表 UI 的 loading 生命周期比本字段更宽：仓库或分支选择会改变提交数据源，Provider 在选择 Intent 到达时先显示“正在获取当前仓库...”，随后以 `GitBranchesController.isLoading` 显示“正在获取当前分支...”。分支控制器可能在当前分支快路径中提前发布一次选择并触发可取消的提交预读，因此只要分支控制器仍在 loading，分支阶段就优先于 `GitCommitController.isLoading`；分支读取收尾后，再由提交控制器接管为“正在加载历史提交列表...”。新选择取消旧任务时，旧流程的 generation 门禁不会发布 false，阶段状态因此连续。
 
 ### searchedCommitList 是展示列表，不是「搜索态才有的东西」
 
@@ -32,11 +34,11 @@ UI 通过 `onSearchedCommitsChanged` 渲染，渲染的对象始终是 `searched
 
 ### selectedCommit 存提交对象
 
-`selectedCommit` 的类型是 `RepositoryCommit`，存的是完整对象而非 `{ hash, repositoryPath }` 标识。
+`selectedCommit` 的类型是 `CommitMetadata`，存的是提交元数据对象而非 Webview 展示标识。
 
 与 `GitBranchesController.selectedBranches` 存 `GitBranchOption` 而非分支名同源：调用方拿到选中项后通常还要用它的 `subject` / `author` / `date` 渲染标题栏，只给标识会迫使调用方回列表里反查一次，而该提交可能已不在列表中（第 6 节规则 2 允许这种情况）。存对象则任何时候都能直接取到这些字段。
 
-`RepositoryCommit` 自带 `repositoryPath`，所以「多仓库下不同仓库存在相同 hash」（cherry-pick 或子模块指向同一上游）的定位问题天然解决 —— 比较时必须 `hash` 与 `repositoryPath` 都相等才算同一提交。
+`CommitMetadata` 通过 `gitBranchOption.repoPath` 持有仓库归属，所以「多仓库下不同仓库存在相同 hash」的定位问题天然解决 —— 比较时必须 `hash` 与仓库路径都相等才算同一提交。
 
 **代价是对象里的图形字段会过期。** `lane` / `laneColor` / `inputSwimlanes` 等由 `buildGraph` 写入，随列表内容变化（见第 10 节）。列表刷新后 `selectedCommit` 里的这几个字段仍是旧布局的值。
 
@@ -46,7 +48,7 @@ UI 通过 `onSearchedCommitsChanged` 渲染，渲染的对象始终是 `searched
 
 ### 当前分支的工作区变更开关
 
-Changes / Staged Changes 两行只挂在 `kind === 'current'` 的分支下。显示开关直接保存在 `GitBranchOption.hasChangeFiles` 与 `GitBranchOption.hasStagedChangeFiles`，由 `GitBranchesController` 读取工作区状态后整体替换 current 分支；Provider 只在当前分支已勾选时将两个布尔值转换成展示层虚拟行。
+Changes / Staged Changes 两行不再挂在 `GitBranchOption.virtualCommits` 中。显示开关仍直接保存在 `GitBranchOption.hasChangeFiles` 与 `GitBranchOption.hasStagedChangeFiles`，由 `GitBranchesController` 读取工作区状态后整体替换 current 分支；提交区域按当前仓库和分支选择独立生成工作区变更行。
 
 Diff 内容仍由第 8 节的 `getVirtualCommitContent` 按需读取。开关只回答「要不要显示」，不缓存内容。
 
@@ -66,13 +68,24 @@ stateDiagram-v2
     Loading --> Loading: 再次收到事件或搜索<br/>直接丢弃 (规则 3)
 ```
 
+## 2. 提交数据模型
+
+### `CommitMetadata`
+
+`CommitMetadata` 表示提交列表中的提交元数据，包含 hash、作者、时间、message、refs 以及提交图泳道字段。
+
+### `GitCommitOption`
+
+`GitCommitOption` 是扩展端非 Webview 阶段的提交聚合对象，持有 `CommitMetadata`、`CommitFile[]` 和 `DiffPayload[]`。`CommitMetadata`、`CommitFile` 与 `DiffPayload` 均提供 `equals()` 值语义比较，`GitCommitOption.equals()` 会比较三部分数据。发送到 Webview 时只发送可序列化的展示数据，不依赖 class 原型方法。
+
 ## 2. 输入契约与去重
 
 有三个触发刷新的入口：
 
-1. `GitBranchesController.onSelectedBranchesChanged` —— 分支选择变化。
-2. `search(keywords)` —— 关键字变化。
-3. Provider 监听 `GitBranchesController.onBranchHeadCommitChanged` —— 分支名未变但 HEAD hash 变化时调用提交控制器 `forceRefresh()`；事件仅表示变化事实，不携带或维护 map。
+1. 内部监听 `GitRepoController.onSelectedRepoListChanged` —— 更新仓库数据源、取消旧提交读取，并等待分支回调。
+2. 内部监听 `GitBranchesController.onSelectedBranchesChanged` —— 分支或所属仓库数据源变化时读取提交。
+3. `search(keywords)` —— 关键字变化。
+4. Provider 监听 `GitBranchesController.onBranchHeadCommitChanged` —— 分支名未变但 HEAD hash 变化时调用提交控制器 `forceRefresh()`；事件仅表示变化事实，不携带或维护 map。
 
 前两个入口做内容去重，**内容与当前一致则整个调用返回**，不改状态、不发通知、不发起 IO。`forceRefresh()` 明确跳过分支名去重，因为它要处理的正是「name 集合相同、commit hash 已变」的情况；它不改 `selectedBranches` 与 `searchKeywords`，按现有状态重读两个提交列表和虚拟提交开关。
 
@@ -106,7 +119,7 @@ stateDiagram-v2
 
 第 5 步的 `totalCommitList` 只在分支变化时才需要重读 —— 关键字变化不影响未过滤的全量列表。关键字变化时它保持原样，也不 fire `onTotalCommitsChanged`。
 
-工作区变更开关属于 `GitBranchesController` 的 current 分支对象。提交控制器不读取工作区 presence、不持有虚拟事件，也不依赖分支控制器；Provider 通过普通 `onBranchesMapChanged` 快照渲染工作区虚拟行。
+工作区变更开关属于 `GitBranchesController` 的 current 分支对象。提交控制器不读取工作区 presence、不持有虚拟事件，也不依赖分支控制器；Provider 通过普通 `onTotalBranchesListChanged` 快照渲染工作区虚拟行。
 
 `getWorkingTreeChangePresence` 只跑一次 `git status --porcelain`，不读 Diff 元数据，代价远低于列表读取，可以并入同一条流程而不必单独设门禁。
 
@@ -130,13 +143,15 @@ sequenceDiagram
         Ctrl->>Ctrl: 与 searchKeywords 比较
     end
 
-    alt isLoading 为 true
-        Ctrl->>Ctrl: 直接丢弃, 不排队不打断
+    alt 分支与仓库数据源变化
+        Ctrl->>Ctrl: abort 旧提交读取<br/>创建新 AbortController + generation
+    else isLoading 为 true
+        Ctrl->>Ctrl: 搜索返回当前结果<br/>forceRefresh 记账补跑
     else 内容一致
         Ctrl->>Ctrl: 直接返回, 无状态变化无 IO
     else 需要刷新
         Ctrl->>Ctrl: isLoading = true (任何 await 之前)<br/>替换变化的那一项
-        Ctrl-->>UI: onLoadingChanged(true)
+        Ctrl-->>UI: onCommitsLoadingChanged(true)
         alt 关键字为空
             Ctrl->>Git: getGitCommits(rootUri, limit, refs, 0)
         else 关键字非空
@@ -151,21 +166,17 @@ sequenceDiagram
         end
         Ctrl->>Ctrl: selectedCommit 仅在未定时取首条<br/>无独立事件, 随 onSearchedCommitsChanged 一并可读
         Ctrl->>Ctrl: isLoading = false (finally)
-        Ctrl-->>UI: onLoadingChanged(false)
+        Ctrl-->>UI: onCommitsLoadingChanged(false)
     end
 ```
 
-## 4. 并发控制：在途即丢弃
+## 4. 并发控制：新分支选择取消旧提交读取
 
-**`isLoading === true` 时，新到的分支事件与搜索请求一律直接丢弃，不排队、不打断在途读取。**
+`selectBranches` 收到与当前数据源不同的分支或仓库集合时，先调用内部 `AbortController.abort()` 取消正在执行的提交列表读取，再立即按新 refs 和新仓库启动读取。分支名集合和仓库 path 集合都一致时才直接返回；仅比较分支名会把不同仓库中的同名分支误判为同一数据源。
 
-**进入刷新流程的第一件事就是同步置 `isLoading = true`，必须在任何 await 之前完成**，确保后续请求必然被拦住。若置位发生在某个 await 之后，两个请求都能通过检查，并发读取随之出现。
+每轮 `refresh` 创建独立的 `AbortController` 和递增 `generation`，取消信号透传 `getGitCommits` / `searchCommits`。每个 await 后先校验 `signal.aborted` 和 generation，再整体替换 `searchedCommitList` 或 `totalCommitList`。旧流程的 `finally` 也必须校验 generation，禁止关闭新流程的 loading 或清空新流程的控制器。
 
-两个入口**共用同一个 `isLoading`**，不各设一个。它们写的是同一个 `searchedCommitList`，若各自独立判断在途，就会出现「关键字刷新正在写列表时分支刷新把它覆盖」的交叉。共用一个门禁把这类竞争从源头消除。
-
-这些规则合起来使控制器**无需代次（generation）机制**：既然同一时刻只可能有一次读取，就不存在「后发结果覆盖先发结果」的竞争。这与 `GitRepoController` 第 6 节的结论同源，比引入代次更简单，也避免了「后发者推进代次把先发者结果作废、而后发者自己又失效」这类双输局面。
-
-同理**不接受外部 `AbortSignal`**：读取的有效性只取决于自身是否完成，不能绑定某一轮外部刷新的生死。外部刷新中止时若连带丢弃读取结果，会导致列表永久停在中间态，且 `isLoading` 可能收不回来。
+搜索和 `forceRefresh` 仍共用 `isLoading` 门禁：它们不会改变分支数据源，因此在途时搜索返回当前结果，`forceRefresh` 记入 `pendingForceRefresh` 并在当前有效流程收尾后补跑。控制器不接受外部 `AbortSignal`，取消权只属于新的分支选择和自身 dispose。
 
 `getCommitContent` 与 `getVirtualCommitContent` **都不受 `isLoading` 限制**也不置位：它们不写任何控制器状态（见第 7、8 节），与列表读取无竞争关系。若受门禁限制，用户在列表加载期间点提交就什么也看不到。
 
@@ -220,7 +231,7 @@ flowchart TD
 
 因此**不存在「回退首条」的收敛规则**。`selectedCommit` 只有三个变化来源：首次默认赋值、用户调 `selectCommit`、以及列表由空变非空时的首次赋值（本质仍是第 1 条 —— 此前 `selectedCommit` 为 `undefined`）。
 
-`selectCommit(commit)` 是用户操作入口，唯一允许主动改 `selectedCommit` 的公开方法，入参是 `RepositoryCommit` 对象。一道校验：与当前选择的 `hash` + `repositoryPath` 相同则返回 `false` 不触发通知，避免重复点击引发无意义的内容重载。
+`selectCommit(commit)` 是用户操作入口，唯一允许主动改 `selectedCommit` 的公开方法，入参是 `CommitMetadata` 对象。一道校验：与当前选择的 `hash` + `repositoryPath` 相同则返回 `false` 不触发通知，避免重复点击引发无意义的内容重载。
 
 **不校验「该提交是否在列表中」** —— 既然第 2 条允许 `selectedCommit` 指向列表外的提交，入口就没有理由拒绝这类值。工作区虚拟提交的约定 hash 也因此天然可用。
 
@@ -270,9 +281,8 @@ flowchart TD
 
 流程：
 
-1. `getWorkingTreeChanges(rootUri)` 取工作区与索引的完整变更快照。
-2. 按 `mode` 取对应的那部分文件元数据。
-3. 逐文件读取两侧正文，组装成 `DiffPayload[]`。
+1. `getWorkingTreeChangeFiles(rootUri, mode)` 仅取当前模式的文件元数据：`staged` 只读 cached raw diff；`changes` 只读普通 raw diff，并补充未跟踪文件。
+2. 逐文件读取两侧正文，组装成 `DiffPayload[]`。
 
 两侧正文的取法与提交 Diff 不同，这是本方法存在的根本原因：
 
@@ -290,40 +300,41 @@ interface GitCommitController {
     /** 用户已选分支（只读副本） */
     readonly selectedBranches: readonly GitBranchOption[];
     /** 建图后的完整提交列表；不参与展示决策 */
-    readonly totalCommitList: readonly RepositoryCommit[];
+    readonly totalCommitList: readonly GitCommitOption[];
     /** 建图后的展示列表；UI 渲染的就是它 */
-    readonly searchedCommitList: readonly RepositoryCommit[];
+    readonly searchedCommitList: readonly GitCommitOption[];
     /** 当前搜索关键字；空数组表示不过滤 */
     readonly searchKeywords: readonly string[];
     /** 当前选中提交对象；无选中时为 undefined。图形字段可能过期，不可用于渲染布局 */
-    readonly selectedCommit: RepositoryCommit | undefined;
+    readonly selectedCommit: GitCommitOption | undefined;
     /** 提交读取是否在途 */
     readonly isLoading: boolean;
 
     /** HEAD hash 变化后的强制刷新；不改分支选择，在途时合并为一次补跑 */
     forceRefresh(): void;
-    /** 刷新入口一：分支选择变化；返回是否真的发起了刷新 */
-    selectBranches(branches: readonly GitBranchOption[], repositories: readonly GitRepositoryOption[]): Promise<boolean>;
-    /** 刷新入口二：关键字变化；空数组表示不过滤 */
-    search(keywords: readonly string[], repositories: readonly GitRepositoryOption[]): Promise<RepositoryCommit[]>;
+    /** 搜索入口；空数组表示不过滤 */
+    search(keywords: readonly string[]): Promise<GitCommitOption[]>;
     /** 用户操作入口，唯一允许主动改 selectedCommit 的公开方法；返回是否被接受 */
-    selectCommit(commit: RepositoryCommit): boolean;
+    selectCommit(commit: GitCommitOption): boolean;
     /** 纯查询：读取某提交的 Diff 内容，不改任何状态不发事件 */
     getCommitContent(hash: string, repositoryPath: string): Promise<DiffPayload[]>;
     /** 纯查询：读取工作区 Changes / Staged 内容，每次都重新读取不缓存 */
-    getVirtualCommitContent(mode: 'changes' | 'staged', repositoryPath: string): Promise<DiffPayload[]>;
+    getVirtualCommitContent(mode: 'changes' | 'staged', repositoryPath: string): Promise<GitCommitOption>;
 
-    onSearchedCommitsChanged: Event<RepositoryCommit[]>;
-    onTotalCommitsChanged: Event<RepositoryCommit[]>;
-    onLoadingChanged: Event<boolean>;
+    onSearchedCommitsChanged: Event<GitCommitOption[]>;
+    onTotalCommitsChanged: Event<GitCommitOption[]>;
+    onSelectedCommitChanged: Event<GitCommitOption | undefined>;
+    onCommitsLoadingChanged: Event<boolean>;
 }
 ```
 
-`onSearchedCommitsChanged` 是 UI 的主要订阅点。提交控制器自身不持有工作区虚拟状态或分支控制器引用。`onTotalCommitsChanged` 仍只在分支变化时 fire。
+`onSearchedCommitsChanged` 是 UI 的主要订阅点。`onSelectedCommitChanged` 是提交区域选中状态的唯一事件源；提交控制器构造时接收 `GitRepoController` 与 `GitBranchesController`，仅内部监听它们的已选仓库/分支回调来维护提交数据源；`onTotalCommitsChanged` 仍只在分支变化时 fire。
 
 `getCommitContent` 与 `getVirtualCommitContent` 是唯一返回数据而非改状态的两个方法。它们不发事件，因为没有状态变化可通知 —— 调用方 `await` 到返回值就是全部结果。
 
-`selectBranches` 与 `search` 都需要 `repositories` 参数：`getGitCommits` / `searchCommits` 要 `rootUri`，而控制器不订阅仓库事件 —— 那会形成两个输入源，产生时序竞争。由调用方在调用时一并传入。两个内容读取方法不需要，因为 `repositoryPath` 本身就能构造 `rootUri`。
+`selectCommit` 是唯一允许主动修改 `selectedCommit` 的公开入口。Provider 在用户点击普通或虚拟提交行时都先构造/定位 `CommitMetadata`，再调用该方法；相同业务键直接返回 false。方法接受选择后先同步 fire `onCommitsLoadingChanged(true)`，再修改 `selectedCommit` 并立即 fire `onSelectedCommitChanged`，最后 fire `onCommitsLoadingChanged(false)`。调用方据此更新提交区域选中状态并启动内容读取。提交列表刷新、搜索、仓库/分支选择、HEAD 变化均不得自动调用 `selectCommit`；首次默认选中由控制器内部通过同一入口完成。
+
+仓库与分支选择处理是 private：调用方不得调用或向提交控制器传入仓库快照。`GitRepoController.onSelectedRepoListChanged` 先更新内部仓库快照并取消旧读取，`GitBranchesController.onSelectedBranchesChanged` 再以分支集合触发读取。`search` 只接收关键字，并使用内部仓库快照构造 `rootUri`。
 
 接口只暴露被真正使用的成员。分页不在本轮范围，需要时再加。
 
@@ -352,16 +363,16 @@ flowchart LR
         P1[监听 onSearchedCommitsChanged<br/>渲染展示列表]
         P2[点选后调 getCommitContent<br/>或 getVirtualCommitContent]
         P3[搜索框防抖后调 search]
-        P4[监听 onBranchesMapChanged<br/>按 current 分支标记决定工作区行]
+        P4[监听 onTotalBranchesListChanged<br/>按 current 分支标记决定工作区行]
     end
 
-    Br -->|onSelectedBranchesChanged| Caller
-    Caller -->|selectBranches + 仓库列表| Ctrl
+    Repo[GitRepoController] -->|onSelectedRepoListChanged| Ctrl
+    Br -->|onSelectedBranchesChanged| Ctrl
     UI[Webview] -->|selectCommit| Ctrl
     P3 --> Ctrl
     Ctrl -->|onSearchedCommitsChanged| P1
-    Br -->|onBranchesMapChanged| P4
-    Ctrl -->|onLoadingChanged| P1
+    Br -->|onTotalBranchesListChanged| P4
+    Ctrl -->|onCommitsLoadingChanged| P1
     P1 --> UI
     P4 --> UI
     P2 -->|DiffPayload 数组| UI
@@ -374,19 +385,19 @@ flowchart LR
 
 **「点的是哪一行」的判断在调用方。** 控制器不提供「这个 hash 是不是虚拟提交」的辅助方法 —— 虚拟提交的约定 hash 是展示层的协议，控制器只按调用的方法名区分要读什么。
 
-**搜索防抖在调用方。** 第 4 节说明了原因：控制器用「在途即丢弃」保证并发安全，代价是快速连续的关键字变化会被丢弃。防抖是展示层的输入处理，放进控制器等于让它承担 UI 节奏。
+**搜索防抖在调用方。** 搜索不会取消正在执行的提交读取；加载在途时返回当前结果，因此快速连续的关键字变化仍可能不立即落地。防抖是展示层的输入处理，放进控制器等于让它承担 UI 节奏。分支选择不同：它改变提交数据源，必须取消旧读取并优先执行最新选择。
 
 ## 11. buildGraph 的所有权与既有约束
 
-`buildGraph` 已从 `gitLogProvider` 移入 `GitCommitController`，作为控制器私有方法。`gitLogProvider` 只负责读取原始 `GitCommit[]`，不再导出或持有图形布局算法；这样提交数据的读取、建图和列表整体替换由同一所有者完成。
+`buildGraph` 已从 `gitLogProvider` 移入 `GitCommitController`，作为控制器私有方法。`gitLogProvider` 只负责读取原始 `CommitMetadata[]`，不再导出或持有图形布局算法；这样提交数据的读取、建图和列表整体替换由同一所有者完成。
 
 `buildGraph` 原地改写入参的 `lane` / `laneColor` / `laneStartsHere` / `inputSwimlanes` / `outputSwimlanes` 五个字段并返回同一数组。
 
 两个列表都各自建图。**不得让两个列表共享提交对象** —— 尤其不能拿 `totalCommitList` 过滤出 `searchedCommitList` 再建图，那会改写 `totalCommitList` 里对象的 lane，全量列表的布局被展示列表污染。
 
-因此 `searchedCommitList` 必须来自独立的读取结果：关键字非空时来自 `searchCommits`，关键字为空时来自 `getGitCommits`。若为省一次 IO 而想复用 `totalCommitList` 的数据，必须先逐对象复制再建图。
+`searchedCommitList` 的读取来源为：关键字非空时调用 `searchCommits`，关键字为空时调用 `getGitCommits`。分支变化且关键字为空时，`searchedCommitList` 已经是本轮完整提交结果，`totalCommitList` 应通过逐对象复制得到，禁止再次执行相同的 `git log`。
 
-**关键字为空时两个列表内容相同，但仍要各读一次。** 直接 `this.total = this.searched` 会让两个字段指向同一批对象，后续任一侧重建图都会改写另一侧的 lane。省这一次 IO 换来的是难以定位的布局错乱，不值得。
+两个字段仍不得共享对象引用：正确写法是 `this.total = this.searched.map(commit => ({ ...commit }))`，而不是 `this.total = this.searched`。图形字段中的泳道数组可共享只读快照，因为本轮 `buildGraph` 已结束，后续刷新会整体替换列表而不会原地重建旧对象。关键字非空时两份列表内容不同，才需要独立读取无过滤的全量列表。
 
 这也解释了第 1 节为什么规定「`selectedCommit` 的图形字段不可信」：图形字段属于「这一次布局的结果」，不是提交本身的属性。`selectedCommit` 持有的是某一帧的对象引用，那一帧的布局早已被后续刷新取代。
 
@@ -398,7 +409,7 @@ flowchart LR
 | 首次落地时列表为空                          | `selectedCommit` 保持 undefined                                     |
 | 列表由空变非空                              | `selectedCommit` 取首条（此前为 undefined）                         |
 | 分支快路径后全量落地再 fire 一次            | name 集合一致，直接忽略，无 IO 无 UI 抖动                             |
-| current 分支变更标记更新后 fire            | name 集合一致，不重载                                                 |
+| current 分支变更标记更新后 fire             | name 集合一致，不重载                                                 |
 | 上游 fire 的数组顺序与副本不同但集合相同    | 判定一致，不重载                                                      |
 | 用户切换分支                                | `searchedCommitList` 与 `totalCommitList` 都刷新，两个事件都 fire |
 | 用户改关键字                                | 只刷新`searchedCommitList`，不 fire `onTotalCommitsChanged`       |
@@ -423,14 +434,14 @@ flowchart LR
 | `getCommitContent` 中单文件读取失败       | 该条`DiffPayload.error` 有值，其余文件正常返回                      |
 | `getCommitContent` 的 hash 不存在         | 抛异常，由调用方处理，控制器状态不变                                  |
 | `getCommitContent` 调用前后               | 所有状态不变，无事件发出                                              |
-| 切换分支后                                  | `GitBranchesController` 更新 current 分支的变更标记                   |
+| 切换分支后                                  | `GitBranchesController` 更新 current 分支的变更标记                 |
 | 改关键字后                                  | 只更新提交展示列表，不触发工作区状态读取                              |
-| HEAD hash 变化但已选分支 name 不变          | 分支控制器发无负载通知，Provider 调提交控制器 `forceRefresh`            |
+| HEAD hash 变化但已选分支 name 不变          | 分支控制器发无负载通知，Provider 调提交控制器`forceRefresh`         |
 | HEAD 事件到达时提交读取在途                 | 置`pendingForceRefresh`，当前读取收尾后补跑一次                     |
 | 多次 HEAD 事件在同一读取期间到达            | 合并成一次补跑，最终读取最新 Git 状态                                 |
 | HEAD 未变化、只有普通分支列表变化           | 不触发`forceRefresh`                                                |
-| HEAD 分支未勾选                             | 即使有变更标记，Provider 仍不显示 Changes / Staged 两行                 |
-| HEAD 分支已勾选                             | 按 `hasChangeFiles` / `hasStagedChangeFiles` 显示虚拟提交              |
+| HEAD 分支未勾选                             | 即使有变更标记，Provider 仍不显示 Changes / Staged 两行               |
+| HEAD 分支已勾选                             | 按`hasChangeFiles` / `hasStagedChangeFiles` 显示虚拟提交          |
 | 连续两次调`getVirtualCommitContent`       | 两次都重新读取本地，不返回缓存                                        |
 | 开关为 false 时仍调用                       | 不拒绝，照常读取并返回真实结果（可能为空数组）                        |
 | `getVirtualCommitContent('changes')`      | original 取索引版本，modified 取磁盘工作区文件                        |

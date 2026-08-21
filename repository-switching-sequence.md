@@ -40,9 +40,7 @@ sequenceDiagram
     Provider->>Provider: Abort paging, search, and file requests
     Provider->>Diff: Stop reader and cancel pending render
 
-    Note over Provider,Webview: Branches are cleared synchronously, before any await,<br/>so the previous repository's list is never rendered
-    Provider->>Store: Clear branches, selectedBranches, hasBranchSelection
-    Provider->>Webview: branchesReset
+    Note over Provider,Webview: Repository selection cannot mutate the branch display.<br/>The previous confirmed display remains until onSelectedBranchesChanged.
     Provider->>Webview: branchesLoading
 
     alt One repository selected

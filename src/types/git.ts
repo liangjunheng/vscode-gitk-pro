@@ -1,29 +1,66 @@
 import * as vscode from 'vscode';
 
-// 单条提交记录
-export interface GitCommit {
-    hash: string;
-    shortHash: string;
-    parents: string[];
-    author: string;
+// 提交元数据；图形字段由提交控制器补充。
+export class CommitMetadata {
+    gitBranchOption?: GitBranchOption;
+    hash = '';
+    shortHash = '';
+    parents: string[] = [];
+    author = '';
     authorEmail?: string;
-    committer: string;
+    committer = '';
     committerEmail?: string;
-    authorDate: string;
-    authorDateLabel: string;
-    message: string;
+    authorDate = '';
+    authorDateLabel = '';
+    message = '';
     body?: string;
-    refs: string[];
+    refs: string[] = [];
     lane?: number;
     inputSwimlanes?: GraphLane[];
     outputSwimlanes?: GraphLane[];
     laneColor?: string;
     laneStartsHere?: boolean;
+
+    constructor(init: Partial<CommitMetadata> = {}) {
+        Object.assign(this, init);
+    }
+
+    equals(other: CommitMetadata): boolean {
+        const sameBranch = this.gitBranchOption && other.gitBranchOption
+            ? this.gitBranchOption.equals(other.gitBranchOption)
+            : this.gitBranchOption === other.gitBranchOption;
+        return this.hash === other.hash && sameBranch;
+    }
 }
 
-export interface GraphLane {
-    hash: string;
-    color: string;
+// Webview 之外使用的提交聚合对象；提交元数据、文件元数据和完整 Diff 属于同一提交。
+export class GitCommitOption {
+    constructor(
+        readonly commitMetadata: CommitMetadata,
+        readonly commitFiles: readonly CommitFile[] = [],
+        readonly diffPayload: readonly DiffPayload[] = [],
+    ) {}
+
+    equals(other: GitCommitOption): boolean {
+        return this.commitMetadata.equals(other.commitMetadata)
+            && this.commitFiles.length === other.commitFiles.length
+            && this.commitFiles.every((file, index) => file.equals(other.commitFiles[index]))
+            && this.diffPayload.length === other.diffPayload.length
+            && this.diffPayload.every((payload, index) => payload.equals(other.diffPayload[index]));
+    }
+}
+
+export class GraphLane {
+    hash = '';
+    color = '';
+
+    constructor(init: Partial<GraphLane> = {}) {
+        Object.assign(this, init);
+    }
+
+    equals(other: GraphLane): boolean {
+        return this.hash === other.hash && this.color === other.color;
+    }
 }
 
 export type FileStatus = 'A' | 'M' | 'D' | 'R' | 'C' | 'T' | 'U' | '?';
@@ -31,38 +68,28 @@ export type FileStatus = 'A' | 'M' | 'D' | 'R' | 'C' | 'T' | 'U' | '?';
 /**
  * 仓库选项; 所有属性不可变。
  *
- * 改属性只能走 copyRepositoryOption 造新对象整体替换, 禁止原地赋值。
- * 属性全同的两个实例视为同一个对象, 判等用 equalsRepositoryOption, 不用 ===。
+ * 属性不可变，修改时创建新的 GitRepositoryOption 实例。
+ * 属性全同的两个实例视为同一个对象, 判等直接调用实例 equals。
  */
-export interface GitRepositoryOption {
+export class GitRepositoryOption {
     readonly path: string;
     readonly label: string;
     readonly description?: string;
     readonly hasSubmodules?: boolean;
-}
 
-/** 改某个属性的唯一入口: 返回新对象, 原对象保持不变。 */
-export function copyRepositoryOption(
-    source: GitRepositoryOption,
-    changes: Partial<GitRepositoryOption>,
-): GitRepositoryOption {
-    return { ...source, ...changes };
-}
+    constructor(init: { path: string; label: string; description?: string; hasSubmodules?: boolean }) {
+        this.path = init.path;
+        this.label = init.label;
+        this.description = init.description;
+        this.hasSubmodules = init.hasSubmodules;
+    }
 
-/** 属性全同即同一个对象。 */
-export function equalsRepositoryOption(left: GitRepositoryOption, right: GitRepositoryOption): boolean {
-    return left.path === right.path
-        && left.label === right.label
-        && left.description === right.description
-        && left.hasSubmodules === right.hasSubmodules;
-}
-
-/** 工作区虚拟提交; 所有属性不可变, 随宿主分支一同整体替换。 */
-export interface GitBranchVirtualCommit {
-    readonly mode: Exclude<ChangeSetMode, 'commit'>;
-    readonly hash: string;
-    readonly label: string;
-    readonly enabled: boolean;
+    equals(other: GitRepositoryOption): boolean {
+        return this.path === other.path
+            && this.label === other.label
+            && this.description === other.description
+            && this.hasSubmodules === other.hasSubmodules;
+    }
 }
 
 export type GitBranchKind = 'current' | 'local' | 'remote';
@@ -70,104 +97,165 @@ export type GitBranchKind = 'current' | 'local' | 'remote';
 /**
  * 分支选项; 所有属性不可变。
  *
- * 改属性只能走 copyBranchOption 造新对象整体替换, 禁止原地赋值。
- * 属性全同的两个实例视为同一个对象, 判等用 equalsBranchOption, 不用 ===。
+ * 属性不可变，修改时创建新的 GitBranchOption 实例。
+ * 属性全同的两个实例视为同一个对象, 判等直接调用实例 equals。
  */
-export interface GitBranchOption {
+export class GitBranchOption {
+    readonly repoOption: GitRepositoryOption;
     readonly name: string;
     readonly label: string;
     readonly hash: string;
     readonly kind: GitBranchKind;
-    /** 仅 current 分支使用：工作区是否有未暂存变更。 */
     readonly hasChangeFiles?: boolean;
-    /** 仅 current 分支使用：暂存区是否有变更。 */
     readonly hasStagedChangeFiles?: boolean;
-    readonly virtualCommits?: readonly GitBranchVirtualCommit[];
+
+    constructor(init: {
+        repoOption: GitRepositoryOption;
+        name: string;
+        label: string;
+        hash: string;
+        kind: GitBranchKind;
+        hasChangeFiles?: boolean;
+        hasStagedChangeFiles?: boolean;
+    }) {
+        this.repoOption = init.repoOption;
+        this.name = init.name;
+        this.label = init.label;
+        this.hash = init.hash;
+        this.kind = init.kind;
+        this.hasChangeFiles = init.hasChangeFiles;
+        this.hasStagedChangeFiles = init.hasStagedChangeFiles;
+    }
+
+    equals(other: GitBranchOption): boolean {
+        return this.repoOption.equals(other.repoOption)
+            && this.name === other.name
+            && this.label === other.label
+            && this.hash === other.hash
+            && this.kind === other.kind
+            && this.hasChangeFiles === other.hasChangeFiles
+            && this.hasStagedChangeFiles === other.hasStagedChangeFiles;
+    }
 }
 
-/** 改某个属性的唯一入口: 返回新对象, 原对象保持不变。 */
-export function copyBranchOption(
-    source: GitBranchOption,
-    changes: Partial<GitBranchOption>,
-): GitBranchOption {
-    return { ...source, ...changes };
-}
-
-function equalsVirtualCommits(
-    left: readonly GitBranchVirtualCommit[] | undefined,
-    right: readonly GitBranchVirtualCommit[] | undefined,
-): boolean {
-    if (left === right) { return true; }
-    if (!left || !right || left.length !== right.length) { return false; }
-    return left.every((commit, index) => {
-        const other = right[index];
-        return commit.mode === other.mode
-            && commit.hash === other.hash
-            && commit.label === other.label
-            && commit.enabled === other.enabled;
-    });
-}
-
-/** 属性全同即同一个对象; virtualCommits 逐项比较。 */
-export function equalsBranchOption(left: GitBranchOption, right: GitBranchOption): boolean {
-    return left.name === right.name
-        && left.label === right.label
-        && left.hash === right.hash
-        && left.kind === right.kind
-        && left.hasChangeFiles === right.hasChangeFiles
-        && left.hasStagedChangeFiles === right.hasStagedChangeFiles
-        && equalsVirtualCommits(left.virtualCommits, right.virtualCommits);
-}
-
-export interface CommitFile {
-    path: string;
-    status: FileStatus;
+export class CommitFile {
+    path = '';
+    status: FileStatus = 'M';
     oldPath?: string;
     oldObjectId?: string;
     newObjectId?: string;
     oldMode?: string;
     newMode?: string;
     isBinary?: boolean;
+
+    constructor(init: Partial<CommitFile> = {}) {
+        Object.assign(this, init);
+    }
+
+    equals(other: CommitFile): boolean {
+        return this.path === other.path
+            && this.status === other.status
+            && this.oldPath === other.oldPath
+            && this.oldObjectId === other.oldObjectId
+            && this.newObjectId === other.newObjectId
+            && this.oldMode === other.oldMode
+            && this.newMode === other.newMode
+            && this.isBinary === other.isBinary;
+    }
 }
 
 export type ChangeSetMode = 'commit' | 'staged' | 'changes';
 
-export interface WorkingTreeChanges {
-    staged: CommitFile[];
-    changes: CommitFile[];
+export class WorkingTreeChanges {
+    staged: CommitFile[] = [];
+    changes: CommitFile[] = [];
+
+    constructor(init: Partial<WorkingTreeChanges> = {}) {
+        this.staged = init.staged ?? [];
+        this.changes = init.changes ?? [];
+    }
+
+    equals(other: WorkingTreeChanges): boolean {
+        return this.staged.length === other.staged.length
+            && this.staged.every((file, index) => file.equals(other.staged[index]))
+            && this.changes.length === other.changes.length
+            && this.changes.every((file, index) => file.equals(other.changes[index]));
+    }
 }
 
-export interface GitRepositoryState {
-    head: string;
-    branch: string;
-    refs: string;
-    status: string;
-}
+export class GitRepositoryState {
+    head = '';
+    branch = '';
+    refs = '';
+    status = '';
 
-// 带仓库路径的提交记录 (用于多仓库合并视图)
-export interface RepositoryCommit extends GitCommit {
-    repositoryPath: string;
+    constructor(init: Partial<GitRepositoryState> = {}) {
+        Object.assign(this, init);
+    }
+
+    equals(other: GitRepositoryState): boolean {
+        return this.head === other.head
+            && this.branch === other.branch
+            && this.refs === other.refs
+            && this.status === other.status;
+    }
 }
 
 // Diff 数据载荷
-export interface DiffPayload extends CommitFile {
-    index: number;
-    fullPath: string;
-    original: string;
-    modified: string;
+export class DiffPayload extends CommitFile {
+    index = 0;
+    fullPath = '';
+    original = '';
+    modified = '';
     error?: string;
+
+    constructor(init: Partial<DiffPayload> = {}) {
+        super(init);
+        Object.assign(this, init);
+    }
+
+    equals(other: DiffPayload): boolean {
+        return super.equals(other)
+            && this.index === other.index
+            && this.fullPath === other.fullPath
+            && this.original === other.original
+            && this.modified === other.modified
+            && this.error === other.error;
+    }
 }
 
 // Changed Files 在读取正文前为元数据，完成后替换为完整 Diff 数据。
 export type ChangedFile = CommitFile | DiffPayload;
 
 // Multi-Diff 加载事件
-export interface MultiDiffLoadEvent {
-    type: 'progress' | 'complete' | 'error';
-    hash: string;
+export class MultiDiffLoadEvent {
+    type: 'progress' | 'complete' | 'error' = 'progress';
+    hash = '';
     rootUri: vscode.Uri;
-    generation: number;
-    completed: number;
-    total: number;
+    generation = 0;
+    completed = 0;
+    total = 0;
     message?: string;
+
+    constructor(init: {
+        type: 'progress' | 'complete' | 'error';
+        hash: string;
+        rootUri: vscode.Uri;
+        generation: number;
+        completed: number;
+        total: number;
+        message?: string;
+    }) {
+        Object.assign(this, init);
+    }
+
+    equals(other: MultiDiffLoadEvent): boolean {
+        return this.type === other.type
+            && this.hash === other.hash
+            && this.rootUri.toString() === other.rootUri.toString()
+            && this.generation === other.generation
+            && this.completed === other.completed
+            && this.total === other.total
+            && this.message === other.message;
+    }
 }
