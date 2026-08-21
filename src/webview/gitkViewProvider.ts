@@ -396,7 +396,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.schedulePushState();
     }
 
-    /** 选中提交状态只由提交控制器回调写入 Store。 */
+    /** 选中提交状态与文件读取统一由该回调驱动，覆盖首次默认选择和用户选择。 */
     private onSelectedCommitChanged(commit: CommitMetadata | undefined): void {
         const hash = commit?.hash;
         const repositoryPath = commit?.gitBranchOption?.repoOption.path;
@@ -407,12 +407,18 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             currentChangeSet: isVirtual ? hash : 'commit',
             selectedPath: undefined,
             files: [],
-            filesLoading: true,
-            diffLoading: true,
+            filesLoading: Boolean(commit),
+            diffLoading: Boolean(commit),
             diffError: undefined,
             diffProgress: { completed: 0, total: 0 },
         });
         this.schedulePushState();
+        if (!commit || !hash) { return; }
+        if (isVirtual) {
+            void this.selectWorkingTreeChanges(hash);
+        } else {
+            void this.selectCommit(hash, repositoryPath);
+        }
     }
 
     private setLoading(value: boolean, message?: string): void {
@@ -750,14 +756,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 if (effect.hash === 'staged' || effect.hash === 'changes') {
                     const branch = this.branchesController.getSelectedCurrentBranch();
                     if (!branch) { break; }
-                    const commit = new CommitMetadata({ hash: effect.hash, gitBranchOption: branch });
-                    if (this.commitController.selectCommit(commit)) {
-                        void this.selectWorkingTreeChanges(effect.hash);
-                    }
+                    this.commitController.selectCommit(new CommitMetadata({ hash: effect.hash, gitBranchOption: branch }));
                 } else if (typeof effect.hash === 'string' && typeof effect.repositoryPath === 'string') {
                     const commit = this.findCommit(effect.hash, effect.repositoryPath);
-                    if (!commit || !this.commitController.selectCommit(commit)) { break; }
-                    void this.selectCommit(effect.hash, effect.repositoryPath);
+                    if (commit) { this.commitController.selectCommit(commit); }
                 }
                 break;
             case 'selectFile':
