@@ -28,7 +28,7 @@ export class MultiDiffPanel implements vscode.Disposable {
     constructor(
         private readonly onSelectFile?: (path: string, generation: number) => void,
         private readonly onRendered?: () => void,
-        private readonly onOpenFileAtLine?: (path: string, line?: number, column?: number) => void,
+        private readonly onOpenFileAtLine?: (path: string, line?: number, column?: number, side?: 'original' | 'modified') => void,
         private readonly onSaveFile?: (path: string, content: string) => void,
     ) {
         this.unsubscribers = [
@@ -103,7 +103,8 @@ export class MultiDiffPanel implements vscode.Disposable {
                 // line 缺省表示标题栏按钮触发, 只打开文件不定位。
                 const line = typeof message.line === 'number' ? message.line : undefined;
                 const column = typeof message.column === 'number' ? message.column : undefined;
-                this.onOpenFileAtLine?.(message.path, line, column);
+                        const side = message.side === 'original' || message.side === 'modified' ? message.side : undefined;
+                this.onOpenFileAtLine?.(message.path, line, column, side);
             } else if (message?.type === 'rendered') {
                 // Diff 卡片与行号渲染完成, 通知 Provider 放行 Changed Files 列表。
                 this.onRendered?.();
@@ -223,6 +224,7 @@ body{margin:0;background:color-mix(in srgb, var(--vscode-editor-background) 50%,
 .diff.collapsed>.diff-body{display:none}
 .editor{width:100%;min-width:0;height:80px}
 .empty{padding:16px 8px;color:var(--vscode-descriptionForeground);text-align:center}
+.gitk-diff-link-hover{text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:2px;cursor:pointer}
 </style></head><body><div id="loading">正在准备 Diff...</div><main id="list" hidden></main><script nonce="${nonce}">window.gitkQueue=[];window.addEventListener('message',event=>window.gitkQueue.push(event.data));window.gitkVscode=acquireVsCodeApi();</script><script nonce="${nonce}" src="${monacoUri}/loader.js"></script><script nonce="${nonce}">
 self.MonacoEnvironment={getWorker:()=>new Worker('${monacoUri}/base/worker/workerMain.js')};
 const loading=document.getElementById('loading'),list=document.getElementById('list'),languages=${JSON.stringify(MONACO_DIFF_LANGUAGES)},diffOptions=${JSON.stringify(MONACO_DIFF_OPTIONS)};
@@ -330,17 +332,40 @@ function createCard(diff,order,parent){
     // 折叠未改动区域的图标用 glyphMarginClassName 渲染, DiffEditor 默认只给左侧开 glyphMargin,
     // 右侧那一列让给了 renderIndicators, 故右侧看不到该图标; 这里单独为右侧开启。
     editor.getModifiedEditor().updateOptions({glyphMargin:true});
-    // Ctrl/Cmd + 左键点右侧(改后)某行: 跳到工作区该文件的对应行。
-    editor.getModifiedEditor().onMouseDown(function(event){
-      const mouse=event.event;
-      if(mouse.leftButton!==true&&mouse.button!==0)return;
-      if(!mouse.ctrlKey&&!mouse.metaKey)return;
-      const line=event.target&&event.target.position&&event.target.position.lineNumber;
-      if(!line)return;
-      mouse.preventDefault&&mouse.preventDefault();
-      const column=event.target.position.column||1;
-      try{window.gitkVscode.postMessage({type:'openFileAtLine',path:diff.path,line:line,column:column})}catch(_){}
-    });
+    function bindOpenFileGesture(side, targetEditor, targetPath) {
+      let linkDecorations = [];
+      targetEditor.onMouseMove(function(event){
+        const mouse=event.event;
+        const position=event.target&&event.target.position;
+        const model=targetEditor.getModel();
+        const word=position&&model?model.getWordAtPosition(position):null;
+        const active=Boolean(word && (mouse.ctrlKey || mouse.metaKey));
+        if (model) {
+          linkDecorations = model.deltaDecorations(linkDecorations, active ? [{
+            range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
+            options: {inlineClassName: 'gitk-diff-link-hover'},
+          }] : []);
+        }
+      });
+      targetEditor.onMouseLeave(function(){
+        const model=targetEditor.getModel();
+        if (model) { linkDecorations = model.deltaDecorations(linkDecorations, []); }
+      });
+      targetEditor.onMouseDown(function(event){
+        const mouse=event.event;
+        if(mouse.leftButton!==true&&mouse.button!==0)return;
+        if(!mouse.ctrlKey&&!mouse.metaKey)return;
+        const position=event.target&&event.target.position;
+        const model=targetEditor.getModel();
+        const word=position&&model?model.getWordAtPosition(position):null;
+        if(!position||!word)return;
+        mouse.preventDefault&&mouse.preventDefault();
+        try{window.gitkVscode.postMessage({type:'openFileAtLine',path:targetPath,line:position.lineNumber,column:word.startColumn,side:side})}catch(_){}
+      });
+    }
+    // Ctrl/Cmd + hover/左键支持 Diff 两侧跳转, 路径按 Diff 文件的对应版本选择。
+    bindOpenFileGesture('original', editor.getOriginalEditor(), diff.oldPath || diff.path);
+    bindOpenFileGesture('modified', editor.getModifiedEditor(), diff.path);
   }catch(error){
     // 创建阶段就失败: 回收已建资源并让调用方就地降级。
     if(editor){try{editor.dispose()}catch(_){}}

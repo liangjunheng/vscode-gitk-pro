@@ -181,7 +181,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.multiDiffPanel = new MultiDiffPanel(
             (path, generation) => this.syncFileHighlightFromDiffPanel(path, generation),
             () => this.handleDiffRendered(),
-            (path, line, column) => void this.openWorkspaceFileAtLine(path, line, column),
+            (path, line, column, side) => void this.openWorkspaceFileAtLine(path, line, column, side),
             (path, content) => void this.saveWorkspaceFile(path, content),
         );
         this.diffReader = new DiffReader();
@@ -939,9 +939,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    // 打开工作区文件。传入 line 时(Ctrl/Cmd + 左键)需先确认磁盘内容与 Diff 右侧一致,
-    // 否则行号已失去意义, 直接提示并放弃跳转; 不传 line 时(标题栏按钮)只打开文件。
-    private async openWorkspaceFileAtLine(filePath: string, line?: number, column?: number): Promise<void> {
+    // 打开 Diff 对应侧的工作区文件。Ctrl/Cmd + 左键会校验该侧内容后再定位。
+    private async openWorkspaceFileAtLine(
+        filePath: string,
+        line?: number,
+        column?: number,
+        side: 'original' | 'modified' = 'modified',
+    ): Promise<void> {
         const rootUri = this.getRepoRootUri();
         if (!rootUri) { return; }
         const fileUri = vscode.Uri.joinPath(rootUri, ...filePath.split('/'));
@@ -949,11 +953,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const document = await vscode.workspace.openTextDocument(fileUri);
             let selection: vscode.Range | undefined;
             if (typeof line === 'number' && line > 0) {
-                const expected = this.files.find(file => file.path === filePath);
-                const expectedContent = expected && 'modified' in expected ? expected.modified : undefined;
+                const expected = this.files.find(file => file.path === filePath)
+                    ?? this.files.find(file => file.oldPath === filePath);
+                const expectedContent = expected && 'modified' in expected
+                    ? side === 'original' ? expected.original : expected.modified
+                    : undefined;
                 // git cat-file 读的是对象库原始内容(LF), 工作区在 core.autocrlf=true 下是 CRLF,
                 // 直接全等比较会把所有文本文件都误判为已修改, 故先归一化行尾再比对。
-                if (typeof expectedContent === 'string'
+                if (side === 'modified'
+                    && typeof expectedContent === 'string'
                     && normalizeEol(document.getText()) !== normalizeEol(expectedContent)) {
                     void vscode.window.showWarningMessage(`${filePath} 与当前提交的内容已不一致（文件已被修改），无法定位到对应行。`);
                     return;
