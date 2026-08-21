@@ -18,13 +18,13 @@ function containsNul(text: string | undefined): boolean {
  * Diff 读取器: 负责从 Git 仓库读取文件内容并写入 Store (单一数据源)
  *
  * 流程:
- * 1. prepare() 按 128 个/批切分，所有批次经 Promise.all 并发读取
- * 2. 每批通过 readDiffs() 获取 DiffPayload[]，完成即累加 diffProgress
- * 3. 全部批次结束后按 index 排序，以完整 DiffPayload 一次性写回 store.files
- * 4. 完成后 store.diffLoading = false 通知渲染完毕
+ * 1. prepare() 整轮只启动一个 git cat-file --batch 子进程
+ * 2. 一次写入全部对象请求并流式解析 stdout，每完成 16 个文件更新进度
+ * 3. stop() 终止当前子进程，代次门禁阻止旧结果落地
+ * 4. 全部完成后一次性写回 store.files 并结束 diffLoading
  */
 export class DiffReader {
-    // 批次并发读取，同时可能存在多个 git cat-file 子进程。
+    // stop() 终止当前整轮唯一的 git cat-file 子进程。
     private childProcesses = new Set<ChildProcess>();
     private requestGeneration = 0;
 
@@ -39,37 +39,21 @@ export class DiffReader {
         this.childProcesses.clear();
     }
 
-    /** 分批并发读取 Diff，全部完成后一次性写入 Store */
+    /** 单个长驻 git cat-file 读取整轮对象，每完成 16 个文件更新进度 */
     async prepare(rootUri: vscode.Uri, hash: string, files: CommitFile[], changeSetMode: ChangeSetMode, generation: number): Promise<void> {
         const readerGeneration = ++this.requestGeneration;
         const isCurrent = () => readerGeneration === this.requestGeneration && generation === store.getState().diffGeneration;
-        const batchSize = 128;
         const total = files.length;
         try {
             store.setState({ diffProgress: { completed: 0, total } });
-            // 单批（含小仓库常见情形）直接读取，避免多余的切批与并发调度开销。
-            if (total <= batchSize) {
-                const diffs = await this.readDiffs(rootUri, hash, files, changeSetMode, 0);
+            const onProgress = (completed: number) => {
                 if (!isCurrent()) { return; }
-                store.setState({ diffProgress: { completed: total, total }, files: diffs, diffLoading: false });
-                return;
-            }
-            // 多批时并发读取；每批完成即累加进度，全部结束后才一次性写回 files。
-            const batches: { start: number; files: CommitFile[] }[] = [];
-            for (let start = 0; start < total; start += batchSize) {
-                batches.push({ start, files: files.slice(start, start + batchSize) });
-            }
-            let completed = 0;
-            const results = await Promise.all(batches.map(async batch => {
-                const diffs = await this.readDiffs(rootUri, hash, batch.files, changeSetMode, batch.start);
-                if (!isCurrent()) { return diffs; }
-                completed = Math.min(completed + batch.files.length, total);
                 store.setState({ diffProgress: { completed, total } });
-                return diffs;
-            }));
+            };
+            const data = changeSetMode === 'commit'
+                ? await this.readCommitDiffsStreaming(rootUri, hash, files, isCurrent, onProgress)
+                : await this.readWorkingTreeDiffsStreaming(rootUri, files, changeSetMode, isCurrent, onProgress);
             if (!isCurrent()) { return; }
-            // 完整 Diff 就绪后一次性替换共享文件数据；并发完成序不定，按 index 恢复文件顺序。
-            const data = results.flat().sort((left, right) => left.index - right.index);
             store.setState({ files: data, diffLoading: false });
         } catch (error) {
             if (!isCurrent()) { return; }
@@ -78,10 +62,54 @@ export class DiffReader {
         }
     }
 
-    /**
-     * 纯读取: 组装 DiffPayload[] 并返回, 不写 Store 不做代次判断。
-     * prepare() 在此之上加了分批/进度/写 Store, 需要副作用时才用 prepare。
-     */
+    private async readCommitDiffsStreaming(
+        rootUri: vscode.Uri,
+        hash: string,
+        files: CommitFile[],
+        isCurrent: () => boolean,
+        onProgress: (completed: number) => void,
+    ): Promise<DiffPayload[]> {
+        const objects = files.flatMap(file => {
+            if (file.isBinary) { return []; }
+            const refs: string[] = [];
+            if (file.status !== 'A') { refs.push(`${hash}^:${file.oldPath || file.path}`); }
+            if (file.status !== 'D') { refs.push(`${hash}:${file.path}`); }
+            return refs;
+        });
+        let nextFile = 0;
+        const contents = await this.readGitObjectsStreaming(rootUri, objects, parsed => {
+            if (!isCurrent()) { return; }
+            while (nextFile < files.length) {
+                const file = files[nextFile];
+                const required = file.isBinary ? [] : [
+                    ...(file.status !== 'A' ? [`${hash}^:${file.oldPath || file.path}`] : []),
+                    ...(file.status !== 'D' ? [`${hash}:${file.path}`] : []),
+                ];
+                if (!required.every(object => parsed.has(object))) { break; }
+                nextFile++;
+                if (nextFile % 16 === 0 || nextFile === files.length) { onProgress(nextFile); }
+            }
+        });
+        if (!isCurrent()) { return []; }
+        onProgress(files.length);
+        return this.createCommitPayloads(rootUri, hash, files, contents);
+    }
+
+    private async readWorkingTreeDiffsStreaming(
+        rootUri: vscode.Uri,
+        files: CommitFile[],
+        changeSetMode: ChangeSetMode,
+        isCurrent: () => boolean,
+        onProgress: (completed: number) => void,
+    ): Promise<DiffPayload[]> {
+        const data = await this.readWorkingTreeDiffs(rootUri, files, changeSetMode);
+        if (!isCurrent()) { return []; }
+        for (let completed = 16; completed < files.length; completed += 16) { onProgress(completed); }
+        onProgress(files.length);
+        return data;
+    }
+
+    /** 纯读取入口，不写 Store 不做代次判断。 */
     async readDiffs(rootUri: vscode.Uri, hash: string, files: CommitFile[], changeSetMode: ChangeSetMode, indexOffset = 0): Promise<DiffPayload[]> {
         if (changeSetMode !== 'commit') {
             return this.readWorkingTreeDiffs(rootUri, files, changeSetMode, indexOffset);
@@ -93,12 +121,21 @@ export class DiffReader {
             if (file.status !== 'D') { objects.push(`${hash}:${file.path}`); }
         }
         const contents = await this.readGitObjects(rootUri, objects);
+        return this.createCommitPayloads(rootUri, hash, files, contents, indexOffset);
+    }
+
+    private createCommitPayloads(
+        rootUri: vscode.Uri,
+        hash: string,
+        files: CommitFile[],
+        contents: Map<string, string>,
+        indexOffset = 0,
+    ): DiffPayload[] {
         return files.map((file, index) => {
             const originalObject = file.isBinary || file.status === 'A' ? undefined : `${hash}^:${file.oldPath || file.path}`;
             const modifiedObject = file.isBinary || file.status === 'D' ? undefined : `${hash}:${file.path}`;
             const original = originalObject ? contents.get(originalObject) : '';
             const modified = modifiedObject ? contents.get(modifiedObject) : '';
-            // 已移除 numstat, isBinary 全部靠内容侧 NUL 探测判定, 避免把二进制当文本渲染。
             const isBinary = file.isBinary || containsNul(original) || containsNul(modified);
             if (isBinary) {
                 return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isBinary: true, original: '', modified: '', error: undefined });
@@ -147,38 +184,65 @@ export class DiffReader {
     }
 
     private readGitObjects(rootUri: vscode.Uri, objects: string[]): Promise<Map<string, string>> {
+        return this.readGitObjectsStreaming(rootUri, objects);
+    }
+
+    private readGitObjectsStreaming(
+        rootUri: vscode.Uri,
+        objects: string[],
+        onObject?: (contents: ReadonlyMap<string, string>) => void,
+    ): Promise<Map<string, string>> {
         if (objects.length === 0) { return Promise.resolve(new Map()); }
         const uniqueObjects = [...new Set(objects)];
         return new Promise((resolve, reject) => {
             const child = spawn('git', ['-C', rootUri.fsPath, 'cat-file', '--batch'], { windowsHide: true });
             this.childProcesses.add(child);
-            const chunks: Buffer[] = [];
+            const result = new Map<string, string>();
             let stderr = '';
-            child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
-            child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
-            child.on('error', err => {
+            let buffer: Buffer = Buffer.alloc(0);
+            let objectIndex = 0;
+            let settled = false;
+            const fail = (error: unknown) => {
+                if (settled) { return; }
+                settled = true;
                 this.childProcesses.delete(child);
-                reject(err);
+                reject(error);
+            };
+            const parse = () => {
+                while (objectIndex < uniqueObjects.length) {
+                    const headerEnd = buffer.indexOf(0x0A);
+                    if (headerEnd < 0) { return; }
+                    const header = buffer.subarray(0, headerEnd).toString('utf8');
+                    const size = Number(header.split(' ')[2]);
+                    if (!Number.isFinite(size)) {
+                        buffer = buffer.subarray(headerEnd + 1);
+                        objectIndex++;
+                        onObject?.(result);
+                        continue;
+                    }
+                    const contentStart = headerEnd + 1;
+                    const responseEnd = contentStart + size + 1;
+                    if (buffer.length < responseEnd) { return; }
+                    result.set(uniqueObjects[objectIndex], buffer.subarray(contentStart, contentStart + size).toString('utf8'));
+                    buffer = buffer.subarray(responseEnd);
+                    objectIndex++;
+                    onObject?.(result);
+                }
+            };
+            child.stdout.on('data', (chunk: Buffer) => {
+                buffer = buffer.length === 0 ? chunk : Buffer.concat([buffer, chunk]);
+                try { parse(); } catch (error) { fail(error); }
             });
+            child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+            child.on('error', fail);
             child.on('close', code => {
                 this.childProcesses.delete(child);
-                if (code !== 0) { reject(new Error(stderr || `git cat-file 失败（退出码 ${code}）`)); return; }
-                try {
-                    const output = Buffer.concat(chunks);
-                    const result = new Map<string, string>();
-                    let offset = 0;
-                    for (const object of uniqueObjects) {
-                        const headerEnd = output.indexOf(0x0A, offset);
-                        if (headerEnd < 0) { throw new Error('git cat-file 输出不完整'); }
-                        const header = output.subarray(offset, headerEnd).toString('utf8');
-                        offset = headerEnd + 1;
-                        const size = Number(header.split(' ')[2]);
-                        if (!Number.isFinite(size)) { continue; }
-                        result.set(object, output.subarray(offset, offset + size).toString('utf8'));
-                        offset += size + 1;
-                    }
-                    resolve(result);
-                } catch (error) { reject(error); }
+                if (settled) { return; }
+                if (code !== 0) { fail(new Error(stderr || `git cat-file 失败（退出码 ${code}）`)); return; }
+                try { parse(); } catch (error) { fail(error); return; }
+                if (objectIndex !== uniqueObjects.length) { fail(new Error('git cat-file 输出不完整')); return; }
+                settled = true;
+                resolve(result);
             });
             child.stdin.end(`${uniqueObjects.join('\n')}\n`);
         });
