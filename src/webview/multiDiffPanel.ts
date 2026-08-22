@@ -277,6 +277,15 @@ let monacoReady=false,lastRevision=0,pending,cards=[],cardByPath=new Map(),activ
 function diffKey(diff){return diff.diffKey||diff.path}
 let activeChangeIndex=-1,activeChangePage=0;
 function activeEntry(){return activePath&&cardByPath.get(activePath)}
+function navigableChanges(entry){
+  const changes=entry.editor&&entry.editor.getLineChanges()||[];
+  if(changes.length)return changes;
+  const diff=entry.diff;
+  if(diff.status!=='R'||!diff.oldPath||diff.oldPath===diff.path||!entry.editor)return [];
+  const leftCount=entry.editor.getOriginalEditor().getModel().getLineCount();
+  const rightCount=entry.editor.getModifiedEditor().getModel().getLineCount();
+  return [{originalStartLineNumber:1,originalEndLineNumber:leftCount,modifiedStartLineNumber:1,modifiedEndLineNumber:rightCount,wholeFileRename:true}]
+}
 function changeBlockGeometry(editor,startLine,endLine){
   const lineCount=editor.getModel().getLineCount();
   const top=editor.getTopForLineNumber(startLine)-editor.getScrollTop();
@@ -304,22 +313,22 @@ function changePageInfo(entry,change){
   const pageHeight=Math.max(80,visibleBottom-navigationTop);
   return {top:top,height:height,navigationTop:navigationTop,pageHeight:pageHeight,pageCount:Math.max(1,Math.ceil(height/pageHeight))}
 }
-function flashChange(entry,pageInfo,page){
+function flashChange(entry,pageInfo,page,wholeFile){
   clearChangeFlash(entry);
   const top=pageInfo.top+page*pageInfo.pageHeight;
-  const height=Math.min(pageInfo.pageHeight,pageInfo.height-page*pageInfo.pageHeight);
+  const height=wholeFile?pageInfo.height:Math.min(pageInfo.pageHeight,pageInfo.height-page*pageInfo.pageHeight);
   const overlay=document.createElement('div');overlay.className='gitk-change-flash';
   overlay.style.top=Math.max(0,top)+'px';overlay.style.height=Math.max(2,height)+'px';
   entry.slot.host.append(overlay);entry.flashOverlay=overlay;
   entry.flashTimer=setTimeout(function(){clearChangeFlash(entry)},650)
 }
 function selectLineChange(entry,index,page){
-  const changes=entry.editor.getLineChanges()||[],change=changes[index];
+  const changes=navigableChanges(entry),change=changes[index];
   if(!change)return false;
   const left=entry.editor.getOriginalEditor(),right=entry.editor.getModifiedEditor(),pageInfo=changePageInfo(entry,change);
   const targetPage=Math.max(0,Math.min(pageInfo.pageCount-1,page||0));
   clickedPath=entry.path;setActive(entry.path,true);activeChangeIndex=index;activeChangePage=targetPage;
-  flashChange(entry,pageInfo,targetPage);
+  flashChange(entry,pageInfo,targetPage,change.wholeFileRename===true);
   const baseTop=change.originalEndLineNumber>0?changePageTop(left,change.originalStartLineNumber,pageInfo.navigationTop):changePageTop(right,change.modifiedStartLineNumber,pageInfo.navigationTop);
   animateScrollTo(Math.max(0,baseTop+targetPage*pageInfo.pageHeight));
   return true
@@ -329,7 +338,7 @@ async function findNavigableEntry(start,direction){
     const entry=cards[index];
     if(entry.staticContent||entry.collapsed)continue;
     await mountEntry(entry,false);
-    const changes=entry.editor&&entry.editor.getLineChanges()||[];
+    const changes=navigableChanges(entry);
     if(changes.length)return {entry:entry,index:direction>0?0:changes.length-1}
   }
   return null
@@ -337,7 +346,7 @@ async function findNavigableEntry(start,direction){
 async function navigateChange(direction){
   const current=activeEntry();
   if(current&&current.editor){
-    const changes=current.editor.getLineChanges()||[];
+    const changes=navigableChanges(current);
     if(activeChangeIndex>=0&&activeChangeIndex<changes.length){
       const pageInfo=changePageInfo(current,changes[activeChangeIndex]),nextPage=activeChangePage+direction;
       if(nextPage>=0&&nextPage<pageInfo.pageCount){selectLineChange(current,activeChangeIndex,nextPage);return}
@@ -351,7 +360,7 @@ async function navigateChange(direction){
   const start=current?current.index+direction:(direction>0?0:cards.length-1);
   const target=await findNavigableEntry(start,direction);
   if(target){
-    const changes=target.entry.editor.getLineChanges()||[],pageInfo=changePageInfo(target.entry,changes[target.index]);
+    const changes=navigableChanges(target.entry),pageInfo=changePageInfo(target.entry,changes[target.index]);
     selectLineChange(target.entry,target.index,direction>0?0:pageInfo.pageCount-1)
   }
 }
