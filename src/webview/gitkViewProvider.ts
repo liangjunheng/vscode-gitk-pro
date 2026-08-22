@@ -1018,7 +1018,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
         if (!this.getRepoRootUri()) { return; }
         // 只显示面板, 数据由 loadDiffData() 在后台加载到 Store
-        this.multiDiffPanel.show(this.currentHash, filePath);
+        this.multiDiffPanel.show(this.currentHash, this.commitController.selectedCommit?.message ?? '', filePath);
     }
 
     // 工作区 Diff 右侧编辑后回写文件。

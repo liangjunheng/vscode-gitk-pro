@@ -41,11 +41,11 @@ export class MultiDiffPanel implements vscode.Disposable {
     }
 
     // 打开(必要时创建)面板并定位; 新建或未就绪时发完整快照, 否则只做定位。
-    show(hash: string, revealPath?: string): void {
+    show(hash: string, commitTitle: string, revealPath?: string): void {
         const isNewPanel = !this.panel;
         this.ensurePanel();
         // 标题仅在提交变化时更新, 避免重复写入面板属性。
-        const title = `Gitk Diff (${hash.slice(0, 8)})`;
+        const title = `${commitTitle || 'Gitk Diff'} (${hash.slice(0, 8)})`;
         if (this.panel!.title !== title) { this.panel!.title = title; }
         this.panel!.reveal(this.panel!.viewColumn ?? vscode.ViewColumn.Active, false);
         this.revealPath = revealPath;
