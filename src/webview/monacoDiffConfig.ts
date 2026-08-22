@@ -12,8 +12,6 @@ export const MONACO_DIFF_OPTIONS = {
     overviewRulerBorder: false,
     overviewRulerLanes: 0,
     diffAlgorithm: 'advanced',
-    diffWordWrap: 'off',
-    wordWrap: 'off',
     renderWhitespace: 'selection',
     renderLineHighlight: 'line',
     // 不使用编辑器内部滚动条；MultiDiffPanel 按内容尺寸扩展卡片并由页面统一滚动。

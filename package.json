@@ -45,18 +45,6 @@
         "title": "下一个差异",
         "category": "Gitk",
         "icon": "$(arrow-down)"
-      },
-      {
-        "command": "vscode-gitk.multiDiff.enableWordWrap",
-        "title": "启用软换行（当前：关闭）",
-        "category": "Gitk",
-        "icon": "$(word-wrap)"
-      },
-      {
-        "command": "vscode-gitk.multiDiff.disableWordWrap",
-        "title": "关闭软换行（当前：开启）",
-        "category": "Gitk",
-        "icon": "$(word-wrap)"
       }
     ],
     "viewsContainers": {
@@ -98,16 +86,6 @@
           "command": "vscode-gitk.multiDiff.nextChange",
           "when": "activeWebviewPanelId == vscode-gitk.multiDiff",
           "group": "navigation@11"
-        },
-        {
-          "command": "vscode-gitk.multiDiff.enableWordWrap",
-          "when": "activeWebviewPanelId == vscode-gitk.multiDiff && !gitk:multiDiffWordWrap",
-          "group": "navigation@12"
-        },
-        {
-          "command": "vscode-gitk.multiDiff.disableWordWrap",
-          "when": "activeWebviewPanelId == vscode-gitk.multiDiff && gitk:multiDiffWordWrap",
-          "group": "navigation@12"
         }
       ]
     },

@@ -13,7 +13,6 @@ type DiffSnapshot = {
     revealPath?: string;
     // changes 虚拟提交对比的是工作区文件, 右侧允许编辑并回写。
     editable: boolean;
-    wordWrap: boolean;
     diffs: Array<Omit<DiffPayload, 'equals'> & { editable?: boolean }>;
 };
 
@@ -23,7 +22,6 @@ export class MultiDiffPanel implements vscode.Disposable {
     private webviewReady = false;
     private revision = 0;
     private revealPath?: string;
-    private wordWrap: boolean;
     private postQueue: Promise<unknown> = Promise.resolve();
     private readonly unsubscribers: (() => void)[];
 
@@ -33,9 +31,7 @@ export class MultiDiffPanel implements vscode.Disposable {
         private readonly onOpenFileAtLine?: (path: string, line?: number, column?: number, side?: 'original' | 'modified') => void,
         private readonly onSaveFile?: (path: string, content: string) => void,
         private readonly onWorkingTreeAction?: (action: 'stage' | 'unstage' | 'discard', section: 'staged' | 'unstaged', path: string) => void,
-        wordWrap = false,
     ) {
-        this.wordWrap = wordWrap;
         this.unsubscribers = [
             store.subscribeSelector(state => state.diffLoading, () => this.publish()),
             store.subscribeSelector(state => state.diffError, () => this.publish()),
@@ -69,11 +65,6 @@ export class MultiDiffPanel implements vscode.Disposable {
 
     navigateChange(direction: -1 | 1): void {
         this.post({ type: 'navigateChange', direction });
-    }
-
-    setWordWrap(enabled: boolean): void {
-        this.wordWrap = enabled;
-        this.post({ type: 'wordWrapChanged', enabled });
     }
 
     // 推进 generation 使在途 DiffReader 失效；新 Store 快照由订阅自动发布。
@@ -159,7 +150,6 @@ export class MultiDiffPanel implements vscode.Disposable {
             revealPath: this.revealPath ?? state.selectedPath,
             // changes 与 uncommitted 的右侧都是工作区文件本身，允许编辑并回写。
             editable: state.currentChangeSet === 'changes' || state.currentChangeSet === 'uncommitted',
-            wordWrap: this.wordWrap,
             diffs,
         };
         console.log(`[gitk-multi-diff] publish #${snapshot.revision}: loading=${snapshot.loading}, progress=${snapshot.completed}/${snapshot.total}, diffs=${snapshot.diffs.length}, error=${snapshot.error ?? 'none'}`);
@@ -273,7 +263,7 @@ const loading=document.getElementById('loading'),list=document.getElementById('l
 const report=message=>{try{window.gitkVscode.postMessage({type:'error',message})}catch(_){}};
 const log=message=>{try{window.gitkVscode.postMessage({type:'log',message})}catch(_){}};
 const notifyRendered=revision=>{try{window.gitkVscode.postMessage({type:'rendered',revision})}catch(_){}};
-let monacoReady=false,lastRevision=0,pending,cards=[],cardByPath=new Map(),activePath='',clickedPath='',suppressSyncUntil=0,scrollAnimationFrame=0,renderToken=0,editable=false,wordWrap=false,virtualFrame=0,editorPool=[],syncingGlobalHScroll=false,hScrollFrame=0;
+let monacoReady=false,lastRevision=0,pending,cards=[],cardByPath=new Map(),activePath='',clickedPath='',suppressSyncUntil=0,scrollAnimationFrame=0,renderToken=0,editable=false,virtualFrame=0,editorPool=[],syncingGlobalHScroll=false,hScrollFrame=0;
 function diffKey(diff){return diff.diffKey||diff.path}
 let activeChangeIndex=-1,activeChangePage=0;
 function activeEntry(){return activePath&&cardByPath.get(activePath)}
@@ -391,7 +381,7 @@ function releaseSlot(slot){
 function acquireSlot(entry){
   const slot=editorPool.pop()||function(){
     const host=document.createElement('div');host.className='editor';
-    const editor=monaco.editor.createDiffEditor(host,Object.assign({},diffOptions,{readOnly:!editable,wordWrap:wordWrap?'on':'off',diffWordWrap:wordWrap?'on':'off'}));
+    const editor=monaco.editor.createDiffEditor(host,Object.assign({},diffOptions,{readOnly:!editable}));
     applyVsCodeFont(editor);return {host:host,editor:editor,owner:null,generation:0};
   }();
   slot.owner=entry;slot.generation++;entry.body.replaceChildren(slot.host);return slot;
@@ -530,7 +520,7 @@ function mountEntry(entry,fromScroll=false){
     modified=monaco.editor.createModel(entry.modifiedValue,language(diff.path));
     // changes 模式右侧即工作区文件, 允许编辑; 其余模式(commit/staged)保持只读。
     const entryEditable=diff.editable===true;
-    editor.updateOptions(Object.assign({},diffOptions,{readOnly:!entryEditable,wordWrap:wordWrap?'on':'off',diffWordWrap:wordWrap?'on':'off'}));
+    editor.updateOptions(Object.assign({},diffOptions,{readOnly:!entryEditable}));
     editor.setModel({original:original,modified:modified});
     const originalEditor=editor.getOriginalEditor(),modifiedEditor=editor.getModifiedEditor();
     originalEditor.setScrollLeft(entry.horizontalLeft||0);modifiedEditor.setScrollLeft(entry.horizontalLeft||0);
@@ -752,7 +742,6 @@ function render(snapshot){
     dispose();
     const token=renderToken;
     editable=snapshot.editable===true;
-    wordWrap=snapshot.wordWrap===true;
     if(!snapshot.diffs.length){list.classList.remove('rendering');list.textContent='没有可显示的 Diff 内容';loading.hidden=true;list.hidden=false;log('render #'+snapshot.revision+': empty');notifyRendered(snapshot.revision);return}
     const total=snapshot.diffs.length;
     // 先同步创建全部逻辑项外壳，只有可视范围绑定对象池中的 Monaco。
@@ -769,17 +758,10 @@ function render(snapshot){
     notifyRendered(snapshot.revision);
   }catch(error){fail(error)}
 }
-function applyWordWrap(enabled){
-  wordWrap=enabled;
-  const value=enabled?'on':'off';
-  for(const slot of editorPool)slot.editor.updateOptions({wordWrap:value,diffWordWrap:value});
-  for(const entry of cards){if(entry.editor){entry.editor.updateOptions({wordWrap:value,diffWordWrap:value});entry.fit()}}
-}
 function receive(message){
   if(!message)return;
   if(message.type==='reveal'){reveal(message.path,true);return}
   if(message.type==='navigateChange'){navigateChange(message.direction===-1?-1:1).catch(fail);return}
-  if(message.type==='wordWrapChanged'){applyWordWrap(message.enabled===true);return}
   if(typeof message.revision!=='number'||message.revision<=lastRevision)return;
   lastRevision=message.revision;
   log('receive #'+message.revision+': loading='+message.loading+', progress='+message.completed+'/'+message.total+', diffs='+message.diffs.length);
