@@ -195,6 +195,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             (path, line, column, side) => void this.openWorkspaceFileAtLine(path, line, column, side),
             (path, content) => void this.saveWorkspaceFile(path, content),
             (action, section, path) => void this.runWorkingTreeAction(action, section, path),
+            context.globalState.get<boolean>('gitk.multiDiff.wordWrap', false),
         );
         this.diffReader = new DiffReader();
         this.gitActions = new GitActionRunner(
@@ -1005,6 +1006,16 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             diffLoading: true,
         });
         await this.diffReader.prepare(rootUri, this.currentHash, this.files, this.currentChangeSet, generation);
+    }
+
+    navigateMultiDiffChange(direction: -1 | 1): void {
+        this.multiDiffPanel.navigateChange(direction);
+    }
+
+    async setMultiDiffWordWrap(enabled: boolean): Promise<void> {
+        await this.context.globalState.update('gitk.multiDiff.wordWrap', enabled);
+        await vscode.commands.executeCommand('setContext', 'gitk:multiDiffWordWrap', enabled);
+        this.multiDiffPanel.setWordWrap(enabled);
     }
 
     private openDiff(filePath?: string): void {

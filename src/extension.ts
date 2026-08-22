@@ -23,6 +23,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     const provider = new GitkViewProvider(context);
     provider.initializeBackground();
+    await vscode.commands.executeCommand('setContext', 'gitk:multiDiffWordWrap', context.globalState.get<boolean>('gitk.multiDiff.wordWrap', false));
 
     // 注册 webview view provider
     context.subscriptions.push(
@@ -48,7 +49,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('vscode-gitk.selectCommit', (hash: string) => provider.selectCommit(hash))
+        vscode.commands.registerCommand('vscode-gitk.selectCommit', (hash: string) => provider.selectCommit(hash)),
+        vscode.commands.registerCommand('vscode-gitk.multiDiff.previousChange', () => provider.navigateMultiDiffChange(-1)),
+        vscode.commands.registerCommand('vscode-gitk.multiDiff.nextChange', () => provider.navigateMultiDiffChange(1)),
+        vscode.commands.registerCommand('vscode-gitk.multiDiff.enableWordWrap', () => provider.setMultiDiffWordWrap(true)),
+        vscode.commands.registerCommand('vscode-gitk.multiDiff.disableWordWrap', () => provider.setMultiDiffWordWrap(false))
     );
 
     // 状态栏: workspace 有 git 仓库时显示 "Gitk" 字样 + 内置 git-merge 图标

@@ -13,6 +13,7 @@ type DiffSnapshot = {
     revealPath?: string;
     // changes 虚拟提交对比的是工作区文件, 右侧允许编辑并回写。
     editable: boolean;
+    wordWrap: boolean;
     diffs: Array<Omit<DiffPayload, 'equals'> & { editable?: boolean }>;
 };
 
@@ -22,6 +23,7 @@ export class MultiDiffPanel implements vscode.Disposable {
     private webviewReady = false;
     private revision = 0;
     private revealPath?: string;
+    private wordWrap: boolean;
     private postQueue: Promise<unknown> = Promise.resolve();
     private readonly unsubscribers: (() => void)[];
 
@@ -31,7 +33,9 @@ export class MultiDiffPanel implements vscode.Disposable {
         private readonly onOpenFileAtLine?: (path: string, line?: number, column?: number, side?: 'original' | 'modified') => void,
         private readonly onSaveFile?: (path: string, content: string) => void,
         private readonly onWorkingTreeAction?: (action: 'stage' | 'unstage' | 'discard', section: 'staged' | 'unstaged', path: string) => void,
+        wordWrap = false,
     ) {
+        this.wordWrap = wordWrap;
         this.unsubscribers = [
             store.subscribeSelector(state => state.diffLoading, () => this.publish()),
             store.subscribeSelector(state => state.diffError, () => this.publish()),
@@ -61,6 +65,15 @@ export class MultiDiffPanel implements vscode.Disposable {
         this.revealPath = revealPath;
         this.post({ type: 'reveal', path: revealPath });
         return true;
+    }
+
+    navigateChange(direction: -1 | 1): void {
+        this.post({ type: 'navigateChange', direction });
+    }
+
+    setWordWrap(enabled: boolean): void {
+        this.wordWrap = enabled;
+        this.post({ type: 'wordWrapChanged', enabled });
     }
 
     // 推进 generation 使在途 DiffReader 失效；新 Store 快照由订阅自动发布。
@@ -146,6 +159,7 @@ export class MultiDiffPanel implements vscode.Disposable {
             revealPath: this.revealPath ?? state.selectedPath,
             // changes 与 uncommitted 的右侧都是工作区文件本身，允许编辑并回写。
             editable: state.currentChangeSet === 'changes' || state.currentChangeSet === 'uncommitted',
+            wordWrap: this.wordWrap,
             diffs,
         };
         console.log(`[gitk-multi-diff] publish #${snapshot.revision}: loading=${snapshot.loading}, progress=${snapshot.completed}/${snapshot.total}, diffs=${snapshot.diffs.length}, error=${snapshot.error ?? 'none'}`);
@@ -246,9 +260,10 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .meta-rename-to{color:var(--vscode-gitDecoration-addedResourceForeground)}
 .diff-body{border-radius:0 0 calc(var(--card-radius) - var(--card-border)) calc(var(--card-radius) - var(--card-border));overflow:hidden}
 .diff.collapsed>.diff-body{display:none}
-.editor{width:100%;min-width:0;height:80px}
+.editor{position:relative;width:100%;min-width:0;height:80px}
 .empty{padding:16px 8px;color:var(--vscode-descriptionForeground);text-align:center}
 .gitk-diff-link-hover{text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:2px;cursor:pointer}
+.gitk-change-flash{position:absolute;z-index:12;right:2px;left:2px;pointer-events:none;border-radius:4px;background:color-mix(in srgb,var(--vscode-focusBorder,#007acc) 20%,transparent);box-shadow:inset 0 0 0 2px var(--vscode-focusBorder,#007acc),0 3px 8px rgba(0,0,0,.38),0 1px 2px rgba(0,0,0,.28);transform:translateY(-1px)}
 #global-hscroll{position:fixed;z-index:20;right:0;bottom:0;left:0;height:14px;overflow-x:auto;overflow-y:hidden;background:var(--vscode-scrollbar-shadow,rgba(0,0,0,.18));scrollbar-color:var(--vscode-scrollbarSlider-background) transparent;scrollbar-width:auto}
 #global-hscroll[hidden]{display:none}
 #global-hscroll-content{height:1px;pointer-events:none}
@@ -258,9 +273,89 @@ const loading=document.getElementById('loading'),list=document.getElementById('l
 const report=message=>{try{window.gitkVscode.postMessage({type:'error',message})}catch(_){}};
 const log=message=>{try{window.gitkVscode.postMessage({type:'log',message})}catch(_){}};
 const notifyRendered=revision=>{try{window.gitkVscode.postMessage({type:'rendered',revision})}catch(_){}};
-let monacoReady=false,lastRevision=0,pending,cards=[],cardByPath=new Map(),activePath='',clickedPath='',suppressSyncUntil=0,scrollAnimationFrame=0,renderToken=0,editable=false,virtualFrame=0,editorPool=[],syncingGlobalHScroll=false,hScrollFrame=0;
+let monacoReady=false,lastRevision=0,pending,cards=[],cardByPath=new Map(),activePath='',clickedPath='',suppressSyncUntil=0,scrollAnimationFrame=0,renderToken=0,editable=false,wordWrap=false,virtualFrame=0,editorPool=[],syncingGlobalHScroll=false,hScrollFrame=0;
 function diffKey(diff){return diff.diffKey||diff.path}
+let activeChangeIndex=-1,activeChangePage=0;
 function activeEntry(){return activePath&&cardByPath.get(activePath)}
+function changeBlockGeometry(editor,startLine,endLine){
+  const lineCount=editor.getModel().getLineCount();
+  const top=editor.getTopForLineNumber(startLine)-editor.getScrollTop();
+  const bottom=endLine<lineCount?editor.getTopForLineNumber(endLine+1)-editor.getScrollTop():editor.getTopForLineNumber(endLine)+editor.getOption(monaco.editor.EditorOption.lineHeight)-editor.getScrollTop();
+  return {top:top,height:Math.max(2,bottom-top)}
+}
+function changePageTop(editor,lineNumber,visibleTop){
+  const node=editor.getDomNode();
+  const lineTop=editor.getTopForLineNumber(lineNumber);
+  return node.getBoundingClientRect().top+window.scrollY+lineTop-editor.getScrollTop()-visibleTop
+}
+function clearChangeFlash(entry){
+  if(entry.flashTimer){clearTimeout(entry.flashTimer);entry.flashTimer=0}
+  if(entry.flashOverlay){entry.flashOverlay.remove();entry.flashOverlay=null}
+}
+function changePageInfo(entry,change){
+  const left=entry.editor.getOriginalEditor(),right=entry.editor.getModifiedEditor(),blocks=[];
+  if(change.originalEndLineNumber>0)blocks.push(changeBlockGeometry(left,change.originalStartLineNumber,change.originalEndLineNumber));
+  if(change.modifiedEndLineNumber>0)blocks.push(changeBlockGeometry(right,change.modifiedStartLineNumber,change.modifiedEndLineNumber));
+  const top=Math.min.apply(null,blocks.map(function(block){return block.top}));
+  const height=Math.max.apply(null,blocks.map(function(block){return block.height}));
+  const visibleTop=entry.pinnedGroup.getBoundingClientRect().height;
+  const visibleBottom=window.innerHeight-14;
+  const navigationTop=visibleTop+(visibleBottom-visibleTop)/5;
+  const pageHeight=Math.max(80,visibleBottom-navigationTop);
+  return {top:top,height:height,navigationTop:navigationTop,pageHeight:pageHeight,pageCount:Math.max(1,Math.ceil(height/pageHeight))}
+}
+function flashChange(entry,pageInfo,page){
+  clearChangeFlash(entry);
+  const top=pageInfo.top+page*pageInfo.pageHeight;
+  const height=Math.min(pageInfo.pageHeight,pageInfo.height-page*pageInfo.pageHeight);
+  const overlay=document.createElement('div');overlay.className='gitk-change-flash';
+  overlay.style.top=Math.max(0,top)+'px';overlay.style.height=Math.max(2,height)+'px';
+  entry.slot.host.append(overlay);entry.flashOverlay=overlay;
+  entry.flashTimer=setTimeout(function(){clearChangeFlash(entry)},650)
+}
+function selectLineChange(entry,index,page){
+  const changes=entry.editor.getLineChanges()||[],change=changes[index];
+  if(!change)return false;
+  const left=entry.editor.getOriginalEditor(),right=entry.editor.getModifiedEditor(),pageInfo=changePageInfo(entry,change);
+  const targetPage=Math.max(0,Math.min(pageInfo.pageCount-1,page||0));
+  clickedPath=entry.path;setActive(entry.path,true);activeChangeIndex=index;activeChangePage=targetPage;
+  flashChange(entry,pageInfo,targetPage);
+  const baseTop=change.originalEndLineNumber>0?changePageTop(left,change.originalStartLineNumber,pageInfo.navigationTop):changePageTop(right,change.modifiedStartLineNumber,pageInfo.navigationTop);
+  animateScrollTo(Math.max(0,baseTop+targetPage*pageInfo.pageHeight));
+  return true
+}
+async function findNavigableEntry(start,direction){
+  for(let index=start;index>=0&&index<cards.length;index+=direction){
+    const entry=cards[index];
+    if(entry.staticContent||entry.collapsed)continue;
+    await mountEntry(entry,false);
+    const changes=entry.editor&&entry.editor.getLineChanges()||[];
+    if(changes.length)return {entry:entry,index:direction>0?0:changes.length-1}
+  }
+  return null
+}
+async function navigateChange(direction){
+  const current=activeEntry();
+  if(current&&current.editor){
+    const changes=current.editor.getLineChanges()||[];
+    if(activeChangeIndex>=0&&activeChangeIndex<changes.length){
+      const pageInfo=changePageInfo(current,changes[activeChangeIndex]),nextPage=activeChangePage+direction;
+      if(nextPage>=0&&nextPage<pageInfo.pageCount){selectLineChange(current,activeChangeIndex,nextPage);return}
+    }
+    const candidate=activeChangeIndex<0?(direction>0?0:changes.length-1):activeChangeIndex+direction;
+    if(candidate>=0&&candidate<changes.length){
+      const pageInfo=changePageInfo(current,changes[candidate]);
+      selectLineChange(current,candidate,direction>0?0:pageInfo.pageCount-1);return
+    }
+  }
+  const start=current?current.index+direction:(direction>0?0:cards.length-1);
+  const target=await findNavigableEntry(start,direction);
+  if(target){
+    const changes=target.entry.editor.getLineChanges()||[],pageInfo=changePageInfo(target.entry,changes[target.index]);
+    selectLineChange(target.entry,target.index,direction>0?0:pageInfo.pageCount-1)
+  }
+}
+
 function sideMaxScrollLeft(side){if(!side)return 0;const layout=side.getLayoutInfo();return Math.max(0,side.getScrollWidth()-(layout.contentWidth||0))}
 function updateGlobalHScroll(){
   if(hScrollFrame)return;
@@ -287,12 +382,13 @@ function releaseSlot(slot){
 function acquireSlot(entry){
   const slot=editorPool.pop()||function(){
     const host=document.createElement('div');host.className='editor';
-    const editor=monaco.editor.createDiffEditor(host,Object.assign({},diffOptions,{readOnly:!editable}));
+    const editor=monaco.editor.createDiffEditor(host,Object.assign({},diffOptions,{readOnly:!editable,wordWrap:wordWrap?'on':'off',diffWordWrap:wordWrap?'on':'off'}));
     applyVsCodeFont(editor);return {host:host,editor:editor,owner:null,generation:0};
   }();
   slot.owner=entry;slot.generation++;entry.body.replaceChildren(slot.host);return slot;
 }
 function disposeEntry(entry){
+  clearChangeFlash(entry);
   entry.mountVersion++;
   if(entry.path===activePath)globalHScroll.hidden=true;
   if(entry.saveTimer){clearTimeout(entry.saveTimer);entry.saveTimer=0}
@@ -314,7 +410,7 @@ function dispose(){
   if(virtualFrame){cancelAnimationFrame(virtualFrame);virtualFrame=0}
   for(const entry of cards)disposeEntry(entry);
   while(editorPool.length)destroySlot(editorPool.pop());
-  cards=[];cardByPath=new Map();activePath='';clickedPath='';list.replaceChildren();globalHScroll.hidden=true;globalHScroll.scrollLeft=0
+  cards=[];cardByPath=new Map();activePath='';clickedPath='';activeChangeIndex=-1;activeChangePage=0;list.replaceChildren();globalHScroll.hidden=true;globalHScroll.scrollLeft=0
 }
 function language(path){const ext=path.slice(path.lastIndexOf('.')+1).toLowerCase();return languages[ext]||'plaintext'}
 function escapeHtml(value){return String(value==null?'':value).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
@@ -391,7 +487,7 @@ function createCardShell(diff,order,parent){
   const meta=document.createElement('div');meta.className='file-meta';meta.innerHTML=metaHtml(diff);
   pinnedGroup.append(headerLayer,meta);
   card.append(pinnedGroup,body);parent.append(card);
-  const entry={diff:diff,index:order,path:key,filePath:diff.path,card:card,header:header,pinnedGroup:pinnedGroup,body:body,slot:null,editor:null,original:null,modified:null,modifiedValue:diff.modified||'',originalSelections:null,modifiedSelections:null,bodyHeight:estimateBodyHeight(diff),horizontalLeft:0,collapsed:false,staticContent:false,mounted:false,mounting:false,mountVersion:0,saveTimer:0,disposables:[],fit:function(){}};
+  const entry={diff:diff,index:order,path:key,filePath:diff.path,card:card,header:header,pinnedGroup:pinnedGroup,body:body,slot:null,editor:null,original:null,modified:null,modifiedValue:diff.modified||'',originalSelections:null,modifiedSelections:null,bodyHeight:estimateBodyHeight(diff),horizontalLeft:0,flashOverlay:null,flashTimer:0,collapsed:false,staticContent:false,mounted:false,mounting:false,mountVersion:0,saveTimer:0,disposables:[],fit:function(){}};
   header.addEventListener('click',function(){toggle(entry)});
   card.addEventListener('pointerdown',function(){clickedPath=entry.path;setActive(entry.path,true)});
   actions.querySelectorAll('.diff-action').forEach(function(button){
@@ -425,7 +521,7 @@ function mountEntry(entry,fromScroll=false){
     modified=monaco.editor.createModel(entry.modifiedValue,language(diff.path));
     // changes 模式右侧即工作区文件, 允许编辑; 其余模式(commit/staged)保持只读。
     const entryEditable=diff.editable===true;
-    editor.updateOptions(Object.assign({},diffOptions,{readOnly:!entryEditable}));
+    editor.updateOptions(Object.assign({},diffOptions,{readOnly:!entryEditable,wordWrap:wordWrap?'on':'off',diffWordWrap:wordWrap?'on':'off'}));
     editor.setModel({original:original,modified:modified});
     const originalEditor=editor.getOriginalEditor(),modifiedEditor=editor.getModifiedEditor();
     originalEditor.setScrollLeft(entry.horizontalLeft||0);modifiedEditor.setScrollLeft(entry.horizontalLeft||0);
@@ -567,7 +663,7 @@ function setActive(path,notify){
     if(entry.path===path||!entry.editor)continue;
     try{entry.editor.getOriginalEditor().blur();entry.editor.getModifiedEditor().blur()}catch(_){ }
   }
-  if(changed)for(const entry of cards)entry.card.classList.toggle('selected',entry.path===path);
+  if(changed){activeChangeIndex=-1;activeChangePage=0;for(const entry of cards)entry.card.classList.toggle('selected',entry.path===path)}
   if(changed&&notify){try{window.gitkVscode.postMessage({type:'selectFile',path:path})}catch(_){}}
   updateGlobalHScroll();
 }
@@ -647,6 +743,7 @@ function render(snapshot){
     dispose();
     const token=renderToken;
     editable=snapshot.editable===true;
+    wordWrap=snapshot.wordWrap===true;
     if(!snapshot.diffs.length){list.classList.remove('rendering');list.textContent='没有可显示的 Diff 内容';loading.hidden=true;list.hidden=false;log('render #'+snapshot.revision+': empty');notifyRendered(snapshot.revision);return}
     const total=snapshot.diffs.length;
     // 先同步创建全部逻辑项外壳，只有可视范围绑定对象池中的 Monaco。
@@ -663,9 +760,17 @@ function render(snapshot){
     notifyRendered(snapshot.revision);
   }catch(error){fail(error)}
 }
+function applyWordWrap(enabled){
+  wordWrap=enabled;
+  const value=enabled?'on':'off';
+  for(const slot of editorPool)slot.editor.updateOptions({wordWrap:value,diffWordWrap:value});
+  for(const entry of cards){if(entry.editor){entry.editor.updateOptions({wordWrap:value,diffWordWrap:value});entry.fit()}}
+}
 function receive(message){
   if(!message)return;
   if(message.type==='reveal'){reveal(message.path,true);return}
+  if(message.type==='navigateChange'){navigateChange(message.direction===-1?-1:1).catch(fail);return}
+  if(message.type==='wordWrapChanged'){applyWordWrap(message.enabled===true);return}
   if(typeof message.revision!=='number'||message.revision<=lastRevision)return;
   lastRevision=message.revision;
   log('receive #'+message.revision+': loading='+message.loading+', progress='+message.completed+'/'+message.total+', diffs='+message.diffs.length);

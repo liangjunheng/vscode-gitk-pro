@@ -33,6 +33,30 @@
         "title": "Select Commit",
         "category": "Gitk",
         "enablement": "false"
+      },
+      {
+        "command": "vscode-gitk.multiDiff.previousChange",
+        "title": "上一个差异",
+        "category": "Gitk",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "vscode-gitk.multiDiff.nextChange",
+        "title": "下一个差异",
+        "category": "Gitk",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "vscode-gitk.multiDiff.enableWordWrap",
+        "title": "启用软换行（当前：关闭）",
+        "category": "Gitk",
+        "icon": "$(word-wrap)"
+      },
+      {
+        "command": "vscode-gitk.multiDiff.disableWordWrap",
+        "title": "关闭软换行（当前：开启）",
+        "category": "Gitk",
+        "icon": "$(word-wrap)"
       }
     ],
     "viewsContainers": {
@@ -63,8 +87,42 @@
           "when": "view == vscode-gitk.panelView",
           "group": "navigation"
         }
+      ],
+      "editor/title": [
+        {
+          "command": "vscode-gitk.multiDiff.previousChange",
+          "when": "activeWebviewPanelId == vscode-gitk.multiDiff",
+          "group": "navigation@10"
+        },
+        {
+          "command": "vscode-gitk.multiDiff.nextChange",
+          "when": "activeWebviewPanelId == vscode-gitk.multiDiff",
+          "group": "navigation@11"
+        },
+        {
+          "command": "vscode-gitk.multiDiff.enableWordWrap",
+          "when": "activeWebviewPanelId == vscode-gitk.multiDiff && !gitk:multiDiffWordWrap",
+          "group": "navigation@12"
+        },
+        {
+          "command": "vscode-gitk.multiDiff.disableWordWrap",
+          "when": "activeWebviewPanelId == vscode-gitk.multiDiff && gitk:multiDiffWordWrap",
+          "group": "navigation@12"
+        }
       ]
-    }
+    },
+    "keybindings": [
+      {
+        "command": "vscode-gitk.multiDiff.nextChange",
+        "key": "f7",
+        "when": "activeWebviewPanelId == vscode-gitk.multiDiff"
+      },
+      {
+        "command": "vscode-gitk.multiDiff.previousChange",
+        "key": "f8",
+        "when": "activeWebviewPanelId == vscode-gitk.multiDiff"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
