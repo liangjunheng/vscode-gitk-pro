@@ -30,6 +30,7 @@ export class MultiDiffPanel implements vscode.Disposable {
         private readonly onRendered?: () => void,
         private readonly onOpenFileAtLine?: (path: string, line?: number, column?: number, side?: 'original' | 'modified') => void,
         private readonly onSaveFile?: (path: string, content: string) => void,
+        private readonly onWorkingTreeAction?: (action: 'stage' | 'unstage' | 'discard', section: 'staged' | 'unstaged', path: string) => void,
     ) {
         this.unsubscribers = [
             store.subscribeSelector(state => state.diffLoading, () => this.publish()),
@@ -103,8 +104,13 @@ export class MultiDiffPanel implements vscode.Disposable {
                 // line 缺省表示标题栏按钮触发, 只打开文件不定位。
                 const line = typeof message.line === 'number' ? message.line : undefined;
                 const column = typeof message.column === 'number' ? message.column : undefined;
-                        const side = message.side === 'original' || message.side === 'modified' ? message.side : undefined;
+                const side = message.side === 'original' || message.side === 'modified' ? message.side : undefined;
                 this.onOpenFileAtLine?.(message.path, line, column, side);
+            } else if (message?.type === 'workingTreeAction'
+                && (message.action === 'stage' || message.action === 'unstage' || message.action === 'discard')
+                && (message.section === 'staged' || message.section === 'unstaged')
+                && typeof message.path === 'string') {
+                this.onWorkingTreeAction?.(message.action, message.section, message.path);
             } else if (message?.type === 'rendered') {
                 // Diff 卡片与行号渲染完成, 通知 Provider 放行 Changed Files 列表。
                 this.onRendered?.();
@@ -163,8 +169,8 @@ export class MultiDiffPanel implements vscode.Disposable {
 *{box-sizing:border-box}
 /* 不要给 html/body 设 overflow 或 min-height: 那会改变滚动容器归属, 使 window.scrollY /
    window 的 scroll 事件失效, 并让 sticky 的参照系偏移导致标题栏无法吸顶。保持文档视口滚动。 */
-body{margin:0;background:color-mix(in srgb, var(--vscode-editor-background) 50%, #000);color:var(--vscode-editor-foreground);font-family:var(--vscode-editor-font-family);font-size:var(--vscode-editor-font-size)}
-#loading{min-height:100vh;display:grid;place-items:center;color:var(--vscode-descriptionForeground)}
+body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-editor-background) 50%, #000);color:var(--vscode-editor-foreground);font-family:var(--vscode-editor-font-family);font-size:var(--vscode-editor-font-size)}
+#loading{min-height:calc(100vh - 14px);display:grid;place-items:center;color:var(--vscode-descriptionForeground)}
 #loading[hidden]{display:none}
 #list{width:100%;padding:8px}
 /* 渲染中：卡片已在文档流内（保证 Monaco 拿到真实宽度），仅视觉隐藏，避免逐个跳动。 */
@@ -218,21 +224,20 @@ body{margin:0;background:color-mix(in srgb, var(--vscode-editor-background) 50%,
 .diff.selected>.pinned-group{border-color:var(--vscode-focusBorder)}
 .header-layer{position:relative;z-index:1}
 .header-layer::before{content:'';position:absolute;z-index:0;top:calc(var(--header-cover-bleed) * -1);right:calc(var(--header-cover-bleed) * -1);bottom:0;left:calc(var(--header-cover-bleed) * -1);background:var(--vscode-editor-background);pointer-events:none}
-.header-row{position:relative;z-index:1;display:flex;align-items:stretch}
-.header-row>.file-header,.header-row>.open-file{position:relative;z-index:1}
+.header-row{position:relative;z-index:1;display:flex;align-items:center}
+.header-row>.file-header,.header-row>.diff-actions{position:relative;z-index:1}
 /* 轮廓层位于盖板上方：向外延展高亮总宽度，和底层卡片的三边高亮线无缝连接。 */
 .pinned-group::after{content:'';position:absolute;z-index:3;top:calc((var(--card-border) + var(--card-ring)) * -1);right:calc((var(--card-border) + var(--card-ring)) * -1);bottom:0;left:calc((var(--card-border) + var(--card-ring)) * -1);border-top:calc(var(--card-border) + var(--card-ring)) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-right:calc(var(--card-border) + var(--card-ring)) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-left:calc(var(--card-border) + var(--card-ring)) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:var(--card-radius) var(--card-radius) 0 0;pointer-events:none}
 .diff.selected>.pinned-group::after{border-color:var(--vscode-focusBorder)}
 .header-row>.file-header{flex:1 1 auto;min-width:0;border-radius:calc(var(--card-radius) - var(--card-border) - var(--card-ring)) 0 0 0}
-.header-row>.open-file{border-radius:0 calc(var(--card-radius) - var(--card-border) - var(--card-ring)) 0 0}
+.diff-actions{align-self:stretch;flex:0 0 auto;display:flex;align-items:center;gap:2px;margin-right:0;padding-right:4px;background:var(--header-surface)}
+.diff-action,.open-file{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;color:var(--vscode-icon-foreground,currentColor);background:transparent;border:0;border-radius:5px;cursor:pointer}
+.diff-action:hover,.open-file:hover{background:var(--vscode-toolbar-hoverBackground,var(--vscode-list-hoverBackground))}
+.diff-action:active,.open-file:active{background:var(--vscode-toolbar-activeBackground,var(--vscode-toolbar-hoverBackground,var(--vscode-list-hoverBackground)))}
+.diff-action:focus-visible,.open-file:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}
+.diff-action .codicon,.open-file .codicon{font-size:16px}
 .diff.collapsed>.pinned-group{border-radius:var(--card-radius)}
 .diff.collapsed>.pinned-group>.header-layer>.header-row>.file-header{border-radius:calc(var(--card-radius) - var(--card-border) - var(--card-ring)) 0 0 calc(var(--card-radius) - var(--card-border) - var(--card-ring))}
-.diff.collapsed>.pinned-group>.header-layer>.header-row>.open-file{border-radius:0 calc(var(--card-radius) - var(--card-border) - var(--card-ring)) calc(var(--card-radius) - var(--card-border) - var(--card-ring)) 0}
-.open-file{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:26px;padding:0;color:var(--vscode-icon-foreground,currentColor);background:var(--header-surface);border:0;cursor:pointer}
-.open-file:hover{background:var(--vscode-toolbar-hoverBackground,var(--vscode-list-hoverBackground))}
-.open-file:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-1px}
-.open-file svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}
-.diff.collapsed .open-file{border-bottom-color:transparent}
 /* 标题栏下方的 git 元信息行: index <old>..<new> <mode> 以及重命名来源。 */
 .file-meta{position:relative;z-index:1;display:flex;flex-direction:column;gap:1px;padding:0 8px 4px;border-bottom:var(--card-border) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));color:var(--vscode-descriptionForeground);background:var(--header-surface);font-family:var(--vscode-editor-font-family,monospace);font-size:calc(var(--vscode-editor-font-size) * .85);line-height:1.45}
 .diff.collapsed>.pinned-group>.file-meta{display:none}
@@ -244,14 +249,33 @@ body{margin:0;background:color-mix(in srgb, var(--vscode-editor-background) 50%,
 .editor{width:100%;min-width:0;height:80px}
 .empty{padding:16px 8px;color:var(--vscode-descriptionForeground);text-align:center}
 .gitk-diff-link-hover{text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:2px;cursor:pointer}
-</style></head><body><div id="loading">正在准备 Diff...</div><main id="list" hidden></main><script nonce="${nonce}">window.gitkQueue=[];window.addEventListener('message',event=>window.gitkQueue.push(event.data));window.gitkVscode=acquireVsCodeApi();</script><script nonce="${nonce}" src="${monacoUri}/loader.js"></script><script nonce="${nonce}">
+#global-hscroll{position:fixed;z-index:20;right:0;bottom:0;left:0;height:14px;overflow-x:auto;overflow-y:hidden;background:var(--vscode-scrollbar-shadow,rgba(0,0,0,.18));scrollbar-color:var(--vscode-scrollbarSlider-background) transparent;scrollbar-width:auto}
+#global-hscroll[hidden]{display:none}
+#global-hscroll-content{height:1px;pointer-events:none}
+</style></head><body><div id="loading">正在准备 Diff...</div><main id="list" hidden></main><div id="global-hscroll" role="scrollbar" aria-label="当前 Diff 水平滚动" aria-orientation="horizontal" hidden><div id="global-hscroll-content"></div></div><script nonce="${nonce}">window.gitkQueue=[];window.addEventListener('message',event=>window.gitkQueue.push(event.data));window.gitkVscode=acquireVsCodeApi();</script><script nonce="${nonce}" src="${monacoUri}/loader.js"></script><script nonce="${nonce}">
 self.MonacoEnvironment={getWorker:()=>new Worker('${monacoUri}/base/worker/workerMain.js')};
-const loading=document.getElementById('loading'),list=document.getElementById('list'),languages=${JSON.stringify(MONACO_DIFF_LANGUAGES)},diffOptions=${JSON.stringify(MONACO_DIFF_OPTIONS)};
+const loading=document.getElementById('loading'),list=document.getElementById('list'),globalHScroll=document.getElementById('global-hscroll'),globalHScrollContent=document.getElementById('global-hscroll-content'),languages=${JSON.stringify(MONACO_DIFF_LANGUAGES)},diffOptions=${JSON.stringify(MONACO_DIFF_OPTIONS)};
 const report=message=>{try{window.gitkVscode.postMessage({type:'error',message})}catch(_){}};
 const log=message=>{try{window.gitkVscode.postMessage({type:'log',message})}catch(_){}};
 const notifyRendered=revision=>{try{window.gitkVscode.postMessage({type:'rendered',revision})}catch(_){}};
-let monacoReady=false,lastRevision=0,pending,cards=[],cardByPath=new Map(),activePath='',suppressSyncUntil=0,scrollAnimationFrame=0,renderToken=0,editable=false,virtualFrame=0,editorPool=[];
+let monacoReady=false,lastRevision=0,pending,cards=[],cardByPath=new Map(),activePath='',clickedPath='',suppressSyncUntil=0,scrollAnimationFrame=0,renderToken=0,editable=false,virtualFrame=0,editorPool=[],syncingGlobalHScroll=false,hScrollFrame=0;
 function diffKey(diff){return diff.diffKey||diff.path}
+function activeEntry(){return activePath&&cardByPath.get(activePath)}
+function sideMaxScrollLeft(side){if(!side)return 0;const layout=side.getLayoutInfo();return Math.max(0,side.getScrollWidth()-(layout.contentWidth||0))}
+function updateGlobalHScroll(){
+  if(hScrollFrame)return;
+  hScrollFrame=requestAnimationFrame(function(){
+    hScrollFrame=0;
+    const entry=activeEntry();
+    if(!entry||!entry.mounted||!entry.editor||entry.collapsed){globalHScroll.hidden=true;globalHScroll.scrollLeft=0;return}
+    const left=entry.editor.getOriginalEditor(),right=entry.editor.getModifiedEditor();
+    const max=Math.max(sideMaxScrollLeft(left),sideMaxScrollLeft(right));
+    if(max<1){globalHScroll.hidden=true;globalHScroll.scrollLeft=0;return}
+    globalHScroll.hidden=false;
+    globalHScrollContent.style.width=(globalHScroll.clientWidth+max)+'px';
+    syncingGlobalHScroll=true;globalHScroll.scrollLeft=entry.horizontalLeft||Math.max(left.getScrollLeft(),right.getScrollLeft());syncingGlobalHScroll=false;
+  });
+}
 const SCROLL_DURATION=150,MAX_IDLE_EDITORS=6;
 function show(message){loading.textContent=message;loading.hidden=false;list.hidden=true;list.classList.remove('rendering')}
 function fail(error){const message=error&&error.message||String(error);show('Diff 渲染失败: '+message);report(message)}
@@ -270,6 +294,7 @@ function acquireSlot(entry){
 }
 function disposeEntry(entry){
   entry.mountVersion++;
+  if(entry.path===activePath)globalHScroll.hidden=true;
   if(entry.saveTimer){clearTimeout(entry.saveTimer);entry.saveTimer=0}
   if(entry.modified){
     entry.modifiedValue=entry.modified.getValue();
@@ -289,7 +314,7 @@ function dispose(){
   if(virtualFrame){cancelAnimationFrame(virtualFrame);virtualFrame=0}
   for(const entry of cards)disposeEntry(entry);
   while(editorPool.length)destroySlot(editorPool.pop());
-  cards=[];cardByPath=new Map();activePath='';list.replaceChildren()
+  cards=[];cardByPath=new Map();activePath='';clickedPath='';list.replaceChildren();globalHScroll.hidden=true;globalHScroll.scrollLeft=0
 }
 function language(path){const ext=path.slice(path.lastIndexOf('.')+1).toLowerCase();return languages[ext]||'plaintext'}
 function escapeHtml(value){return String(value==null?'':value).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
@@ -352,17 +377,27 @@ function createCardShell(diff,order,parent){
   const headerLayer=document.createElement('div');headerLayer.className='header-layer';
   const headerRow=document.createElement('div');headerRow.className='header-row';
   const header=document.createElement('button');header.type='button';header.className='file-header'+(diff.status==='R'&&diff.oldPath&&diff.oldPath!==diff.path?' rename-header':'');header.innerHTML=headerHtml(diff);
+  const actions=document.createElement('div');actions.className='diff-actions';
+  function actionButton(action,section,title,icon){const button=document.createElement('button');button.type='button';button.className='diff-action';button.dataset.action=action;button.dataset.section=section;button.title=title;button.setAttribute('aria-label',title);button.innerHTML='<span class="codicon codicon-'+icon+'" aria-hidden="true"></span>';return button}
+  if(diff.workingTreeKind==='staged')actions.append(actionButton('unstage','staged','取消暂存当前文件（移回 Unstaged Changes）','remove'));
+  else if(diff.workingTreeKind==='unstaged'||diff.workingTreeKind==='untracked')actions.append(actionButton('discard','unstaged','放弃当前文件的未暂存更改（不可撤销）','discard'),actionButton('stage','unstaged','暂存当前文件（移入 Staged Changes）','add'));
   const openFile=document.createElement('button');openFile.type='button';openFile.className='open-file';
-  openFile.title='在编辑器中打开文件';openFile.setAttribute('aria-label','在编辑器中打开文件');
-  openFile.innerHTML='<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 2.5h4.5V7"/><path d="M13.5 2.5 8 8"/><path d="M12 9.5v3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3"/></svg>';
+  openFile.title='在编辑器中打开当前文件';openFile.setAttribute('aria-label','在编辑器中打开当前文件');
+  openFile.innerHTML='<span class="codicon codicon-go-to-file" aria-hidden="true"></span>';
+  actions.append(openFile);
   const body=document.createElement('div');body.className='diff-body';
-  headerRow.append(header,openFile);
+  headerRow.append(header,actions);
   headerLayer.append(headerRow);
   const meta=document.createElement('div');meta.className='file-meta';meta.innerHTML=metaHtml(diff);
   pinnedGroup.append(headerLayer,meta);
   card.append(pinnedGroup,body);parent.append(card);
-  const entry={diff:diff,index:order,path:key,filePath:diff.path,card:card,header:header,pinnedGroup:pinnedGroup,body:body,slot:null,editor:null,original:null,modified:null,modifiedValue:diff.modified||'',originalSelections:null,modifiedSelections:null,bodyHeight:estimateBodyHeight(diff),collapsed:false,staticContent:false,mounted:false,mounting:false,mountVersion:0,saveTimer:0,disposables:[],fit:function(){}};
+  const entry={diff:diff,index:order,path:key,filePath:diff.path,card:card,header:header,pinnedGroup:pinnedGroup,body:body,slot:null,editor:null,original:null,modified:null,modifiedValue:diff.modified||'',originalSelections:null,modifiedSelections:null,bodyHeight:estimateBodyHeight(diff),horizontalLeft:0,collapsed:false,staticContent:false,mounted:false,mounting:false,mountVersion:0,saveTimer:0,disposables:[],fit:function(){}};
   header.addEventListener('click',function(){toggle(entry)});
+  card.addEventListener('pointerdown',function(){clickedPath=entry.path;setActive(entry.path,true)});
+  actions.querySelectorAll('.diff-action').forEach(function(button){
+    button.addEventListener('pointerdown',function(event){if(event.button!==0)return;event.preventDefault();event.stopPropagation()});
+    button.addEventListener('pointerup',function(event){if(event.button!==0)return;event.preventDefault();event.stopPropagation();try{window.gitkVscode.postMessage({type:'workingTreeAction',action:button.dataset.action,section:button.dataset.section,path:diff.path})}catch(_){}});
+  });
   // 标题栏右侧直接打开工作区文件, 不带行号定位。
   openFile.addEventListener('click',function(event){
     event.stopPropagation();
@@ -378,10 +413,10 @@ function createCardShell(diff,order,parent){
   return entry;
 }
 // 为可视逻辑项借用 Monaco 模板；离屏后归还对象池并保留等高占位。
-function mountEntry(entry){
+function mountEntry(entry,fromScroll=false){
   if(entry.staticContent||entry.collapsed||entry.mounted||entry.mounting)return Promise.resolve();
   entry.mounting=true;entry.mountVersion++;
-  const mountVersion=entry.mountVersion,diff=entry.diff;
+  const mountVersion=entry.mountVersion,diff=entry.diff,allowScrollCompensation=!fromScroll;
   entry.body.style.height='';
   const slot=acquireSlot(entry),host=slot.host,editor=slot.editor;
   let original,modified;
@@ -392,8 +427,19 @@ function mountEntry(entry){
     const entryEditable=diff.editable===true;
     editor.updateOptions(Object.assign({},diffOptions,{readOnly:!entryEditable}));
     editor.setModel({original:original,modified:modified});
-    if(entry.originalSelections)editor.getOriginalEditor().setSelections(entry.originalSelections);
-    if(entry.modifiedSelections)editor.getModifiedEditor().setSelections(entry.modifiedSelections);
+    const originalEditor=editor.getOriginalEditor(),modifiedEditor=editor.getModifiedEditor();
+    originalEditor.setScrollLeft(entry.horizontalLeft||0);modifiedEditor.setScrollLeft(entry.horizontalLeft||0);
+    if(entry.originalSelections)originalEditor.setSelections(entry.originalSelections);
+    if(entry.modifiedSelections)modifiedEditor.setSelections(entry.modifiedSelections);
+    function syncHorizontalFromEditor(source){
+      if(syncingGlobalHScroll)return;
+      entry.horizontalLeft=source.getScrollLeft();
+      const other=source===originalEditor?modifiedEditor:originalEditor;
+      syncingGlobalHScroll=true;other.setScrollLeft(entry.horizontalLeft);syncingGlobalHScroll=false;
+      if(entry.path===activePath)updateGlobalHScroll();
+    }
+    entry.disposables.push(originalEditor.onDidScrollChange(function(event){if(event.scrollLeftChanged)syncHorizontalFromEditor(originalEditor)}));
+    entry.disposables.push(modifiedEditor.onDidScrollChange(function(event){if(event.scrollLeftChanged)syncHorizontalFromEditor(modifiedEditor)}));
     if(entryEditable){
       // 仅工作区一侧允许编辑回写，Staged 卡片保持只读。
       entry.disposables.push(modified.onDidChangeContent(function(){
@@ -460,14 +506,16 @@ function mountEntry(entry){
     const aboveViewport=entry.card.getBoundingClientRect().bottom<=0;
     entry.bodyHeight=nextHeight;entry.body.style.height='';host.style.height=entry.bodyHeight+'px';
     editor.layout({width:Math.ceil(width),height:entry.bodyHeight});
-    // 视口上方项目高度变化时补偿外层滚动，保持用户当前看到的内容不跳动。
-    if(delta&&aboveViewport)window.scrollTo({top:Math.max(0,window.scrollY+delta),behavior:'auto'});
+    if(entry.path===activePath)updateGlobalHScroll();
+    // 滚动触发的异步挂载不得改写用户当前位置；首次渲染等静态挂载才补偿上方高度。
+    if(delta&&aboveViewport&&allowScrollCompensation)window.scrollTo({top:Math.max(0,window.scrollY+delta),behavior:'auto'});
     scheduleVirtualization();
   };
   entry.disposables.push(editor.onDidUpdateDiff(function(){fit();updateLineStats(entry)}));
   entry.disposables.push(editor.getOriginalEditor().onDidContentSizeChange(fit));
   entry.disposables.push(editor.getModifiedEditor().onDidContentSizeChange(fit));
   entry.slot=slot;entry.editor=editor;entry.original=original;entry.modified=modified;entry.fit=fit;entry.mounted=true;entry.mounting=false;
+  if(entry.path===activePath)updateGlobalHScroll();
   // 纯事件驱动：onDidUpdateDiff 到达即就绪；若挂监听前差异已算完，
   // getLineChanges() 已非 null，直接就绪，避免错过事件而永久等待。
   return new Promise(function(resolve,reject){
@@ -510,13 +558,18 @@ function toggle(entry){
   entry.collapsed=!entry.collapsed;
   entry.card.classList.toggle('collapsed',entry.collapsed);
   if(entry.collapsed)disposeEntry(entry);else scheduleVirtualization();
-  setActive(entry.path,true);
+  setActive(entry.path,true);updateGlobalHScroll();
 }
 function setActive(path,notify){
-  if(activePath===path)return;
+  const changed=activePath!==path;
   activePath=path;
-  for(const entry of cards)entry.card.classList.toggle('selected',entry.path===path);
-  if(notify){try{window.gitkVscode.postMessage({type:'selectFile',path:path})}catch(_){}}
+  for(const entry of cards){
+    if(entry.path===path||!entry.editor)continue;
+    try{entry.editor.getOriginalEditor().blur();entry.editor.getModifiedEditor().blur()}catch(_){ }
+  }
+  if(changed)for(const entry of cards)entry.card.classList.toggle('selected',entry.path===path);
+  if(changed&&notify){try{window.gitkVscode.postMessage({type:'selectFile',path:path})}catch(_){}}
+  updateGlobalHScroll();
 }
 // 固定 SCROLL_DURATION 完成滚动：距离越远速度越快，不用浏览器 smooth 的按距离计时。
 function animateScrollTo(top){
@@ -553,9 +606,17 @@ function reveal(path,smooth){
   else{if(scrollAnimationFrame){cancelAnimationFrame(scrollAnimationFrame);scrollAnimationFrame=0}window.scrollTo({top:top,behavior:'auto'})}
   setActive(path,false);scheduleVirtualization();
 }
+function isCardVisible(entry){const rect=entry.card.getBoundingClientRect();return rect.bottom>36&&rect.top<window.innerHeight}
 function topVisibleCard(){for(const entry of cards){if(entry.card.getBoundingClientRect().bottom>1)return entry}return cards[cards.length-1]}
-function syncActiveFromViewport(){if(performance.now()<suppressSyncUntil)return;const entry=topVisibleCard();if(entry)setActive(entry.path,true)}
-function updateVirtualization(){
+function syncActiveFromViewport(){
+  if(performance.now()<suppressSyncUntil)return;
+  const clickedEntry=clickedPath&&cardByPath.get(clickedPath);
+  if(clickedEntry&&isCardVisible(clickedEntry))return;
+  clickedPath='';
+  const entry=topVisibleCard();
+  if(entry)setActive(entry.path,true)
+}
+function updateVirtualization(fromScroll=false){
   if(!cards.length)return;
   let first=-1,last=-1;
   for(let index=0;index<cards.length;index++){
@@ -566,14 +627,20 @@ function updateVirtualization(){
   for(let index=0;index<cards.length;index++){
     const entry=cards[index];
     if(index>=first&&index<=last&&!entry.collapsed){
-      mountEntry(entry).catch(function(error){markCardFailed(entry,error)});
+      mountEntry(entry,fromScroll).catch(function(error){markCardFailed(entry,error)});
     }else if(entry.mounted||entry.mounting){disposeEntry(entry)}
   }
 }
 function scheduleVirtualization(){if(virtualFrame)return;virtualFrame=requestAnimationFrame(function(){virtualFrame=0;updateVirtualization()})}
 let scrollFrame=0;
-window.addEventListener('scroll',function(){if(scrollFrame)return;scrollFrame=requestAnimationFrame(function(){scrollFrame=0;syncActiveFromViewport();updateVirtualization()})},{passive:true});
-window.addEventListener('resize',scheduleVirtualization);
+window.addEventListener('scroll',function(){if(scrollFrame)return;scrollFrame=requestAnimationFrame(function(){scrollFrame=0;syncActiveFromViewport();updateVirtualization(true)})},{passive:true});
+globalHScroll.addEventListener('scroll',function(){
+  if(syncingGlobalHScroll)return;
+  const entry=activeEntry();if(!entry||!entry.mounted||!entry.editor)return;
+  entry.horizontalLeft=globalHScroll.scrollLeft;
+  syncingGlobalHScroll=true;entry.editor.getOriginalEditor().setScrollLeft(entry.horizontalLeft);entry.editor.getModifiedEditor().setScrollLeft(entry.horizontalLeft);syncingGlobalHScroll=false;
+},{passive:true});
+window.addEventListener('resize',function(){scheduleVirtualization();updateGlobalHScroll()});
 // 全部逻辑项外壳先进入文档流，只有 viewport 相交项绑定池中的 Monaco 模板。
 function render(snapshot){
   try{

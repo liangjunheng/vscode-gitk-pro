@@ -194,6 +194,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             () => this.handleDiffRendered(),
             (path, line, column, side) => void this.openWorkspaceFileAtLine(path, line, column, side),
             (path, content) => void this.saveWorkspaceFile(path, content),
+            (action, section, path) => void this.runWorkingTreeAction(action, section, path),
         );
         this.diffReader = new DiffReader();
         this.gitActions = new GitActionRunner(
@@ -1083,7 +1084,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     private syncFileHighlightFromDiffPanel(filePath: string, generation: number): void {
-        if (generation !== store.getState().diffGeneration || !this.files.some(file => (file.diffKey || file.path) === filePath)) { return; }
+        const state = store.getState();
+        if (generation !== state.diffGeneration || state.selectedPath === filePath || !this.files.some(file => (file.diffKey || file.path) === filePath)) { return; }
         this.selectedPath = filePath;
     }
 
@@ -1977,8 +1979,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     const folder = lastSlash >= 0 ? file.path.slice(0, lastSlash + 1) : '';
     const name = lastSlash >= 0 ? file.path.slice(lastSlash + 1) : file.path;
     const actions = section === 'staged'
-      ? workingTreeActionButton('unstage', section, file.path, 'remove', '取消暂存')
-      : workingTreeActionButton('discard', section, file.path, 'discard', '放弃更改') + workingTreeActionButton('stage', section, file.path, 'add', '暂存更改');
+      ? workingTreeActionButton('unstage', section, file.path, 'remove', '取消暂存当前文件（移回 Unstaged Changes）')
+      : workingTreeActionButton('discard', section, file.path, 'discard', '放弃当前文件的未暂存更改（不可撤销）') + workingTreeActionButton('stage', section, file.path, 'add', '暂存当前文件（移入 Staged Changes）');
     const untracked = section === 'unstaged' && file.isUntracked ? ' untracked' : '';
     const diffKey = section + ':' + file.path;
     return '<div class="file-item' + (diffKey === selectedPath ? ' selected' : '') + untracked + '" data-path="' + escapeAttr(file.path) + '" data-diff-key="' + escapeAttr(diffKey) + '" data-section="' + section + '" title="' + escapeAttr(file.path) + '">' +
@@ -1990,8 +1992,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     if (section === 'staged' && sectionFiles.length === 0) return '';
     const disabled = sectionFiles.length === 0;
     const actions = disabled ? '' : section === 'staged'
-      ? workingTreeActionButton('unstage', section, '', 'remove', '全部取消暂存')
-      : workingTreeActionButton('discard', section, '', 'discard', '放弃所有更改') + workingTreeActionButton('stage', section, '', 'add', '全部暂存');
+      ? workingTreeActionButton('unstage', section, '', 'remove', '取消暂存此分组的所有文件（全部移回 Unstaged Changes）')
+      : workingTreeActionButton('discard', section, '', 'discard', '放弃此分组所有文件的未暂存更改（不可撤销）') + workingTreeActionButton('stage', section, '', 'add', '暂存此分组的所有文件（全部移入 Staged Changes）');
     return '<section class="working-tree-section" data-section="' + section + '">' +
       '<div class="working-tree-section-header' + (disabled ? ' disabled' : '') + '"><span class="working-tree-section-title">' + label + '</span><span class="working-tree-section-count">' + sectionFiles.length + '</span><span class="working-tree-section-actions">' + actions + '</span></div>' +
       '<div class="working-tree-section-body">' + sectionFiles.map(function(file) { return workingTreeFileHTML(file, section); }).join('') + '</div></section>';
