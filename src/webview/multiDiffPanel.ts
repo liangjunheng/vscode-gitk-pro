@@ -13,7 +13,7 @@ type DiffSnapshot = {
     revealPath?: string;
     // changes 虚拟提交对比的是工作区文件, 右侧允许编辑并回写。
     editable: boolean;
-    diffs: DiffPayload[];
+    diffs: Array<Omit<DiffPayload, 'equals'> & { editable?: boolean }>;
 };
 
 // 单一 Webview 接收 Store 的原子完整快照，并为每个文件创建一套共享 Monaco Diff 配置。
@@ -122,7 +122,13 @@ export class MultiDiffPanel implements vscode.Disposable {
     private publish(): void {
         if (!this.panel || !this.webviewReady) { return; }
         const state = store.getState();
-        const diffs = state.files.filter((file): file is DiffPayload => 'original' in file && 'modified' in file);
+        const diffs = state.files
+            .filter((file): file is DiffPayload => 'original' in file && 'modified' in file)
+            .map(file => ({
+                ...file,
+                editable: state.currentChangeSet === 'changes'
+                    || (state.currentChangeSet === 'uncommitted' && file.workingTreeKind !== 'staged'),
+            }));
         const snapshot: DiffSnapshot = {
             type: 'snapshot',
             revision: ++this.revision,
@@ -132,8 +138,8 @@ export class MultiDiffPanel implements vscode.Disposable {
             total: state.diffProgress.total,
             error: state.diffError,
             revealPath: this.revealPath ?? state.selectedPath,
-            // 只有 changes(未暂存改动) 的右侧就是工作区文件本身, 才允许编辑。
-            editable: state.currentChangeSet === 'changes',
+            // changes 与 uncommitted 的右侧都是工作区文件本身，允许编辑并回写。
+            editable: state.currentChangeSet === 'changes' || state.currentChangeSet === 'uncommitted',
             diffs,
         };
         console.log(`[gitk-multi-diff] publish #${snapshot.revision}: loading=${snapshot.loading}, progress=${snapshot.completed}/${snapshot.total}, diffs=${snapshot.diffs.length}, error=${snapshot.error ?? 'none'}`);
@@ -183,6 +189,12 @@ body{margin:0;background:color-mix(in srgb, var(--vscode-editor-background) 50%,
 .title-side-right{padding-right:34px}
 .diff-chevron{flex:0 0 auto;width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.5;transition:transform .12s ease}
 .diff.collapsed .diff-chevron{transform:rotate(-90deg)}
+.working-tree-kind{display:inline-grid;place-items:center;flex:0 0 20px;width:20px;height:20px;box-sizing:border-box}
+.working-tree-kind svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.working-tree-kind-untracked{color:var(--vscode-gitDecoration-untrackedResourceForeground,var(--vscode-gitDecoration-deletedResourceForeground,#f14c4c))}
+.working-tree-kind-untracked .kind-file{stroke-dasharray:1.6 1.6}
+.working-tree-kind-unstaged{color:var(--vscode-foreground)}
+.working-tree-kind-staged{color:var(--vscode-gitDecoration-addedResourceForeground,#73c991)}
 .status{flex:0 0 auto;width:14px;text-align:center;font-weight:600}
 .status-A{color:var(--vscode-gitDecoration-addedResourceForeground)}
 .status-M{color:var(--vscode-gitDecoration-modifiedResourceForeground)}
@@ -239,6 +251,7 @@ const report=message=>{try{window.gitkVscode.postMessage({type:'error',message})
 const log=message=>{try{window.gitkVscode.postMessage({type:'log',message})}catch(_){}};
 const notifyRendered=revision=>{try{window.gitkVscode.postMessage({type:'rendered',revision})}catch(_){}};
 let monacoReady=false,lastRevision=0,pending,cards=[],cardByPath=new Map(),activePath='',suppressSyncUntil=0,scrollAnimationFrame=0,renderToken=0,editable=false,virtualFrame=0,editorPool=[];
+function diffKey(diff){return diff.diffKey||diff.path}
 const SCROLL_DURATION=150,MAX_IDLE_EDITORS=6;
 function show(message){loading.textContent=message;loading.hidden=false;list.hidden=true;list.classList.remove('rendering')}
 function fail(error){const message=error&&error.message||String(error);show('Diff 渲染失败: '+message);report(message)}
@@ -282,7 +295,13 @@ function language(path){const ext=path.slice(path.lastIndexOf('.')+1).toLowerCas
 function escapeHtml(value){return String(value==null?'':value).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function pathHtml(path,deleted){const slash=path.lastIndexOf('/');const name=slash<0?path:path.slice(slash+1),folder=slash<0?'':path.slice(0,slash+1);return '<span class="file-location'+(deleted?' is-deleted':'')+'" title="'+escapeHtml(path)+'"><span class="file-name">'+escapeHtml(name)+'</span>'+(folder?'<span class="file-path-gap"> </span><span class="file-folder">'+escapeHtml(folder)+'</span>':'')+'</span>'}
 function statusHtml(status){return '<span class="status status-'+escapeHtml(status)+'">'+escapeHtml(status)+'</span>'}
-function headerHtml(diff){const chevron='<svg class="diff-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 5.5 5 5 5-5"/></svg>';const stats='<span class="line-stats"><span class="line-stat-added"></span><span class="line-stat-removed"></span></span>';const renamed=diff.status==='R'&&diff.oldPath&&diff.oldPath!==diff.path;const leftPath=renamed?diff.oldPath:diff.path;const left=chevron+stats+statusHtml(diff.status)+pathHtml(leftPath,diff.status==='D'||renamed);if(!renamed)return '<span class="title-side title-side-left">'+left+'</span>';return '<span class="title-side title-side-left">'+left+'</span><span class="title-side title-side-right">'+statusHtml(diff.status)+pathHtml(diff.path,false)+'</span>'}
+function workingTreeKindHtml(kind){
+  if(kind==='staged')return '<span class="working-tree-kind working-tree-kind-staged" title="Staged：已暂存" aria-label="Staged：已暂存"><svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="6.25"/><path d="m5.8 9 2.1 2.1 4.35-4.45" stroke-width="2"/></svg></span>';
+  if(kind==='untracked')return '<span class="working-tree-kind working-tree-kind-untracked" title="Untracked：未跟踪" aria-label="Untracked：未跟踪"><svg viewBox="0 0 18 18" aria-hidden="true"><circle class="kind-file" cx="9" cy="9" r="6.25"/><path d="M7.15 7.15c.15-2.1 3.85-2.15 3.85.15 0 1.55-2 1.65-2 3.15M9 12.75v.1" stroke-width="1.7"/></svg></span>';
+  if(kind==='unstaged')return '<span class="working-tree-kind working-tree-kind-unstaged" title="Unstaged：未暂存" aria-label="Unstaged：未暂存"><svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="6.25"/><path d="M9 5.25v4.5M9 12.4v.1" stroke-width="2"/></svg></span>';
+  return '';
+}
+function headerHtml(diff){const chevron='<svg class="diff-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 5.5 5 5 5-5"/></svg>';const kind=workingTreeKindHtml(diff.workingTreeKind);const stats='<span class="line-stats"><span class="line-stat-added"></span><span class="line-stat-removed"></span></span>';const renamed=diff.status==='R'&&diff.oldPath&&diff.oldPath!==diff.path;const leftPath=renamed?diff.oldPath:diff.path;const left=chevron+kind+stats+statusHtml(diff.status)+pathHtml(leftPath,diff.status==='D'||renamed);if(!renamed)return '<span class="title-side title-side-left">'+left+'</span>';return '<span class="title-side title-side-left">'+left+'</span><span class="title-side title-side-right">'+statusHtml(diff.status)+pathHtml(diff.path,false)+'</span>'}
 // 对象 id 按 git 惯例截断到 7 位; 全 0 表示该侧不存在(新增或删除)。
 function shortObjectId(id){const value=String(id==null?'':id);return value?value.slice(0,7):'0000000'}
 // 标题栏下方的元信息: index <old>..<new> <mode>, 以及重命名的来源与目标。
@@ -327,7 +346,7 @@ function estimateBodyHeight(diff){
 }
 // 先创建轻量逻辑项外壳，Monaco 模板只绑定可视范围，离屏后归还对象池。
 function createCardShell(diff,order,parent){
-  const card=document.createElement('section');card.className='diff';card.dataset.path=diff.path;card.dataset.index=String(order);
+  const key=diffKey(diff),card=document.createElement('section');card.className='diff';card.dataset.path=diff.path;card.dataset.diffKey=key;card.dataset.index=String(order);
   const pinnedGroup=document.createElement('div');pinnedGroup.className='pinned-group';
   // 独立标题层: 盖板与标题栏同高, 盖板位于标题内容下方但可跨出标题栏 8px 覆盖相邻卡片。
   const headerLayer=document.createElement('div');headerLayer.className='header-layer';
@@ -342,14 +361,14 @@ function createCardShell(diff,order,parent){
   const meta=document.createElement('div');meta.className='file-meta';meta.innerHTML=metaHtml(diff);
   pinnedGroup.append(headerLayer,meta);
   card.append(pinnedGroup,body);parent.append(card);
-  const entry={diff:diff,index:order,path:diff.path,card:card,header:header,pinnedGroup:pinnedGroup,body:body,slot:null,editor:null,original:null,modified:null,modifiedValue:diff.modified||'',originalSelections:null,modifiedSelections:null,bodyHeight:estimateBodyHeight(diff),collapsed:false,staticContent:false,mounted:false,mounting:false,mountVersion:0,saveTimer:0,disposables:[],fit:function(){}};
+  const entry={diff:diff,index:order,path:key,filePath:diff.path,card:card,header:header,pinnedGroup:pinnedGroup,body:body,slot:null,editor:null,original:null,modified:null,modifiedValue:diff.modified||'',originalSelections:null,modifiedSelections:null,bodyHeight:estimateBodyHeight(diff),collapsed:false,staticContent:false,mounted:false,mounting:false,mountVersion:0,saveTimer:0,disposables:[],fit:function(){}};
   header.addEventListener('click',function(){toggle(entry)});
   // 标题栏右侧直接打开工作区文件, 不带行号定位。
   openFile.addEventListener('click',function(event){
     event.stopPropagation();
     try{window.gitkVscode.postMessage({type:'openFileAtLine',path:diff.path})}catch(_){}
   });
-  cards.push(entry);cardByPath.set(diff.path,entry);
+  cards.push(entry);cardByPath.set(key,entry);
   if(diff.error||diff.isBinary){
     const message=document.createElement('div');message.className='empty';
     message.textContent=diff.error?('无法读取此文件：'+diff.error):'二进制文件不同，无法显示文本差异。';
@@ -370,12 +389,13 @@ function mountEntry(entry){
     original=monaco.editor.createModel(diff.original||'',language(diff.path));
     modified=monaco.editor.createModel(entry.modifiedValue,language(diff.path));
     // changes 模式右侧即工作区文件, 允许编辑; 其余模式(commit/staged)保持只读。
-    editor.updateOptions(Object.assign({},diffOptions,{readOnly:!editable}));
+    const entryEditable=diff.editable===true;
+    editor.updateOptions(Object.assign({},diffOptions,{readOnly:!entryEditable}));
     editor.setModel({original:original,modified:modified});
     if(entry.originalSelections)editor.getOriginalEditor().setSelections(entry.originalSelections);
     if(entry.modifiedSelections)editor.getModifiedEditor().setSelections(entry.modifiedSelections);
-    if(editable){
-      // 编辑防抖回写工作区文件, 避免每次击键都发消息。
+    if(entryEditable){
+      // 仅工作区一侧允许编辑回写，Staged 卡片保持只读。
       entry.disposables.push(modified.onDidChangeContent(function(){
         entry.modifiedValue=modified.getValue();
         if(entry.saveTimer)clearTimeout(entry.saveTimer);
@@ -567,7 +587,7 @@ function render(snapshot){
     loading.textContent='正在创建 Diff 列表...';loading.hidden=false;
     snapshot.diffs.forEach(function(diff,order){createCardShell(diff,order,list)});
     if(token!==renderToken)return;
-    const target=snapshot.revealPath&&cardByPath.has(snapshot.revealPath)?snapshot.revealPath:snapshot.diffs[0].path;
+    const target=snapshot.revealPath&&cardByPath.has(snapshot.revealPath)?snapshot.revealPath:diffKey(snapshot.diffs[0]);
     reveal(target,false);
     updateVirtualization();
     list.classList.remove('rendering');loading.hidden=true;

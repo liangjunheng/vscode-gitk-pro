@@ -106,8 +106,6 @@ export class GitBranchOption {
     readonly label: string;
     readonly hash: string;
     readonly kind: GitBranchKind;
-    readonly hasChangeFiles?: boolean;
-    readonly hasStagedChangeFiles?: boolean;
 
     constructor(init: {
         repoOption: GitRepositoryOption;
@@ -115,16 +113,12 @@ export class GitBranchOption {
         label: string;
         hash: string;
         kind: GitBranchKind;
-        hasChangeFiles?: boolean;
-        hasStagedChangeFiles?: boolean;
     }) {
         this.repoOption = init.repoOption;
         this.name = init.name;
         this.label = init.label;
         this.hash = init.hash;
         this.kind = init.kind;
-        this.hasChangeFiles = init.hasChangeFiles;
-        this.hasStagedChangeFiles = init.hasStagedChangeFiles;
     }
 
     equals(other: GitBranchOption): boolean {
@@ -132,9 +126,7 @@ export class GitBranchOption {
             && this.name === other.name
             && this.label === other.label
             && this.hash === other.hash
-            && this.kind === other.kind
-            && this.hasChangeFiles === other.hasChangeFiles
-            && this.hasStagedChangeFiles === other.hasStagedChangeFiles;
+            && this.kind === other.kind;
     }
 }
 
@@ -147,6 +139,9 @@ export class CommitFile {
     oldMode?: string;
     newMode?: string;
     isBinary?: boolean;
+    isUntracked?: boolean;
+    workingTreeKind?: 'untracked' | 'unstaged' | 'staged';
+    diffKey?: string;
 
     constructor(init: Partial<CommitFile> = {}) {
         Object.assign(this, init);
@@ -160,11 +155,14 @@ export class CommitFile {
             && this.newObjectId === other.newObjectId
             && this.oldMode === other.oldMode
             && this.newMode === other.newMode
-            && this.isBinary === other.isBinary;
+            && this.isBinary === other.isBinary
+            && this.isUntracked === other.isUntracked
+            && this.workingTreeKind === other.workingTreeKind
+            && this.diffKey === other.diffKey;
     }
 }
 
-export type ChangeSetMode = 'commit' | 'staged' | 'changes';
+export type ChangeSetMode = 'commit' | 'staged' | 'changes' | 'uncommitted';
 
 export class WorkingTreeChanges {
     staged: CommitFile[] = [];

@@ -17,6 +17,7 @@ export type GitkIntent =
     | { type: 'selectCommit'; hash: unknown; repositoryPath?: unknown }
     | { type: 'selectFile'; path?: unknown }
     | { type: 'copyFilePath'; path: unknown; absolute?: unknown }
+    | { type: 'workingTreeAction'; action: unknown; section: unknown; path?: unknown }
     | { type: 'toggleFilesMode' }
     | { type: 'search'; keywords: unknown };
 
@@ -36,8 +37,11 @@ export interface AppState {
     currentRepositoryPath: string | undefined;
     currentChangeSet: ChangeSetMode;
     files: ChangedFile[];
-    workingTreeRows: Array<{ hash: 'changes' | 'staged'; label: string; repositoryPath: string }>;
+    stagedFiles: ChangedFile[];
+    unstagedFiles: ChangedFile[];
+    workingTreeRows: Array<{ hash: 'uncommitted'; label: string; repositoryPath: string; enabled: boolean }>;
     filesLoading: boolean;
+    workingTreeActionLoading: boolean;
     selectedPath: string | undefined;
     selectedCommit: { key: string; hash: string; repositoryPath: string; kind: ChangeSetMode } | null;
     displayMode: 'tree' | 'flat';
@@ -71,8 +75,11 @@ export function createInitialState(): AppState {
         currentRepositoryPath: undefined,
         currentChangeSet: 'commit',
         files: [],
+        stagedFiles: [],
+        unstagedFiles: [],
         workingTreeRows: [],
         filesLoading: false,
+        workingTreeActionLoading: false,
         selectedPath: undefined,
         selectedCommit: null,
         displayMode: 'flat',

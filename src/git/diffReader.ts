@@ -138,38 +138,41 @@ export class DiffReader {
             const modified = modifiedObject ? contents.get(modifiedObject) : '';
             const isBinary = file.isBinary || containsNul(original) || containsNul(modified);
             if (isBinary) {
-                return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isBinary: true, original: '', modified: '', error: undefined });
+                return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isUntracked: file.isUntracked, workingTreeKind: file.workingTreeKind, diffKey: file.diffKey, isBinary: true, original: '', modified: '', error: undefined });
             }
             const missing = [originalObject, modifiedObject].find(object => object && !contents.has(object));
-            return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isBinary: false, original: original || '', modified: modified || '', error: missing ? `无法读取 Git 对象：${missing}` : undefined });
+            return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isUntracked: file.isUntracked, workingTreeKind: file.workingTreeKind, diffKey: file.diffKey, isBinary: false, original: original || '', modified: modified || '', error: missing ? `无法读取 Git 对象：${missing}` : undefined });
         });
     }
 
     private async readWorkingTreeDiffs(rootUri: vscode.Uri, files: CommitFile[], changeSetMode: ChangeSetMode, indexOffset = 0): Promise<DiffPayload[]> {
-        const originalRef = changeSetMode === 'staged' ? 'HEAD' : '';
+        const readsIndex = (file: CommitFile) => changeSetMode === 'staged'
+            || (changeSetMode === 'uncommitted' && file.workingTreeKind === 'staged');
+        const originalRef = (file: CommitFile) => readsIndex(file) ? 'HEAD' : '';
         const objects: string[] = [];
         for (const file of files) {
             if (file.isBinary) { continue; }
-            if (file.status !== 'A') { objects.push(`${originalRef}:${file.oldPath || file.path}`); }
-            if (file.status !== 'D') { objects.push(`:${file.path}`); }
+            if (file.status !== 'A') { objects.push(`${originalRef(file)}:${file.oldPath || file.path}`); }
+            if (readsIndex(file) && file.status !== 'D') { objects.push(`:${file.path}`); }
         }
         const contents = await this.readGitObjects(rootUri, objects);
         return Promise.all(files.map(async (file, index) => {
-            const originalObject = file.isBinary || file.status === 'A' ? undefined : `${originalRef}:${file.oldPath || file.path}`;
-            const modifiedObject = file.isBinary || file.status === 'D' ? undefined : `:${file.path}`;
+            const fromIndex = readsIndex(file);
+            const originalObject = file.isBinary || file.status === 'A' ? undefined : `${originalRef(file)}:${file.oldPath || file.path}`;
+            const modifiedObject = file.isBinary || file.status === 'D' || !fromIndex ? undefined : `:${file.path}`;
             const original = originalObject ? contents.get(originalObject) || '' : '';
-            const workingTreeFile = file.isBinary || changeSetMode === 'staged' || file.status === 'D'
+            const workingTreeFile = file.isBinary || fromIndex || file.status === 'D'
                 ? { content: '', error: undefined }
                 : await this.readWorkingTreeFile(rootUri, file.path);
-            const modified = changeSetMode === 'staged'
+            const modified = fromIndex
                 ? (modifiedObject ? contents.get(modifiedObject) || '' : '')
                 : workingTreeFile.content;
             // 已移除 numstat, isBinary 靠内容侧 NUL 探测判定。
             const isBinary = file.isBinary || containsNul(original) || containsNul(modified);
             if (isBinary) {
-                return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isBinary: true, original: '', modified: '', error: workingTreeFile.error });
+                return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isUntracked: file.isUntracked, workingTreeKind: file.workingTreeKind, diffKey: file.diffKey, isBinary: true, original: '', modified: '', error: workingTreeFile.error });
             }
-            return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isBinary: false, original, modified, error: workingTreeFile.error });
+            return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isUntracked: file.isUntracked, workingTreeKind: file.workingTreeKind, diffKey: file.diffKey, isBinary: false, original, modified, error: workingTreeFile.error });
         }));
     }
 

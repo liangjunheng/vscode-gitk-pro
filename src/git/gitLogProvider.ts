@@ -1,11 +1,11 @@
 import * as vscode from 'vscode';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import * as path from 'path';
 import { promisify } from 'util';
 // 类型定义统一从 types/ 导入, 消除重复
 export type { ChangeSetMode, FileStatus, GitBranchOption, GitRepositoryOption, GitRepositoryState, WorkingTreeChanges } from '../types';
 export { CommitFile, CommitMetadata } from '../types';
-import { CommitFile, CommitMetadata, GitBranchOption, GitRepositoryOption, GitRepositoryState, WorkingTreeChanges, type ChangeSetMode, type FileStatus } from '../types';
+import { CommitFile, CommitMetadata, GitBranchOption, GitRepositoryOption, GitRepositoryState, WorkingTreeChanges, type FileStatus } from '../types';
 
 const execFileAsync = promisify(execFile);
 
@@ -482,69 +482,57 @@ async function readRepositoryStateFromCli(rootUri: vscode.Uri, signal?: AbortSig
     }
 }
 
+export function checkWorkingTreePresence(rootUri: vscode.Uri, signal?: AbortSignal): Promise<boolean> {
+    return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            const error = new Error('请求已取消');
+            error.name = 'AbortError';
+            reject(error);
+            return;
+        }
+        const child = spawn('git', [
+            '--no-optional-locks', '-C', rootUri.fsPath,
+            '-c', 'status.renames=true',
+            'status', '--porcelain=v1', '-z', '--untracked-files=normal',
+        ], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+        let settled = false;
+        let stderr = '';
+        const finish = (value: boolean) => {
+            if (settled) { return; }
+            settled = true;
+            signal?.removeEventListener('abort', abort);
+            resolve(value);
+        };
+        const fail = (error: Error) => {
+            if (settled) { return; }
+            settled = true;
+            signal?.removeEventListener('abort', abort);
+            reject(error);
+        };
+        const abort = () => {
+            child.kill();
+            const error = new Error('请求已取消');
+            error.name = 'AbortError';
+            fail(error);
+        };
+        signal?.addEventListener('abort', abort, { once: true });
+        child.stdout.once('data', () => {
+            finish(true);
+            child.kill();
+        });
+        child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+        child.once('error', error => fail(error));
+        child.once('close', code => {
+            if (settled) { return; }
+            if (code === 0) { finish(false); }
+            else { fail(new Error(stderr.trim() || `Git 状态检测失败，退出码 ${code}`)); }
+        });
+    });
+}
+
 export async function getWorkingTreeChanges(rootUri: vscode.Uri, signal?: AbortSignal): Promise<WorkingTreeChanges> {
     // 分支选择器发布前必须使用同一份完整 Git 状态快照。
     return readWorkingTreeChangesFromCli(rootUri, signal);
-}
-
-/**
- * 按虚拟提交模式读取当前文件清单。
- * 点击单侧时只读取该侧的 Git 元数据；未跟踪文件只属于 Changes。
- */
-export async function getWorkingTreeChangeFiles(
-    rootUri: vscode.Uri,
-    mode: Exclude<ChangeSetMode, 'commit'>,
-    signal?: AbortSignal,
-): Promise<CommitFile[]> {
-    try {
-        if (mode === 'staged') {
-            return readDiffMetadata(rootUri, ['diff', '--cached'], signal);
-        }
-        const [changes, untracked] = await Promise.all([
-            readDiffMetadata(rootUri, ['diff'], signal),
-            readUntrackedFiles(rootUri, signal),
-        ]);
-        const knownPaths = new Set(changes.map(file => file.path));
-        return [...changes, ...untracked.filter(file => !knownPaths.has(file.path))];
-    } catch (error: any) {
-        if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
-        throw new Error(`无法读取${mode === 'staged' ? '暂存区' : '工作区'}变更: ${error instanceof Error ? error.message : String(error)}`);
-    }
-}
-
-async function readUntrackedFiles(rootUri: vscode.Uri, signal?: AbortSignal): Promise<CommitFile[]> {
-    const { stdout } = await execFileAsync('git', [
-        '-C', rootUri.fsPath,
-        'ls-files', '--others', '--exclude-standard', '-z',
-    ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
-    return stdout.split('\0').flatMap(filePath => filePath ? [new CommitFile({ path: filePath, status: 'A' as const })] : []);
-}
-
-// 仅判断暂存区与工作区是否有变更，不读取 Diff 元数据。
-export async function getWorkingTreeChangePresence(rootUri: vscode.Uri, signal?: AbortSignal): Promise<{ staged: boolean; changes: boolean }> {
-    try {
-        const { stdout } = await execFileAsync('git', [
-            '-C', rootUri.fsPath,
-            'status', '--porcelain=v1', '-z', '--untracked-files=normal',
-        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
-        let staged = false;
-        let changes = false;
-        const entries = stdout.split('\0');
-        for (let index = 0; index < entries.length; index++) {
-            const entry = entries[index];
-            if (!entry || entry.length < 3 || entry[2] !== ' ') { continue; }
-            const indexStatus = entry[0];
-            const workingTreeStatus = entry[1];
-            staged ||= indexStatus !== ' ' && indexStatus !== '?';
-            changes ||= workingTreeStatus !== ' ';
-            if (indexStatus === 'R' || indexStatus === 'C' || workingTreeStatus === 'R' || workingTreeStatus === 'C') { index++; }
-            if (staged && changes) { break; }
-        }
-        return { staged, changes };
-    } catch (error: any) {
-        if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
-        throw new Error(`无法读取工作区变更状态: ${error instanceof Error ? error.message : String(error)}`);
-    }
 }
 
 // 从 git CLI 读工作区变更
@@ -582,6 +570,7 @@ async function readWorkingTreeChangesFromCli(rootUri: vscode.Uri, signal?: Abort
                     path: filePath,
                     status: porcelainStatus(workingTreeStatus),
                     oldPath: workingTreeStatus === 'R' || workingTreeStatus === 'C' ? renameSourcePath : undefined,
+                    isUntracked: indexStatus === '?' && workingTreeStatus === '?',
                 }));
             }
         }

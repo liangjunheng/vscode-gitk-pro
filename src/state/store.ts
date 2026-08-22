@@ -11,6 +11,7 @@ export type StoreEffect =
     | { type: 'selectCommit'; hash: unknown; repositoryPath?: unknown }
     | { type: 'selectFile'; path?: unknown }
     | { type: 'copyFilePath'; path: unknown; absolute?: unknown }
+    | { type: 'workingTreeAction'; action: unknown; section: unknown; path?: unknown }
     | { type: 'persistFilesDisplayMode'; displayMode: AppState['displayMode'] }
     | { type: 'search'; keywords: unknown };
 
@@ -83,20 +84,27 @@ export class Store {
                 effects = [{ type: 'commitAction', action: intent.action, hash: intent.hash, repositoryPath: intent.repositoryPath }];
                 break;
             case 'selectCommit': {
-                const isWorkingTree = intent.hash === 'staged' || intent.hash === 'changes';
+                const isWorkingTree = intent.hash === 'uncommitted';
                 const isCommit = typeof intent.hash === 'string' && typeof intent.repositoryPath === 'string';
                 if (!isWorkingTree && !isCommit) { break; }
                 effects = [{ type: 'selectCommit', hash: intent.hash, repositoryPath: intent.repositoryPath }];
                 break;
             }
             case 'selectFile':
-                if (typeof intent.path !== 'string' || !this.state.files.some(file => file.path === intent.path)) { break; }
+                if (typeof intent.path !== 'string' || !this.state.files.some(file => (file.diffKey || file.path) === intent.path)) { break; }
                 if (intent.path === this.state.selectedPath) { break; }
                 partial = { selectedPath: intent.path };
                 effects = [{ type: 'selectFile', path: intent.path }];
                 break;
             case 'copyFilePath':
                 effects = [{ type: 'copyFilePath', path: intent.path, absolute: intent.absolute }];
+                break;
+            case 'workingTreeAction':
+                if ((intent.action === 'stage' || intent.action === 'unstage' || intent.action === 'discard')
+                    && (intent.section === 'staged' || intent.section === 'unstaged')
+                    && (intent.path === undefined || typeof intent.path === 'string')) {
+                    effects = [{ type: 'workingTreeAction', action: intent.action, section: intent.section, path: intent.path }];
+                }
                 break;
             case 'toggleFilesMode': {
                 const displayMode = this.state.displayMode === 'tree' ? 'flat' : 'tree';

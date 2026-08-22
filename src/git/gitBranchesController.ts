@@ -1,4 +1,3 @@
-import * as path from 'path';
 import * as vscode from 'vscode';
 import { GitBranchOption, type GitBranchKind, type GitRepositoryOption } from '../types';
 import {
@@ -6,7 +5,6 @@ import {
     getCurrentGitBranch,
     getCurrentGitHeadHash,
     getGitBranches,
-    getWorkingTreeChangePresence,
 } from './gitLogProvider';
 
 import { GitRepoController } from './gitRepoController';
@@ -36,9 +34,6 @@ export class GitBranchesController implements vscode.Disposable {
     private readonly branches = new Map<string, GitBranchOption[]>();
     private _selectedBranches: GitBranchOption[] = [];
 
-    private readonly changeWatchers = new Map<string, vscode.Disposable>();
-    private changeFlagRefreshTimer?: ReturnType<typeof setTimeout>;
-    private pendingChangeFlagRefresh = false;
     private branchReadAbortController?: AbortController;
     private branchReadGeneration = 0;
     private _isLoading = false;
@@ -48,9 +43,6 @@ export class GitBranchesController implements vscode.Disposable {
     private readonly selectedEmitter = new vscode.EventEmitter<Map<GitRepositoryOption, GitBranchOption[]>>();
     private readonly loadingEmitter = new vscode.EventEmitter<boolean>();
     private readonly repositorySelectionSubscription: vscode.Disposable;
-    private readonly workspaceChangeSubscription = vscode.workspace.onDidChangeTextDocument(event => {
-        if (this.isRepositoryDocument(event.document.uri)) { this.scheduleCurrentBranchChangeFlagRefresh(); }
-    });
 
     readonly onTotalBranchesListChanged = this.branchesEmitter.event;
     readonly onBranchHeadCommitChanged = this.branchHeadEmitter.event;
@@ -126,17 +118,11 @@ export class GitBranchesController implements vscode.Disposable {
         this.fireSelected();
         this._isLoading = false;
         this.loadingEmitter.fire(false);
-        // 虚拟提交状态由内部 watcher 异步维护，不能阻塞分支选择和提交读取。
-        this.scheduleCurrentBranchChangeFlagRefresh();
         return true;
     }
 
     dispose(): void {
         this.repositorySelectionSubscription.dispose();
-        this.workspaceChangeSubscription.dispose();
-        this.changeWatchers.forEach(watcher => watcher.dispose());
-        this.changeWatchers.clear();
-        if (this.changeFlagRefreshTimer) { clearTimeout(this.changeFlagRefreshTimer); }
         this.branchReadAbortController?.abort();
         this.branchesEmitter.dispose();
         this.branchHeadEmitter.dispose();
@@ -156,7 +142,6 @@ export class GitBranchesController implements vscode.Disposable {
         this.loadingEmitter.fire(true);
         this.repositories = [...repositories];
         const keep = new Set(this.repositories.map(repository => repository.path));
-        this.syncChangeWatchers(keep);
         // 先更新内部选择但不立即通知，避免仓库切换时先发布空分支并触发一次无效提交读取。
         this.pruneSelected(keep);
         this.pruneRemoved(keep);
@@ -211,17 +196,12 @@ export class GitBranchesController implements vscode.Disposable {
             // 全量落地一律不碰 selected: 初值已由快路径给出, 重算只会多 fire 一次。
             if (changed) { this.fireBranches(); }
             if (headChanged) { this.branchHeadEmitter.fire(); }
-            await this.refreshCurrentBranchChangeFlags();
         } finally {
             // 旧流程被取消后不能结束新流程的 loading，也不能清空新流程的取消控制器。
             if (generation !== this.branchReadGeneration) { return; }
             this.branchReadAbortController = undefined;
             this._isLoading = false;
             this.loadingEmitter.fire(false);
-            if (this.pendingChangeFlagRefresh) {
-                this.pendingChangeFlagRefresh = false;
-                this.scheduleCurrentBranchChangeFlagRefresh();
-            }
         }
     }
 
@@ -274,47 +254,6 @@ export class GitBranchesController implements vscode.Disposable {
         if (this.sameSelected(this._selectedBranches, next)) { return false; }
         this._selectedBranches = next;
         return true;
-    }
-
-    private syncChangeWatchers(keep: ReadonlySet<string>): void {
-        for (const [repositoryPath, watcher] of this.changeWatchers) {
-            if (keep.has(repositoryPath)) { continue; }
-            watcher.dispose();
-            this.changeWatchers.delete(repositoryPath);
-        }
-        for (const repositoryPath of keep) {
-            if (this.changeWatchers.has(repositoryPath)) { continue; }
-            const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.parse(repositoryPath), '.git/index'));
-            const refresh = () => this.scheduleCurrentBranchChangeFlagRefresh();
-            this.changeWatchers.set(repositoryPath, vscode.Disposable.from(
-                watcher,
-                watcher.onDidCreate(refresh),
-                watcher.onDidChange(refresh),
-                watcher.onDidDelete(refresh),
-            ));
-        }
-    }
-
-    private isRepositoryDocument(uri: vscode.Uri): boolean {
-        return this.repositories.some(repository => uri.scheme === 'file'
-            && (uri.fsPath === vscode.Uri.parse(repository.path).fsPath
-                || uri.fsPath.startsWith(`${vscode.Uri.parse(repository.path).fsPath}${path.sep}`)));
-    }
-
-    private scheduleCurrentBranchChangeFlagRefresh(): void {
-        if (this._isLoading) {
-            this.pendingChangeFlagRefresh = true;
-            return;
-        }
-        if (this.changeFlagRefreshTimer) { clearTimeout(this.changeFlagRefreshTimer); }
-        this.changeFlagRefreshTimer = setTimeout(() => {
-            this.changeFlagRefreshTimer = undefined;
-            if (this._isLoading) {
-                this.pendingChangeFlagRefresh = true;
-                return;
-            }
-            void this.refreshCurrentBranchChangeFlags();
-        }, 300);
     }
 
     /**
@@ -374,54 +313,6 @@ export class GitBranchesController implements vscode.Disposable {
             result.push(entry);
         }
         return result;
-    }
-
-    private async refreshCurrentBranchChangeFlags(): Promise<void> {
-        const updates = await Promise.all(this.repositories.map(async repository => {
-            const branch = this.getCurrentBranch(repository);
-            if (!branch) { return undefined; }
-            try {
-                const presence = await getWorkingTreeChangePresence(vscode.Uri.parse(repository.path));
-                if (branch.hasChangeFiles === presence.changes && branch.hasStagedChangeFiles === presence.staged) {
-                    return undefined;
-                }
-                return {
-                    repository,
-                    branch: new GitBranchOption({
-                        repoOption: branch.repoOption,
-                        name: branch.name,
-                        label: branch.label,
-                        hash: branch.hash,
-                        kind: branch.kind,
-                        hasChangeFiles: presence.changes,
-                        hasStagedChangeFiles: presence.staged,
-                    }),
-                };
-            } catch (error) {
-                console.warn('无法读取工作区状态:', error);
-                return undefined;
-            }
-        }));
-        let changed = false;
-        for (const update of updates) {
-            if (!update) { continue; }
-            const branches = this.branches.get(update.repository.path);
-            if (!branches) { continue; }
-            const index = branches.findIndex(branch => branch.kind === 'current');
-            if (index < 0) { continue; }
-            const next = [...branches];
-            next[index] = update.branch;
-            this.branches.set(update.repository.path, next);
-            this.replaceSelectedCurrentBranch(update.repository.path, update.branch);
-            changed = true;
-        }
-        if (changed) { this.fireBranches(); }
-    }
-
-    private replaceSelectedCurrentBranch(repositoryPath: string, branch: GitBranchOption): void {
-        this._selectedBranches = this._selectedBranches.map(entry => entry.repoOption.path === repositoryPath && entry.kind === 'current'
-            ? branch
-            : entry);
     }
 
     // 对外形态以 GitRepositoryOption 为 key, 由内部按 path 索引的真值现场转出。
