@@ -19,7 +19,7 @@ function containsNul(text: string | undefined): boolean {
  *
  * 流程:
  * 1. prepare() 整轮只启动一个 git cat-file --batch 子进程
- * 2. 一次写入全部对象请求并流式解析 stdout，每完成 16 个文件更新进度
+ * 2. 一次写入全部对象请求并流式解析 stdout，每完成 32 个文件更新进度
  * 3. stop() 终止当前子进程，代次门禁阻止旧结果落地
  * 4. 全部完成后一次性写回 store.files 并结束 diffLoading
  */
@@ -39,7 +39,7 @@ export class DiffReader {
         this.childProcesses.clear();
     }
 
-    /** 单个长驻 git cat-file 读取整轮对象，每完成 16 个文件更新进度 */
+    /** 单个长驻 git cat-file 读取整轮对象，每完成 32 个文件更新进度 */
     async prepare(rootUri: vscode.Uri, hash: string, files: CommitFile[], changeSetMode: ChangeSetMode, generation: number): Promise<void> {
         const readerGeneration = ++this.requestGeneration;
         const isCurrent = () => readerGeneration === this.requestGeneration && generation === store.getState().diffGeneration;
@@ -87,7 +87,7 @@ export class DiffReader {
                 ];
                 if (!required.every(object => parsed.has(object))) { break; }
                 nextFile++;
-                if (nextFile % 16 === 0 || nextFile === files.length) { onProgress(nextFile); }
+                if (nextFile % 32 === 0 || nextFile === files.length) { onProgress(nextFile); }
             }
         });
         if (!isCurrent()) { return []; }
@@ -104,7 +104,7 @@ export class DiffReader {
     ): Promise<DiffPayload[]> {
         const data = await this.readWorkingTreeDiffs(rootUri, files, changeSetMode);
         if (!isCurrent()) { return []; }
-        for (let completed = 16; completed < files.length; completed += 16) { onProgress(completed); }
+        for (let completed = 32; completed < files.length; completed += 32) { onProgress(completed); }
         onProgress(files.length);
         return data;
     }
