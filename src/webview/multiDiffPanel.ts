@@ -231,11 +231,53 @@ const loading=document.getElementById('loading'),list=document.getElementById('l
 const report=message=>{try{window.gitkVscode.postMessage({type:'error',message})}catch(_){}};
 const log=message=>{try{window.gitkVscode.postMessage({type:'log',message})}catch(_){}};
 const notifyRendered=revision=>{try{window.gitkVscode.postMessage({type:'rendered',revision})}catch(_){}};
-let monacoReady=false,lastRevision=0,pending,cards=[],cardByPath=new Map(),activePath='',suppressSyncUntil=0,scrollAnimationFrame=0,renderToken=0,editable=false;
-const SCROLL_DURATION=150;
+let monacoReady=false,lastRevision=0,pending,cards=[],cardByPath=new Map(),activePath='',suppressSyncUntil=0,scrollAnimationFrame=0,renderToken=0,editable=false,virtualFrame=0,editorPool=[];
+const SCROLL_DURATION=150,MAX_IDLE_EDITORS=6;
 function show(message){loading.textContent=message;loading.hidden=false;list.hidden=true;list.classList.remove('rendering')}
 function fail(error){const message=error&&error.message||String(error);show('Diff 渲染失败: '+message);report(message)}
-function dispose(){for(const entry of cards){if(entry.editor){entry.editor.dispose();entry.original.dispose();entry.modified.dispose()}}cards=[];cardByPath=new Map();activePath='';list.replaceChildren()}
+function destroySlot(slot){try{slot.editor.setModel(null)}catch(_){}try{slot.editor.dispose()}catch(_){}try{slot.host.remove()}catch(_){}}
+function releaseSlot(slot){
+  slot.owner=null;slot.generation++;try{slot.editor.setModel(null)}catch(_){}try{slot.host.remove()}catch(_){}
+  editorPool.push(slot);while(editorPool.length>MAX_IDLE_EDITORS)destroySlot(editorPool.shift());
+}
+function acquireSlot(entry){
+  const slot=editorPool.pop()||function(){
+    const host=document.createElement('div');host.className='editor';
+    const editor=monaco.editor.createDiffEditor(host,Object.assign({},diffOptions,{readOnly:!editable}));
+    applyVsCodeFont(editor);return {host:host,editor:editor,owner:null,generation:0};
+  }();
+  slot.owner=entry;slot.generation++;entry.body.replaceChildren(slot.host);return slot;
+}
+function flushPendingSave(entry){
+  if(!entry.saveTimer)return;
+  clearTimeout(entry.saveTimer);entry.saveTimer=0;
+  try{window.gitkVscode.postMessage({type:'saveFile',path:entry.path,content:entry.modifiedValue})}catch(_){}
+}
+function disposeEntry(entry){
+  entry.mountVersion++;
+  if(entry.cancelMountReady){entry.cancelMountReady();entry.cancelMountReady=null}
+  if(entry.modified){
+    entry.modifiedValue=entry.modified.getValue();
+    entry.originalSelections=entry.editor.getOriginalEditor().getSelections();
+    entry.modifiedSelections=entry.editor.getModifiedEditor().getSelections();
+  }
+  // 离屏、折叠或销毁前立即提交防抖队列中的最后一次编辑，避免清理 timer 导致内容未写回。
+  flushPendingSave(entry);
+  for(const disposable of entry.disposables||[]){try{disposable.dispose()}catch(_){}}
+  entry.disposables=[];
+  if(entry.slot)releaseSlot(entry.slot);
+  if(entry.original){try{entry.original.dispose()}catch(_){}}
+  if(entry.modified){try{entry.modified.dispose()}catch(_){}}
+  entry.slot=null;entry.editor=null;entry.original=null;entry.modified=null;entry.fit=function(){};entry.mounted=false;entry.mounting=false;entry.mountPromise=null;
+  if(!entry.collapsed&&!entry.staticContent){entry.body.replaceChildren();entry.body.style.height=Math.max(80,entry.bodyHeight||80)+'px'}
+}
+function dispose(){
+  renderToken++;
+  if(virtualFrame){cancelAnimationFrame(virtualFrame);virtualFrame=0}
+  for(const entry of cards)disposeEntry(entry);
+  while(editorPool.length)destroySlot(editorPool.pop());
+  cards=[];cardByPath=new Map();activePath='';list.replaceChildren()
+}
 function language(path){const ext=path.slice(path.lastIndexOf('.')+1).toLowerCase();return languages[ext]||'plaintext'}
 function escapeHtml(value){return String(value==null?'':value).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function pathHtml(path){const slash=path.lastIndexOf('/');return slash<0?escapeHtml(path):'<span class="file-folder">'+escapeHtml(path.slice(0,slash+1))+'</span>'+escapeHtml(path.slice(slash+1))}
@@ -278,8 +320,12 @@ function updateLineStats(entry){
   host.querySelector('.line-stat-removed').textContent='-'+removed;
   host.classList.add('ready');
 }
-// 返回 Promise：Monaco 首次差异计算完成（onDidUpdateDiff）才算这张卡片就绪。
-function createCard(diff,order,parent){
+function estimateBodyHeight(diff){
+  const originalLines=(diff.original||'').split('\\n').length,modifiedLines=(diff.modified||'').split('\\n').length;
+  return Math.max(80,Math.max(originalLines,modifiedLines)*20+12);
+}
+// 先创建轻量逻辑项外壳，Monaco 模板只绑定可视范围，离屏后归还对象池。
+function createCardShell(diff,order,parent){
   const card=document.createElement('section');card.className='diff';card.dataset.path=diff.path;card.dataset.index=String(order);
   const pinnedGroup=document.createElement('div');pinnedGroup.className='pinned-group';
   // 独立标题层: 盖板与标题栏同高, 盖板位于标题内容下方但可跨出标题栏 8px 覆盖相邻卡片。
@@ -295,7 +341,7 @@ function createCard(diff,order,parent){
   const meta=document.createElement('div');meta.className='file-meta';meta.innerHTML=metaHtml(diff);
   pinnedGroup.append(headerLayer,meta);
   card.append(pinnedGroup,body);parent.append(card);
-  const entry={path:diff.path,card:card,header:header,pinnedGroup:pinnedGroup,body:body,editor:null,original:null,modified:null,collapsed:false,fit:function(){}};
+  const entry={diff:diff,index:order,path:diff.path,card:card,header:header,pinnedGroup:pinnedGroup,body:body,slot:null,editor:null,original:null,modified:null,modifiedValue:diff.modified||'',originalSelections:null,modifiedSelections:null,bodyHeight:estimateBodyHeight(diff),collapsed:false,staticContent:false,mounted:false,mounting:false,mountVersion:0,mountPromise:null,cancelMountReady:null,saveTimer:0,disposables:[],fit:function(){}};
   header.addEventListener('click',function(){toggle(entry)});
   // 标题栏右侧直接打开工作区文件, 不带行号定位。
   openFile.addEventListener('click',function(event){
@@ -306,35 +352,44 @@ function createCard(diff,order,parent){
   if(diff.error||diff.isBinary){
     const message=document.createElement('div');message.className='empty';
     message.textContent=diff.error?('无法读取此文件：'+diff.error):'二进制文件不同，无法显示文本差异。';
-    body.append(message);
-    return Promise.resolve();
+    body.append(message);entry.staticContent=true;return entry;
   }
-  const host=document.createElement('div');host.className='editor';body.append(host);
-  let original,modified,editor;
+  body.style.height=entry.bodyHeight+'px';
+  return entry;
+}
+// 为可视逻辑项借用 Monaco 模板；离屏后归还对象池并保留等高占位。
+function mountEntry(entry){
+  if(entry.staticContent||entry.collapsed||entry.mounted||entry.mounting)return Promise.resolve();
+  entry.mounting=true;entry.mountVersion++;
+  const mountVersion=entry.mountVersion,diff=entry.diff;
+  entry.body.style.height='';
+  const slot=acquireSlot(entry),host=slot.host,editor=slot.editor;
+  let original,modified;
   try{
     original=monaco.editor.createModel(diff.original||'',language(diff.path));
-    modified=monaco.editor.createModel(diff.modified||'',language(diff.path));
+    modified=monaco.editor.createModel(entry.modifiedValue,language(diff.path));
     // changes 模式右侧即工作区文件, 允许编辑; 其余模式(commit/staged)保持只读。
-    editor=monaco.editor.createDiffEditor(host,Object.assign({},diffOptions,{readOnly:!editable}));
+    editor.updateOptions(Object.assign({},diffOptions,{readOnly:!editable}));
     editor.setModel({original:original,modified:modified});
-    applyVsCodeFont(editor);
+    if(entry.originalSelections)editor.getOriginalEditor().setSelections(entry.originalSelections);
+    if(entry.modifiedSelections)editor.getModifiedEditor().setSelections(entry.modifiedSelections);
     if(editable){
       // 编辑防抖回写工作区文件, 避免每次击键都发消息。
-      let saveTimer=0;
-      modified.onDidChangeContent(function(){
-        if(saveTimer)clearTimeout(saveTimer);
-        saveTimer=setTimeout(function(){
-          saveTimer=0;
-          try{window.gitkVscode.postMessage({type:'saveFile',path:diff.path,content:modified.getValue()})}catch(_){}
+      entry.disposables.push(modified.onDidChangeContent(function(){
+        entry.modifiedValue=modified.getValue();
+        if(entry.saveTimer)clearTimeout(entry.saveTimer);
+        entry.saveTimer=setTimeout(function(){
+          entry.saveTimer=0;
+          try{window.gitkVscode.postMessage({type:'saveFile',path:diff.path,content:entry.modifiedValue})}catch(_){}
         },400);
-      });
+      }));
     }
     // 折叠未改动区域的图标用 glyphMarginClassName 渲染, DiffEditor 默认只给左侧开 glyphMargin,
     // 右侧那一列让给了 renderIndicators, 故右侧看不到该图标; 这里单独为右侧开启。
     editor.getModifiedEditor().updateOptions({glyphMargin:true});
     function bindOpenFileGesture(side, targetEditor, targetPath) {
       let linkDecorations = [];
-      targetEditor.onMouseMove(function(event){
+      entry.disposables.push(targetEditor.onMouseMove(function(event){
         const mouse=event.event;
         const position=event.target&&event.target.position;
         const model=targetEditor.getModel();
@@ -346,12 +401,12 @@ function createCard(diff,order,parent){
             options: {inlineClassName: 'gitk-diff-link-hover'},
           }] : []);
         }
-      });
-      targetEditor.onMouseLeave(function(){
+      }));
+      entry.disposables.push(targetEditor.onMouseLeave(function(){
         const model=targetEditor.getModel();
         if (model) { linkDecorations = model.deltaDecorations(linkDecorations, []); }
-      });
-      targetEditor.onMouseDown(function(event){
+      }));
+      entry.disposables.push(targetEditor.onMouseDown(function(event){
         const mouse=event.event;
         if(mouse.leftButton!==true&&mouse.button!==0)return;
         if(!mouse.ctrlKey&&!mouse.metaKey)return;
@@ -361,44 +416,57 @@ function createCard(diff,order,parent){
         if(!position||!word)return;
         mouse.preventDefault&&mouse.preventDefault();
         try{window.gitkVscode.postMessage({type:'openFileAtLine',path:targetPath,line:position.lineNumber,column:word.startColumn,side:side})}catch(_){}
-      });
+      }));
     }
     // Ctrl/Cmd + hover/左键支持 Diff 两侧跳转, 路径按 Diff 文件的对应版本选择。
     bindOpenFileGesture('original', editor.getOriginalEditor(), diff.oldPath || diff.path);
     bindOpenFileGesture('modified', editor.getModifiedEditor(), diff.path);
   }catch(error){
     // 创建阶段就失败: 回收已建资源并让调用方就地降级。
-    if(editor){try{editor.dispose()}catch(_){}}
+    try{editor.setModel(null)}catch(_){}
+    releaseSlot(slot);
     if(original){try{original.dispose()}catch(_){}}
     if(modified){try{modified.dispose()}catch(_){}}
+    entry.mounting=false;
     return Promise.reject(error);
   }
   const fit=function(){
-    if(entry.collapsed)return;
+    if(entry.collapsed||entry.mountVersion!==mountVersion)return;
     const left=editor.getOriginalEditor(),right=editor.getModifiedEditor();
-    const height=Math.max(80,left.getContentHeight(),right.getContentHeight());
+    const nextHeight=Math.ceil(Math.max(80,left.getContentHeight(),right.getContentHeight()));
     const width=host.clientWidth||Math.max(0,window.innerWidth-18);
-    host.style.height=Math.ceil(height)+'px';
-    editor.layout({width:Math.ceil(width),height:Math.ceil(height)});
+    const delta=nextHeight-entry.bodyHeight;
+    const aboveViewport=entry.card.getBoundingClientRect().bottom<=0;
+    entry.bodyHeight=nextHeight;entry.body.style.height='';host.style.height=entry.bodyHeight+'px';
+    editor.layout({width:Math.ceil(width),height:entry.bodyHeight});
+    // 视口上方项目高度变化时补偿外层滚动，保持用户当前看到的内容不跳动。
+    if(delta&&aboveViewport)window.scrollTo({top:Math.max(0,window.scrollY+delta),behavior:'auto'});
+    scheduleVirtualization();
   };
-  editor.onDidUpdateDiff(function(){fit();updateLineStats(entry)});editor.getOriginalEditor().onDidContentSizeChange(fit);editor.getModifiedEditor().onDidContentSizeChange(fit);
-  entry.editor=editor;entry.original=original;entry.modified=modified;entry.fit=fit;
+  entry.disposables.push(editor.onDidUpdateDiff(function(){fit();updateLineStats(entry)}));
+  entry.disposables.push(editor.getOriginalEditor().onDidContentSizeChange(fit));
+  entry.disposables.push(editor.getModifiedEditor().onDidContentSizeChange(fit));
+  entry.slot=slot;entry.editor=editor;entry.original=original;entry.modified=modified;entry.fit=fit;entry.mounted=true;entry.mounting=false;
   // 纯事件驱动：onDidUpdateDiff 到达即就绪；若挂监听前差异已算完，
   // getLineChanges() 已非 null，直接就绪，避免错过事件而永久等待。
   return new Promise(function(resolve,reject){
     let settled=false;
-    const listener=editor.onDidUpdateDiff(function(){finish()});
-    function finish(){
+    const listener=editor.onDidUpdateDiff(function(){finish(true)});
+    entry.cancelMountReady=function(){finish(false)};
+    function finish(ready){
       if(settled)return;
       settled=true;
       try{listener.dispose()}catch(_){}
+      if(entry.cancelMountReady){entry.cancelMountReady=null}
+      if(ready&&entry.mountVersion===mountVersion){entry.mounting=false;fit();updateLineStats(entry)}
       resolve();
     }
     try{
-      if(editor.getLineChanges()!==null){finish();return}
+      if(editor.getLineChanges()!==null){finish(true);return}
     }catch(error){
       settled=true;
       try{listener.dispose()}catch(_){}
+      entry.cancelMountReady=null;
       reject(error);
       return;
     }
@@ -408,10 +476,12 @@ function createCard(diff,order,parent){
 function markCardFailed(entry,error){
   const message=error&&error.message||String(error);
   if(entry.editor){
-    try{entry.editor.dispose()}catch(_){}
+    for(const disposable of entry.disposables||[]){try{disposable.dispose()}catch(_){} }
+    entry.disposables=[];
+    if(entry.slot)releaseSlot(entry.slot);
     try{entry.original.dispose()}catch(_){}
     try{entry.modified.dispose()}catch(_){}
-    entry.editor=null;entry.original=null;entry.modified=null;entry.fit=function(){};
+    entry.slot=null;entry.editor=null;entry.original=null;entry.modified=null;entry.mounted=false;entry.mounting=false;entry.staticContent=true;entry.fit=function(){};
   }
   const notice=document.createElement('div');notice.className='empty';
   notice.textContent='此文件差异渲染失败：'+message;
@@ -421,7 +491,7 @@ function markCardFailed(entry,error){
 function toggle(entry){
   entry.collapsed=!entry.collapsed;
   entry.card.classList.toggle('collapsed',entry.collapsed);
-  if(!entry.collapsed)requestAnimationFrame(entry.fit);
+  if(entry.collapsed)disposeEntry(entry);else scheduleVirtualization();
   setActive(entry.path,true);
 }
 function setActive(path,notify){
@@ -447,57 +517,72 @@ function animateScrollTo(top){
 function reveal(path,smooth){
   const entry=path&&cardByPath.get(path);
   if(!entry)return;
+  // 从 Changed Files 定位时只负责自动展开目标，挂载仍由原虚拟化范围管理。
+  if(entry.collapsed){
+    entry.collapsed=false;entry.card.classList.remove('collapsed');entry.body.style.height=Math.max(80,entry.bodyHeight||80)+'px';
+  }
   suppressSyncUntil=performance.now()+SCROLL_DURATION+120;
-  // 对齐 pinned 组的实际 sticky top，而非卡片顶部再留固定 8px，
-  // 点击 Changed Files 后目标标题栏 + index 栏会直接落在置顶位置。
   const group=entry.pinnedGroup||entry.card;
   const stickyTop=parseFloat(getComputedStyle(group).top)||0;
-  const top=Math.max(0,group.getBoundingClientRect().top+window.scrollY-stickyTop);
+  // 使用逻辑项缓存高度累计定位，避免依赖尚未挂载 Monaco 的实时 DOM 内容高度。
+  let top=8;
+  for(let index=0;index<entry.index;index++){
+    const item=cards[index];
+    top+=(item.collapsed?item.pinnedGroup.offsetHeight:item.pinnedGroup.offsetHeight+item.bodyHeight)+14;
+  }
+  top=Math.max(0,top-stickyTop);
   if(smooth)animateScrollTo(top);
   else{if(scrollAnimationFrame){cancelAnimationFrame(scrollAnimationFrame);scrollAnimationFrame=0}window.scrollTo({top:top,behavior:'auto'})}
-  setActive(path,false);
+  setActive(path,false);scheduleVirtualization();
 }
 function topVisibleCard(){for(const entry of cards){if(entry.card.getBoundingClientRect().bottom>1)return entry}return cards[cards.length-1]}
 function syncActiveFromViewport(){if(performance.now()<suppressSyncUntil)return;const entry=topVisibleCard();if(entry)setActive(entry.path,true)}
+function updateVirtualization(){
+  if(!cards.length)return;
+  let first=-1,last=-1;
+  for(let index=0;index<cards.length;index++){
+    const rect=cards[index].card.getBoundingClientRect();
+    if(rect.bottom>=0&&rect.top<=window.innerHeight){if(first<0)first=index;last=index}
+  }
+  if(first<0){const visible=topVisibleCard();first=last=visible?visible.index:0}
+  for(let index=0;index<cards.length;index++){
+    const entry=cards[index];
+    if(index>=first&&index<=last&&!entry.collapsed){
+      if(!entry.mounted&&!entry.mounting){
+        entry.mountPromise=mountEntry(entry).catch(function(error){markCardFailed(entry,error)});
+      }
+    }else if(entry.mounted||entry.mounting){disposeEntry(entry)}
+  }
+}
+function scheduleVirtualization(){if(virtualFrame)return;virtualFrame=requestAnimationFrame(function(){virtualFrame=0;updateVirtualization()})}
 let scrollFrame=0;
-window.addEventListener('scroll',function(){if(scrollFrame)return;scrollFrame=requestAnimationFrame(function(){scrollFrame=0;syncActiveFromViewport()})},{passive:true});
-// 卡片直接建在 #list 内（Monaco 需要真实容器宽度），渲染期间整个列表 visibility:hidden，
-// 全部差异计算完成后再显示，既不逐个跳动也不需要挂载后补偿 layout。
+window.addEventListener('scroll',function(){if(scrollFrame)return;scrollFrame=requestAnimationFrame(function(){scrollFrame=0;syncActiveFromViewport();updateVirtualization()})},{passive:true});
+window.addEventListener('resize',scheduleVirtualization);
+// 全部逻辑项外壳先进入文档流，只有 viewport 相交项绑定池中的 Monaco 模板。
 function render(snapshot){
   try{
     dispose();
-    renderToken++;
     const token=renderToken;
     editable=snapshot.editable===true;
     if(!snapshot.diffs.length){list.classList.remove('rendering');list.textContent='没有可显示的 Diff 内容';loading.hidden=true;list.hidden=false;log('render #'+snapshot.revision+': empty');notifyRendered(snapshot.revision);return}
     const total=snapshot.diffs.length;
-    let ready=0;
-    // 列表先进入文档流但不可见；loading 保持可见承载进度文案。
-    list.classList.add('rendering');
-    list.hidden=false;
-    loading.textContent='正在渲染 Diff (0/'+total+')...';
-    loading.hidden=false;
-    const tasks=snapshot.diffs.map(function(diff,order){
-      // 单张卡片异常就地降级显示, 不阻塞其余卡片, 也不让整个面板失败。
-      return createCard(diff,order,list).catch(function(error){
-        const entry=cardByPath.get(diff.path);
-        if(entry)markCardFailed(entry,error);else report('card '+diff.path+' failed: '+(error&&error.message||String(error)));
-      }).then(function(){
-        if(token!==renderToken)return;
-        ready++;
-        loading.textContent='正在渲染 Diff ('+ready+'/'+total+')...';
-      });
+    // 先同步创建全部逻辑项外壳，只有可视范围绑定对象池中的 Monaco。
+    list.classList.add('rendering');list.hidden=false;
+    loading.textContent='正在创建 Diff 列表...';loading.hidden=false;
+    snapshot.diffs.forEach(function(diff,order){createCardShell(diff,order,list)});
+    if(token!==renderToken)return;
+    const target=snapshot.revealPath&&cardByPath.has(snapshot.revealPath)?snapshot.revealPath:snapshot.diffs[0].path;
+    reveal(target,false);
+    updateVirtualization();
+    list.classList.remove('rendering');loading.hidden=true;
+    const initialEntries=cards.filter(function(entry){return entry.staticContent||entry.mounted||entry.mounting});
+    log('render #'+snapshot.revision+': cards='+total+', mounted='+cards.filter(function(entry){return entry.mounted}).length+', reveal='+target);
+    // rendered 表示列表及首屏 Diff 已就绪；离屏卡片仍由滚动虚拟化按需渲染。
+    Promise.all(initialEntries.map(function(entry){return entry.mountPromise||Promise.resolve()})).then(function(){
+      if(token===renderToken)notifyRendered(snapshot.revision);
+    }).catch(function(error){
+      if(token===renderToken){report('initial diff render failed: '+(error&&error.message||String(error)));notifyRendered(snapshot.revision)}
     });
-    Promise.all(tasks).then(function(){
-      if(token!==renderToken)return;
-      list.classList.remove('rendering');
-      loading.hidden=true;
-      const target=snapshot.revealPath&&cardByPath.has(snapshot.revealPath)?snapshot.revealPath:snapshot.diffs[0].path;
-      reveal(target,false);
-      log('render #'+snapshot.revision+': cards='+cards.length+', reveal='+target);
-      // Diff 内容与行号已呈现, 通知扩展侧再放行 Changed Files 列表。
-      notifyRendered(snapshot.revision);
-    }).catch(function(error){notifyRendered(snapshot.revision);fail(error)});
   }catch(error){fail(error)}
 }
 function receive(message){
