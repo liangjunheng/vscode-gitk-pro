@@ -173,10 +173,14 @@ body{margin:0;background:color-mix(in srgb, var(--vscode-editor-background) 50%,
 .diff:last-child{margin-bottom:0}
 .diff.selected{border-color:var(--vscode-focusBorder);box-shadow:0 0 0 var(--card-ring) var(--vscode-focusBorder),0 1px 4px rgba(0,0,0,.08)}
 /* 标题栏贴合卡片顶部与两侧内沿并沿用圆角，但不覆盖卡片边框本身。 */
-.file-header{display:flex;align-items:center;gap:6px;width:100%;margin:0;padding:4px 8px;border:0;color:var(--vscode-tab-activeForeground);background:var(--header-surface);font:inherit;font-size:calc(var(--vscode-editor-font-size) * .95);text-align:left;cursor:pointer}
+.file-header{display:grid;grid-template-columns:minmax(0,1fr);width:100%;margin:0;padding:4px 8px;border:0;color:var(--vscode-tab-activeForeground);background:var(--header-surface);font:inherit;font-size:calc(var(--vscode-editor-font-size) * .95);text-align:left;cursor:pointer}
+.file-header.rename-header{grid-template-columns:calc((100% + 26px)/2) minmax(0,1fr);padding-right:0;padding-left:0}
+.file-header.rename-header .title-side-left{padding-left:8px}
 .file-header:hover{background:var(--vscode-list-hoverBackground,var(--vscode-editorWidget-background))}
 /* 标题栏底边保持常规边框色: 选中高光只体现在卡片外框与顶部预留条, 底部不跟着高亮。 */
 .diff.collapsed>.pinned-group>.header-layer>.header-row>.file-header{border-bottom-color:transparent}
+.title-side{display:flex;align-items:center;gap:6px;min-width:0}
+.title-side-right{padding-right:34px}
 .diff-chevron{flex:0 0 auto;width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.5;transition:transform .12s ease}
 .diff.collapsed .diff-chevron{transform:rotate(-90deg)}
 .status{flex:0 0 auto;width:14px;text-align:center;font-weight:600}
@@ -188,8 +192,11 @@ body{margin:0;background:color-mix(in srgb, var(--vscode-editor-background) 50%,
 .line-stats.ready{display:inline-flex}
 .line-stat-added{color:var(--vscode-gitDecoration-addedResourceForeground)}
 .line-stat-removed{color:var(--vscode-gitDecoration-deletedResourceForeground)}
-.file-path{flex:0 1 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.file-folder{color:var(--vscode-descriptionForeground)}
+.file-location{display:flex;align-items:center;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.file-location.is-deleted{text-decoration-line:line-through;text-decoration-thickness:1px}
+.file-name{flex:0 0 auto;font-size:calc(var(--vscode-editor-font-size) + 2px);line-height:1.2}
+.file-path-gap{flex:0 0 auto;white-space:pre}
+.file-folder{min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--vscode-descriptionForeground);opacity:.72;line-height:1.2}
 /* 标题栏和 index 栏是同一吸顶组: 顶部与左右边都复刻卡片的 border + ring 宽度。
    负水平 margin 让这三条高亮边精确覆盖卡片的外环和边框；不能用 overflow:hidden 裁圆角，
    否则会改变 sticky 滚动上下文。 */
@@ -248,27 +255,20 @@ function acquireSlot(entry){
   }();
   slot.owner=entry;slot.generation++;entry.body.replaceChildren(slot.host);return slot;
 }
-function flushPendingSave(entry){
-  if(!entry.saveTimer)return;
-  clearTimeout(entry.saveTimer);entry.saveTimer=0;
-  try{window.gitkVscode.postMessage({type:'saveFile',path:entry.path,content:entry.modifiedValue})}catch(_){}
-}
 function disposeEntry(entry){
   entry.mountVersion++;
-  if(entry.cancelMountReady){entry.cancelMountReady();entry.cancelMountReady=null}
+  if(entry.saveTimer){clearTimeout(entry.saveTimer);entry.saveTimer=0}
   if(entry.modified){
     entry.modifiedValue=entry.modified.getValue();
     entry.originalSelections=entry.editor.getOriginalEditor().getSelections();
     entry.modifiedSelections=entry.editor.getModifiedEditor().getSelections();
   }
-  // 离屏、折叠或销毁前立即提交防抖队列中的最后一次编辑，避免清理 timer 导致内容未写回。
-  flushPendingSave(entry);
   for(const disposable of entry.disposables||[]){try{disposable.dispose()}catch(_){}}
   entry.disposables=[];
   if(entry.slot)releaseSlot(entry.slot);
   if(entry.original){try{entry.original.dispose()}catch(_){}}
   if(entry.modified){try{entry.modified.dispose()}catch(_){}}
-  entry.slot=null;entry.editor=null;entry.original=null;entry.modified=null;entry.fit=function(){};entry.mounted=false;entry.mounting=false;entry.mountPromise=null;
+  entry.slot=null;entry.editor=null;entry.original=null;entry.modified=null;entry.fit=function(){};entry.mounted=false;entry.mounting=false;
   if(!entry.collapsed&&!entry.staticContent){entry.body.replaceChildren();entry.body.style.height=Math.max(80,entry.bodyHeight||80)+'px'}
 }
 function dispose(){
@@ -280,8 +280,9 @@ function dispose(){
 }
 function language(path){const ext=path.slice(path.lastIndexOf('.')+1).toLowerCase();return languages[ext]||'plaintext'}
 function escapeHtml(value){return String(value==null?'':value).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
-function pathHtml(path){const slash=path.lastIndexOf('/');return slash<0?escapeHtml(path):'<span class="file-folder">'+escapeHtml(path.slice(0,slash+1))+'</span>'+escapeHtml(path.slice(slash+1))}
-function headerHtml(diff){const chevron='<svg class="diff-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 5.5 5 5 5-5"/></svg>';const status='<span class="status status-'+escapeHtml(diff.status)+'">'+escapeHtml(diff.status)+'</span>';const stats='<span class="line-stats"><span class="line-stat-added"></span><span class="line-stat-removed"></span></span>';return chevron+status+stats+'<span class="file-path" title="'+escapeHtml(diff.path)+'">'+pathHtml(diff.path)+'</span>'}
+function pathHtml(path,deleted){const slash=path.lastIndexOf('/');const name=slash<0?path:path.slice(slash+1),folder=slash<0?'':path.slice(0,slash+1);return '<span class="file-location'+(deleted?' is-deleted':'')+'" title="'+escapeHtml(path)+'"><span class="file-name">'+escapeHtml(name)+'</span>'+(folder?'<span class="file-path-gap"> </span><span class="file-folder">'+escapeHtml(folder)+'</span>':'')+'</span>'}
+function statusHtml(status){return '<span class="status status-'+escapeHtml(status)+'">'+escapeHtml(status)+'</span>'}
+function headerHtml(diff){const chevron='<svg class="diff-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 5.5 5 5 5-5"/></svg>';const stats='<span class="line-stats"><span class="line-stat-added"></span><span class="line-stat-removed"></span></span>';const renamed=diff.status==='R'&&diff.oldPath&&diff.oldPath!==diff.path;const leftPath=renamed?diff.oldPath:diff.path;const left=chevron+stats+statusHtml(diff.status)+pathHtml(leftPath,diff.status==='D'||renamed);if(!renamed)return '<span class="title-side title-side-left">'+left+'</span>';return '<span class="title-side title-side-left">'+left+'</span><span class="title-side title-side-right">'+statusHtml(diff.status)+pathHtml(diff.path,false)+'</span>'}
 // 对象 id 按 git 惯例截断到 7 位; 全 0 表示该侧不存在(新增或删除)。
 function shortObjectId(id){const value=String(id==null?'':id);return value?value.slice(0,7):'0000000'}
 // 标题栏下方的元信息: index <old>..<new> <mode>, 以及重命名的来源与目标。
@@ -331,7 +332,7 @@ function createCardShell(diff,order,parent){
   // 独立标题层: 盖板与标题栏同高, 盖板位于标题内容下方但可跨出标题栏 8px 覆盖相邻卡片。
   const headerLayer=document.createElement('div');headerLayer.className='header-layer';
   const headerRow=document.createElement('div');headerRow.className='header-row';
-  const header=document.createElement('button');header.type='button';header.className='file-header';header.innerHTML=headerHtml(diff);
+  const header=document.createElement('button');header.type='button';header.className='file-header'+(diff.status==='R'&&diff.oldPath&&diff.oldPath!==diff.path?' rename-header':'');header.innerHTML=headerHtml(diff);
   const openFile=document.createElement('button');openFile.type='button';openFile.className='open-file';
   openFile.title='在编辑器中打开文件';openFile.setAttribute('aria-label','在编辑器中打开文件');
   openFile.innerHTML='<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 2.5h4.5V7"/><path d="M13.5 2.5 8 8"/><path d="M12 9.5v3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3"/></svg>';
@@ -341,7 +342,7 @@ function createCardShell(diff,order,parent){
   const meta=document.createElement('div');meta.className='file-meta';meta.innerHTML=metaHtml(diff);
   pinnedGroup.append(headerLayer,meta);
   card.append(pinnedGroup,body);parent.append(card);
-  const entry={diff:diff,index:order,path:diff.path,card:card,header:header,pinnedGroup:pinnedGroup,body:body,slot:null,editor:null,original:null,modified:null,modifiedValue:diff.modified||'',originalSelections:null,modifiedSelections:null,bodyHeight:estimateBodyHeight(diff),collapsed:false,staticContent:false,mounted:false,mounting:false,mountVersion:0,mountPromise:null,cancelMountReady:null,saveTimer:0,disposables:[],fit:function(){}};
+  const entry={diff:diff,index:order,path:diff.path,card:card,header:header,pinnedGroup:pinnedGroup,body:body,slot:null,editor:null,original:null,modified:null,modifiedValue:diff.modified||'',originalSelections:null,modifiedSelections:null,bodyHeight:estimateBodyHeight(diff),collapsed:false,staticContent:false,mounted:false,mounting:false,mountVersion:0,saveTimer:0,disposables:[],fit:function(){}};
   header.addEventListener('click',function(){toggle(entry)});
   // 标题栏右侧直接打开工作区文件, 不带行号定位。
   openFile.addEventListener('click',function(event){
@@ -451,22 +452,19 @@ function mountEntry(entry){
   // getLineChanges() 已非 null，直接就绪，避免错过事件而永久等待。
   return new Promise(function(resolve,reject){
     let settled=false;
-    const listener=editor.onDidUpdateDiff(function(){finish(true)});
-    entry.cancelMountReady=function(){finish(false)};
-    function finish(ready){
+    const listener=editor.onDidUpdateDiff(function(){finish()});
+    function finish(){
       if(settled)return;
       settled=true;
       try{listener.dispose()}catch(_){}
-      if(entry.cancelMountReady){entry.cancelMountReady=null}
-      if(ready&&entry.mountVersion===mountVersion){entry.mounting=false;fit();updateLineStats(entry)}
+      if(entry.mountVersion===mountVersion){entry.mounting=false;fit();updateLineStats(entry)}
       resolve();
     }
     try{
-      if(editor.getLineChanges()!==null){finish(true);return}
+      if(editor.getLineChanges()!==null){finish();return}
     }catch(error){
       settled=true;
       try{listener.dispose()}catch(_){}
-      entry.cancelMountReady=null;
       reject(error);
       return;
     }
@@ -548,9 +546,7 @@ function updateVirtualization(){
   for(let index=0;index<cards.length;index++){
     const entry=cards[index];
     if(index>=first&&index<=last&&!entry.collapsed){
-      if(!entry.mounted&&!entry.mounting){
-        entry.mountPromise=mountEntry(entry).catch(function(error){markCardFailed(entry,error)});
-      }
+      mountEntry(entry).catch(function(error){markCardFailed(entry,error)});
     }else if(entry.mounted||entry.mounting){disposeEntry(entry)}
   }
 }
@@ -575,14 +571,9 @@ function render(snapshot){
     reveal(target,false);
     updateVirtualization();
     list.classList.remove('rendering');loading.hidden=true;
-    const initialEntries=cards.filter(function(entry){return entry.staticContent||entry.mounted||entry.mounting});
     log('render #'+snapshot.revision+': cards='+total+', mounted='+cards.filter(function(entry){return entry.mounted}).length+', reveal='+target);
-    // rendered 表示列表及首屏 Diff 已就绪；离屏卡片仍由滚动虚拟化按需渲染。
-    Promise.all(initialEntries.map(function(entry){return entry.mountPromise||Promise.resolve()})).then(function(){
-      if(token===renderToken)notifyRendered(snapshot.revision);
-    }).catch(function(error){
-      if(token===renderToken){report('initial diff render failed: '+(error&&error.message||String(error)));notifyRendered(snapshot.revision)}
-    });
+    // 外壳和首屏 Monaco 已开始挂载即可放行 Changed Files；后续由滚动虚拟化管理。
+    notifyRendered(snapshot.revision);
   }catch(error){fail(error)}
 }
 function receive(message){
