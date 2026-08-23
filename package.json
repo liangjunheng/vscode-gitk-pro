@@ -64,6 +64,18 @@
         "title": "下一个差异",
         "category": "Gitk",
         "icon": "$(arrow-down)"
+      },
+      {
+        "command": "vscode-gitk.commitEditMsg.complete",
+        "title": "完成提交",
+        "category": "Gitk",
+        "icon": "$(check)"
+      },
+      {
+        "command": "vscode-gitk.commitEditMsg.cancel",
+        "title": "取消提交",
+        "category": "Gitk",
+        "icon": "$(close)"
       }
     ],
     "viewsContainers": {
@@ -82,8 +94,7 @@
           "id": "vscode-gitk.panelView",
           "name": "Gitk",
           "icon": "media/gitk-icon.svg",
-          "contextualTitle": "Gitk",
-          "when": "gitk:hasRepository"
+          "contextualTitle": "Gitk"
         }
       ]
     },
@@ -105,10 +116,31 @@
           "command": "vscode-gitk.multiDiff.nextChange",
           "when": "activeWebviewPanelId == vscode-gitk.multiDiff",
           "group": "navigation@11"
+        },
+        {
+          "command": "vscode-gitk.commitEditMsg.complete",
+          "when": "gitk:commitEditMsgActive",
+          "group": "navigation@1"
+        },
+        {
+          "command": "vscode-gitk.commitEditMsg.cancel",
+          "when": "gitk:commitEditMsgActive",
+          "group": "navigation@2"
         }
       ]
     },
     "keybindings": [
+      {
+        "command": "vscode-gitk.commitEditMsg.complete",
+        "key": "ctrl+enter",
+        "mac": "cmd+enter",
+        "when": "gitk:commitEditMsgActive"
+      },
+      {
+        "command": "vscode-gitk.commitEditMsg.cancel",
+        "key": "escape",
+        "when": "gitk:commitEditMsgActive"
+      },
       {
         "command": "vscode-gitk.multiDiff.nextChange",
         "key": "f7",

@@ -5,7 +5,7 @@ export class GitkStatusBar {
     private item: vscode.StatusBarItem;
     private headWatchers: vscode.Disposable[] = [];
     private workspaceFoldersListener?: vscode.Disposable;
-    private refreshTimer?: ReturnType<typeof setTimeout>;
+    private visibilityGeneration = 0;
 
     constructor(
         private readonly context: vscode.ExtensionContext,
@@ -31,24 +31,19 @@ export class GitkStatusBar {
         this.headWatchers.splice(0).forEach(disposable => disposable.dispose());
         for (const folder of vscode.workspace.workspaceFolders ?? []) {
             const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(folder, '.git/HEAD'));
-            watcher.onDidCreate(() => this.queueRefreshVisibility());
-            watcher.onDidChange(() => this.queueRefreshVisibility());
-            watcher.onDidDelete(() => this.queueRefreshVisibility());
+            const refresh = () => void this.refreshVisibility();
+            watcher.onDidCreate(refresh);
+            watcher.onDidChange(refresh);
+            watcher.onDidDelete(refresh);
             this.headWatchers.push(watcher);
         }
-        this.queueRefreshVisibility();
-    }
-
-    private queueRefreshVisibility(): void {
-        if (this.refreshTimer) { clearTimeout(this.refreshTimer); }
-        this.refreshTimer = setTimeout(() => {
-            this.refreshTimer = undefined;
-            void this.refreshVisibility();
-        }, 100);
+        void this.refreshVisibility();
     }
 
     private async refreshVisibility(): Promise<void> {
+        const generation = ++this.visibilityGeneration;
         const hasRootGitHead = await this.hasAnyRootGitHead();
+        if (generation !== this.visibilityGeneration) { return; }
         await this.checkVisibility(hasRootGitHead);
     }
 
@@ -75,7 +70,7 @@ export class GitkStatusBar {
     }
 
     dispose(): void {
-        if (this.refreshTimer) { clearTimeout(this.refreshTimer); }
+        this.visibilityGeneration++;
         this.workspaceFoldersListener?.dispose();
         this.headWatchers.splice(0).forEach(disposable => disposable.dispose());
         this.item.dispose();
