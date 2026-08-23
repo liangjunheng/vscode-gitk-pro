@@ -4,15 +4,11 @@ import {
     runGitSync,
     updateGitSubmodules,
 } from '../git/gitLogProvider';
+import { GitCommitEditMsgEditor } from '../git/gitCommitEditMsgEditor';
 
 /**
  * Git 操作执行器: 处理用户触发的 Git 命令 (tag, branch, checkout, merge, rebase, reset 等)
  */
-interface GitApiRepository {
-    readonly rootUri: vscode.Uri;
-    commit(message: string, options?: { amend?: boolean; useEditor?: boolean }): Promise<void>;
-}
-
 interface CommitWorkingTreeState {
     hasStagedChanges: boolean;
     hasUnstagedChanges: boolean;
@@ -36,14 +32,6 @@ async function getCommitWorkingTreeState(rootUri: vscode.Uri): Promise<CommitWor
     return { hasStagedChanges, hasUnstagedChanges };
 }
 
-interface GitApi {
-    readonly repositories: readonly GitApiRepository[];
-}
-
-interface GitExtensionExports {
-    getAPI(version: 1): GitApi;
-}
-
 export class GitActionRunner {
     private syncInProgress = false;
 
@@ -55,20 +43,12 @@ export class GitActionRunner {
             reloadSelectors?: boolean,
             refreshOnlyWhenCurrentBranchSelected?: boolean,
         ) => Promise<void>,
+        private readonly commitEditMsgEditor: GitCommitEditMsgEditor,
     ) {}
 
     async openCommitEditor(repositoryPath: string, amend: boolean): Promise<void> {
         const rootUri = this.getRootUri(repositoryPath);
         if (!rootUri) { return; }
-        const gitExtension = vscode.extensions.getExtension<GitExtensionExports>('vscode.git');
-        const gitApi = gitExtension?.isActive
-            ? gitExtension.exports.getAPI(1)
-            : (await gitExtension?.activate())?.getAPI(1);
-        const repository = gitApi?.repositories.find(candidate => candidate.rootUri.toString() === rootUri.toString());
-        if (!repository) {
-            void vscode.window.showErrorMessage(`VS Code Git 未打开仓库: ${rootUri.fsPath}`);
-            return;
-        }
         await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
             title: amend ? '修改提交' : '创建提交',
@@ -93,12 +73,16 @@ export class GitActionRunner {
                 progress.report({ message: '正在暂存更改...' });
                 await runGitCommand(rootUri, ['add', '-A', '--', '.']);
             }
-            progress.report({ message: 'COMMIT_EDITMSG：等待完成或取消提交...' });
-            try {
-                await repository.commit('', { amend, useEditor: true });
-            } catch (error) {
+            progress.report({ message: '正在打开 COMMIT_EDITMSG 编辑器...' });
+            const session = await this.commitEditMsgEditor.edit(rootUri, amend);
+            void session.completed.then(async committed => {
+                if (committed) {
+                    await this.onMutated(rootUri);
+                }
+            }).catch(error => {
                 vscode.window.setStatusBarMessage(`$(warning) Git Commit 失败：${error instanceof Error ? error.message : String(error)}`, 3000);
-            }
+            });
+            await session.opened;
         });
     }
 

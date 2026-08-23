@@ -157,7 +157,6 @@ export class GitCommitController implements vscode.Disposable {
         this._isLoading = true;
         this.branches = [...branches];
         this.branchRepositorySelectionGeneration = this.repositorySelectionGeneration;
-        this.requestUncommittedPresenceCheck();
         void this.refresh(true);
     }
 
@@ -234,6 +233,12 @@ export class GitCommitController implements vscode.Disposable {
         await this.refreshWorkingTreeSnapshot();
     }
 
+    private async readUncommittedPresence(signal: AbortSignal): Promise<boolean> {
+        const repositoryPath = this.uncommittedRepositoryPath;
+        if (!repositoryPath) { return false; }
+        return checkWorkingTreePresence(vscode.Uri.parse(repositoryPath), signal);
+    }
+
     dispose(): void {
         this.repositorySelectionSubscription.dispose();
         this.branchSelectionSubscription.dispose();
@@ -265,8 +270,16 @@ export class GitCommitController implements vscode.Disposable {
                 refs.push(branch.name);
                 refsByRepository.set(branch.repoOption.path, refs);
             }
-            const searched = await this.readCommits(refsByRepository, this.keywords, abortController.signal);
+            const presenceGeneration = ++this.presenceGeneration;
+            this.presenceAbortController?.abort();
+            this.presenceAbortController = undefined;
+            const searchedPromise = this.readCommits(refsByRepository, this.keywords, abortController.signal);
+            const presencePromise = this.readUncommittedPresence(abortController.signal);
+            const [searched, hasUncommittedChanges] = await Promise.all([searchedPromise, presencePromise]);
             if (abortController.signal.aborted || generation !== this.commitReadGeneration) { return; }
+            if (presenceGeneration === this.presenceGeneration) {
+                this.setHasUncommittedChanges(hasUncommittedChanges);
+            }
             this.searched = searched;
             this.searchedEmitter.fire([...this.searched]);
             if (branchesChanged) {

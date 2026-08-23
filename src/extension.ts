@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { GitkViewProvider } from './webview/gitkViewProvider';
 import { GitkStatusBar } from './statusBar';
 import { store } from './state/store';
+import { GitCommitEditMsgEditor } from './git/gitCommitEditMsgEditor';
 
 // 插件激活入口
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -21,7 +22,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         })
     );
 
-    const provider = new GitkViewProvider(context);
+    const commitEditMsgEditor = new GitCommitEditMsgEditor(context.extensionPath);
+    context.subscriptions.push(commitEditMsgEditor);
+    const provider = new GitkViewProvider(context, commitEditMsgEditor);
     provider.initializeBackground();
 
     // 注册 webview view provider

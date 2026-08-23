@@ -3,6 +3,7 @@ import { type ChangeSetMode, type ChangedFile, type GitBranchOption, CommitFile,
 import { getCommitFiles, getGitRepositoryState, runGitCommand } from '../git/gitLogProvider';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { DiffReader } from '../git/diffReader';
+import { GitCommitEditMsgEditor } from '../git/gitCommitEditMsgEditor';
 import { GitActionRunner } from '../services/gitActions';
 import { GitRepoController } from '../git/gitRepoController';
 import { GitBranchesController } from '../git/gitBranchesController';
@@ -177,7 +178,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         return this.selectedRepositoryPaths.length === 1 ? this.selectedRepositoryPaths[0] : undefined;
     }
 
-    constructor(private readonly context: vscode.ExtensionContext) {
+    constructor(
+        private readonly context: vscode.ExtensionContext,
+        commitEditMsgEditor: GitCommitEditMsgEditor,
+    ) {
         this.displayMode = vscode.workspace.getConfiguration('vscode-gitk').get<'tree' | 'flat'>('changedFilesDisplayMode', 'flat');
         // 订阅顺序是有意设计：仓库显示必须先于分支/提交刷新，避免下游监听器的同步前置逻辑阻塞 UI 更新。
         this.selectedRepoSubscription = this.repoController.onSelectedRepoListChanged(selected => this.onSelectedRepoListChanged(selected));
@@ -211,6 +215,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 }
                 return this.refresh(reloadSelectors);
             },
+            commitEditMsgEditor,
         );
         // 三个控制器只发通知；推 Webview 与串联下游都由 Provider 承担。
         context.subscriptions.push(
@@ -230,7 +235,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.schedulePushState();
             }),
             this.branchesController.onBranchHeadCommitChanged(() => {
-                this.commitController.requestUncommittedPresenceCheck();
                 this.commitController.forceRefresh();
             }),
             // 保持 selectedBranchesSubscription 在 GitCommitController 创建前注册，确保分支 UI 先于提交刷新。
