@@ -177,7 +177,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     constructor(private readonly context: vscode.ExtensionContext) {
-        this.displayMode = context.workspaceState.get<'tree' | 'flat'>('gitk.filesDisplayMode', 'flat');
+        this.displayMode = vscode.workspace.getConfiguration('vscode-gitk').get<'tree' | 'flat'>('changedFilesDisplayMode', 'flat');
         // 订阅顺序是有意设计：仓库显示必须先于分支/提交刷新，避免下游监听器的同步前置逻辑阻塞 UI 更新。
         this.selectedRepoSubscription = this.repoController.onSelectedRepoListChanged(selected => this.onSelectedRepoListChanged(selected));
         this.reposLoadingSubscription = this.repoController.onReposLoadingChanged(loading => {
@@ -247,6 +247,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.commitController.onCommitsLoadingChanged(loading => {
                 this.setLoading(loading, loading ? '正在加载历史提交列表...' : undefined);
                 if (loading) { this.postLoadingProgress('commit', '正在加载历史提交列表...', 0, 0); }
+            }),
+            vscode.workspace.onDidChangeConfiguration(event => {
+                if (event.affectsConfiguration('vscode-gitk.changedFilesDisplayMode')) {
+                    this.displayMode = vscode.workspace.getConfiguration('vscode-gitk').get<'tree' | 'flat'>('changedFilesDisplayMode', 'flat');
+                }
             }),
         );
         context.subscriptions.push(
@@ -791,7 +796,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 void this.runWorkingTreeAction(effect.action, effect.section, effect.path);
                 break;
             case 'persistFilesDisplayMode':
-                void this.context.workspaceState.update('gitk.filesDisplayMode', effect.displayMode);
+                void vscode.workspace.getConfiguration('vscode-gitk').update('changedFilesDisplayMode', effect.displayMode, vscode.ConfigurationTarget.Workspace);
                 break;
             case 'search': {
                 // 搜索与去重一律由提交控制器裁决，Provider 不再自行读提交。
