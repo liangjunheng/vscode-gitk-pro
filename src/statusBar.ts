@@ -33,7 +33,6 @@ export class GitkStatusBar {
             const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(folder, '.git/HEAD'));
             const refresh = () => void this.refreshVisibility();
             watcher.onDidCreate(refresh);
-            watcher.onDidChange(refresh);
             watcher.onDidDelete(refresh);
             this.headWatchers.push(watcher);
         }
