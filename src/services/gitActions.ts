@@ -8,6 +8,42 @@ import {
 /**
  * Git 操作执行器: 处理用户触发的 Git 命令 (tag, branch, checkout, merge, rebase, reset 等)
  */
+interface GitApiRepository {
+    readonly rootUri: vscode.Uri;
+    commit(message: string, options?: { amend?: boolean; useEditor?: boolean }): Promise<void>;
+}
+
+interface CommitWorkingTreeState {
+    hasStagedChanges: boolean;
+    hasUnstagedChanges: boolean;
+}
+
+async function getCommitWorkingTreeState(rootUri: vscode.Uri): Promise<CommitWorkingTreeState> {
+    const output = await runGitCommand(rootUri, [
+        '--no-optional-locks',
+        'status', '--porcelain=v1', '-z', '--untracked-files=normal', '--ignore-submodules=dirty', '--no-renames',
+    ]);
+    let hasStagedChanges = false;
+    let hasUnstagedChanges = false;
+    for (const entry of output.split('\0')) {
+        if (entry.length < 3) { continue; }
+        const indexStatus = entry[0];
+        const workTreeStatus = entry[1];
+        hasStagedChanges ||= indexStatus !== ' ' && indexStatus !== '?' && indexStatus !== '!';
+        hasUnstagedChanges ||= workTreeStatus !== ' ' || indexStatus === '?';
+        if (hasStagedChanges && hasUnstagedChanges) { break; }
+    }
+    return { hasStagedChanges, hasUnstagedChanges };
+}
+
+interface GitApi {
+    readonly repositories: readonly GitApiRepository[];
+}
+
+interface GitExtensionExports {
+    getAPI(version: 1): GitApi;
+}
+
 export class GitActionRunner {
     private syncInProgress = false;
 
@@ -20,6 +56,51 @@ export class GitActionRunner {
             refreshOnlyWhenCurrentBranchSelected?: boolean,
         ) => Promise<void>,
     ) {}
+
+    async openCommitEditor(repositoryPath: string, amend: boolean): Promise<void> {
+        const rootUri = this.getRootUri(repositoryPath);
+        if (!rootUri) { return; }
+        const gitExtension = vscode.extensions.getExtension<GitExtensionExports>('vscode.git');
+        const gitApi = gitExtension?.isActive
+            ? gitExtension.exports.getAPI(1)
+            : (await gitExtension?.activate())?.getAPI(1);
+        const repository = gitApi?.repositories.find(candidate => candidate.rootUri.toString() === rootUri.toString());
+        if (!repository) {
+            void vscode.window.showErrorMessage(`VS Code Git 未打开仓库: ${rootUri.fsPath}`);
+            return;
+        }
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: amend ? '修改提交' : '创建提交',
+            cancellable: false,
+        }, async progress => {
+            // 单次 porcelain 只读取提交决策所需状态，不触发 VS Code SCM 全量刷新。
+            progress.report({ message: '正在检查更改...' });
+            const state = await getCommitWorkingTreeState(rootUri);
+            if (!state.hasStagedChanges) {
+                if (!state.hasUnstagedChanges) {
+                    void vscode.window.showInformationMessage('没有可提交的更改。');
+                    return;
+                }
+                progress.report({ message: '等待确认是否暂存全部更改...' });
+                const choice = await vscode.window.showWarningMessage(
+                    '当前没有已暂存的更改，是否暂存全部未暂存更改？',
+                    { modal: true },
+                    '是',
+                    '否',
+                );
+                if (choice !== '是') { return; }
+                progress.report({ message: '正在暂存更改...' });
+                await runGitCommand(rootUri, ['add', '-A', '--', '.']);
+            }
+            progress.report({ message: 'COMMIT_EDITMSG：等待完成或取消提交...' });
+            try {
+                await repository.commit('', { amend, useEditor: true });
+            } catch (error) {
+                vscode.window.setStatusBarMessage(`$(warning) Git Commit 失败：${error instanceof Error ? error.message : String(error)}`, 3000);
+            }
+        });
+    }
 
     async runCommitAction(action: string, hash: string, repositoryPath: string): Promise<void> {
         const rootUri = this.getRootUri(repositoryPath);

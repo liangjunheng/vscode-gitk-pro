@@ -12,6 +12,7 @@ export type StoreEffect =
     | { type: 'selectFile'; path?: unknown }
     | { type: 'copyFilePath'; path: unknown; absolute?: unknown }
     | { type: 'workingTreeAction'; action: unknown; section: unknown; path?: unknown }
+    | { type: 'openCommitEditor'; amend: boolean; repositoryPath: string }
     | { type: 'persistFilesDisplayMode'; displayMode: AppState['displayMode'] }
     | { type: 'search'; keywords: unknown };
 
@@ -104,6 +105,14 @@ export class Store {
                     && (intent.section === 'staged' || intent.section === 'unstaged')
                     && (intent.path === undefined || typeof intent.path === 'string')) {
                     effects = [{ type: 'workingTreeAction', action: intent.action, section: intent.section, path: intent.path }];
+                }
+                break;
+            case 'openCommitEditor':
+                if (!this.state.commitEditorLoading
+                    && typeof intent.amend === 'boolean'
+                    && typeof intent.repositoryPath === 'string') {
+                    partial = { commitEditorLoading: true };
+                    effects = [{ type: 'openCommitEditor', amend: intent.amend, repositoryPath: intent.repositoryPath }];
                 }
                 break;
             case 'toggleFilesMode': {
