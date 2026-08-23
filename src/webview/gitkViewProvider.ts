@@ -6,6 +6,8 @@ import { DiffReader } from '../git/diffReader';
 import { GitCommitEditMsgEditor } from '../git/gitCommitEditMsgEditor';
 import { GitActionRunner } from '../services/gitActions';
 import { GitRepoController } from '../git/gitRepoController';
+import { RepoHeadBranchWatcher } from '../git/gitRepoHeadBranchWatcher';
+import { UncommittedFilesWatcher } from '../git/uncommittedFilesWatcher';
 import { GitBranchesController } from '../git/gitBranchesController';
 import { GitCommitController } from '../git/gitCommitController';
 import { store, type StoreEffect } from '../state/store';
@@ -34,7 +36,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private readonly onDidChangeDiffAvailabilityEmitter = new vscode.EventEmitter<void>();
     readonly onDidChangeDiffAvailability = this.onDidChangeDiffAvailabilityEmitter.event;
     private repositoryStateDebounceTimer?: ReturnType<typeof setTimeout>;
-    private headChangeDebounceTimer?: ReturnType<typeof setTimeout>;
     private lastLoadingProgress?: { phase: string; message: string; current: number; total: number };
     private repositoryStateSignature?: string;
     private storeUnsubscribe?: () => void;
@@ -45,7 +46,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private readonly gitActions: GitActionRunner;
     // 仓库 / 分支 / 提交状态的唯一写入者，Provider 只读不写。
     private readonly repoController = new GitRepoController();
+    private readonly repoHeadBranchWatcher = new RepoHeadBranchWatcher(this.repoController);
     private readonly branchesController: GitBranchesController;
+    private readonly uncommittedFilesWatcher: UncommittedFilesWatcher;
     private readonly commitController: GitCommitController;
     private readonly selectedRepoSubscription: vscode.Disposable;
     private readonly reposLoadingSubscription: vscode.Disposable;
@@ -189,10 +192,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.reposLoadingSnapshot = loading;
             this.view?.webview.postMessage({ type: 'repoLoadingChanged', loading });
         });
-        this.branchesController = new GitBranchesController(this.repoController);
+        this.branchesController = new GitBranchesController(this.repoController, this.repoHeadBranchWatcher);
+        this.uncommittedFilesWatcher = new UncommittedFilesWatcher(this.branchesController);
         // 分支显示必须先订阅；提交 Controller 的监听器会在回调中启动刷新。
         this.selectedBranchesSubscription = this.branchesController.onSelectedBranchesChanged(branches => this.onSelectedBranchesChanged(branches));
-        this.commitController = new GitCommitController(this.repoController, this.branchesController);
+        this.commitController = new GitCommitController(
+            this.repoController,
+            this.branchesController,
+            this.uncommittedFilesWatcher,
+        );
         // Diff 面板顶部卡片变化时回写 selectedPath，驱动 Changed Files 高亮。
         this.multiDiffPanel = new MultiDiffPanel(
             (path, generation) => this.syncFileHighlightFromDiffPanel(path, generation),
@@ -220,6 +228,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         // 三个控制器只发通知；推 Webview 与串联下游都由 Provider 承担。
         context.subscriptions.push(
             this.repoController,
+            this.repoHeadBranchWatcher,
+            this.uncommittedFilesWatcher,
             // 保持 selectedRepoSubscription 在构造阶段的订阅顺序；不要移到 Controller 创建之后。
             this.selectedRepoSubscription,
             this.reposLoadingSubscription,
@@ -233,9 +243,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.totalBranchesListSnapshot = branches;
                 this.view?.webview.postMessage({ type: 'totalBranchesListChanged', branches });
                 this.schedulePushState();
-            }),
-            this.branchesController.onBranchHeadCommitChanged(() => {
-                this.commitController.forceRefresh();
             }),
             // 保持 selectedBranchesSubscription 在 GitCommitController 创建前注册，确保分支 UI 先于提交刷新。
             this.selectedBranchesSubscription,
@@ -309,19 +316,21 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async selectWorkingTreeChanges(refreshDetails = true): Promise<void> {
+    private async selectWorkingTreeChanges(
+        changes?: { staged: ChangedFile[]; changes: ChangedFile[] },
+        showLoading = true,
+    ): Promise<void> {
         const generation = ++this.commitFilesGeneration;
-        if (refreshDetails) {
-            await this.commitController.refreshWorkingTreeImmediately();
-            if (generation !== this.commitFilesGeneration || this.currentHash !== 'uncommitted') { return; }
-        }
-        const changes = this.commitController.workingTreeChanges;
-        const staged = changes.staged.map(file => new CommitFile({
+        const selectedBranch = this.commitController.selectedCommit?.gitBranchOption;
+        if (!selectedBranch || this.commitController.selectedCommit?.hash !== 'uncommitted') { return; }
+        const workingTreeChanges = changes ?? await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(selectedBranch);
+        if (generation !== this.commitFilesGeneration || this.currentHash !== 'uncommitted') { return; }
+        const staged = workingTreeChanges.staged.map(file => new CommitFile({
             ...file,
             workingTreeKind: 'staged',
             diffKey: `staged:${file.path}`,
         }));
-        const unstaged = changes.changes.map(file => new CommitFile({
+        const unstaged = workingTreeChanges.changes.map(file => new CommitFile({
             ...file,
             workingTreeKind: file.isUntracked ? 'untracked' : 'unstaged',
             diffKey: `unstaged:${file.path}`,
@@ -331,15 +340,24 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.multiDiffPanel.cancelPending();
         store.setState({
             files,
-            stagedFiles: [...changes.staged],
-            unstagedFiles: [...changes.changes],
-            filesLoading: files.length > 0,
-            diffLoading: files.length > 0,
+            stagedFiles: [...workingTreeChanges.staged],
+            unstagedFiles: [...workingTreeChanges.changes],
+            filesLoading: showLoading && files.length > 0,
+            diffLoading: showLoading && files.length > 0,
             diffError: undefined,
             selectedPath: files.some(file => (file.diffKey || file.path) === this.selectedPath) ? this.selectedPath : (files[0]?.diffKey || files[0]?.path),
         });
         if (files.length === 0) {
             this.multiDiffPanel.hide();
+            return;
+        }
+        if (!showLoading) {
+            this.pendingFilesRevealGeneration = undefined;
+            this.filesLoading = false;
+            if (this.canShowMultiDiff() && this.view?.visible) {
+                this.openDiff(this.resolveSelectedChangedFile());
+                void this.loadDiffData();
+            }
             return;
         }
         await this.completeChangedFilesSelection(generation);
@@ -409,10 +427,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.schedulePushState();
     }
 
-    private onWorkingTreeChangesChanged(_changes: { staged: ChangedFile[]; changes: ChangedFile[] }): void {
+    private onWorkingTreeChangesChanged(changes: { staged: ChangedFile[]; changes: ChangedFile[] }): void {
         this.schedulePushState();
-        if (this.currentHash !== 'uncommitted') { return; }
-        void this.selectWorkingTreeChanges(false);
+        const selectedBranch = this.commitController.selectedCommit?.gitBranchOption;
+        if (this.currentHash !== 'uncommitted'
+            || !selectedBranch
+            || selectedBranch.repoOption.path !== this.commitController.uncommittedRepositoryPath) { return; }
+        void this.selectWorkingTreeChanges(changes, false);
     }
 
     /** 选中提交状态与文件读取统一由该回调驱动，覆盖首次默认选择和用户选择。 */
@@ -557,11 +578,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         // 仓库缓存已由 GitRepoController 自己持有，重扫直接走它的 rescan。
         const refreshWorkspaceRepositories = () => this.queueLifecycleRefresh();
         const refreshRepositoryState = () => this.queueRepositoryStateRefresh();
-        const refreshHeadState = () => this.queueHeadChangeRefresh();
         const gitmodulesWatcher = vscode.workspace.createFileSystemWatcher('**/.gitmodules');
-        const gitHeadWatcher = vscode.workspace.createFileSystemWatcher('**/.git/HEAD');
         const gitRefsWatcher = vscode.workspace.createFileSystemWatcher('**/.git/refs/**');
-        const gitIndexWatcher = vscode.workspace.createFileSystemWatcher('**/.git/index');
         this.gitWatchDisposables.push(
             this.gitWatcherSentinel,
             vscode.workspace.onDidChangeWorkspaceFolders(refreshWorkspaceRepositories),
@@ -569,17 +587,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             gitmodulesWatcher.onDidCreate(refreshWorkspaceRepositories),
             gitmodulesWatcher.onDidChange(refreshWorkspaceRepositories),
             gitmodulesWatcher.onDidDelete(refreshWorkspaceRepositories),
-            gitHeadWatcher,
-            gitHeadWatcher.onDidCreate(refreshHeadState),
-            gitHeadWatcher.onDidChange(refreshHeadState),
             gitRefsWatcher,
             gitRefsWatcher.onDidCreate(refreshRepositoryState),
             gitRefsWatcher.onDidChange(refreshRepositoryState),
             gitRefsWatcher.onDidDelete(refreshRepositoryState),
-            gitIndexWatcher,
-            gitIndexWatcher.onDidCreate(refreshRepositoryState),
-            gitIndexWatcher.onDidChange(refreshRepositoryState),
-            gitIndexWatcher.onDidDelete(refreshRepositoryState),
         );
     }
 
@@ -661,22 +672,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             // 读取失败时不做抑制，交由正常刷新兜底。
             return undefined;
         }
-    }
-
-    private queueHeadChangeRefresh(): void {
-        if (this.headChangeDebounceTimer) {
-            clearTimeout(this.headChangeDebounceTimer);
-        }
-        this.headChangeDebounceTimer = setTimeout(() => {
-            this.headChangeDebounceTimer = undefined;
-            this.refreshCurrentHeadBranch();
-        }, 100);
-    }
-
-    /** HEAD 变化后触发分支强制刷新；Provider 收到 HEAD 变化通知后重载提交。 */
-    private refreshCurrentHeadBranch(): void {
-        if (this.repoController.selectedRepoList.length === 0) { return; }
-        this.branchesController.forceRefresh();
     }
 
     /**
@@ -804,7 +799,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 void this.runOpenCommitEditor(effect.repositoryPath, effect.amend);
                 break;
             case 'persistFilesDisplayMode':
-                void vscode.workspace.getConfiguration('vscode-gitk').update('changedFilesDisplayMode', effect.displayMode, vscode.ConfigurationTarget.Workspace);
+                void vscode.workspace.getConfiguration('vscode-gitk').update('changedFilesDisplayMode', effect.displayMode, vscode.ConfigurationTarget.Global);
                 break;
             case 'search': {
                 // 搜索与去重一律由提交控制器裁决，Provider 不再自行读提交。
@@ -847,40 +842,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             );
             if (choice !== '放弃更改') { return; }
         }
-        this.applyOptimisticWorkingTreeAction(action, paths);
         this.workingTreeActionQueue.push({ action, section, paths, rootUri });
         store.setState({ workingTreeActionLoading: true });
         void this.processWorkingTreeActionQueue();
-    }
-
-    private applyOptimisticWorkingTreeAction(action: 'stage' | 'unstage' | 'discard', paths: readonly string[]): void {
-        const pathSet = new Set(paths);
-        const state = store.getState();
-        let stagedFiles = [...state.stagedFiles];
-        let unstagedFiles = [...state.unstagedFiles];
-        if (action === 'stage') {
-            const moved = unstagedFiles.filter(file => pathSet.has(file.path));
-            unstagedFiles = unstagedFiles.filter(file => !pathSet.has(file.path));
-            const existing = new Set(stagedFiles.map(file => file.path));
-            stagedFiles.push(...moved.filter(file => !existing.has(file.path)));
-        } else if (action === 'unstage') {
-            const moved = stagedFiles.filter(file => pathSet.has(file.path));
-            stagedFiles = stagedFiles.filter(file => !pathSet.has(file.path));
-            const existing = new Set(unstagedFiles.map(file => file.path));
-            unstagedFiles.push(...moved.filter(file => !existing.has(file.path)));
-        } else {
-            unstagedFiles = unstagedFiles.filter(file => !pathSet.has(file.path));
-        }
-        const visibleKeys = [
-            ...stagedFiles.map(file => `staged:${file.path}`),
-            ...unstagedFiles.map(file => `unstaged:${file.path}`),
-        ];
-        store.setState({
-            stagedFiles,
-            unstagedFiles,
-            selectedPath: state.selectedPath && visibleKeys.includes(state.selectedPath) ? state.selectedPath : visibleKeys[0],
-        });
-        if (action === 'stage' || action === 'unstage') { this.commitController.markUncommittedDirty(); }
     }
 
     private async processWorkingTreeActionQueue(): Promise<void> {
@@ -899,9 +863,16 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                         } else {
                             await runGitCommand(operation.rootUri, ['restore', '--staged', '--', ...operation.paths]);
                         }
+                        const currentBranch = this.commitController.selectedCommit?.gitBranchOption;
+                        if (currentBranch?.kind === 'current'
+                            && currentBranch.repoOption.path === operation.rootUri.toString()) {
+                            await this.uncommittedFilesWatcher.refreshUncommittedFilesByHeadBranch(currentBranch);
+                        }
                     } catch (error) {
                         failed = true;
                         void vscode.window.showErrorMessage(`Git 操作失败: ${error instanceof Error ? error.message : String(error)}`);
+                        this.commitController.requestUncommittedPresenceCheck();
+                        await this.commitController.refreshWorkingTreeImmediately();
                     }
                 }
                 this.commitController.requestUncommittedPresenceCheck();
@@ -1739,7 +1710,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       applySelectedCommit();
       updateCountLabel();
       updateFilesCommitHash();
-      if (filesLoading || diffLoading) {
+      if (filesLoading || (diffLoading && selectedCommitHash !== 'uncommitted')) {
         var progressText = diffProgress.total > 0 ? '（已加载 ' + diffProgress.completed + ' / ' + diffProgress.total + '）' : '';
         document.getElementById('filesList').innerHTML = '<div id="filesEmpty"><span class="files-loading-spinner"></span><span>正在加载变更文件' + progressText + '...</span></div>';
       } else {
@@ -2054,6 +2025,40 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       '<span class="file-path"><span class="file-folder">' + escapeHtml(folder) + '</span>' + escapeHtml(name) + '</span><span class="file-actions">' + actions + '</span></div>';
   }
 
+  function workingTreeSectionFilesHTML(section, sectionFiles) {
+    if (filesMode !== 'tree') return sectionFiles.map(function(file) { return workingTreeFileHTML(file, section); }).join('');
+    const byFolder = new Map();
+    sectionFiles.slice().sort(function(left, right) { return left.path.localeCompare(right.path); }).forEach(function(file) {
+      const lastSlash = file.path.lastIndexOf('/');
+      const folder = lastSlash >= 0 ? file.path.slice(0, lastSlash) : '';
+      const folderFiles = byFolder.get(folder) || [];
+      folderFiles.push(file);
+      byFolder.set(folder, folderFiles);
+    });
+    let html = '';
+    byFolder.forEach(function(folderFiles, folder) {
+      const folderKey = 'working-tree:' + section + ':' + folder;
+      if (folder) {
+        const expanded = !collapsedFolders.has(folderKey);
+        html += '<div class="folder-item" data-folder="' + escapeAttr(folderKey) + '" title="' + escapeAttr(folder) + '">';
+        html += '<span class="tree-chevron">' + (expanded ? '⌄' : '›') + '</span><span class="tree-folder-icon">▰</span><span class="file-path">' + escapeHtml(folder) + '</span></div>';
+        if (!expanded) return;
+      }
+      folderFiles.forEach(function(file) {
+        const lastSlash = file.path.lastIndexOf('/');
+        const name = lastSlash >= 0 ? file.path.slice(lastSlash + 1) : file.path;
+        const actions = section === 'staged'
+          ? workingTreeActionButton('unstage', section, file.path, 'remove', '取消暂存当前文件（移回 Unstaged Changes）')
+          : workingTreeActionButton('discard', section, file.path, 'discard', '放弃当前文件的未暂存更改（不可撤销）') + workingTreeActionButton('stage', section, file.path, 'add', '暂存当前文件（移入 Staged Changes）');
+        const diffKey = section + ':' + file.path;
+        const untracked = section === 'unstaged' && file.isUntracked ? ' untracked' : '';
+        html += '<div class="file-item' + (diffKey === selectedPath ? ' selected' : '') + untracked + '" data-path="' + escapeAttr(file.path) + '" data-diff-key="' + escapeAttr(diffKey) + '" data-section="' + section + '" style="padding-left:' + (folder ? 30 : 10) + 'px" title="' + escapeAttr(file.path) + '">';
+        html += workingTreeKindIconHTML(file, section) + '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span><span class="file-path">' + escapeHtml(name) + '</span><span class="file-actions">' + actions + '</span></div>';
+      });
+    });
+    return html;
+  }
+
   function workingTreeSectionHTML(section, label, sectionFiles) {
     if (section === 'staged' && sectionFiles.length === 0) return '';
     const disabled = sectionFiles.length === 0;
@@ -2062,7 +2067,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       : workingTreeActionButton('discard', section, '', 'discard', '放弃此分组所有文件的未暂存更改（不可撤销）') + workingTreeActionButton('stage', section, '', 'add', '暂存此分组的所有文件（全部移入 Staged Changes）');
     return '<section class="working-tree-section" data-section="' + section + '">' +
       '<div class="working-tree-section-header' + (disabled ? ' disabled' : '') + '"><span class="working-tree-section-title">' + label + '</span><span class="working-tree-section-count">' + sectionFiles.length + '</span><span class="working-tree-section-actions">' + actions + '</span></div>' +
-      '<div class="working-tree-section-body">' + sectionFiles.map(function(file) { return workingTreeFileHTML(file, section); }).join('') + '</div></section>';
+      '<div class="working-tree-section-body">' + workingTreeSectionFilesHTML(section, sectionFiles) + '</div></section>';
   }
 
   function renderFiles() {
@@ -2444,6 +2449,41 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     list.querySelectorAll('.working-tree').forEach(function(row) { setupRow(row, currentGraphW); });
   }
 
+  function captureVisibleCommitAnchor(graph, list) {
+    if (!graph || !list) return null;
+    var graphTop = graph.getBoundingClientRect().top;
+    var rows = list.querySelectorAll('.commit-row[data-hash][data-repository-path]');
+    for (var index = 0; index < rows.length; index++) {
+      var row = rows[index];
+      var top = row.getBoundingClientRect().top - graphTop;
+      var bottom = row.getBoundingClientRect().bottom - graphTop;
+      if (bottom > 0 && top < graph.clientHeight) {
+        return {
+          hash: row.getAttribute('data-hash'),
+          repositoryPath: row.getAttribute('data-repository-path'),
+          top: top
+        };
+      }
+    }
+    return null;
+  }
+
+  function restoreVisibleCommitAnchor(graph, list, anchor, fallbackScrollTop) {
+    if (!graph) return;
+    if (!anchor) {
+      graph.scrollTop = fallbackScrollTop;
+      return;
+    }
+    var selector = '.commit-row[data-hash="' + CSS.escape(anchor.hash || '') + '"][data-repository-path="' + CSS.escape(anchor.repositoryPath || '') + '"]';
+    var row = list.querySelector(selector);
+    if (!row) {
+      graph.scrollTop = fallbackScrollTop;
+      return;
+    }
+    var top = row.getBoundingClientRect().top - graph.getBoundingClientRect().top;
+    graph.scrollTop = Math.max(0, graph.scrollTop + top - anchor.top);
+  }
+
   function render() {
     if (isCommitLoading) {
       document.getElementById('commitList').style.display = 'none';
@@ -2454,6 +2494,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     const graph = document.getElementById('graph');
     const scrollTop = graph ? graph.scrollTop : 0;
     const list = document.getElementById('commitList');
+    const visibleCommitAnchor = captureVisibleCommitAnchor(graph, list);
     const loading = document.getElementById('loading');
     if (commits.length === 0) {
       loading.style.display = 'none';
@@ -2494,9 +2535,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     updateCountLabel();
     renderCommitFooter();
-    if (graph) {
-      graph.scrollTop = scrollTop;
-    }
+    restoreVisibleCommitAnchor(graph, list, visibleCommitAnchor, scrollTop);
   }
 
   function drawSvg(svg, idx, graphW, rowH, laneW, dotR, refColumnX) {

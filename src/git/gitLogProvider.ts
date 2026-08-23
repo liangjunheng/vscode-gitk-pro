@@ -540,7 +540,7 @@ async function readWorkingTreeChangesFromCli(rootUri: vscode.Uri, signal?: Abort
     try {
         const [statusResult, stagedMetadata, changesMetadata] = await Promise.all([
             execFileAsync('git', [
-                '-C', rootUri.fsPath,
+                '--no-optional-locks', '-C', rootUri.fsPath,
                 'status', '--porcelain=v1', '-z', '--untracked-files=all',
             ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
             readDiffMetadata(rootUri, ['diff', '--cached'], signal),
@@ -597,7 +597,10 @@ function porcelainStatus(status: string): FileStatus {
 }
 
 async function readDiffMetadata(rootUri: vscode.Uri, args: string[], signal?: AbortSignal): Promise<CommitFile[]> {
-    const rawResult = await execFileAsync('git', ['-C', rootUri.fsPath, ...args, '--raw', '-z', '-M', '-C'], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
+    const rawResult = await execFileAsync('git', [
+        '--no-optional-locks', '-C', rootUri.fsPath,
+        ...args, '--raw', '-z', '-M', '-C',
+    ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
     return parseRawStatus(rawResult.stdout);
 }
 

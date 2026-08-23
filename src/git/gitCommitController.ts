@@ -1,4 +1,3 @@
-import * as path from 'path';
 import * as vscode from 'vscode';
 import {
     type ChangeSetMode,
@@ -12,11 +11,10 @@ import {
 import { DiffReader } from './diffReader';
 import { GitBranchesController } from './gitBranchesController';
 import { GitRepoController } from './gitRepoController';
+import { UncommittedFilesWatcher } from './uncommittedFilesWatcher';
 import {
-    checkWorkingTreePresence,
     getCommitFiles,
     getGitCommits,
-    getWorkingTreeChanges,
     searchCommits,
 } from './gitLogProvider';
 
@@ -56,11 +54,7 @@ export class GitCommitController implements vscode.Disposable {
     private pendingForceRefresh = false;
     private workingTree = new WorkingTreeChanges();
     private workingTreeRepositoryPath?: string;
-    private workingTreeReadGeneration = 0;
     private _hasUncommittedChanges = false;
-    private presenceAbortController?: AbortController;
-    private presenceGeneration = 0;
-    private readonly changeWatchers = new Map<string, vscode.Disposable>();
     /**
      * 内容读取专用实例, 不与 Provider 共用。
      *
@@ -77,8 +71,8 @@ export class GitCommitController implements vscode.Disposable {
     private readonly presenceEmitter = new vscode.EventEmitter<boolean>();
     private readonly repositorySelectionSubscription: vscode.Disposable;
     private readonly branchSelectionSubscription: vscode.Disposable;
-    private readonly workspaceChangeSubscription: vscode.Disposable;
-    private readonly workspaceSaveSubscription: vscode.Disposable;
+    private readonly currentHeadBranchSubscription: vscode.Disposable;
+    private readonly uncommittedFilesSubscription: vscode.Disposable;
 
     readonly onSearchedCommitsChanged = this.searchedEmitter.event;
     readonly onTotalCommitsChanged = this.totalEmitter.event;
@@ -87,19 +81,25 @@ export class GitCommitController implements vscode.Disposable {
     readonly onWorkingTreeChangesChanged = this.workingTreeEmitter.event;
     readonly onUncommittedPresenceChanged = this.presenceEmitter.event;
 
-    constructor(repoController: GitRepoController, branchesController: GitBranchesController) {
+    constructor(
+        repoController: GitRepoController,
+        branchesController: GitBranchesController,
+        private readonly uncommittedFilesWatcher: UncommittedFilesWatcher,
+    ) {
         this.repositorySelectionSubscription = repoController.onSelectedRepoListChanged(repositories => {
             void this.selectRepositories(repositories);
         });
         this.branchSelectionSubscription = branchesController.onSelectedBranchesChanged(branchesMap => {
             this.selectBranches([...branchesMap.values()].flat());
         });
-        this.workspaceChangeSubscription = vscode.workspace.onDidChangeTextDocument(event => {
-            if (!this.isRepositoryDocument(event.document.uri)) { return; }
-            this.markUncommittedDirty();
+        this.currentHeadBranchSubscription = branchesController.onEachRepoCurrentHeadBranchChanged(event => {
+            if (!event.branch || !this.repositories.some(repository => repository.path === event.repositoryPath)) { return; }
+            this.forceRefresh();
         });
-        this.workspaceSaveSubscription = vscode.workspace.onDidSaveTextDocument(document => {
-            if (this.isRepositoryDocument(document.uri)) { this.requestUncommittedPresenceCheck(); }
+        this.uncommittedFilesSubscription = uncommittedFilesWatcher.onEachHeadBranchUncommittedFileChanged(event => {
+            const current = this.branches.find(branch => branch.kind === 'current');
+            if (current?.repoOption.path !== event.branch.repoOption.path || current.hash !== event.branch.hash) { return; }
+            this.applyWorkingTreeSnapshot(event.branch.repoOption.path, event.changes);
         });
     }
 
@@ -136,8 +136,6 @@ export class GitCommitController implements vscode.Disposable {
         this.commitReadAbortController?.abort();
         this.repositories = [...repositories];
         this.repositorySelectionGeneration++;
-        this.syncChangeWatchers();
-        this.requestUncommittedPresenceCheck();
         // 分支事件将携带新仓库对应的分支；强制该次事件按新数据源重新读取。
     }
 
@@ -151,12 +149,13 @@ export class GitCommitController implements vscode.Disposable {
             this.branchesByRepository.set(repositoryPath, list);
         }
         const repositoryChanged = this.branchRepositorySelectionGeneration !== this.repositorySelectionGeneration;
-        if (!repositoryChanged && this.sameNames(this.branches, branches)) { return; }
+        if (!repositoryChanged && this.sameBranches(this.branches, branches)) { return; }
         // 新分支或新仓库选择必须立即淘汰旧提交列表读取，不能因 loading 丢弃最新数据源。
         this.commitReadAbortController?.abort();
         this._isLoading = true;
         this.branches = [...branches];
         this.branchRepositorySelectionGeneration = this.repositorySelectionGeneration;
+        void this.syncWorkingTreeForCurrentBranch();
         void this.refresh(true);
     }
 
@@ -203,51 +202,30 @@ export class GitCommitController implements vscode.Disposable {
     get hasUncommittedChanges(): boolean { return this._hasUncommittedChanges; }
 
     markUncommittedDirty(): void {
-        this.setHasUncommittedChanges(true);
+        const current = this.branches.find(branch => branch.kind === 'current');
+        if (current) { void this.uncommittedFilesWatcher.refreshUncommittedFilesByHeadBranch(current); }
     }
 
     requestUncommittedPresenceCheck(): void {
-        const generation = ++this.presenceGeneration;
-        this.presenceAbortController?.abort();
-        const repositoryPath = this.uncommittedRepositoryPath;
-        if (!repositoryPath) {
-            this.presenceAbortController = undefined;
-            this.setHasUncommittedChanges(false);
-            return;
-        }
-        const abortController = new AbortController();
-        this.presenceAbortController = abortController;
-        void checkWorkingTreePresence(vscode.Uri.parse(repositoryPath), abortController.signal).then(hasChanges => {
-            if (generation === this.presenceGeneration && !abortController.signal.aborted) {
-                this.setHasUncommittedChanges(hasChanges);
-            }
-        }).catch(error => {
-            if (error instanceof Error && error.name === 'AbortError') { return; }
-            if (generation === this.presenceGeneration) { console.warn('无法检测未提交状态:', error); }
-        }).finally(() => {
-            if (this.presenceAbortController === abortController) { this.presenceAbortController = undefined; }
-        });
+        this.markUncommittedDirty();
     }
 
     async refreshWorkingTreeImmediately(): Promise<void> {
-        await this.refreshWorkingTreeSnapshot();
-    }
-
-    private async readUncommittedPresence(signal: AbortSignal): Promise<boolean> {
-        const repositoryPath = this.uncommittedRepositoryPath;
-        if (!repositoryPath) { return false; }
-        return checkWorkingTreePresence(vscode.Uri.parse(repositoryPath), signal);
+        const current = this.branches.find(branch => branch.kind === 'current');
+        if (!current) {
+            this.applyWorkingTreeSnapshot(undefined, new WorkingTreeChanges());
+            return;
+        }
+        const changes = await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(current);
+        this.applyWorkingTreeSnapshot(current.repoOption.path, changes);
     }
 
     dispose(): void {
         this.repositorySelectionSubscription.dispose();
         this.branchSelectionSubscription.dispose();
-        this.workspaceChangeSubscription.dispose();
-        this.workspaceSaveSubscription.dispose();
+        this.currentHeadBranchSubscription.dispose();
+        this.uncommittedFilesSubscription.dispose();
         this.commitReadAbortController?.abort();
-        this.presenceAbortController?.abort();
-        this.changeWatchers.forEach(watcher => watcher.dispose());
-        this.changeWatchers.clear();
         this.diffReader.stop();
         this.searchedEmitter.dispose();
         this.totalEmitter.dispose();
@@ -270,16 +248,9 @@ export class GitCommitController implements vscode.Disposable {
                 refs.push(branch.name);
                 refsByRepository.set(branch.repoOption.path, refs);
             }
-            const presenceGeneration = ++this.presenceGeneration;
-            this.presenceAbortController?.abort();
-            this.presenceAbortController = undefined;
             const searchedPromise = this.readCommits(refsByRepository, this.keywords, abortController.signal);
-            const presencePromise = this.readUncommittedPresence(abortController.signal);
-            const [searched, hasUncommittedChanges] = await Promise.all([searchedPromise, presencePromise]);
+            const searched = await searchedPromise;
             if (abortController.signal.aborted || generation !== this.commitReadGeneration) { return; }
-            if (presenceGeneration === this.presenceGeneration) {
-                this.setHasUncommittedChanges(hasUncommittedChanges);
-            }
             this.searched = searched;
             this.searchedEmitter.fire([...this.searched]);
             if (branchesChanged) {
@@ -380,43 +351,19 @@ export class GitCommitController implements vscode.Disposable {
         return commits;
     }
 
-    private syncChangeWatchers(): void {
-        const keep = new Set(this.repositories.map(repository => repository.path));
-        for (const [repositoryPath, watcher] of this.changeWatchers) {
-            if (keep.has(repositoryPath)) { continue; }
-            watcher.dispose();
-            this.changeWatchers.delete(repositoryPath);
-        }
-        for (const repository of this.repositories) {
-            if (this.changeWatchers.has(repository.path)) { continue; }
-            const rootUri = vscode.Uri.parse(repository.path);
-            const indexWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(rootUri, '.git/index'));
-            const refresh = () => this.requestUncommittedPresenceCheck();
-            this.changeWatchers.set(repository.path, vscode.Disposable.from(
-                indexWatcher,
-                indexWatcher.onDidCreate(refresh),
-                indexWatcher.onDidChange(refresh),
-                indexWatcher.onDidDelete(refresh),
-            ));
-        }
-    }
-
-    private async refreshWorkingTreeSnapshot(): Promise<void> {
-        const generation = ++this.workingTreeReadGeneration;
-        const selectedHead = this.branches.find(branch => branch.kind === 'current');
-        const repositoryPath = selectedHead?.repoOption.path;
-        if (!selectedHead || !repositoryPath) {
+    private async syncWorkingTreeForCurrentBranch(): Promise<void> {
+        const current = this.branches.find(branch => branch.kind === 'current');
+        if (!current) {
             this.applyWorkingTreeSnapshot(undefined, new WorkingTreeChanges());
             return;
         }
         try {
-            const changes = await getWorkingTreeChanges(vscode.Uri.parse(repositoryPath));
-            if (generation !== this.workingTreeReadGeneration) { return; }
-            this.applyWorkingTreeSnapshot(repositoryPath, changes);
+            const changes = await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(current);
+            const selected = this.branches.find(branch => branch.kind === 'current');
+            if (selected?.repoOption.path !== current.repoOption.path || selected.hash !== current.hash) { return; }
+            this.applyWorkingTreeSnapshot(current.repoOption.path, changes);
         } catch (error) {
-            if (generation === this.workingTreeReadGeneration) {
-                console.warn('无法读取工作区变更:', error);
-            }
+            console.warn(`无法同步未提交文件: ${current.repoOption.path}`, error);
         }
     }
 
@@ -434,19 +381,15 @@ export class GitCommitController implements vscode.Disposable {
         this.presenceEmitter.fire(value);
     }
 
-    isRepositoryDocument(uri: vscode.Uri): boolean {
-        if (uri.scheme !== 'file') { return false; }
-        return this.repositories.some(repository => {
-            const rootPath = vscode.Uri.parse(repository.path).fsPath;
-            return uri.fsPath === rootPath || uri.fsPath.startsWith(`${rootPath}${path.sep}`);
-        });
-    }
-
-    // 顺序无关的 name 集合比较: 上游 fire 的数组顺序不稳定。
-    private sameNames(left: readonly GitBranchOption[], right: readonly GitBranchOption[]): boolean {
+    private sameBranches(left: readonly GitBranchOption[], right: readonly GitBranchOption[]): boolean {
         if (left.length !== right.length) { return false; }
-        const names = new Set(left.map(branch => branch.name));
-        return right.every(branch => names.has(branch.name));
+        const byRepository = new Map<string, Map<string, GitBranchOption>>();
+        for (const branch of left) {
+            const byName = byRepository.get(branch.repoOption.path) ?? new Map<string, GitBranchOption>();
+            byName.set(branch.name, branch);
+            byRepository.set(branch.repoOption.path, byName);
+        }
+        return right.every(branch => byRepository.get(branch.repoOption.path)?.get(branch.name)?.equals(branch) ?? false);
     }
 
     private sameRepositories(left: readonly GitRepositoryOption[], right: readonly GitRepositoryOption[]): boolean {
