@@ -1254,8 +1254,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .commit-header { position: sticky; top: 0; z-index: 1; height: 30px; margin: 0; padding: 0 10px; color: var(--vscode-tab-activeForeground); background: var(--vscode-editorWidget-background, var(--vscode-tab-activeBackground)); border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); box-sizing: border-box; font-weight: 600; }
   .commit-row { min-height: 26px; height: auto; box-sizing: border-box; cursor: pointer; }
   .commit-row:hover { background: var(--vscode-list-hoverBackground); }
-  .commit-row.expanded .col-graph { grid-row: span 2; }
-  .commit-description { display: none; grid-column: 2 / -1; grid-row: 2; padding: 0 5px 7px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vscode-descriptionForeground); line-height: 17px; cursor: text; }
+  .commit-row.expanded { grid-template-rows: 26px auto; }
+  .commit-row.expanded .col-graph { grid-row: 1 / 3; }
+  .commit-row.expanded .col-message, .commit-row.expanded .col-author, .commit-row.expanded .col-hash, .commit-row.expanded .col-date { grid-row: 1; align-self: center; }
+  .commit-description { display: none; grid-column: 2 / -1; grid-row: 2; padding: 7px 5px; border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 12%, transparent); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vscode-descriptionForeground); line-height: 17px; cursor: text; }
   .commit-row.expanded .commit-description { display: block; }
   .commit-description:empty { display: none; }
   .commit-row.selected { background: var(--vscode-list-activeSelectionBackground, #094771); }
@@ -2201,26 +2203,31 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     var html = '<div class="commit-row' + (expanded ? ' expanded' : '') + (selected ? ' selected' : '') + '" data-hash="' + escapeAttr(c.hash) + '" data-repository-path="' + escapeAttr(c.gitBranchOption.repoOption.path) + '" data-row="' + i + '" data-has-description="true">';
     var branchList = (c.refs || []).join(', ');
     html += '<div class="col-graph"' + (branchList ? ' title="' + escapeAttr(branchList) + '"' : '') + '><svg class="graph-svg" width="' + graphW + '" height="' + ROW_H + '" viewBox="0 0 ' + graphW + ' ' + ROW_H + '"></svg></div>';
-    html += '<div class="col-message" title="' + escapeAttr(c.message) + '">' + escapeHtml(c.message) + '</div>';
     var authorPreview = c.authorEmail ? c.author + ' <' + c.authorEmail + '>' : c.author;
+    var commitDate = c.authorDate ? new Date(c.authorDate).toString() : c.authorDateLabel;
+    var descriptionText = [c.message, c.body || ''].filter(Boolean).join('\\n')
+      .trim().replace(/\\n[ \\t]*\\n(?:[ \\t]*\\n)+/g, '\\n\\n');
+    var hoverDescription = [
+      descriptionText,
+      '────────────────',
+      'Author: ' + authorPreview,
+      'Date: ' + commitDate,
+    ].filter(Boolean).join('\\n');
+    html += '<div class="col-message" title="' + escapeAttr(hoverDescription) + '">' + escapeHtml(c.message) + '</div>';
     html += '<div class="col-author" title="' + escapeAttr(authorPreview) + '">' + escapeHtml(authorPreview) + '</div>';
     html += '<div class="col-hash">' + escapeHtml(c.shortHash) + '</div>';
     html += '<div class="col-date" title="' + escapeAttr(c.authorDateLabel) + '">' + escapeHtml(c.authorDateLabel) + '</div>';
     var committerPreview = c.committerEmail ? c.committer + ' <' + c.committerEmail + '>' : c.committer;
     var parentList = (c.parents || []).join(' ');
-    var commitDate = c.authorDate ? new Date(c.authorDate).toString() : c.authorDateLabel;
     var description = [
+      descriptionText,
+      '────────────────',
+      'Author: ' + authorPreview,
+      'Date: ' + commitDate,
       'Commit: ' + c.hash,
       'Parents: ' + parentList,
-      'Author: ' + authorPreview,
       'Committer: ' + committerPreview,
-      'Date: ' + commitDate,
-      '',
-      c.message,
-      c.body || '',
-    ].filter(function(line, index) {
-      return line || index < 7;
-    }).join('\\n');
+    ].filter(Boolean).join('\\n');
     html += '<div class="commit-description">' + escapeHtml(description) + '</div>';
     html += '</div>';
     return html;
