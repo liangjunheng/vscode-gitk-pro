@@ -327,7 +327,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const selectedBranch = this.commitController.selectedCommit?.gitBranchOption;
         if (!selectedBranch || this.commitController.selectedCommit?.hash !== 'uncommitted') { return; }
         const workingTreeChanges = changes ?? await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(selectedBranch);
-        if (generation !== this.commitFilesGeneration || this.currentHash !== 'uncommitted') { return; }
+        if (generation !== this.commitFilesGeneration
+            || this.currentHash !== 'uncommitted'
+            || this.currentRepositoryPath !== selectedBranch.repoOption.path) { return; }
         const staged = workingTreeChanges.staged.map(file => new CommitFile({
             ...file,
             workingTreeKind: 'staged',
@@ -339,37 +341,40 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             diffKey: `unstaged:${file.path}`,
         }));
         const files = [...staged, ...unstaged];
-        const selectedFilePath = files.some(file => (file.diffKey || file.path) === this.selectedPath)
-            ? this.selectedPath
-            : (files[0]?.diffKey || files[0]?.path);
-        const shouldRefreshDiff = showLoading || selectedFilePath !== this.selectedPath;
-        if (shouldRefreshDiff) {
-            this.diffReader.stop();
-            this.multiDiffPanel.cancelPending();
-        }
+        const previousSelectedFile = this.files.find(file => (file.diffKey || file.path) === this.selectedPath);
+        const rootUri = vscode.Uri.parse(selectedBranch.repoOption.path);
+        this.diffReader.stop();
+        store.setState({ diffGeneration: store.getState().diffGeneration + 1 });
+        const diffs = files.length > 0
+            ? await this.diffReader.readDiffs(rootUri, 'uncommitted', files, 'uncommitted')
+            : [];
+        if (generation !== this.commitFilesGeneration
+            || this.currentHash !== 'uncommitted'
+            || this.currentRepositoryPath !== selectedBranch.repoOption.path) { return; }
+        const selectedFile = diffs.find(file => (file.diffKey || file.path) === this.selectedPath)
+            ?? diffs.find(file => file.path === previousSelectedFile?.path)
+            ?? diffs[0];
+        const selectedFilePath = selectedFile?.diffKey || selectedFile?.path;
+        this.pendingFilesRevealGeneration = showLoading && diffs.length > 0 ? generation : undefined;
         store.setState({
-            files,
+            files: diffs,
             stagedFiles: [...workingTreeChanges.staged],
             unstagedFiles: [...workingTreeChanges.changes],
-            filesLoading: showLoading && files.length > 0,
-            diffLoading: shouldRefreshDiff && files.length > 0,
-            diffError: shouldRefreshDiff ? undefined : store.getState().diffError,
+            filesLoading: showLoading && diffs.length > 0,
+            diffLoading: false,
+            diffError: undefined,
+            diffProgress: { completed: diffs.length, total: diffs.length },
             selectedPath: selectedFilePath,
         });
-        if (files.length === 0) {
+        if (diffs.length === 0) {
             this.multiDiffPanel.hide();
             return;
         }
-        if (!showLoading) {
-            this.pendingFilesRevealGeneration = undefined;
+        if (showLoading && this.canShowMultiDiff() && this.view?.visible) {
+            this.openDiff(selectedFilePath);
+        } else if (showLoading) {
             this.filesLoading = false;
-            if (shouldRefreshDiff && this.canShowMultiDiff() && this.view?.visible) {
-                this.openDiff(this.resolveSelectedChangedFile());
-                void this.loadDiffData();
-            }
-            return;
         }
-        await this.completeChangedFilesSelection(generation);
     }
 
     private isAbortError(error: unknown): boolean {
@@ -1018,21 +1023,36 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             });
         };
         try {
-            // 仅取 --raw 变更文件清单 (不含行数统计), 拿到即启动 Diff 正文读取。
+            // 文件清单与 Diff 正文先在局部完成，Store.files 只接收完整 DiffPayload[]。
             const files = await getCommitFiles(rootUri, hash, signal, reportProgress);
             if (signal?.aborted || generation !== this.commitFilesGeneration) { return; }
-            this.files = files;
-            if (files.length === 0) {
-                // 无文件, 直接移除两边 loading
+            const diffs = files.length > 0
+                ? await this.diffReader.readDiffs(rootUri, hash, files, 'commit')
+                : [];
+            if (signal?.aborted
+                || generation !== this.commitFilesGeneration
+                || this.currentHash !== hash
+                || this.currentRepositoryPath !== repositoryPath) { return; }
+            const selectedPath = diffs[0]?.diffKey || diffs[0]?.path;
+            this.pendingFilesRevealGeneration = diffs.length > 0 ? generation : undefined;
+            store.setState({
+                files: diffs,
+                filesLoading: diffs.length > 0,
+                diffLoading: false,
+                diffError: undefined,
+                diffProgress: { completed: diffs.length, total: diffs.length },
+                selectedPath,
+            });
+            if (diffs.length === 0) {
                 this.multiDiffPanel.hide();
-                this.pendingFilesRevealGeneration = undefined;
-                store.batch(() => {
-                    this.filesLoading = false;
-                    store.setState({ diffLoading: false });
-                });
                 return;
             }
-            await this.completeChangedFilesSelection(generation, signal);
+            if (this.canShowMultiDiff() && this.view?.visible) {
+                this.openDiff(selectedPath);
+            } else {
+                this.pendingFilesRevealGeneration = undefined;
+                this.filesLoading = false;
+            }
         } catch (error: any) {
             if (!this.isAbortError(error) && generation === this.commitFilesGeneration) {
                 this.view?.webview.postMessage({ type: 'filesError', hash, repositoryPath, message: error instanceof Error ? error.message : String(error) });
@@ -1045,21 +1065,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     });
                 });
             }
-        }
-    }
-
-    private async completeChangedFilesSelection(generation: number, signal?: AbortSignal): Promise<void> {
-        if (this.files.length === 0 || !this.currentHash) { return; }
-        const selectedPath = this.resolveSelectedChangedFile();
-        const willRenderDiff = this.canShowMultiDiff();
-        if (willRenderDiff) { this.openDiff(selectedPath); }
-        await this.loadDiffData();
-        if (generation !== this.commitFilesGeneration || signal?.aborted) { return; }
-        // Changed Files 列表放到 Diff 内容渲染完成之后再显示; 面板不渲染时立即放行避免一直 loading。
-        if (willRenderDiff && this.view?.visible) {
-            this.pendingFilesRevealGeneration = generation;
-        } else {
-            this.filesLoading = false;
         }
     }
 
@@ -1092,25 +1097,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.openDiff(filePath);
     }
 
-    // 后台加载 diff 数据到 Store (单一数据源), 不依赖面板可见性
-    // cancelPending 已设置 diffGeneration/diffLoading, 此处复用并启动 DiffReader
-    private async loadDiffData(): Promise<void> {
-        if (!this.currentHash) { return; }
-        const rootUri = this.getRepoRootUri();
-        if (!rootUri) {
-            store.setState({ diffLoading: false, diffError: '无法确定当前提交所属的 Git 仓库。' });
-            return;
-        }
-        this.diffReader.stop();
-        const generation = store.getState().diffGeneration;
-        store.setState({
-            diffError: undefined,
-            diffProgress: { completed: 0, total: this.files.length },
-            diffLoading: true,
-        });
-        await this.diffReader.prepare(rootUri, this.currentHash, this.files, this.currentChangeSet, generation);
-    }
-
     navigateMultiDiffChange(direction: -1 | 1): void {
         this.multiDiffPanel.navigateChange(direction);
     }
@@ -1125,7 +1111,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             return;
         }
         if (!this.getRepoRootUri()) { return; }
-        // 只显示面板, 数据由 loadDiffData() 在后台加载到 Store
+        // 完整 Diff 数据已原子写入 Store，此处只显示面板并定位文件。
         this.multiDiffPanel.show(this.currentHash, this.commitController.selectedCommit?.message ?? '', filePath);
     }
 
@@ -1815,7 +1801,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       applySelectedCommit();
       updateCountLabel();
       updateFilesCommitHash();
-      if (filesLoading || (diffLoading && selectedCommitHash !== 'uncommitted')) {
+      if (filesLoading) {
         var progressText = diffProgress.total > 0 ? '（已加载 ' + diffProgress.completed + ' / ' + diffProgress.total + '）' : '';
         document.getElementById('filesList').innerHTML = '<div id="filesEmpty"><span class="files-loading-spinner"></span><span>正在加载变更文件' + progressText + '...</span></div>';
       } else {

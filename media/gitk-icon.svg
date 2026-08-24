@@ -1,13 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" role="img" aria-label="Gitk">
-  <!-- 单色图标: VS Code 以 alpha 作 mask 着色, 故统一使用不透明白色 -->
-  <g fill="none" stroke="#FFFFFF" stroke-width="1.6" stroke-linecap="round">
-    <path d="M7 5v15.5"/>
-    <path d="M15 12C15 8.6 11 5 7 5"/>
-    <path d="M15 12c0 3.4-4 7-8 7"/>
-  </g>
-  <g fill="#FFFFFF">
-    <circle cx="7" cy="5" r="2.4"/>
-    <circle cx="7" cy="19" r="2.4"/>
-    <circle cx="15" cy="12" r="2.4"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8">
+    <path d="M5 6v12M19 6v12M5 12h14"/>
+    <circle cx="5" cy="6" r="1.8" fill="currentColor" stroke="none"/>
+    <circle cx="5" cy="18" r="1.8" fill="currentColor" stroke="none"/>
+    <circle cx="19" cy="6" r="1.8" fill="currentColor" stroke="none"/>
+    <circle cx="19" cy="18" r="1.8" fill="currentColor" stroke="none"/>
+    <circle cx="12" cy="12" r="2.35"/>
+    <circle cx="12" cy="12" r=".7" fill="currentColor" stroke="none"/>
   </g>
 </svg>

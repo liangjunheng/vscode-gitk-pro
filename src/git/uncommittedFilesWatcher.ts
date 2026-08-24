@@ -35,7 +35,6 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
     private readonly indexWatcherCreations = new Map<string, Promise<void>>();
     private readonly slots = new Map<string, RepositoryRefreshSlot>();
     private readonly changesByRepository = new Map<string, Map<string, WorkingTreeChanges>>();
-    private readonly branchesByRepository = new Map<string, Map<string, GitBranchOption>>();
     private readonly branchSubscription: vscode.Disposable;
     private readonly changesEmitter = new vscode.EventEmitter<HeadBranchUncommittedFilesChangedEvent>();
 
@@ -104,9 +103,6 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         if (previous.equals(merged)) { return; }
         cached.set(branch.hash, merged);
         this.changesByRepository.set(branch.repoOption.path, cached);
-        const branches = this.branchesByRepository.get(branch.repoOption.path) ?? new Map<string, GitBranchOption>();
-        branches.set(branch.hash, branch);
-        this.branchesByRepository.set(branch.repoOption.path, branches);
         this.changesEmitter.fire({ branch, changes: copyChanges(merged) });
     }
 
@@ -119,7 +115,6 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         this.indexWatcherCreations.clear();
         this.slots.clear();
         this.changesByRepository.clear();
-        this.branchesByRepository.clear();
         this.changesEmitter.dispose();
     }
 
@@ -212,7 +207,7 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         const slot = this.slots.get(repositoryPath);
         if (!slot?.branch) { return Promise.resolve(); }
         if (slot.running) {
-            if (!slot.needsRefresh) { slot.needsRefresh = true; }
+            slot.needsRefresh = true;
             return slot.completion ?? Promise.resolve();
         }
         slot.running = true;
@@ -223,14 +218,15 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
 
     private async drainRefresh(repositoryPath: string, slot: RepositoryRefreshSlot): Promise<void> {
         try {
-            do {
-                slot.needsRefresh = false;
-                const branch = slot.branch;
-                const generation = slot.generation;
-                if (!branch) { return; }
-                await this.refreshBranch(repositoryPath, branch, generation, slot);
-            } while (slot.needsRefresh && slot.branch);
+            const branch = slot.branch;
+            const generation = slot.generation;
+            if (!branch) { return; }
+            await this.refreshBranch(repositoryPath, branch, generation, slot);
+            if (!slot.needsRefresh || !slot.branch) { return; }
+            // 补读期间保持 needsRefresh=true，后续重复事件直接合并到本次补读。
+            await this.refreshBranch(repositoryPath, slot.branch, slot.generation, slot);
         } finally {
+            slot.needsRefresh = false;
             slot.running = false;
             slot.completion = undefined;
         }
@@ -250,9 +246,6 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             if (previous?.equals(changes)) { return; }
             changesByHash.set(branch.hash, changes);
             this.changesByRepository.set(repositoryPath, changesByHash);
-            const branchesByHash = this.branchesByRepository.get(repositoryPath) ?? new Map<string, GitBranchOption>();
-            branchesByHash.set(branch.hash, branch);
-            this.branchesByRepository.set(repositoryPath, branchesByHash);
             this.changesEmitter.fire({ branch, changes: copyChanges(changes) });
         } catch (error) {
             console.warn(`无法读取未提交文件: ${repositoryPath}`, error);

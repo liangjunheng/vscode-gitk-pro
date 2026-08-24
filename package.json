@@ -1,7 +1,7 @@
 {
   "name": "vscode-gitk-pro",
-  "displayName": "vscode-gitk-pro",
-  "description": "A gitk-style commit graph panel for VS Code",
+  "displayName": "Gitk Pro",
+  "description": "Explore Git history, multi-file diffs, branches, and working-tree changes in a Gitk-style panel",
   "version": "1.0.6",
   "publisher": "liangjunheng",
   "license": "MIT",

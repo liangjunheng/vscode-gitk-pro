@@ -6,6 +6,7 @@ import { MONACO_DIFF_LANGUAGES, MONACO_DIFF_OPTIONS } from './monacoDiffConfig';
 type DiffSnapshot = {
     type: 'snapshot';
     revision: number;
+    identity: string;
     loading: boolean;
     completed: number;
     total: number;
@@ -21,8 +22,8 @@ export class MultiDiffPanel implements vscode.Disposable {
     private panel?: vscode.WebviewPanel;
     private webviewReady = false;
     private revision = 0;
-    private revealPath?: string;
     private postQueue: Promise<unknown> = Promise.resolve();
+    private publishScheduled = false;
     private readonly unsubscribers: (() => void)[];
 
     constructor(
@@ -33,10 +34,10 @@ export class MultiDiffPanel implements vscode.Disposable {
         private readonly onWorkingTreeAction?: (action: 'stage' | 'unstage' | 'discard', section: 'staged' | 'unstaged', path: string) => void,
     ) {
         this.unsubscribers = [
-            store.subscribeSelector(state => state.diffLoading, () => this.publish()),
-            store.subscribeSelector(state => state.diffError, () => this.publish()),
-            store.subscribeSelector(state => state.files, () => this.publish()),
-            store.subscribeSelector(state => state.diffProgress, () => this.publish()),
+            store.subscribeSelector(state => state.diffLoading, () => this.schedulePublish()),
+            store.subscribeSelector(state => state.diffError, () => this.schedulePublish()),
+            store.subscribeSelector(state => state.files, () => this.schedulePublish()),
+            store.subscribeSelector(state => state.diffProgress, () => this.schedulePublish()),
         ];
     }
 
@@ -48,7 +49,6 @@ export class MultiDiffPanel implements vscode.Disposable {
         const title = `${commitTitle || 'Gitk Diff'} (${hash.slice(0, 8)})`;
         if (this.panel!.title !== title) { this.panel!.title = title; }
         this.panel!.reveal(this.panel!.viewColumn ?? vscode.ViewColumn.Active, false);
-        this.revealPath = revealPath;
         // 已渲染的面板只做定位，避免重建全部 Monaco 编辑器；卡片重建仅由 Store 快照驱动。
         if (isNewPanel || !this.webviewReady) { this.publish(); return; }
         this.post({ type: 'reveal', path: revealPath });
@@ -58,7 +58,6 @@ export class MultiDiffPanel implements vscode.Disposable {
     // 返回 false 表示面板不可用, 调用方需回退到 show()。
     revealFile(revealPath?: string): boolean {
         if (!this.panel || !this.webviewReady) { return false; }
-        this.revealPath = revealPath;
         this.post({ type: 'reveal', path: revealPath });
         return true;
     }
@@ -100,7 +99,6 @@ export class MultiDiffPanel implements vscode.Disposable {
                 this.publish();
             } else if (message?.type === 'selectFile' && typeof message.path === 'string') {
                 // 顶部卡片变化时同步 Changed Files 高亮。
-                this.revealPath = message.path;
                 this.onSelectFile?.(message.path, store.getState().diffGeneration);
             } else if (message?.type === 'saveFile' && typeof message.path === 'string' && typeof message.content === 'string') {
                 this.onSaveFile?.(message.path, message.content);
@@ -129,6 +127,15 @@ export class MultiDiffPanel implements vscode.Disposable {
         this.panel.webview.html = this.getHtml(monacoRoot);
     }
 
+    private schedulePublish(): void {
+        if (this.publishScheduled) { return; }
+        this.publishScheduled = true;
+        queueMicrotask(() => {
+            this.publishScheduled = false;
+            this.publish();
+        });
+    }
+
     private publish(): void {
         if (!this.panel || !this.webviewReady) { return; }
         const state = store.getState();
@@ -142,12 +149,13 @@ export class MultiDiffPanel implements vscode.Disposable {
         const snapshot: DiffSnapshot = {
             type: 'snapshot',
             revision: ++this.revision,
+            identity: `${state.currentRepositoryPath ?? ''}\u0000${state.currentHash ?? ''}`,
             // 与 CustomDiffPanel 一致：只由 Store 的 diffLoading 决定加载态；完成空快照也必须结束 loading。
             loading: state.diffLoading,
             completed: state.diffProgress.completed,
             total: state.diffProgress.total,
             error: state.diffError,
-            revealPath: this.revealPath ?? state.selectedPath,
+            revealPath: state.selectedPath,
             // changes 与 uncommitted 的右侧都是工作区文件本身，允许编辑并回写。
             editable: state.currentChangeSet === 'changes' || state.currentChangeSet === 'uncommitted',
             diffs,
@@ -263,7 +271,7 @@ const loading=document.getElementById('loading'),list=document.getElementById('l
 const report=message=>{try{window.gitkVscode.postMessage({type:'error',message})}catch(_){}};
 const log=message=>{try{window.gitkVscode.postMessage({type:'log',message})}catch(_){}};
 const notifyRendered=revision=>{try{window.gitkVscode.postMessage({type:'rendered',revision})}catch(_){}};
-let monacoReady=false,lastRevision=0,pending,cards=[],cardByPath=new Map(),activePath='',clickedPath='',suppressSyncUntil=0,scrollAnimationFrame=0,renderToken=0,editable=false,virtualFrame=0,editorPool=[],syncingGlobalHScroll=false,hScrollFrame=0;
+let monacoReady=false,lastRevision=0,lastIdentity='',pending,cards=[],cardByPath=new Map(),activePath='',clickedPath='',suppressSyncUntil=0,scrollAnimationFrame=0,renderToken=0,editable=false,virtualFrame=0,editorPool=[],syncingGlobalHScroll=false,hScrollFrame=0,pinnedAnchor=null;
 function diffKey(diff){return diff.diffKey||diff.path}
 let activeChangeIndex=-1,activeChangePage=0;
 function activeEntry(){return activePath&&cardByPath.get(activePath)}
@@ -409,7 +417,7 @@ function dispose(){
   if(virtualFrame){cancelAnimationFrame(virtualFrame);virtualFrame=0}
   for(const entry of cards)disposeEntry(entry);
   while(editorPool.length)destroySlot(editorPool.pop());
-  cards=[];cardByPath=new Map();activePath='';clickedPath='';activeChangeIndex=-1;activeChangePage=0;list.replaceChildren();globalHScroll.hidden=true;globalHScroll.scrollLeft=0
+  cards=[];cardByPath=new Map();activePath='';clickedPath='';activeChangeIndex=-1;activeChangePage=0;pinnedAnchor=null;list.replaceChildren();globalHScroll.hidden=true;globalHScroll.scrollLeft=0
 }
 function language(path){const ext=path.slice(path.lastIndexOf('.')+1).toLowerCase();return languages[ext]||'plaintext'}
 function escapeHtml(value){return String(value==null?'':value).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
@@ -602,8 +610,10 @@ function mountEntry(entry,fromScroll=false){
     entry.bodyHeight=nextHeight;entry.body.style.height='';host.style.height=entry.bodyHeight+'px';
     editor.layout({width:Math.ceil(width),height:entry.bodyHeight});
     if(entry.path===activePath)updateGlobalHScroll();
+    // 刷新锚点存在时由锚点统一对齐真实高度，避免逐张卡片各自补偿导致累积偏移。
+    if(pinnedAnchor)applyPinnedAnchor();
     // 滚动触发的异步挂载不得改写用户当前位置；首次渲染等静态挂载才补偿上方高度。
-    if(delta&&aboveViewport&&allowScrollCompensation)window.scrollTo({top:Math.max(0,window.scrollY+delta),behavior:'auto'});
+    else if(delta&&aboveViewport&&allowScrollCompensation)window.scrollTo({top:Math.max(0,window.scrollY+delta),behavior:'auto'});
     scheduleVirtualization();
   };
   entry.disposables.push(editor.onDidUpdateDiff(function(){fit();updateLineStats(entry)}));
@@ -687,6 +697,8 @@ function reveal(path,smooth){
   if(entry.collapsed){
     entry.collapsed=false;entry.card.classList.remove('collapsed');entry.body.style.height=Math.max(80,entry.bodyHeight||80)+'px';
   }
+  // 显式定位优先级高于刷新锚点，否则后续 fit() 会把视图拉回旧锚点。
+  pinnedAnchor=null;
   suppressSyncUntil=performance.now()+SCROLL_DURATION+120;
   const group=entry.pinnedGroup||entry.card;
   const stickyTop=parseFloat(getComputedStyle(group).top)||0;
@@ -728,7 +740,11 @@ function updateVirtualization(fromScroll=false){
 }
 function scheduleVirtualization(){if(virtualFrame)return;virtualFrame=requestAnimationFrame(function(){virtualFrame=0;updateVirtualization()})}
 let scrollFrame=0;
-window.addEventListener('scroll',function(){if(scrollFrame)return;scrollFrame=requestAnimationFrame(function(){scrollFrame=0;syncActiveFromViewport();updateVirtualization(true)})},{passive:true});
+window.addEventListener('scroll',function(){
+  // 用户主动滚动即放弃刷新锚点；锚点自身的对齐写入不算用户滚动。
+  if(pinnedAnchor){if(pinnedAnchor.selfScroll)pinnedAnchor.selfScroll=false;else pinnedAnchor=null}
+  if(scrollFrame)return;scrollFrame=requestAnimationFrame(function(){scrollFrame=0;syncActiveFromViewport();updateVirtualization(true)})
+},{passive:true});
 globalHScroll.addEventListener('scroll',function(){
   if(syncingGlobalHScroll)return;
   const entry=activeEntry();if(!entry||!entry.mounted||!entry.editor)return;
@@ -736,24 +752,56 @@ globalHScroll.addEventListener('scroll',function(){
   syncingGlobalHScroll=true;entry.editor.getOriginalEditor().setScrollLeft(entry.horizontalLeft);entry.editor.getModifiedEditor().setScrollLeft(entry.horizontalLeft);syncingGlobalHScroll=false;
 },{passive:true});
 window.addEventListener('resize',function(){scheduleVirtualization();updateGlobalHScroll()});
+// 同一提交刷新前记录选中卡片及其相对视口位置，key 变化时按真实文件路径映射。
+function refreshState(){
+  const selected=activeEntry();
+  if(!selected)return null;
+  return {key:selected.path,filePath:selected.filePath,index:selected.index,offset:selected.card.getBoundingClientRect().top}
+}
+// 卡片重建后高度先是 estimateBodyHeight 估算值，真实高度要等 Monaco 挂载后 fit() 才确定；
+// 锚点必须在每次高度落定后重新对齐，否则 add/restore 改变卡片顺序时上方累积误差会让位置错乱。
+function applyPinnedAnchor(){
+  if(!pinnedAnchor)return;
+  const entry=cardByPath.get(pinnedAnchor.key);
+  if(!entry){pinnedAnchor=null;return}
+  const delta=entry.card.getBoundingClientRect().top-pinnedAnchor.offset;
+  if(Math.abs(delta)<.5)return;
+  // 标记为锚点自身写入，避免 scroll 监听把它当成用户滚动而解除锚定。
+  pinnedAnchor.selfScroll=true;
+  window.scrollTo({top:Math.max(0,window.scrollY+delta),behavior:'auto'});
+}
+function restoreRefreshState(state,revealPath){
+  // 原选中文件优先按 diffKey，其次按真实路径 (stage/unstage 会改变 staged:/unstaged: 前缀)。
+  const kept=state&&(cardByPath.get(state.key)||cards.find(function(item){return item.filePath===state.filePath}));
+  const entry=kept||(revealPath&&cardByPath.get(revealPath))||(state&&cards[Math.min(state.index,cards.length-1)]);
+  if(!entry)return false;
+  // 只有仍是同一文件才锚定原偏移，文件已消失时保持当前滚动位置不跳动。
+  if(kept){pinnedAnchor={key:entry.path,offset:state.offset};applyPinnedAnchor()}
+  // 复用用户点击置顶通道，避免刷新后 syncActiveFromViewport 把高亮改成首个可见卡片并回写 Changed Files。
+  clickedPath=entry.path;
+  setActive(entry.path,entry.path!==revealPath);
+  return true
+}
 // 全部逻辑项外壳先进入文档流，只有 viewport 相交项绑定池中的 Monaco 模板。
 function render(snapshot){
   try{
+    const sameIdentity=lastIdentity!==''&&snapshot.identity===lastIdentity;
+    const state=sameIdentity?refreshState():null;
     dispose();
     const token=renderToken;
     editable=snapshot.editable===true;
-    if(!snapshot.diffs.length){list.classList.remove('rendering');list.textContent='没有可显示的 Diff 内容';loading.hidden=true;list.hidden=false;log('render #'+snapshot.revision+': empty');notifyRendered(snapshot.revision);return}
+    if(!snapshot.diffs.length){list.classList.remove('rendering');list.textContent='没有可显示的 Diff 内容';loading.hidden=true;list.hidden=false;lastIdentity=snapshot.identity;log('render #'+snapshot.revision+': empty');notifyRendered(snapshot.revision);return}
     const total=snapshot.diffs.length;
-    // 先同步创建全部逻辑项外壳，只有可视范围绑定对象池中的 Monaco。
-    list.classList.add('rendering');list.hidden=false;
-    loading.textContent='正在创建 Diff 列表...';loading.hidden=false;
+    // 同一提交刷新保留当前页面，不展示读取或创建 Diff 的中间界面。
+    if(!sameIdentity){list.classList.add('rendering');loading.textContent='正在创建 Diff 列表...';loading.hidden=false}
+    list.hidden=false;
     snapshot.diffs.forEach(function(diff,order){createCardShell(diff,order,list)});
     if(token!==renderToken)return;
     const target=snapshot.revealPath&&cardByPath.has(snapshot.revealPath)?snapshot.revealPath:diffKey(snapshot.diffs[0]);
-    reveal(target,false);
+    if(!sameIdentity||!restoreRefreshState(state,snapshot.revealPath))reveal(target,false);
     updateVirtualization();
-    list.classList.remove('rendering');loading.hidden=true;
-    log('render #'+snapshot.revision+': cards='+total+', mounted='+cards.filter(function(entry){return entry.mounted}).length+', reveal='+target);
+    list.classList.remove('rendering');loading.hidden=true;lastIdentity=snapshot.identity;
+    log('render #'+snapshot.revision+': cards='+total+', mounted='+cards.filter(function(entry){return entry.mounted}).length+', reveal='+(sameIdentity?'anchor':target));
     // 外壳和首屏 Monaco 已开始挂载即可放行 Changed Files；后续由滚动虚拟化管理。
     notifyRendered(snapshot.revision);
   }catch(error){fail(error)}
