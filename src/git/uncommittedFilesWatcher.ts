@@ -4,7 +4,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { GitBranchOption, WorkingTreeChanges } from '../types';
 import { getWorkingTreeStatus, getWorkingTreeStatusForPaths } from './gitLogProvider';
-import { GitBranchesController } from './gitBranchesController';
+import { RepoHeadBranchWatcher } from './gitRepoHeadBranchWatcher';
 
 const execFileAsync = promisify(execFile);
 
@@ -18,6 +18,7 @@ type RepositoryRefreshSlot = {
     generation: number;
     running: boolean;
     needsRefresh: boolean;
+    pendingPaths?: Set<string>;
     completion?: Promise<void>;
 };
 
@@ -28,7 +29,7 @@ function copyChanges(changes: WorkingTreeChanges): WorkingTreeChanges {
     });
 }
 
-/** 当前 HEAD 工作区未提交文件的唯一读取者与目录监听者。 */
+/** 全部仓库当前 HEAD 工作区未提交文件的唯一读取者与目录监听者。 */
 export class UncommittedFilesWatcher implements vscode.Disposable {
     private readonly workspaceWatchers = new Map<string, vscode.Disposable>();
     private readonly indexWatchers = new Map<string, vscode.Disposable>();
@@ -40,13 +41,28 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
 
     readonly onEachHeadBranchUncommittedFileChanged = this.changesEmitter.event;
 
-    constructor(branchesController: GitBranchesController) {
-        this.branchSubscription = branchesController.onEachRepoCurrentHeadBranchChanged(event => {
-            this.applyCurrentHeadBranch(event.repositoryPath, event.branch);
+    constructor(repoHeadBranchWatcher: RepoHeadBranchWatcher) {
+        // 数据源改为全部仓库 HEAD 监听器, 不再跟随仓库选择, 天然覆盖所有仓库。
+        this.branchSubscription = repoHeadBranchWatcher.onEachRepoHeadBranchChanged(event => {
+            this.applyCurrentHeadBranch(event.repositoryPath, event.headBranch);
         });
-        for (const branch of branchesController.getBranches('current')) {
-            this.applyCurrentHeadBranch(branch.repoOption.path, branch);
+    }
+
+    /** 列出所有已知仓库的当前 HEAD 分支 (覆盖全部仓库, 不受仓库选择限制)。 */
+    listCurrentHeadBranches(): GitBranchOption[] {
+        const branches: GitBranchOption[] = [];
+        for (const slot of this.slots.values()) {
+            if (slot.branch) { branches.push(slot.branch); }
         }
+        return branches;
+    }
+
+    getCachedUncommittedFilesByHeadBranch(branch: GitBranchOption): WorkingTreeChanges | undefined {
+        if (branch.kind !== 'current') {
+            throw new Error('只能查询当前 HEAD 分支的未提交文件');
+        }
+        const cached = this.changesByRepository.get(branch.repoOption.path)?.get(branch.hash);
+        return cached ? copyChanges(cached) : undefined;
     }
 
     async getUncommittedFilesByHeadBranch(branch: GitBranchOption): Promise<WorkingTreeChanges> {
@@ -85,25 +101,10 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         if (!slot || slot.branch?.hash !== branch.hash) {
             throw new Error('该分支不是仓库当前 HEAD');
         }
-        const changes = await getWorkingTreeStatusForPaths(vscode.Uri.parse(branch.repoOption.path), paths);
-        if (slot.branch?.hash !== branch.hash) { return; }
-        const cached = this.changesByRepository.get(branch.repoOption.path) ?? new Map<string, WorkingTreeChanges>();
-        const previous = cached.get(branch.hash) ?? new WorkingTreeChanges();
-        const pathSet = new Set(paths);
-        const isStale = (file: WorkingTreeChanges['staged'][number]) =>
-            pathSet.has(file.path) || (!!file.oldPath && pathSet.has(file.oldPath));
-        const mergeSection = (allFiles: WorkingTreeChanges['staged'], changedFiles: WorkingTreeChanges['staged']) => [
-            ...allFiles.filter(file => !isStale(file)),
-            ...changedFiles,
-        ];
-        const merged = new WorkingTreeChanges({
-            staged: mergeSection(previous.staged, changes.staged),
-            changes: mergeSection(previous.changes, changes.changes),
-        });
-        if (previous.equals(merged)) { return; }
-        cached.set(branch.hash, merged);
-        this.changesByRepository.set(branch.repoOption.path, cached);
-        this.changesEmitter.fire({ branch, changes: copyChanges(merged) });
+        const pendingPaths = slot.pendingPaths ?? new Set<string>();
+        paths.forEach(filePath => pendingPaths.add(filePath));
+        slot.pendingPaths = pendingPaths;
+        await this.requestRefresh(branch.repoOption.path);
     }
 
     dispose(): void {
@@ -200,6 +201,9 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         const rootPath = vscode.Uri.parse(repositoryPath).fsPath;
         const relativePath = path.relative(rootPath, uri.fsPath);
         if (!relativePath || relativePath === '.git' || relativePath.startsWith(`.git${path.sep}`)) { return; }
+        const pendingPaths = slot.pendingPaths ?? new Set<string>();
+        pendingPaths.add(relativePath.split(path.sep).join('/'));
+        slot.pendingPaths = pendingPaths;
         await this.requestRefresh(repositoryPath);
     }
 
@@ -208,9 +212,17 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         if (!slot?.branch) { return Promise.resolve(); }
         if (slot.running) {
             slot.needsRefresh = true;
+            console.log(`[Gitk][UncommittedWatcher] refresh merged ${repositoryPath}`, {
+                timestamp: new Date().toISOString(),
+                pendingPaths: slot.pendingPaths ? [...slot.pendingPaths] : [],
+            });
             return slot.completion ?? Promise.resolve();
         }
         slot.running = true;
+        console.log(`[Gitk][UncommittedWatcher] refresh started ${repositoryPath}`, {
+            timestamp: new Date().toISOString(),
+            pendingPaths: slot.pendingPaths ? [...slot.pendingPaths] : [],
+        });
         const completion = this.drainRefresh(repositoryPath, slot);
         slot.completion = completion;
         return completion;
@@ -218,37 +230,82 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
 
     private async drainRefresh(repositoryPath: string, slot: RepositoryRefreshSlot): Promise<void> {
         try {
-            const branch = slot.branch;
-            const generation = slot.generation;
-            if (!branch) { return; }
-            await this.refreshBranch(repositoryPath, branch, generation, slot);
-            if (!slot.needsRefresh || !slot.branch) { return; }
-            // 补读期间保持 needsRefresh=true，后续重复事件直接合并到本次补读。
-            await this.refreshBranch(repositoryPath, slot.branch, slot.generation, slot);
+            while (slot.branch) {
+                const branch = slot.branch;
+                const generation = slot.generation;
+                // 此轮开始前消费已有请求；读取期间到达的新请求将驱动下一轮。
+                slot.needsRefresh = false;
+                await this.refreshSlot(repositoryPath, branch, generation, slot);
+                if (!slot.needsRefresh) { return; }
+                console.log(`[Gitk][UncommittedWatcher] refresh retry ${repositoryPath}`, { timestamp: new Date().toISOString() });
+            }
         } finally {
+            console.log(`[Gitk][UncommittedWatcher] refresh finished ${repositoryPath}`, { timestamp: new Date().toISOString() });
             slot.needsRefresh = false;
             slot.running = false;
             slot.completion = undefined;
         }
     }
 
-    private async refreshBranch(
+    private async refreshSlot(
         repositoryPath: string,
         branch: GitBranchOption,
         generation: number,
         slot: RepositoryRefreshSlot,
     ): Promise<void> {
         try {
-            const changes = await getWorkingTreeStatus(vscode.Uri.parse(repositoryPath));
-            if (slot.generation !== generation || slot.branch?.hash !== branch.hash) { return; }
+            const paths = slot.pendingPaths;
+            slot.pendingPaths = undefined;
+            const rootUri = vscode.Uri.parse(repositoryPath);
+            const pathChanges = paths && paths.size > 0
+                ? await getWorkingTreeStatusForPaths(rootUri, [...paths])
+                : undefined;
+            const changes = pathChanges
+                ? this.mergePathChanges(repositoryPath, branch.hash, pathChanges, paths!)
+                : await getWorkingTreeStatus(rootUri);
+            if (slot.generation !== generation || slot.branch?.hash !== branch.hash) {
+                console.log(`[Gitk][UncommittedWatcher] refresh discarded ${repositoryPath}`, { timestamp: new Date().toISOString() });
+                return;
+            }
             const changesByHash = this.changesByRepository.get(repositoryPath) ?? new Map<string, WorkingTreeChanges>();
             const previous = changesByHash.get(branch.hash);
-            if (previous?.equals(changes)) { return; }
+            if (previous?.equals(changes)) {
+                console.log(`[Gitk][UncommittedWatcher] status unchanged ${repositoryPath}`, {
+                    timestamp: new Date().toISOString(),
+                    paths: paths ? [...paths] : [],
+                });
+                return;
+            }
             changesByHash.set(branch.hash, changes);
             this.changesByRepository.set(repositoryPath, changesByHash);
+            console.log(`[Gitk][UncommittedWatcher] status changed ${repositoryPath}`, {
+                timestamp: new Date().toISOString(),
+                paths: paths ? [...paths] : [],
+                stagedCount: changes.staged.length,
+                unstagedCount: changes.changes.length,
+            });
             this.changesEmitter.fire({ branch, changes: copyChanges(changes) });
         } catch (error) {
             console.warn(`无法读取未提交文件: ${repositoryPath}`, error);
         }
+    }
+
+    private mergePathChanges(
+        repositoryPath: string,
+        branchHash: string,
+        changes: WorkingTreeChanges,
+        paths: ReadonlySet<string>,
+    ): WorkingTreeChanges {
+        const previous = this.changesByRepository.get(repositoryPath)?.get(branchHash) ?? new WorkingTreeChanges();
+        const isAffected = (file: WorkingTreeChanges['staged'][number]) =>
+            paths.has(file.path) || (!!file.oldPath && paths.has(file.oldPath));
+        const mergeSection = (allFiles: WorkingTreeChanges['staged'], changedFiles: WorkingTreeChanges['staged']) => [
+            ...allFiles.filter(file => !isAffected(file)),
+            ...changedFiles,
+        ];
+        return new WorkingTreeChanges({
+            staged: mergeSection(previous.staged, changes.staged),
+            changes: mergeSection(previous.changes, changes.changes),
+        });
     }
 }

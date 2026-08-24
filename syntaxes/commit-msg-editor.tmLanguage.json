@@ -1,0 +1,58 @@
+{
+  "scopeName": "text.commit-msg-editor",
+  "patterns": [
+    {
+      "begin": "(?<=^|\\n)(?=#)",
+      "end": "(?!\\G)(?=\\n[^#])",
+      "name": "meta.scope.metadata.commit-msg-editor",
+      "patterns": [
+        {
+          "match": "^#\\s*(-{8}>8-{8})\\s*$",
+          "captures": {
+            "1": { "name": "punctuation.separator.scissors.commit-msg-editor" }
+          },
+          "name": "comment.line.number-sign.scissors.commit-msg-editor"
+        },
+        {
+          "begin": "^#",
+          "end": "$",
+          "name": "comment.line.number-sign.commit-msg-editor",
+          "patterns": [
+            {
+              "match": "\\b(new file|deleted|modified|renamed|copied|typechange)\\b:",
+              "name": "keyword.other.change-type.commit-msg-editor"
+            },
+            {
+              "match": "\\b(Changes to be committed|Changes not staged for commit|Untracked files|Changes not staged|Unmerged paths)\\b",
+              "name": "keyword.other.section.commit-msg-editor"
+            },
+            {
+              "match": "\\b(On branch|HEAD detached at|Your branch is|interactive rebase in progress)\\b",
+              "name": "keyword.other.branch.commit-msg-editor"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "\\G.{1,50}",
+      "name": "markup.heading.subject.commit-msg-editor"
+    },
+    {
+      "match": "\\G.{51,72}",
+      "name": "markup.other.subject-overflow.commit-msg-editor"
+    },
+    {
+      "match": "\\G.{73,}",
+      "name": "invalid.deprecated.line-too-long.commit-msg-editor"
+    },
+    {
+      "match": "\\b(fixup!|squash!|amend!)\\s",
+      "name": "keyword.other.autosquash.commit-msg-editor"
+    },
+    {
+      "match": "^\\s*(Signed-off-by|Co-authored-by|Reviewed-by|Acked-by|Tested-by|Reported-by|Suggested-by|Cc):",
+      "name": "keyword.other.trailer.commit-msg-editor"
+    }
+  ]
+}

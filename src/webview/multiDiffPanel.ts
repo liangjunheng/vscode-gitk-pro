@@ -87,11 +87,13 @@ export class MultiDiffPanel implements vscode.Disposable {
         if (this.panel) { return; }
         this.webviewReady = false;
         this.postQueue = Promise.resolve();
-        const monacoRoot = vscode.Uri.joinPath(vscode.Uri.file(__dirname), '..', '..', 'media', 'monaco');
+        const mediaRoot = vscode.Uri.joinPath(vscode.Uri.file(__dirname), '..', '..', 'media');
+        const monacoRoot = vscode.Uri.joinPath(mediaRoot, 'monaco');
+        const codiconsRoot = vscode.Uri.joinPath(mediaRoot, 'codicons');
         this.panel = vscode.window.createWebviewPanel('vscode-gitk.multiDiff', 'Gitk Diff', vscode.ViewColumn.Active, {
             enableScripts: true,
             retainContextWhenHidden: true,
-            localResourceRoots: [monacoRoot],
+            localResourceRoots: [monacoRoot, codiconsRoot],
         });
         this.panel.webview.onDidReceiveMessage(message => {
             if (message?.type === 'ready') {
@@ -124,7 +126,7 @@ export class MultiDiffPanel implements vscode.Disposable {
         });
         // 面板被关闭后不会再有渲染完成信号, 通知 Provider 兜底放行 Changed Files 列表。
         this.panel.onDidDispose(() => { this.panel = undefined; this.webviewReady = false; this.onRendered?.(); });
-        this.panel.webview.html = this.getHtml(monacoRoot);
+        this.panel.webview.html = this.getHtml(monacoRoot, codiconsRoot);
     }
 
     private schedulePublish(): void {
@@ -170,11 +172,13 @@ export class MultiDiffPanel implements vscode.Disposable {
             .then(() => this.panel?.webview.postMessage(message));
     }
 
-    private getHtml(monacoRoot: vscode.Uri): string {
+    private getHtml(monacoRoot: vscode.Uri, codiconsRoot: vscode.Uri): string {
         const webview = this.panel!.webview;
         const monacoUri = webview.asWebviewUri(vscode.Uri.joinPath(monacoRoot, 'vs'));
+        // 显式加载 codicon 样式，不再依赖 Monaco 自带字体隐式提供 .codicon-* 字形。
+        const codiconCssUri = webview.asWebviewUri(vscode.Uri.joinPath(codiconsRoot, 'codicon.css'));
         const nonce = String(Date.now());
-        return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}' 'unsafe-eval'; worker-src ${webview.cspSource}; font-src ${webview.cspSource};"><style>
+        return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}' 'unsafe-eval'; worker-src ${webview.cspSource}; font-src ${webview.cspSource};"><link rel="stylesheet" href="${codiconCssUri}"><style>
 /* 吸顶组与文件顶部高亮轮廓对齐，不额外向上偏移。
    --header-cover-bleed 控制标题栏背后不透明盖板向上及向两侧的延展。 */
 :root{color-scheme:light dark;--header-surface:var(--vscode-editorWidget-background,var(--vscode-tab-activeBackground));--card-radius:9px;--card-border:1px;--card-ring:1px;--header-gap:0px;--header-inset:0px;--header-cover-bleed:8px}

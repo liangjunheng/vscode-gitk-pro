@@ -12,6 +12,7 @@ export type StoreEffect =
     | { type: 'selectFile'; path?: unknown }
     | { type: 'copyFilePath'; path: unknown; absolute?: unknown }
     | { type: 'workingTreeAction'; action: unknown; section: unknown; path?: unknown }
+    | { type: 'rendered'; fileCount: unknown }
     | { type: 'openCommitEditor'; amend: boolean; repositoryPath: string }
     | { type: 'persistFilesDisplayMode'; displayMode: AppState['displayMode'] }
     | { type: 'search'; keywords: unknown };
@@ -105,6 +106,11 @@ export class Store {
                     && (intent.section === 'staged' || intent.section === 'unstaged')
                     && (intent.path === undefined || typeof intent.path === 'string')) {
                     effects = [{ type: 'workingTreeAction', action: intent.action, section: intent.section, path: intent.path }];
+                }
+                break;
+            case 'rendered':
+                if (intent.target === 'changedFiles' && typeof intent.fileCount === 'number') {
+                    effects = [{ type: 'rendered', fileCount: intent.fileCount }];
                 }
                 break;
             case 'openCommitEditor':

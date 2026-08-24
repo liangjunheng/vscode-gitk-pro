@@ -3,6 +3,13 @@ import { randomUUID } from 'crypto';
 import * as net from 'net';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { runGitReadCommand } from './gitLogProvider';
+
+interface HistoryMessage {
+    readonly shortHash: string;
+    readonly subject: string;
+    readonly message: string;
+}
 
 interface CommitEditSession {
     readonly rootUri: vscode.Uri;
@@ -23,6 +30,7 @@ export class GitCommitEditMsgEditor implements vscode.Disposable {
 
     constructor(private readonly extensionPath: string) {
         this.disposables = [
+            vscode.commands.registerCommand('vscode-gitk.commitEditMsg.history', () => this.fillHistoryMessage()),
             vscode.commands.registerCommand('vscode-gitk.commitEditMsg.complete', () => this.completeActiveSession()),
             vscode.commands.registerCommand('vscode-gitk.commitEditMsg.cancel', () => this.cancelActiveSession()),
             vscode.window.tabGroups.onDidChangeTabs(event => this.handleTabsClosed(event.closed)),
@@ -126,7 +134,9 @@ export class GitCommitEditMsgEditor implements vscode.Disposable {
     ): Promise<void> {
         const documentUri = vscode.Uri.file(filePath);
         const key = documentUri.toString();
-        const document = await vscode.workspace.openTextDocument(documentUri);
+        const opened = await vscode.workspace.openTextDocument(documentUri);
+        // 语言不通过 filenames 关联, 避免与内置 Git 争抢 COMMIT_EDITMSG; 由本扩展打开时显式指定。
+        const document = await vscode.languages.setTextDocumentLanguage(opened, 'COMMIT_MSG_EDITOR');
         this.sessions.set(key, { rootUri, documentUri, socket, resolveEditor, completing: false });
         await vscode.window.showTextDocument(document, {
             viewColumn: vscode.ViewColumn.Active,
@@ -148,6 +158,83 @@ export class GitCommitEditMsgEditor implements vscode.Disposable {
         }
         this.finishSession(session, true);
         await this.closeDocumentTab(session.documentUri);
+    }
+
+    /** 用历史提交信息替换当前 COMMIT_EDITMSG 的消息区, 保留 Git 写入的注释块。 */
+    private async fillHistoryMessage(): Promise<void> {
+        const session = this.getActiveSession();
+        if (!session || session.completing) { return; }
+        const [history, commentChar] = await Promise.all([
+            this.readHistoryMessages(session.rootUri),
+            this.readCommentChar(session.rootUri),
+        ]);
+        if (history.length === 0) {
+            void vscode.window.showInformationMessage('当前仓库没有可复用的历史提交信息。');
+            return;
+        }
+        const picked = await vscode.window.showQuickPick(
+            history.map(item => ({
+                label: item.subject,
+                description: item.shortHash,
+                detail: item.message.includes('\n') ? item.message.split('\n').slice(1).join(' ').trim() : undefined,
+                message: item.message,
+            })),
+            { title: '选择历史提交信息', placeHolder: '选中后替换当前提交信息', matchOnDescription: true, matchOnDetail: true },
+        );
+        if (!picked) { return; }
+        const document = await vscode.workspace.openTextDocument(session.documentUri);
+        const messageRange = this.getMessageRange(document, commentChar);
+        const edit = new vscode.WorkspaceEdit();
+        edit.replace(document.uri, messageRange, `${picked.message}\n${messageRange.end.line < document.lineCount - 1 ? '\n' : ''}`);
+        if (!await vscode.workspace.applyEdit(edit)) {
+            vscode.window.setStatusBarMessage('$(warning) 历史提交信息填充失败', 3000);
+            return;
+        }
+        const editor = vscode.window.visibleTextEditors.find(candidate => candidate.document.uri.toString() === session.documentUri.toString());
+        if (editor) {
+            const cursor = document.lineAt(Math.min(picked.message.split('\n').length - 1, document.lineCount - 1)).range.end;
+            editor.selection = new vscode.Selection(cursor, cursor);
+        }
+    }
+
+    /** 读取历史提交信息, 按完整消息去重后保留最新 10 条。 */
+    private async readHistoryMessages(rootUri: vscode.Uri): Promise<HistoryMessage[]> {
+        // 多读一段用于去重, 重复消息不占用最终 10 条名额。
+        const output = await runGitReadCommand(rootUri, [
+            'log', '--max-count=50', '--all', '--format=%h%x1f%s%x1f%B%x1e',
+        ]);
+        const seen = new Set<string>();
+        const messages: HistoryMessage[] = [];
+        for (const record of output.split('\x1e')) {
+            const [shortHash, subject, body] = record.replace(/^\r?\n/, '').split('\x1f');
+            if (!shortHash) { continue; }
+            const message = (body ?? '').replace(/\s+$/, '');
+            if (!message || seen.has(message)) { continue; }
+            seen.add(message);
+            messages.push({ shortHash, subject: subject || message.split('\n')[0], message });
+            if (messages.length >= 10) { break; }
+        }
+        return messages;
+    }
+
+    /**
+     * 读取注释字符; core.commentChar=auto 时 Git 优先使用 '#',
+     * 仅当消息行以 '#' 开头才改选其他字符, 此处按其首选值处理。
+     */
+    private async readCommentChar(rootUri: vscode.Uri): Promise<string> {
+        const value = (await runGitReadCommand(rootUri, ['config', '--default', '#', '--get', 'core.commentChar'])).trim();
+        return !value || value === 'auto' ? '#' : value;
+    }
+
+    /** 消息区为文档开头到首个注释行之前的范围。 */
+    private getMessageRange(document: vscode.TextDocument, commentChar: string): vscode.Range {
+        const start = new vscode.Position(0, 0);
+        for (let line = 0; line < document.lineCount; line++) {
+            if (document.lineAt(line).text.startsWith(commentChar)) {
+                return new vscode.Range(start, new vscode.Position(line, 0));
+            }
+        }
+        return new vscode.Range(start, document.lineAt(document.lineCount - 1).range.end);
     }
 
     private async cancelActiveSession(): Promise<void> {

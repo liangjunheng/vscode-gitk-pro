@@ -14,9 +14,28 @@
   "activationEvents": [
     "*"
   ],
+  "enabledApiProposals": [
+    "contribEditorContentMenu"
+  ],
   "icon": "media/gitk-logo.png",
   "main": "./out/extension.js",
   "contributes": {
+    "languages": [
+      {
+        "id": "COMMIT_MSG_EDITOR",
+        "aliases": [
+          "Commit Message Editor"
+        ],
+        "configuration": "./syntaxes/commit-msg-editor.language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "COMMIT_MSG_EDITOR",
+        "scopeName": "text.commit-msg-editor",
+        "path": "./syntaxes/commit-msg-editor.tmLanguage.json"
+      }
+    ],
     "configuration": {
       "title": "Gitk",
       "properties": {
@@ -31,8 +50,14 @@
             "以平铺列表显示变更文件"
           ],
           "default": "flat",
-          "scope": "window",
+          "scope": "application",
           "description": "Changed Files 的显示方式"
+        },
+        "vscode-gitk.discardUntrackedChangesToTrash": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "description": "还原未跟踪文件时移入回收站，而不是永久删除。回收站不可用的环境 (远程、Snap) 将始终永久删除。"
         }
       }
     },
@@ -64,6 +89,12 @@
         "title": "下一个差异",
         "category": "Gitk",
         "icon": "$(arrow-down)"
+      },
+      {
+        "command": "vscode-gitk.commitEditMsg.history",
+        "title": "历史提交信息",
+        "category": "Gitk",
+        "icon": "$(history)"
       },
       {
         "command": "vscode-gitk.commitEditMsg.complete",
@@ -118,14 +149,36 @@
           "group": "navigation@11"
         },
         {
+          "command": "vscode-gitk.commitEditMsg.history",
+          "when": "gitk:commitEditMsgActive",
+          "group": "navigation@0"
+        },
+        {
           "command": "vscode-gitk.commitEditMsg.complete",
-          "when": "editorLangId == git-commit && resourceFilename == COMMIT_EDITMSG && gitk:commitEditMsgActive",
+          "when": "gitk:commitEditMsgActive",
           "group": "navigation@1"
         },
         {
           "command": "vscode-gitk.commitEditMsg.cancel",
-          "when": "editorLangId == git-commit && resourceFilename == COMMIT_EDITMSG && gitk:commitEditMsgActive",
+          "when": "gitk:commitEditMsgActive",
           "group": "navigation@2"
+        }
+      ],
+      "editor/content": [
+        {
+          "command": "vscode-gitk.commitEditMsg.complete",
+          "when": "gitk:commitEditMsgActive",
+          "group": "navigation@1"
+        },
+        {
+          "command": "vscode-gitk.commitEditMsg.cancel",
+          "when": "gitk:commitEditMsgActive",
+          "group": "navigation@2"
+        },
+        {
+          "command": "vscode-gitk.commitEditMsg.history",
+          "when": "gitk:commitEditMsgActive",
+          "group": "secondary@1"
         }
       ]
     },

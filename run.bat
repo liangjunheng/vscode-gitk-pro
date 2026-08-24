@@ -8,10 +8,10 @@ set PROJECT_DIR=%~dp0
 set PROJECT_DIR=%PROJECT_DIR:~0,-1%
 set CODE_EXE=C:\Users\JUNHENG.LIANG\AppData\Local\Programs\Microsoft VS Code\Code.exe
 
-REM 先编译
+REM 先编译 (含 Monaco/codicons 资源同步)
 cd /d "%PROJECT_DIR%"
 echo [1/2] 编译 TypeScript...
-call npx tsc -p tsconfig.json
+call npm run compile
 if errorlevel 1 (
     echo 编译失败
     pause
@@ -19,6 +19,7 @@ if errorlevel 1 (
 )
 
 REM 启动 Extension Development Host
+REM extensionDevelopmentPath 加载的扩展会自动启用 package.json 中声明的 enabledApiProposals, 无需传 --enable-proposed-api
 echo [2/2] 启动 Extension Development Host...
 start "" "%CODE_EXE%" --extensionDevelopmentPath="%PROJECT_DIR%" --new-window "%PROJECT_DIR%"
 

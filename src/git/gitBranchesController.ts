@@ -28,7 +28,7 @@ export class GitBranchesController implements vscode.Disposable {
     private repositories: GitRepositoryOption[] = [];
     // key 用 path: 选项对象经 copy 后引用会变, Map 按引用判等会查不到。
     private readonly branches = new Map<string, GitBranchOption[]>();
-    private _selectedBranches: GitBranchOption[] = [];
+    private readonly selectedBranchNamesByRepository = new Map<string, Set<string>>();
 
     private branchReadAbortController?: AbortController;
     private branchReadGeneration = 0;
@@ -66,10 +66,24 @@ export class GitBranchesController implements vscode.Disposable {
 
     /** 当前已选分支中的当前分支。 */
     getSelectedCurrentBranch(): GitBranchOption | undefined {
-        for (const entry of this._selectedBranches) {
-            if (entry.kind === 'current') { return entry; }
+        return this.selectedBranches.find(branch => branch.kind === 'current');
+    }
+
+    private get selectedBranches(): GitBranchOption[] {
+        return this.repositories.flatMap(repository => {
+            const names = this.selectedBranchNamesByRepository.get(repository.path);
+            return (this.branches.get(repository.path) ?? []).filter(branch => names?.has(branch.name));
+        });
+    }
+
+    getSelectedBranchesByRepository(): ReadonlyMap<GitRepositoryOption, GitBranchOption[]> {
+        const selected = new Map<GitRepositoryOption, GitBranchOption[]>();
+        for (const branch of this.selectedBranches) {
+            const branches = selected.get(branch.repoOption) ?? [];
+            branches.push(branch);
+            selected.set(branch.repoOption, branches);
         }
-        return undefined;
+        return selected;
     }
 
     /** 指定仓库的当前分支。 */
@@ -112,11 +126,10 @@ export class GitBranchesController implements vscode.Disposable {
             if (!duplicated) { next.push(resolved); }
         }
         // 校验 2: 与当前选择完全相同直接返回, 避免重复点击引发无意义的提交重载。
-        if (this.sameSelected(this._selectedBranches, next)) { return false; }
-        // 空数组是合法入参: 用户取消全部勾选就该得到空选择。
+        if (this.sameSelected(this.selectedBranches, next)) { return false; }
         this._isLoading = true;
         this.loadingEmitter.fire(true);
-        this._selectedBranches = next;
+        this.replaceSelected(next);
         this.fireSelected();
         this._isLoading = false;
         this.loadingEmitter.fire(false);
@@ -189,7 +202,7 @@ export class GitBranchesController implements vscode.Disposable {
                 const currentBranches = await currentBranchesPromise;
                 if (abortController.signal.aborted || generation !== this.branchReadGeneration) { return; }
                 const defaults = currentBranches.flatMap(entry => entry ? [entry] : []);
-                this._selectedBranches = this.dedupeSelected([...this._selectedBranches, ...defaults]);
+                this.replaceSelected([...this.selectedBranches, ...defaults]);
                 this.fireSelected();
             }
             const loaded = await loadedPromise;
@@ -262,9 +275,9 @@ export class GitBranchesController implements vscode.Disposable {
         const nextHead = next.find(branch => branch.kind === 'current');
         if (previousHead?.name === nextHead?.name && previousHead?.hash === nextHead?.hash) { return; }
         this.branches.set(repositoryPath, next);
-        const selected = this._selectedBranches.filter(branch => !(branch.repoOption.path === repositoryPath && branch.kind === 'current'));
+        const selected = this.selectedBranches.filter(branch => !(branch.repoOption.path === repositoryPath && branch.kind === 'current'));
         if (nextHead) { selected.push(nextHead); }
-        this._selectedBranches = this.dedupeSelected(selected);
+        this.replaceSelected(selected);
         this.fireBranches();
         this.fireSelected();
         this.currentHeadBranchEmitter.fire({ repositoryPath, branch: nextHead });
@@ -280,10 +293,14 @@ export class GitBranchesController implements vscode.Disposable {
 
     /** 仓库集合变化时先删除旧仓库的勾选，避免新列表与旧勾选组合成一帧。 */
     private pruneSelected(keep: ReadonlySet<string>): boolean {
-        const next = this._selectedBranches.filter(branch => keep.has(branch.repoOption.path));
-        if (this.sameSelected(this._selectedBranches, next)) { return false; }
-        this._selectedBranches = next;
-        return true;
+        let changed = false;
+        for (const repositoryPath of this.selectedBranchNamesByRepository.keys()) {
+            if (!keep.has(repositoryPath)) {
+                this.selectedBranchNamesByRepository.delete(repositoryPath);
+                changed = true;
+            }
+        }
+        return changed;
     }
 
     /**
@@ -323,29 +340,24 @@ export class GitBranchesController implements vscode.Disposable {
             && left.every((branch, index) => branch.equals(right[index]));
     }
 
-    // 顺序无关的已选集合比较；同一仓库的同名分支是唯一业务键。
     private sameSelected(left: readonly GitBranchOption[], right: readonly GitBranchOption[]): boolean {
         if (left.length !== right.length) { return false; }
-        const byRepository = new Map<string, Map<string, GitBranchOption>>();
+        const namesByRepository = new Map<string, Set<string>>();
         for (const branch of left) {
-            const byName = byRepository.get(branch.repoOption.path) ?? new Map<string, GitBranchOption>();
-            byName.set(branch.name, branch);
-            byRepository.set(branch.repoOption.path, byName);
+            const names = namesByRepository.get(branch.repoOption.path) ?? new Set<string>();
+            names.add(branch.name);
+            namesByRepository.set(branch.repoOption.path, names);
         }
-        return right.every(branch => byRepository.get(branch.repoOption.path)?.get(branch.name)?.equals(branch) ?? false);
+        return right.every(branch => namesByRepository.get(branch.repoOption.path)?.has(branch.name) ?? false);
     }
 
-    private dedupeSelected(selected: readonly GitBranchOption[]): GitBranchOption[] {
-        const result: GitBranchOption[] = [];
-        const namesByRepository = new Map<string, Set<string>>();
-        for (const entry of selected) {
-            const names = namesByRepository.get(entry.repoOption.path) ?? new Set<string>();
-            if (names.has(entry.name)) { continue; }
-            names.add(entry.name);
-            namesByRepository.set(entry.repoOption.path, names);
-            result.push(entry);
+    private replaceSelected(branches: readonly GitBranchOption[]): void {
+        this.selectedBranchNamesByRepository.clear();
+        for (const branch of branches) {
+            const names = this.selectedBranchNamesByRepository.get(branch.repoOption.path) ?? new Set<string>();
+            names.add(branch.name);
+            this.selectedBranchNamesByRepository.set(branch.repoOption.path, names);
         }
-        return result;
     }
 
     // 对外形态以 GitRepositoryOption 为 key, 由内部按 path 索引的真值现场转出。
@@ -359,7 +371,7 @@ export class GitBranchesController implements vscode.Disposable {
 
     private fireSelected(): void {
         const snapshot = new Map<GitRepositoryOption, GitBranchOption[]>();
-        for (const branch of this._selectedBranches) {
+        for (const branch of this.selectedBranches) {
             const branches = snapshot.get(branch.repoOption);
             if (branches) {
                 branches.push(branch);

@@ -45,7 +45,7 @@ export class GitCommitController implements vscode.Disposable {
     private keywords: string[] = [];
     private searched: CommitMetadata[] = [];
     private total: CommitMetadata[] = [];
-    private _selectedCommit?: CommitMetadata;
+    private selectedCommitIdentity?: { hash: string; repositoryPath: string };
     private commitReadAbortController?: AbortController;
     private commitReadGeneration = 0;
     private repositorySelectionGeneration = 0;
@@ -98,7 +98,9 @@ export class GitCommitController implements vscode.Disposable {
         });
         this.uncommittedFilesSubscription = uncommittedFilesWatcher.onEachHeadBranchUncommittedFileChanged(event => {
             const current = this.branches.find(branch => branch.kind === 'current');
-            if (current?.repoOption.path !== event.branch.repoOption.path || current.hash !== event.branch.hash) { return; }
+            if (current?.repoOption.path !== event.branch.repoOption.path || current.hash !== event.branch.hash) {
+                return;
+            }
             this.applyWorkingTreeSnapshot(event.branch.repoOption.path, event.changes);
         });
     }
@@ -107,7 +109,16 @@ export class GitCommitController implements vscode.Disposable {
     get totalCommitList(): readonly CommitMetadata[] { return this.total; }
     get searchedCommitList(): readonly CommitMetadata[] { return this.searched; }
     get searchKeywords(): readonly string[] { return this.keywords; }
-    get selectedCommit(): CommitMetadata | undefined { return this._selectedCommit; }
+    get selectedCommit(): CommitMetadata | undefined {
+        const identity = this.selectedCommitIdentity;
+        if (!identity) { return undefined; }
+        if (identity.hash === 'uncommitted') {
+            const branch = this.branches.find(candidate => candidate.kind === 'current' && candidate.repoOption.path === identity.repositoryPath);
+            return branch ? new CommitMetadata({ hash: identity.hash, gitBranchOption: branch }) : undefined;
+        }
+        return this.total.find(commit => commit.hash === identity.hash && commit.gitBranchOption?.repoOption.path === identity.repositoryPath)
+            ?? this.searched.find(commit => commit.hash === identity.hash && commit.gitBranchOption?.repoOption.path === identity.repositoryPath);
+    }
 
     findCommit(hash: string, repositoryPath: string): CommitMetadata | undefined {
         return this.searched.find(commit =>
@@ -172,15 +183,13 @@ export class GitCommitController implements vscode.Disposable {
 
     /** 用户操作入口, 唯一允许主动改 selected 的公开方法。 */
     selectCommit(commit: CommitMetadata): boolean {
-        // 提交业务身份由仓库路径和 hash 组成；对象重建、图形字段变化不应触发重复选择。
-        if (this._selectedCommit?.gitBranchOption && commit.gitBranchOption
-            && this._selectedCommit.gitBranchOption.equals(commit.gitBranchOption)
-            && this._selectedCommit.hash === commit.hash) {
+        const repositoryPath = commit.gitBranchOption?.repoOption.path;
+        if (!repositoryPath) { return false; }
+        if (this.selectedCommitIdentity?.hash === commit.hash && this.selectedCommitIdentity.repositoryPath === repositoryPath) {
             return false;
         }
-        // 选择提交只改变选择状态，不刷新提交列表；提交内容读取由 Provider 独立管理。
-        this._selectedCommit = commit;
-        this.selectedEmitter.fire(this._selectedCommit);
+        this.selectedCommitIdentity = { hash: commit.hash, repositoryPath };
+        this.selectedEmitter.fire(this.selectedCommit);
         return true;
     }
 
@@ -263,7 +272,7 @@ export class GitCommitController implements vscode.Disposable {
                 this.totalEmitter.fire([...this.total]);
             }
             // 仅首次赋值; 已有选中项一律不动, 即使已不在新列表中。
-            if (!this._selectedCommit && this.searched.length > 0) {
+            if (!this.selectedCommitIdentity && this.searched.length > 0) {
                 this.selectCommit(this.searched[0]);
             }
         } catch (error) {

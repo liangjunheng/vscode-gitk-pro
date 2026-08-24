@@ -23,7 +23,7 @@ function repoKey(filePath: string): string {
  */
 export class GitRepoController implements vscode.Disposable {
     private _totalRepoList: GitRepositoryOption[] = [];
-    private _selectedRepoList: GitRepositoryOption[] = [];
+    private _selectedRepoPaths: string[] = [];
     private _isLoading = false;
     // 区分「默认选中当前仓库」与「用户显式选择」, 后者不随扫描结果改动。
     private hasUserSelection = false;
@@ -38,7 +38,10 @@ export class GitRepoController implements vscode.Disposable {
     readonly onReposLoadingChanged = this.reposLoadingEmitter.event;
 
     get totalRepoList(): readonly GitRepositoryOption[] { return this._totalRepoList; }
-    get selectedRepoList(): readonly GitRepositoryOption[] { return this._selectedRepoList; }
+    get selectedRepoList(): readonly GitRepositoryOption[] {
+        const repositoriesByPath = new Map(this._totalRepoList.map(repository => [repoKey(vscode.Uri.parse(repository.path).fsPath), repository]));
+        return this._selectedRepoPaths.map(path => repositoriesByPath.get(path)!);
+    }
     get isLoading(): boolean { return this._isLoading; }
 
     /** 首次加载: 先产出当前仓库让选择器立即可用, 再递归补齐子模块。 */
@@ -74,7 +77,7 @@ export class GitRepoController implements vscode.Disposable {
             const roots = await this.resolveWorkspaceRepositories();
             // 根仓库是当前工作区的首要数据源，必须先发布，不能等待递归子模块扫描。
             this.applyTotal(roots);
-            if (isInitialize && !this.hasUserSelection && this._selectedRepoList.length === 0 && roots.length > 0) {
+            if (isInitialize && !this.hasUserSelection && this._selectedRepoPaths.length === 0 && roots.length > 0) {
                 this.applySelected([roots[0]]);
             }
             const scanned = await this.scanSubmodules(roots);
@@ -181,10 +184,13 @@ export class GitRepoController implements vscode.Disposable {
         this.totalEmitter.fire([...this._totalRepoList]);
     }
 
-    private applySelected(options: GitRepositoryOption[]): void {
-        this._selectedRepoList = options;
-        console.log('[GitRepoController] selectedEmitter.fire before', performance.now(), this._selectedRepoList.map(repository => repository.path));
-        this.selectedEmitter.fire([...this._selectedRepoList]);
+    private applySelected(options: readonly GitRepositoryOption[]): void {
+        const paths = options.map(repository => repoKey(vscode.Uri.parse(repository.path).fsPath));
+        if (paths.length === this._selectedRepoPaths.length && paths.every((path, index) => path === this._selectedRepoPaths[index])) { return; }
+        this._selectedRepoPaths = paths;
+        const selected = this.selectedRepoList;
+        console.log('[GitRepoController] selectedEmitter.fire before', performance.now(), selected.map(repository => repository.path));
+        this.selectedEmitter.fire([...selected]);
         console.log('[GitRepoController] selectedEmitter.fire after', performance.now());
     }
 }
