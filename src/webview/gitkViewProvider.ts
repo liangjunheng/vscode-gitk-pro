@@ -339,16 +339,22 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             diffKey: `unstaged:${file.path}`,
         }));
         const files = [...staged, ...unstaged];
-        this.diffReader.stop();
-        this.multiDiffPanel.cancelPending();
+        const selectedFilePath = files.some(file => (file.diffKey || file.path) === this.selectedPath)
+            ? this.selectedPath
+            : (files[0]?.diffKey || files[0]?.path);
+        const shouldRefreshDiff = showLoading || selectedFilePath !== this.selectedPath;
+        if (shouldRefreshDiff) {
+            this.diffReader.stop();
+            this.multiDiffPanel.cancelPending();
+        }
         store.setState({
             files,
             stagedFiles: [...workingTreeChanges.staged],
             unstagedFiles: [...workingTreeChanges.changes],
             filesLoading: showLoading && files.length > 0,
-            diffLoading: showLoading && files.length > 0,
-            diffError: undefined,
-            selectedPath: files.some(file => (file.diffKey || file.path) === this.selectedPath) ? this.selectedPath : (files[0]?.diffKey || files[0]?.path),
+            diffLoading: shouldRefreshDiff && files.length > 0,
+            diffError: shouldRefreshDiff ? undefined : store.getState().diffError,
+            selectedPath: selectedFilePath,
         });
         if (files.length === 0) {
             this.multiDiffPanel.hide();
@@ -357,7 +363,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (!showLoading) {
             this.pendingFilesRevealGeneration = undefined;
             this.filesLoading = false;
-            if (this.canShowMultiDiff() && this.view?.visible) {
+            if (shouldRefreshDiff && this.canShowMultiDiff() && this.view?.visible) {
                 this.openDiff(this.resolveSelectedChangedFile());
                 void this.loadDiffData();
             }
