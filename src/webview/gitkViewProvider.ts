@@ -1303,7 +1303,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   #filesHeader .toolbar-icon:active { background: var(--vscode-toolbar-activeBackground, var(--vscode-toolbar-hoverBackground)); }
   #filesHeader .toolbar-icon:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   #filesHeader .toolbar-icon svg { width: 16px; height: 16px; stroke-width: 1.5; }
-  #filesList { min-height: 0; flex: 1 1 auto; overflow: auto; }
+  #filesList { min-width: 0; min-height: 0; flex: 1 1 auto; overflow-x: auto; overflow-y: auto; }
+  #filesList > * { min-width: max-content; }
   #fileContextMenu { position: fixed; z-index: 20; min-width: 168px; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border)); border-radius: 5px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 4px 14px rgba(0, 0, 0, .28); }
   #fileContextMenu[hidden] { display: none; }
   #fileContextMenu button { display: block; width: 100%; border: 0; border-radius: 3px; padding: 5px 8px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: transparent; text-align: left; font: inherit; }
