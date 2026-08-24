@@ -42,7 +42,6 @@ export interface AppState {
     unstagedFiles: ChangedFile[];
     workingTreeRows: Array<{ hash: 'uncommitted'; label: string; repositoryPath: string; enabled: boolean }>;
     filesLoading: boolean;
-    workingTreeActionLoading: boolean;
     commitEditorLoading: boolean;
     selectedPath: string | undefined;
     selectedCommit: { key: string; hash: string; repositoryPath: string; kind: ChangeSetMode } | null;
@@ -81,7 +80,6 @@ export function createInitialState(): AppState {
         unstagedFiles: [],
         workingTreeRows: [],
         filesLoading: false,
-        workingTreeActionLoading: false,
         commitEditorLoading: false,
         selectedPath: undefined,
         selectedCommit: null,

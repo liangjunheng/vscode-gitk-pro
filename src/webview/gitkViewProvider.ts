@@ -73,6 +73,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         action: 'stage' | 'unstage' | 'discard';
         section: 'staged' | 'unstaged';
         paths: string[];
+        untrackedPaths: ReadonlySet<string>;
         rootUri: vscode.Uri;
     }> = [];
     private processingWorkingTreeActions = false;
@@ -164,7 +165,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 stagedFiles: s.stagedFiles,
                 unstagedFiles: s.unstagedFiles,
                 filesLoading: s.filesLoading,
-                workingTreeActionLoading: s.workingTreeActionLoading,
                 commitEditorLoading: s.commitEditorLoading,
                 diffLoading: s.diffLoading,
                 diffProgress: s.diffProgress,
@@ -288,7 +288,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     canShowMultiDiff(): boolean {
-        return !this.isLoading && !!this.currentHash;
+        return !!this.currentHash;
     }
 
     isGitkLoading(): boolean {
@@ -831,10 +831,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             || (filePath !== undefined && typeof filePath !== 'string')) { return; }
         const rootUri = this.getRepoRootUri(this.commitController.uncommittedRepositoryPath);
         if (!rootUri) { return; }
+        const unstagedFiles = store.getState().unstagedFiles;
         const paths = typeof filePath === 'string'
             ? [filePath]
-            : (section === 'staged' ? store.getState().stagedFiles : store.getState().unstagedFiles).map(file => file.path);
+            : (section === 'staged' ? store.getState().stagedFiles : unstagedFiles).map(file => file.path);
         if (paths.length === 0) { return; }
+        const untrackedPaths = new Set(unstagedFiles.filter(file => file.isUntracked).map(file => file.path));
         if (action === 'discard') {
             const choice = await vscode.window.showWarningMessage(
                 `确定要放弃 ${paths.length} 个文件的更改吗？此操作无法撤销。`,
@@ -843,8 +845,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             );
             if (choice !== '放弃更改') { return; }
         }
-        this.workingTreeActionQueue.push({ action, section, paths, rootUri });
-        store.setState({ workingTreeActionLoading: true });
+        this.workingTreeActionQueue.push({ action, section, paths, untrackedPaths, rootUri });
         void this.processWorkingTreeActionQueue();
     }
 
@@ -856,29 +857,45 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             do {
                 while (this.workingTreeActionQueue.length > 0) {
                     const operation = this.workingTreeActionQueue.shift()!;
-                    try {
-                        if (operation.action === 'discard') {
-                            await runGitCommand(operation.rootUri, ['restore', '--worktree', '--', ...operation.paths]);
-                        } else if (operation.action === 'stage') {
-                            await runGitCommand(operation.rootUri, ['add', '--', ...operation.paths]);
-                        } else {
-                            await runGitCommand(operation.rootUri, ['restore', '--staged', '--', ...operation.paths]);
+                    await vscode.window.withProgress({
+                        location: vscode.ProgressLocation.Notification,
+                        title: operation.action === 'stage'
+                            ? '添加文件'
+                            : operation.action === 'unstage' ? '取消暂存' : '还原更改',
+                        cancellable: false,
+                    }, async progress => {
+                        const total = operation.paths.length;
+                        for (let index = 0; index < total; index++) {
+                            const filePath = operation.paths[index];
+                            const actionMessage = operation.action === 'discard'
+                                ? '还原文件'
+                                : operation.action === 'stage'
+                                    ? (operation.untrackedPaths.has(filePath) ? '添加文件' : '更新文件')
+                                    : '取消暂存文件';
+                            progress.report({
+                                message: `${index + 1}/${total} ${actionMessage}：${filePath}`,
+                            });
+                            if (operation.action === 'discard') {
+                                await runGitCommand(operation.rootUri, ['restore', '--worktree', '--', filePath]);
+                            } else if (operation.action === 'stage') {
+                                await runGitCommand(operation.rootUri, ['add', '--', filePath]);
+                            } else {
+                                await runGitCommand(operation.rootUri, ['restore', '--staged', '--', filePath]);
+                            }
                         }
                         const currentBranch = this.commitController.selectedCommit?.gitBranchOption;
                         if (currentBranch?.kind === 'current'
                             && currentBranch.repoOption.path === operation.rootUri.toString()) {
                             await this.uncommittedFilesWatcher.refreshUncommittedFilesForPaths(currentBranch, operation.paths);
                         }
-                    } catch (error) {
-                        failed = true;
-                        void vscode.window.showErrorMessage(`Git 操作失败: ${error instanceof Error ? error.message : String(error)}`);
-                        this.commitController.requestUncommittedPresenceCheck();
-                    }
+                    });
                 }
             } while (this.workingTreeActionQueue.length > 0);
+        } catch (error) {
+            failed = true;
+            void vscode.window.showErrorMessage(`Git 操作失败: ${error instanceof Error ? error.message : String(error)}`);
         } finally {
             this.processingWorkingTreeActions = false;
-            store.setState({ workingTreeActionLoading: false });
             if (failed) { this.commitController.requestUncommittedPresenceCheck(); }
         }
     }
@@ -1006,7 +1023,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.multiDiffPanel.hide();
             return;
         }
-        if (this.isLoading || !this.currentHash) {
+        if (!this.currentHash) {
             this.multiDiffPanel.cancelPending();
             return;
         }
@@ -1189,10 +1206,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   #filesHeader .toolbar-icon:active { background: var(--vscode-toolbar-activeBackground, var(--vscode-toolbar-hoverBackground)); }
   #filesHeader .toolbar-icon:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   #filesHeader .toolbar-icon svg { width: 16px; height: 16px; stroke-width: 1.5; }
-  #filesOperationLoading { position: relative; width: 100%; height: 4px; flex: 0 0 4px; overflow: hidden; background: var(--vscode-panel-border, #444); }
-  #filesOperationLoading[hidden] { display: none; }
-  #filesOperationLoading::before { content: ''; display: block; width: 30%; height: 100%; border-radius: 2px; background: var(--vscode-textLink-foreground, #007acc); animation: files-operation-progress 1s ease-in-out infinite alternate; }
-  @keyframes files-operation-progress { from { transform: translateX(-150%); } to { transform: translateX(350%); } }
   #filesList { min-height: 0; flex: 1 1 auto; overflow: auto; }
   #fileContextMenu { position: fixed; z-index: 20; min-width: 168px; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border)); border-radius: 5px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 4px 14px rgba(0, 0, 0, .28); }
   #fileContextMenu[hidden] { display: none; }
@@ -1334,7 +1347,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     <div id="panelResizeHandle" role="separator" aria-label="调整提交图与变更文件宽度" aria-orientation="vertical"></div>
     <section id="filesSection">
       <div id="filesHeader"><div id="filesTitle"><span>Changed Files</span><span id="filesCommitHash"></span><span class="action-group" aria-label="复制操作"><button class="toolbar-icon commit-action" data-action="copyHash" title="Copy Commit Hash to Clipboard" aria-label="Copy Commit Hash to Clipboard"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="7.5" height="8" rx="1"/><path d="M3 10.5v-7A1.5 1.5 0 0 1 4.5 2H10"/></svg></button></span></div><div id="filesActions"><div class="action-group commit-history-action-group" aria-label="提交操作"><button class="toolbar-icon commit-action" data-action="addTag" title="Add Tag..." aria-label="Add Tag"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 7.75 7.25 3h5.75v5.75L8.25 13.5 2.5 7.75Z"/><circle cx="10.25" cy="5.75" r=".75" fill="currentColor" stroke="none"/></svg></button><button class="toolbar-icon commit-action" data-action="createBranch" title="Create Branch..." aria-label="Create Branch"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3v10M4 5.5c0 2.1 1.4 3.5 3.5 3.5H11"/><circle cx="4" cy="3" r="1.25"/><circle cx="4" cy="13" r="1.25"/><circle cx="12" cy="9" r="1.25"/></svg></button><button class="toolbar-icon commit-action" data-action="checkout" title="Checkout..." aria-label="Checkout"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3v8m0 0-2-2m2 2 2-2M4 11h4.5A3.5 3.5 0 0 0 12 7.5V5"/><path d="m10 6 2-2 2 2"/></svg></button><button class="toolbar-icon commit-action" data-action="cherryPick" title="Cherry Pick..." aria-label="Cherry Pick"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="4" r="1.25"/><circle cx="12" cy="12" r="1.25"/><path d="M4 5.25v2.5A3.25 3.25 0 0 0 7.25 11H12M6 3h3"/></svg></button><button class="toolbar-icon commit-action" data-action="revert" title="Revert..." aria-label="Revert"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 4 3 6.5 5.5 9M3.5 6.5h6A3.5 3.5 0 1 1 6 10"/></svg></button><button class="toolbar-icon commit-action" data-action="drop" title="Drop..." aria-label="Drop"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6 4.5V3h4v1.5M5 6.5v6h6v-6M7 8.5v2.5M9 8.5v2.5"/></svg></button></div><div class="action-group commit-history-action-group" aria-label="分支操作"><button class="toolbar-icon commit-action" data-action="merge" title="Merge into current branch..." aria-label="Merge into current branch"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3v10M4 10c0-2.5 1.75-4 4.25-4H11"/><circle cx="4" cy="3" r="1.25"/><circle cx="4" cy="13" r="1.25"/><circle cx="12" cy="6" r="1.25"/></svg></button><button class="toolbar-icon commit-action" data-action="rebase" title="Rebase current branch on this Commit..." aria-label="Rebase current branch on this Commit"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h7M8.5 2 11 4 8.5 6M13 12H6M7.5 10 5 12l2.5 2"/></svg></button><button class="toolbar-icon commit-action" data-action="reset" title="Reset current branch to this Commit..." aria-label="Reset current branch to this Commit"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.5" y="5.5" width="8" height="8" rx="1"/><path d="M2.5 6A4.5 4.5 0 0 1 7 2.5h2M7 2.5l2 2-2 2"/></svg></button></div><div id="commitSplitGroup" class="action-group" hidden><button id="commitPrimaryBtn" type="button" title="创建新的提交">Commit</button><button id="commitToggleBtn" type="button" title="切换到 Commit (Amend)" aria-label="切换提交方式"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 6.5 8 9l2.5-2.5"/></svg></button></div><div class="action-group"><button class="toolbar-icon" id="filesModeBtn" title="显示方式（当前：树状）" aria-label="显示方式"><svg viewBox="0 0 16 16" aria-hidden="true"><path id="filesModeIcon" d="M2.5 3h5M5 3v4M5 7h5M7.5 7v4M7.5 11h6"/></svg></button></div></div></div>
-      <div id="filesOperationLoading" role="progressbar" aria-label="正在更新提交" aria-busy="true" hidden></div>
       <div id="filesList"><div id="filesEmpty">选择一个提交以查看变更文件</div></div>
       <div id="fileContextMenu" hidden><button type="button" data-copy-path="relative">复制相对路径</button><button type="button" data-copy-path="absolute">复制完整路径</button></div>
     </section>
@@ -1671,9 +1683,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       unstagedFiles = state.unstagedFiles || [];
       filesMode = state.filesMode || 'tree';
       filesLoading = Boolean(state.filesLoading);
-      var workingTreeActionLoading = Boolean(state.workingTreeActionLoading);
-      document.getElementById('filesOperationLoading').hidden = !workingTreeActionLoading;
-      document.getElementById('filesList').setAttribute('aria-busy', String(workingTreeActionLoading));
       var commitEditorLoading = Boolean(state.commitEditorLoading);
       document.getElementById('commitPrimaryBtn').disabled = commitEditorLoading;
       document.getElementById('commitToggleBtn').disabled = commitEditorLoading;

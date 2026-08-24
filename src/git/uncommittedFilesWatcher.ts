@@ -91,8 +91,10 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         const cached = this.changesByRepository.get(branch.repoOption.path) ?? new Map<string, WorkingTreeChanges>();
         const previous = cached.get(branch.hash) ?? new WorkingTreeChanges();
         const pathSet = new Set(paths);
+        const isStale = (file: WorkingTreeChanges['staged'][number]) =>
+            pathSet.has(file.path) || (!!file.oldPath && pathSet.has(file.oldPath));
         const mergeSection = (allFiles: WorkingTreeChanges['staged'], changedFiles: WorkingTreeChanges['staged']) => [
-            ...allFiles.filter(file => !pathSet.has(file.path)),
+            ...allFiles.filter(file => !isStale(file)),
             ...changedFiles,
         ];
         const merged = new WorkingTreeChanges({
