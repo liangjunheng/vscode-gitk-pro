@@ -122,7 +122,7 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
         try {
             const rootUri = vscode.Uri.parse(repository.path);
             const { stdout } = await execFileAsync('git', [
-                '-C', rootUri.fsPath, 'rev-parse', '--absolute-git-dir',
+                '--no-optional-locks', '-C', rootUri.fsPath, 'rev-parse', '--absolute-git-dir',
             ], { windowsHide: true });
             const gitDir = stdout.trim();
             if (!gitDir || this.repositories.get(key)?.path !== repository.path) { return undefined; }

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import {
     runGitCommand,
+    runGitReadCommand,
     runGitSync,
     updateGitSubmodules,
 } from '../git/gitLogProvider';
@@ -15,8 +16,7 @@ interface CommitWorkingTreeState {
 }
 
 async function getCommitWorkingTreeState(rootUri: vscode.Uri): Promise<CommitWorkingTreeState> {
-    const output = await runGitCommand(rootUri, [
-        '--no-optional-locks',
+    const output = await runGitReadCommand(rootUri, [
         'status', '--porcelain=v1', '-z', '--untracked-files=normal', '--ignore-submodules=dirty', '--no-renames',
     ]);
     let hasStagedChanges = false;

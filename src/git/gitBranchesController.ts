@@ -161,18 +161,13 @@ export class GitBranchesController implements vscode.Disposable {
             : this.repositories.filter(repository => !this.branches.has(repository.path));
         this.fireBranches();
         try {
-            // 快路径只对新仓库执行: 已有分片的仓库退回单条当前分支是把有效数据换成更差的数据,
-            // 还会连带触碰它已有的选择。force 一律不走快路径。
-            if (!force) {
-                const currentBranches = await Promise.all(this.repositories.map(
+            // 当前 HEAD 与完整分支列表独立读取：先启动两者，当前 HEAD 完成即发布默认选择。
+            const currentBranchesPromise = !force
+                ? Promise.all(this.repositories.map(
                     repository => this.applyCurrentBranch(repository, abortController.signal, generation),
-                ));
-                if (abortController.signal.aborted || generation !== this.branchReadGeneration) { return; }
-                const defaults = currentBranches.flatMap(entry => entry ? [entry] : []);
-                this._selectedBranches = this.dedupeSelected([...this._selectedBranches, ...defaults]);
-                this.fireSelected();
-            }
-            const loaded = await Promise.all(targets.map(async repository => {
+                ))
+                : undefined;
+            const loadedPromise = Promise.all(targets.map(async repository => {
                 try {
                     const [branches, current] = await Promise.all([
                         getGitBranches(vscode.Uri.parse(repository.path), abortController.signal),
@@ -190,6 +185,14 @@ export class GitBranchesController implements vscode.Disposable {
                     return undefined;
                 }
             }));
+            if (currentBranchesPromise) {
+                const currentBranches = await currentBranchesPromise;
+                if (abortController.signal.aborted || generation !== this.branchReadGeneration) { return; }
+                const defaults = currentBranches.flatMap(entry => entry ? [entry] : []);
+                this._selectedBranches = this.dedupeSelected([...this._selectedBranches, ...defaults]);
+                this.fireSelected();
+            }
+            const loaded = await loadedPromise;
             if (abortController.signal.aborted || generation !== this.branchReadGeneration) { return; }
             let changed = false;
             let headChanged = false;

@@ -72,6 +72,11 @@ export class GitRepoController implements vscode.Disposable {
         this.reposLoadingEmitter.fire(true);
         try {
             const roots = await this.resolveWorkspaceRepositories();
+            // 根仓库是当前工作区的首要数据源，必须先发布，不能等待递归子模块扫描。
+            this.applyTotal(roots);
+            if (isInitialize && !this.hasUserSelection && this._selectedRepoList.length === 0 && roots.length > 0) {
+                this.applySelected([roots[0]]);
+            }
             const scanned = await this.scanSubmodules(roots);
             const options = [...scanned].sort((left, right) => {
                 const leftSub = left.description === 'subrepo';
@@ -79,9 +84,6 @@ export class GitRepoController implements vscode.Disposable {
                 return Number(leftSub) - Number(rightSub) || left.label.localeCompare(right.label);
             });
             this.applyTotal(options);
-            if (isInitialize && !this.hasUserSelection && this._selectedRepoList.length === 0 && options.length > 0) {
-                this.applySelected([options[0]]);
-            }
             return this._totalRepoList;
         } finally {
             // 加载抛异常时 total 保留已发现的部分，loading 仍必须置回 false。
@@ -148,7 +150,7 @@ export class GitRepoController implements vscode.Disposable {
 
     private async resolveRepositoryRoot(directory: string): Promise<string | undefined> {
         try {
-            const { stdout } = await execFileAsync('git', ['-C', directory, 'rev-parse', '--show-toplevel'], { windowsHide: true });
+            const { stdout } = await execFileAsync('git', ['--no-optional-locks', '-C', directory, 'rev-parse', '--show-toplevel'], { windowsHide: true });
             const rootPath = stdout.trim();
             return rootPath ? path.normalize(rootPath) : undefined;
         } catch {
@@ -159,7 +161,7 @@ export class GitRepoController implements vscode.Disposable {
     private async readSubmodulePaths(rootPath: string): Promise<string[]> {
         try {
             const { stdout } = await execFileAsync('git', [
-                '-C', rootPath,
+                '--no-optional-locks', '-C', rootPath,
                 'config', '--null', '--file', '.gitmodules', '--get-regexp', '^submodule\\..*\\.path$',
             ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
             return stdout.split('\0').flatMap(record => {

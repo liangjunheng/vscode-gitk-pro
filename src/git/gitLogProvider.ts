@@ -8,6 +8,7 @@ export { CommitFile, CommitMetadata } from '../types';
 import { CommitFile, CommitMetadata, GitBranchOption, GitRepositoryOption, GitRepositoryState, WorkingTreeChanges, type FileStatus } from '../types';
 
 const execFileAsync = promisify(execFile);
+const noOptionalLocks = ['--no-optional-locks'] as const;
 
 // 格式化日期
 function formatDateLabel(date: Date | string): string {
@@ -44,7 +45,7 @@ interface RepositoryRecord {
 async function getInitializedSubmodulePaths(rootPath: string, signal?: AbortSignal): Promise<string[]> {
     try {
         const { stdout } = await execFileAsync('git', [
-            '-C', rootPath,
+            ...noOptionalLocks, '-C', rootPath,
             'config', '--null', '--file', '.gitmodules', '--get-regexp', '^submodule\\..*\\.path$',
         ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
         return stdout.split('\0').flatMap(record => {
@@ -101,7 +102,7 @@ async function collectSubmoduleRepositories(
 
 async function resolveRepositoryRoot(directory: string, signal?: AbortSignal): Promise<string | undefined> {
     try {
-        const { stdout } = await execFileAsync('git', ['-C', directory, 'rev-parse', '--show-toplevel'], {
+        const { stdout } = await execFileAsync('git', [...noOptionalLocks, '-C', directory, 'rev-parse', '--show-toplevel'], {
             windowsHide: true,
             signal,
         });
@@ -143,7 +144,7 @@ async function resolveCommitRefs(rootUri: vscode.Uri, refs: readonly string[], s
         [...new Set(stdout.split('\n').map(line => line.trim()).filter(line => hashPattern.test(line)))];
     try {
         const { stdout } = await execFileAsync('git', [
-            '-C', rootUri.fsPath, 'rev-parse', ...refs.map(ref => `${ref}^{commit}`),
+            ...noOptionalLocks, '-C', rootUri.fsPath, 'rev-parse', ...refs.map(ref => `${ref}^{commit}`),
         ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
         return parseHashes(stdout);
     } catch (error: any) {
@@ -164,7 +165,7 @@ async function getCommitAuthorDetails(rootUri: vscode.Uri, hashes: readonly stri
     if (hashes.length === 0) { return new Map(); }
     try {
         const { stdout } = await execFileAsync('git', [
-            '-C', rootUri.fsPath, 'show', '-s', '--format=%H%x00%an%x00%ae%x00%aI%x00', ...hashes,
+            ...noOptionalLocks, '-C', rootUri.fsPath, 'show', '-s', '--format=%H%x00%an%x00%ae%x00%aI%x00', ...hashes,
         ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
         const values = stdout.split('\0');
         const details = new Map<string, CommitAuthorDetails>();
@@ -187,16 +188,16 @@ async function readBranchRefsFromCli(rootUri: vscode.Uri, signal?: AbortSignal):
         return [{ hash, label, name }];
     });
     const [currentResult, refsResult, headResult] = await Promise.all([
-        execFileAsync('git', ['-C', rootUri.fsPath, 'symbolic-ref', '--quiet', '--short', 'HEAD'], { windowsHide: true, signal }).catch(error => {
+        execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, 'symbolic-ref', '--quiet', '--short', 'HEAD'], { windowsHide: true, signal }).catch(error => {
             if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
             return { stdout: '' };
         }),
         execFileAsync('git', [
-            '-C', rootUri.fsPath,
+            ...noOptionalLocks, '-C', rootUri.fsPath,
             'for-each-ref', '--format=%(objectname)%09%(refname:short)%09%(refname)', 'refs/heads', 'refs/remotes',
         ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
         // detached HEAD 时用裸 hash 兜底当前项；空仓库解析失败按无 HEAD 处理。
-        execFileAsync('git', ['-C', rootUri.fsPath, 'rev-parse', 'HEAD'], { windowsHide: true, signal }).catch(error => {
+        execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, 'rev-parse', 'HEAD'], { windowsHide: true, signal }).catch(error => {
             if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
             return { stdout: '' };
         }),
@@ -252,7 +253,7 @@ export async function getGitBranches(rootUri: vscode.Uri, signal?: AbortSignal):
 
 export async function getCurrentGitBranch(rootUri: vscode.Uri, signal?: AbortSignal): Promise<string | undefined> {
     try {
-        const { stdout } = await execFileAsync('git', ['-C', rootUri.fsPath, 'symbolic-ref', '--quiet', '--short', 'HEAD'], {
+        const { stdout } = await execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, 'symbolic-ref', '--quiet', '--short', 'HEAD'], {
             windowsHide: true,
             signal,
         });
@@ -270,7 +271,7 @@ export async function getCurrentGitBranch(rootUri: vscode.Uri, signal?: AbortSig
 }
 
 export async function getCurrentGitHeadHash(rootUri: vscode.Uri, signal?: AbortSignal): Promise<string | undefined> {
-    const { stdout } = await execFileAsync('git', ['-C', rootUri.fsPath, 'rev-parse', 'HEAD'], {
+    const { stdout } = await execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, 'rev-parse', 'HEAD'], {
         windowsHide: true,
         signal,
     });
@@ -290,7 +291,7 @@ interface GitlinkChange {
 }
 
 async function getGitlinkChanges(rootUri: vscode.Uri, beforeHead: string, afterHead: string): Promise<GitlinkChange[]> {
-    const output = await runGitCommand(rootUri, [
+    const output = await runGitReadCommand(rootUri, [
         'diff', '--raw', '-z', '--no-abbrev', '--no-renames', beforeHead, afterHead, '--',
     ]);
     const fields = output.split('\0');
@@ -354,7 +355,7 @@ export async function updateGitSubmodules(
 ): Promise<void> {
     onProgress?.('正在递归初始化并更新 Submodule 模块...');
     await runGitCommand(rootUri, ['submodule', 'update', '--init', '--recursive']);
-    const status = await runGitCommand(rootUri, ['submodule', 'status', '--recursive']);
+    const status = await runGitReadCommand(rootUri, ['submodule', 'status', '--recursive']);
     for (const line of status.split(/\r?\n/)) {
         const match = /^[ +\-U]?\S+\s+(.+?)(?:\s+\(|$)/.exec(line);
         if (match) {
@@ -363,6 +364,19 @@ export async function updateGitSubmodules(
     }
 }
 
+export async function runGitReadCommand(rootUri: vscode.Uri, args: string[]): Promise<string> {
+    try {
+        const { stdout } = await execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, ...args], {
+            windowsHide: true,
+            maxBuffer: 16 * 1024 * 1024,
+        });
+        return stdout;
+    } catch (error) {
+        throw new Error(error instanceof Error ? error.message : String(error));
+    }
+}
+
+/** 执行可能修改 index、refs、工作区或远程状态的 Git 命令，保留 Git 原子锁。 */
 export async function runGitCommand(rootUri: vscode.Uri, args: string[]): Promise<string> {
     try {
         const { stdout } = await execFileAsync('git', ['-C', rootUri.fsPath, ...args], {
@@ -401,7 +415,7 @@ function parseLogOutput(stdout: string): CommitMetadata[] {
 async function readCommitsFromCli(rootUri: vscode.Uri, limit: number, refs: readonly string[], skip: number, signal?: AbortSignal): Promise<CommitMetadata[]> {
     const commitRefs = refs.length > 0 ? [...refs] : ['HEAD'];
     const { stdout } = await execFileAsync('git', [
-        '-C', rootUri.fsPath, 'log', '--topo-order', `--max-count=${limit}`, ...(skip > 0 ? [`--skip=${skip}`] : []),
+        ...noOptionalLocks, '-C', rootUri.fsPath, 'log', '--topo-order', `--max-count=${limit}`, ...(skip > 0 ? [`--skip=${skip}`] : []),
         '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1f%D%x1e', ...commitRefs,
     ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
     return parseLogOutput(stdout);
@@ -421,7 +435,7 @@ export async function searchCommits(rootUri: vscode.Uri, keywords: string[], ref
     if (keywords.length === 0) { return []; }
     const commitRefs = refs.length > 0 ? [...refs] : ['HEAD'];
     const { stdout } = await execFileAsync('git', [
-        '-C', rootUri.fsPath, 'log', '--topo-order',
+        ...noOptionalLocks, '-C', rootUri.fsPath, 'log', '--topo-order',
         '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1f%D%x1e', ...commitRefs,
     ], { windowsHide: true, maxBuffer: 64 * 1024 * 1024, signal });
     const allCommits = parseLogOutput(stdout);
@@ -449,7 +463,7 @@ export async function isGitRepo(rootUri: vscode.Uri): Promise<boolean> {
 export async function getCommitFiles(rootUri: vscode.Uri, hash: string, signal?: AbortSignal, onProgress?: (current: number, total: number) => void): Promise<CommitFile[]> {
     onProgress?.(0, 0);
     const rawResult = await execFileAsync('git', [
-        '-C', rootUri.fsPath,
+        ...noOptionalLocks, '-C', rootUri.fsPath,
         'diff-tree', '--root', '--no-commit-id', '--raw', '-z', '-M', '-C', '-r', hash,
     ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
     const files = parseRawStatus(rawResult.stdout);
@@ -465,10 +479,10 @@ export async function getGitRepositoryState(rootUri: vscode.Uri, signal?: AbortS
 async function readRepositoryStateFromCli(rootUri: vscode.Uri, signal?: AbortSignal): Promise<GitRepositoryState> {
     try {
         const [headResult, branchResult, refsResult, statusResult] = await Promise.all([
-            execFileAsync('git', ['-C', rootUri.fsPath, 'rev-parse', '--verify', 'HEAD'], { windowsHide: true, signal }),
-            execFileAsync('git', ['-C', rootUri.fsPath, 'branch', '--show-current'], { windowsHide: true, signal }),
-            execFileAsync('git', ['-C', rootUri.fsPath, 'for-each-ref', '--format=%(refname) %(objectname)'], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
-            execFileAsync('git', ['-C', rootUri.fsPath, 'status', '--porcelain=v1', '-z', '--untracked-files=normal'], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
+            execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, 'rev-parse', '--verify', 'HEAD'], { windowsHide: true, signal }),
+            execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, 'branch', '--show-current'], { windowsHide: true, signal }),
+            execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, 'for-each-ref', '--format=%(refname) %(objectname)'], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
+            execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, 'status', '--porcelain=v1', '-z', '--untracked-files=normal'], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
         ]);
         return new GitRepositoryState({
             head: headResult.stdout.trim(),
@@ -531,11 +545,72 @@ export function checkWorkingTreePresence(rootUri: vscode.Uri, signal?: AbortSign
 }
 
 export async function getWorkingTreeChanges(rootUri: vscode.Uri, signal?: AbortSignal): Promise<WorkingTreeChanges> {
-    // 分支选择器发布前必须使用同一份完整 Git 状态快照。
+    // 完整元数据仅供显式调用方使用；文件 watcher 使用下方的轻量 status 快照。
     return readWorkingTreeChangesFromCli(rootUri, signal);
 }
 
-// 从 git CLI 读工作区变更
+export async function getWorkingTreeStatus(rootUri: vscode.Uri, signal?: AbortSignal): Promise<WorkingTreeChanges> {
+    return readWorkingTreeStatus(rootUri, [], signal);
+}
+
+export async function getWorkingTreeStatusForPaths(
+    rootUri: vscode.Uri,
+    paths: readonly string[],
+    signal?: AbortSignal,
+): Promise<WorkingTreeChanges> {
+    return readWorkingTreeStatus(rootUri, paths, signal);
+}
+
+async function readWorkingTreeStatus(
+    rootUri: vscode.Uri,
+    paths: readonly string[],
+    signal?: AbortSignal,
+): Promise<WorkingTreeChanges> {
+    try {
+        const result = await execFileAsync('git', [
+            '--no-optional-locks', '-C', rootUri.fsPath,
+            'status', '--porcelain=v1', '-z', '--untracked-files=all',
+            ...(paths.length > 0 ? ['--', ...paths] : []),
+        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
+        return parseWorkingTreeStatus(result.stdout);
+    } catch (error: any) {
+        if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
+        throw new Error(`无法读取工作区状态: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+
+// 从 git CLI 读完整工作区变更元数据。
+function parseWorkingTreeStatus(stdout: string): WorkingTreeChanges {
+    const staged: CommitFile[] = [];
+    const changes: CommitFile[] = [];
+    const entries = stdout.split('\0');
+    for (let index = 0; index < entries.length; index++) {
+        const entry = entries[index];
+        if (!entry || entry.length < 4) { continue; }
+        const indexStatus = entry[0];
+        const workingTreeStatus = entry[1];
+        const filePath = entry.slice(3);
+        const hasRenameSource = indexStatus === 'R' || indexStatus === 'C' || workingTreeStatus === 'R' || workingTreeStatus === 'C';
+        const renameSourcePath = hasRenameSource ? entries[++index] || undefined : undefined;
+        if (indexStatus !== ' ' && indexStatus !== '?') {
+            staged.push(new CommitFile({
+                path: filePath,
+                status: porcelainStatus(indexStatus),
+                oldPath: indexStatus === 'R' || indexStatus === 'C' ? renameSourcePath : undefined,
+            }));
+        }
+        if (workingTreeStatus !== ' ') {
+            changes.push(new CommitFile({
+                path: filePath,
+                status: porcelainStatus(workingTreeStatus),
+                oldPath: workingTreeStatus === 'R' || workingTreeStatus === 'C' ? renameSourcePath : undefined,
+                isUntracked: indexStatus === '?' && workingTreeStatus === '?',
+            }));
+        }
+    }
+    return new WorkingTreeChanges({ staged, changes });
+}
+
 async function readWorkingTreeChangesFromCli(rootUri: vscode.Uri, signal?: AbortSignal): Promise<WorkingTreeChanges> {
     try {
         const [statusResult, stagedMetadata, changesMetadata] = await Promise.all([
@@ -546,37 +621,10 @@ async function readWorkingTreeChangesFromCli(rootUri: vscode.Uri, signal?: Abort
             readDiffMetadata(rootUri, ['diff', '--cached'], signal),
             readDiffMetadata(rootUri, ['diff'], signal),
         ]);
-        const stdout = statusResult.stdout;
-        const staged: CommitFile[] = [];
-        const changes: CommitFile[] = [];
-        const entries = stdout.split('\0');
-        for (let index = 0; index < entries.length; index++) {
-            const entry = entries[index];
-            if (!entry || entry.length < 4) { continue; }
-            const indexStatus = entry[0];
-            const workingTreeStatus = entry[1];
-            const filePath = entry.slice(3);
-            const hasRenameSource = indexStatus === 'R' || indexStatus === 'C' || workingTreeStatus === 'R' || workingTreeStatus === 'C';
-            const renameSourcePath = hasRenameSource ? entries[++index] || undefined : undefined;
-            if (indexStatus !== ' ' && indexStatus !== '?') {
-                staged.push(new CommitFile({
-                    path: filePath,
-                    status: porcelainStatus(indexStatus),
-                    oldPath: indexStatus === 'R' || indexStatus === 'C' ? renameSourcePath : undefined,
-                }));
-            }
-            if (workingTreeStatus !== ' ') {
-                changes.push(new CommitFile({
-                    path: filePath,
-                    status: porcelainStatus(workingTreeStatus),
-                    oldPath: workingTreeStatus === 'R' || workingTreeStatus === 'C' ? renameSourcePath : undefined,
-                    isUntracked: indexStatus === '?' && workingTreeStatus === '?',
-                }));
-            }
-        }
+        const status = parseWorkingTreeStatus(statusResult.stdout);
         return new WorkingTreeChanges({
-            staged: mergeDiffMetadata(staged, stagedMetadata),
-            changes: mergeDiffMetadata(changes, changesMetadata),
+            staged: mergeDiffMetadata(status.staged, stagedMetadata),
+            changes: mergeDiffMetadata(status.changes, changesMetadata),
         });
     } catch (error: any) {
         if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }

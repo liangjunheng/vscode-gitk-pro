@@ -259,6 +259,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.commitController.onCommitsLoadingChanged(loading => {
                 this.setLoading(loading, loading ? '正在加载历史提交列表...' : undefined);
                 if (loading) { this.postLoadingProgress('commit', '正在加载历史提交列表...', 0, 0); }
+                this.schedulePushState();
             }),
             vscode.workspace.onDidChangeConfiguration(event => {
                 if (event.affectsConfiguration('vscode-gitk.changedFilesDisplayMode')) {
@@ -866,17 +867,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                         const currentBranch = this.commitController.selectedCommit?.gitBranchOption;
                         if (currentBranch?.kind === 'current'
                             && currentBranch.repoOption.path === operation.rootUri.toString()) {
-                            await this.uncommittedFilesWatcher.refreshUncommittedFilesByHeadBranch(currentBranch);
+                            await this.uncommittedFilesWatcher.refreshUncommittedFilesForPaths(currentBranch, operation.paths);
                         }
                     } catch (error) {
                         failed = true;
                         void vscode.window.showErrorMessage(`Git 操作失败: ${error instanceof Error ? error.message : String(error)}`);
                         this.commitController.requestUncommittedPresenceCheck();
-                        await this.commitController.refreshWorkingTreeImmediately();
                     }
                 }
-                this.commitController.requestUncommittedPresenceCheck();
-                await this.commitController.refreshWorkingTreeImmediately();
             } while (this.workingTreeActionQueue.length > 0);
         } finally {
             this.processingWorkingTreeActions = false;

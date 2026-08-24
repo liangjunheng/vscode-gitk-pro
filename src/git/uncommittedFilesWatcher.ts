@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { GitBranchOption, WorkingTreeChanges } from '../types';
-import { getWorkingTreeChanges } from './gitLogProvider';
+import { getWorkingTreeStatus, getWorkingTreeStatusForPaths } from './gitLogProvider';
 import { GitBranchesController } from './gitBranchesController';
 
 const execFileAsync = promisify(execFile);
@@ -76,6 +76,36 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             throw new Error('该分支不是仓库当前 HEAD');
         }
         await this.requestRefresh(branch.repoOption.path);
+    }
+
+    async refreshUncommittedFilesForPaths(branch: GitBranchOption, paths: readonly string[]): Promise<void> {
+        if (branch.kind !== 'current') {
+            throw new Error('只能刷新当前 HEAD 分支的未提交文件');
+        }
+        const slot = this.slots.get(branch.repoOption.path);
+        if (!slot || slot.branch?.hash !== branch.hash) {
+            throw new Error('该分支不是仓库当前 HEAD');
+        }
+        const changes = await getWorkingTreeStatusForPaths(vscode.Uri.parse(branch.repoOption.path), paths);
+        if (slot.branch?.hash !== branch.hash) { return; }
+        const cached = this.changesByRepository.get(branch.repoOption.path) ?? new Map<string, WorkingTreeChanges>();
+        const previous = cached.get(branch.hash) ?? new WorkingTreeChanges();
+        const pathSet = new Set(paths);
+        const mergeSection = (allFiles: WorkingTreeChanges['staged'], changedFiles: WorkingTreeChanges['staged']) => [
+            ...allFiles.filter(file => !pathSet.has(file.path)),
+            ...changedFiles,
+        ];
+        const merged = new WorkingTreeChanges({
+            staged: mergeSection(previous.staged, changes.staged),
+            changes: mergeSection(previous.changes, changes.changes),
+        });
+        if (previous.equals(merged)) { return; }
+        cached.set(branch.hash, merged);
+        this.changesByRepository.set(branch.repoOption.path, cached);
+        const branches = this.branchesByRepository.get(branch.repoOption.path) ?? new Map<string, GitBranchOption>();
+        branches.set(branch.hash, branch);
+        this.branchesByRepository.set(branch.repoOption.path, branches);
+        this.changesEmitter.fire({ branch, changes: copyChanges(merged) });
     }
 
     dispose(): void {
@@ -211,7 +241,7 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         slot: RepositoryRefreshSlot,
     ): Promise<void> {
         try {
-            const changes = await getWorkingTreeChanges(vscode.Uri.parse(repositoryPath));
+            const changes = await getWorkingTreeStatus(vscode.Uri.parse(repositoryPath));
             if (slot.generation !== generation || slot.branch?.hash !== branch.hash) { return; }
             const changesByHash = this.changesByRepository.get(repositoryPath) ?? new Map<string, WorkingTreeChanges>();
             const previous = changesByHash.get(branch.hash);

@@ -198,7 +198,7 @@ export class DiffReader {
         if (objects.length === 0) { return Promise.resolve(new Map()); }
         const uniqueObjects = [...new Set(objects)];
         return new Promise((resolve, reject) => {
-            const child = spawn('git', ['-C', rootUri.fsPath, 'cat-file', '--batch'], { windowsHide: true });
+            const child = spawn('git', ['--no-optional-locks', '-C', rootUri.fsPath, 'cat-file', '--batch'], { windowsHide: true });
             this.childProcesses.add(child);
             const result = new Map<string, string>();
             let stderr = '';

@@ -1,0 +1,19 @@
+{
+  "name": "_auto_ba35ee03107e41f888b67617f48f6883",
+  "mainConversationId": "ba35ee03107e41f888b67617f48f6883",
+  "workspacePath": "c:\\Users\\JUNHENG.LIANG\\OneDrive\\vscode\\vscode-gitk",
+  "createdAt": "2026-08-23T23:43:41.664Z",
+  "options": {
+    "workspacePath": "c:\\Users\\JUNHENG.LIANG\\OneDrive\\vscode\\vscode-gitk",
+    "isAutoTeam": true
+  },
+  "isAutoTeam": true,
+  "members": [
+    {
+      "memberId": "git-performance-audit@_auto_ba35ee03107e41f888b67617f48f6883",
+      "name": "git-performance-audit",
+      "role": "审计 Git 性能链路",
+      "sessionId": "fd97b4295ab04d1c8c1f962f8f8a66a5"
+    }
+  ]
+}
