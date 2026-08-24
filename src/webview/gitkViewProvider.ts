@@ -1,3 +1,4 @@
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { type ChangeSetMode, type ChangedFile, type GitBranchOption, CommitFile, CommitMetadata, type GitkIntent, type GitRepositoryOption } from '../types';
 import { getCommitFiles, getGitRepositoryState, runGitCommand } from '../git/gitLogProvider';
@@ -74,6 +75,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         section: 'staged' | 'unstaged';
         paths: string[];
         untrackedPaths: ReadonlySet<string>;
+        discardUntrackedToTrash: boolean;
         rootUri: vscode.Uri;
     }> = [];
     private processingWorkingTreeActions = false;
@@ -441,6 +443,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private onSelectedCommitChanged(commit: CommitMetadata | undefined): void {
         const hash = commit?.hash;
         const repositoryPath = commit?.gitBranchOption?.repoOption.path;
+        // 提交内容身份由仓库和 commit id 共同组成；虚拟提交固定使用 uncommitted。
+        if (hash === this.currentHash && repositoryPath === this.currentRepositoryPath) {
+            this.schedulePushState();
+            return;
+        }
         const isVirtual = hash === 'uncommitted';
         store.setState({
             currentHash: hash,
@@ -837,16 +844,93 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             : (section === 'staged' ? store.getState().stagedFiles : unstagedFiles).map(file => file.path);
         if (paths.length === 0) { return; }
         const untrackedPaths = new Set(unstagedFiles.filter(file => file.isUntracked).map(file => file.path));
-        if (action === 'discard') {
-            const choice = await vscode.window.showWarningMessage(
-                `确定要放弃 ${paths.length} 个文件的更改吗？此操作无法撤销。`,
-                { modal: true },
-                '放弃更改',
-            );
-            if (choice !== '放弃更改') { return; }
-        }
-        this.workingTreeActionQueue.push({ action, section, paths, untrackedPaths, rootUri });
+        const discardSelection = action === 'discard'
+            ? await this.confirmDiscardWorkingTreeChanges(paths, untrackedPaths)
+            : { paths: [...paths], discardUntrackedToTrash: false };
+        if (!discardSelection) { return; }
+        this.workingTreeActionQueue.push({
+            action,
+            section,
+            paths: discardSelection.paths,
+            untrackedPaths,
+            discardUntrackedToTrash: discardSelection.discardUntrackedToTrash,
+            rootUri,
+        });
         void this.processWorkingTreeActionQueue();
+    }
+
+    private async confirmDiscardWorkingTreeChanges(
+        paths: readonly string[],
+        untrackedPaths: ReadonlySet<string>,
+    ): Promise<{ paths: string[]; discardUntrackedToTrash: boolean } | undefined> {
+        const tracked = paths.filter(filePath => !untrackedPaths.has(filePath));
+        const untracked = paths.filter(filePath => untrackedPaths.has(filePath));
+        if (untracked.length === 0) {
+            const files = store.getState().unstagedFiles.filter(file => tracked.includes(file.path));
+            const allDeleted = files.every(file => file.status === 'D');
+            const message = allDeleted
+                ? tracked.length === 1
+                    ? `是否确实要还原“${path.basename(tracked[0])}”?`
+                    : `是否确定要还原全部 ${tracked.length} 个文件?`
+                : tracked.length === 1
+                    ? `是否确实要放弃“${path.basename(tracked[0])}”中的更改?`
+                    : `是否确实要放弃 ${tracked.length} 个文件中的全部更改?\n\n此操作不可撤消!\n如果继续操作，你当前的工作集将永久丢失。`;
+            const primaryAction = allDeleted
+                ? tracked.length === 1 ? '还原文件' : `还原所有 ${tracked.length} 文件`
+                : tracked.length === 1 ? '放弃文件' : `放弃所有 ${tracked.length} 个文件`;
+            const choice = await vscode.window.showWarningMessage(message, { modal: true }, primaryAction);
+            return choice === primaryAction
+                ? { paths: [...tracked], discardUntrackedToTrash: false }
+                : undefined;
+        }
+
+        const discardToTrash = vscode.workspace.getConfiguration('git').get<boolean>('discardUntrackedChangesToTrash', true)
+            && !vscode.env.remoteName
+            && !(process.platform === 'linux' && !!process.env.SNAP);
+        const warning = discardToTrash
+            ? ''
+            : untracked.length === 1
+                ? '\n\n此操作不可撤消!\n如果继续操作，此文件将永久丢失。'
+                : '\n\n此操作不可撤消!\n如果继续操作，这些文件将永久丢失。';
+        const untrackedMessage = untracked.length === 1
+            ? `是否确实要删除以下未跟踪的文件： '${path.basename(untracked[0])}'？${warning}`
+            : `是否确实要删除 ${untracked.length} 个未跟踪的文件? ${warning}`;
+        const detail = discardToTrash
+            ? untracked.length === 1 ? '您可以从回收站还原此文件。' : '您可以从回收站还原这些文件。'
+            : '';
+        if (tracked.length === 0) {
+            const primaryAction = discardToTrash
+                ? '移动到回收站'
+                : untracked.length === 1 ? '删除文件' : `删除所有 ${untracked.length} 个文件`;
+            const choice = await vscode.window.showWarningMessage(
+                untrackedMessage,
+                { detail, modal: true },
+                primaryAction,
+            );
+            return choice === primaryAction
+                ? { paths: [...untracked], discardUntrackedToTrash: discardToTrash }
+                : undefined;
+        }
+
+        const trackedMessage = tracked.length === 1
+            ? `\n\n是否确实要放弃“${path.basename(tracked[0])}”中的更改?`
+            : `\n\n是否确实要放弃 ${tracked.length} 文件中的所有更改？`;
+        const trackedAction = tracked.length === 1
+            ? '放弃 1 个已跟踪的文件'
+            : `放弃所有 ${tracked.length} 个跟踪的文件`;
+        const allAction = `放弃所有 ${paths.length} 个文件`;
+        const choice = await vscode.window.showWarningMessage(
+            `${untrackedMessage} ${detail}${trackedMessage}\n\n此操作不可撤消!\n如果继续操作，你当前的工作集将永久丢失。`,
+            { modal: true },
+            trackedAction,
+            allAction,
+        );
+        if (choice === trackedAction) {
+            return { paths: tracked, discardUntrackedToTrash: false };
+        }
+        return choice === allAction
+            ? { paths: [...paths], discardUntrackedToTrash: discardToTrash }
+            : undefined;
     }
 
     private async processWorkingTreeActionQueue(): Promise<void> {
@@ -876,7 +960,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                                 message: `${index + 1}/${total} ${actionMessage}：${filePath}`,
                             });
                             if (operation.action === 'discard') {
-                                await runGitCommand(operation.rootUri, ['restore', '--worktree', '--', filePath]);
+                                if (operation.untrackedPaths.has(filePath)) {
+                                    await vscode.workspace.fs.delete(
+                                        vscode.Uri.joinPath(operation.rootUri, filePath),
+                                        { recursive: true, useTrash: operation.discardUntrackedToTrash },
+                                    );
+                                } else {
+                                    await runGitCommand(operation.rootUri, ['restore', '--worktree', '--', filePath]);
+                                }
                             } else if (operation.action === 'stage') {
                                 await runGitCommand(operation.rootUri, ['add', '--', filePath]);
                             } else {
