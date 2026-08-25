@@ -11,6 +11,13 @@ const execFileAsync = promisify(execFile);
 type HeadBranchUncommittedFilesChangedEvent = {
     branch: GitBranchOption;
     changes: WorkingTreeChanges;
+    affectedPaths?: readonly string[];
+};
+
+type HeadBranchUncommittedFileContentChangedEvent = {
+    branch: GitBranchOption;
+    changes: WorkingTreeChanges;
+    affectedPaths: readonly string[];
 };
 
 type RepositoryRefreshSlot = {
@@ -19,6 +26,7 @@ type RepositoryRefreshSlot = {
     running: boolean;
     needsRefresh: boolean;
     pendingPaths?: Set<string>;
+    pendingWorkspaceContentPaths?: Set<string>;
     fullRefreshPending: boolean;
     indexRefreshPending: boolean;
     indexChangedPaths: Set<string>;
@@ -41,8 +49,10 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
     private readonly changesByRepository = new Map<string, Map<string, WorkingTreeChanges>>();
     private readonly branchSubscription: vscode.Disposable;
     private readonly changesEmitter = new vscode.EventEmitter<HeadBranchUncommittedFilesChangedEvent>();
+    private readonly contentChangesEmitter = new vscode.EventEmitter<HeadBranchUncommittedFileContentChangedEvent>();
 
     readonly onEachHeadBranchUncommittedFileChanged = this.changesEmitter.event;
+    readonly onEachHeadBranchUncommittedFileContentChanged = this.contentChangesEmitter.event;
 
     constructor(repoHeadBranchWatcher: RepoHeadBranchWatcher) {
         // 数据源改为全部仓库 HEAD 监听器, 不再跟随仓库选择, 天然覆盖所有仓库。
@@ -125,6 +135,7 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         this.slots.clear();
         this.changesByRepository.clear();
         this.changesEmitter.dispose();
+        this.contentChangesEmitter.dispose();
     }
 
     private applyCurrentHeadBranch(repositoryPath: string, branch: GitBranchOption | undefined): void {
@@ -141,6 +152,7 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         slot.branch = branch;
         slot.generation++;
         slot.pendingPaths = undefined;
+        slot.pendingWorkspaceContentPaths = undefined;
         slot.fullRefreshPending = false;
         slot.indexRefreshPending = false;
         slot.indexChangedPaths = new Set<string>();
@@ -221,9 +233,13 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         const rootPath = vscode.Uri.parse(repositoryPath).fsPath;
         const relativePath = path.relative(rootPath, uri.fsPath);
         if (!relativePath || relativePath === '.git' || relativePath.startsWith(`.git${path.sep}`)) { return; }
+        const normalizedPath = relativePath.split(path.sep).join('/');
         const pendingPaths = slot.pendingPaths ?? new Set<string>();
-        pendingPaths.add(relativePath.split(path.sep).join('/'));
+        pendingPaths.add(normalizedPath);
         slot.pendingPaths = pendingPaths;
+        const pendingWorkspaceContentPaths = slot.pendingWorkspaceContentPaths ?? new Set<string>();
+        pendingWorkspaceContentPaths.add(normalizedPath);
+        slot.pendingWorkspaceContentPaths = pendingWorkspaceContentPaths;
         await this.requestRefresh(repositoryPath);
     }
 
@@ -278,6 +294,8 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             const previous = this.changesByRepository.get(repositoryPath)?.get(branch.hash);
             const paths = slot.pendingPaths ?? new Set<string>();
             slot.pendingPaths = undefined;
+            const workspaceContentPaths = slot.pendingWorkspaceContentPaths ?? new Set<string>();
+            slot.pendingWorkspaceContentPaths = undefined;
             const fullRefresh = slot.fullRefreshPending;
             slot.fullRefreshPending = false;
             const reconcileIndex = slot.indexRefreshPending;
@@ -309,22 +327,28 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             }
             const changesByHash = this.changesByRepository.get(repositoryPath) ?? new Map<string, WorkingTreeChanges>();
             const previousChanges = changesByHash.get(branch.hash);
+            const affectedPaths = [...paths];
+            const contentChangedPaths = [...workspaceContentPaths];
             if (previousChanges?.equals(changes)) {
-                console.log(`[Gitk][UncommittedWatcher] status unchanged ${repositoryPath}`, {
-                    timestamp: new Date().toISOString(),
-                    paths: paths ? [...paths] : [],
-                });
+                if (contentChangedPaths.length > 0) {
+                    this.contentChangesEmitter.fire({ branch, changes: copyChanges(changes), affectedPaths: contentChangedPaths });
+                } else {
+                    console.log(`[Gitk][UncommittedWatcher] status unchanged ${repositoryPath}`, {
+                        timestamp: new Date().toISOString(),
+                        paths: affectedPaths,
+                    });
+                }
                 return;
             }
             changesByHash.set(branch.hash, changes);
             this.changesByRepository.set(repositoryPath, changesByHash);
             console.log(`[Gitk][UncommittedWatcher] status changed ${repositoryPath}`, {
                 timestamp: new Date().toISOString(),
-                paths: paths ? [...paths] : [],
+                paths: affectedPaths,
                 stagedCount: changes.staged.length,
                 unstagedCount: changes.changes.length,
             });
-            this.changesEmitter.fire({ branch, changes: copyChanges(changes) });
+            this.changesEmitter.fire({ branch, changes: copyChanges(changes), affectedPaths });
         } catch (error) {
             console.warn(`无法读取未提交文件: ${repositoryPath}`, error);
         }

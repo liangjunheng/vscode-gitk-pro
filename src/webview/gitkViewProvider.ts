@@ -288,9 +288,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.commitController.onSelectedCommitChanged(commit => this.onSelectedCommitChanged(commit)),
             this.commitController.onWorkingTreeChangesChanged(changes => this.onWorkingTreeChangesChanged(changes)),
             this.commitController.onUncommittedPresenceChanged(() => this.schedulePushState()),
-            // 任一仓库的未提交变化都由 watcher 事件驱动多仓库 Store 更新, 不依赖仓库选择。
+            // 状态事件维护所有仓库的未提交卡片；内容事件只刷新当前虚拟提交的对应 Diff。
             this.uncommittedFilesWatcher.onEachHeadBranchUncommittedFileChanged(event => {
                 this.onRepositoryUncommittedFilesChanged(event.branch, event.changes);
+            }),
+            this.uncommittedFilesWatcher.onEachHeadBranchUncommittedFileContentChanged(event => {
+                this.onWorkingTreeFileContentChanged(event.branch, event.affectedPaths);
             }),
             this.commitController.onCommitsLoadingChanged(loading => {
                 this.setLoading(loading, loading ? '正在加载历史提交列表...' : undefined);
@@ -360,6 +363,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         changes?: { staged: ChangedFile[]; changes: ChangedFile[] },
         showLoading = true,
         affectedPaths?: ReadonlySet<string>,
+        updateWorkingTreeState = true,
     ): Promise<void> {
         const generation = ++this.commitFilesGeneration;
         const selectedBranch = this.commitController.selectedCommit?.gitBranchOption;
@@ -379,24 +383,26 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             diffKey: `unstaged:${file.path}`,
         }));
         const files = [...staged, ...unstaged];
-        const commitRepositories = store.getState().commitRepositories;
-        const commitRepository = {
-            repositoryPath: selectedBranch.repoOption.path,
-            repositoryLabel: selectedBranch.repoOption.label ?? path.basename(vscode.Uri.parse(selectedBranch.repoOption.path).fsPath),
-            staged: [...workingTreeChanges.staged],
-            unstaged: [...workingTreeChanges.changes],
-        };
-        const existingRepositoryIndex = commitRepositories.findIndex(repository => repository.repositoryPath === commitRepository.repositoryPath);
-        const nextCommitRepositories = existingRepositoryIndex < 0
-            ? [...commitRepositories, commitRepository]
-            : commitRepositories.map((repository, index) => index === existingRepositoryIndex ? commitRepository : repository);
-        store.setState({
-            stagedFiles: [...workingTreeChanges.staged],
-            unstagedFiles: [...workingTreeChanges.changes],
-            commitRepositories: nextCommitRepositories,
-        });
-        if (this.commitPanel.isVisible()) {
-            this.commitPanel.update(this.buildCommitSnapshot());
+        if (updateWorkingTreeState) {
+            const commitRepositories = store.getState().commitRepositories;
+            const commitRepository = {
+                repositoryPath: selectedBranch.repoOption.path,
+                repositoryLabel: selectedBranch.repoOption.label ?? path.basename(vscode.Uri.parse(selectedBranch.repoOption.path).fsPath),
+                staged: [...workingTreeChanges.staged],
+                unstaged: [...workingTreeChanges.changes],
+            };
+            const existingRepositoryIndex = commitRepositories.findIndex(repository => repository.repositoryPath === commitRepository.repositoryPath);
+            const nextCommitRepositories = existingRepositoryIndex < 0
+                ? [...commitRepositories, commitRepository]
+                : commitRepositories.map((repository, index) => index === existingRepositoryIndex ? commitRepository : repository);
+            store.setState({
+                stagedFiles: [...workingTreeChanges.staged],
+                unstagedFiles: [...workingTreeChanges.changes],
+                commitRepositories: nextCommitRepositories,
+            });
+            if (this.commitPanel.isVisible()) {
+                this.commitPanel.update(this.buildCommitSnapshot());
+            }
         }
         const previousSelectedFile = this.files.find(file => (file.diffKey || file.path) === this.selectedPath);
         const rootUri = vscode.Uri.parse(selectedBranch.repoOption.path);
@@ -529,6 +535,47 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         store.setState({ commitRepositories: next });
         this.commitPanelViewTitleController.update(next);
         if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
+    }
+
+    /** 文件内容变化不改变未提交状态，仅替换当前虚拟提交中受影响路径的 Diff 负载。 */
+    private onWorkingTreeFileContentChanged(
+        branch: GitBranchOption,
+        affectedPaths: readonly string[],
+    ): void {
+        const selectedCommit = this.commitController.selectedCommit;
+        if (selectedCommit?.hash !== 'uncommitted'
+            || selectedCommit.gitBranchOption?.repoOption.path !== branch.repoOption.path
+            || selectedCommit.gitBranchOption.hash !== branch.hash) { return; }
+        void this.refreshWorkingTreeDiffs(branch, affectedPaths);
+    }
+
+    /** 内容事件只读取并替换已展示的目标 Diff，不重建文件清单或 Commit Panel。 */
+    private async refreshWorkingTreeDiffs(branch: GitBranchOption, affectedPaths: readonly string[]): Promise<void> {
+        const paths = new Set(affectedPaths);
+        const files = this.files.filter((file): file is DiffPayload =>
+            file instanceof DiffPayload && (paths.has(file.path) || (!!file.oldPath && paths.has(file.oldPath))),
+        );
+        if (files.length === 0) { return; }
+        const generation = ++this.commitFilesGeneration;
+        this.diffReader.stop();
+        store.setState({ diffGeneration: store.getState().diffGeneration + 1 });
+        const rootUri = vscode.Uri.parse(branch.repoOption.path);
+        const refreshed = await this.diffReader.readDiffs(rootUri, 'uncommitted', files, 'uncommitted');
+        if (generation !== this.commitFilesGeneration
+            || this.currentHash !== 'uncommitted'
+            || this.currentRepositoryPath !== branch.repoOption.path
+            || this.commitController.selectedCommit?.gitBranchOption?.hash !== branch.hash) { return; }
+        const refreshedByKey = new Map(refreshed.map(file => [file.diffKey || file.path, file]));
+        const nextFiles = this.files.map((file, index) => {
+            const refreshedFile = refreshedByKey.get(file.diffKey || file.path);
+            return refreshedFile ? new DiffPayload({ ...refreshedFile, index }) : file;
+        });
+        store.setState({
+            files: nextFiles,
+            diffLoading: false,
+            diffError: undefined,
+            diffProgress: { completed: nextFiles.length, total: nextFiles.length },
+        });
     }
 
     private onWorkingTreeChangesChanged(changes: { staged: ChangedFile[]; changes: ChangedFile[] }): void {
