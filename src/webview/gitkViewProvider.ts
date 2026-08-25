@@ -836,16 +836,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     /**
-     * 刷新入口：只负责仓库扫描与加载态。
-     * 分支由 GitBranchesController 接管，提交由 GitCommitController 接管，
-     * Provider 不再读取任何分支或提交数据。
+     * 生命周期刷新入口：只负责仓库扫描与加载态。
+     * 分支由 GitBranchesController 接管，提交由 GitCommitController 接管。
      */
     private async refreshInternal(refreshGen: number, signal?: AbortSignal, reloadSelectors = true): Promise<void> {
         if (signal?.aborted) { return; }
         if (!this.hasRepositorySelection) {
             this.postLoadingProgress('start', '初始化环境...', 0, 0);
         }
-        // 仓库扫描交给控制器；选择落地后由 onSelectedRepoListChanged 驱动分支与提交加载。
         if (reloadSelectors) { this.requestRepositoryScan(); }
         if (signal?.aborted || !this.isRefreshCurrent(refreshGen)) { return; }
         if (this.hasRepositorySelection && this.repositories.length === 0) {
@@ -854,6 +852,22 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         // 记录基线，使本轮加载自身写入 .git/index 引发的 watcher 事件不再触发重复刷新。
         void this.captureRepositoryStateSignature();
         this.updateViewVisible();
+    }
+
+    /**
+     * 手动刷新: 重读当前提交列表和全部仓库当前 HEAD 的未提交变更, 不干扰选择器生命周期。
+     * 选中仓库的提交列表与工作区状态由 GitCommitController 负责并吸收异常;
+     * 其余 current-head 仓库经 watcher 强制刷新, 结果通过 onEachHeadBranchUncommittedFileChanged 回流多仓库 Store。
+     */
+    private refreshCurrentViewData(): void {
+        void this.commitController.forceRefreshCurrentSelection();
+        const selectedRepositoryPath = this.commitController.uncommittedRepositoryPath;
+        for (const branch of this.uncommittedFilesWatcher.listCurrentHeadBranches()) {
+            // 选中仓库已由 commit controller 刷新, 避免重复 status。
+            if (branch.repoOption.path === selectedRepositoryPath) { continue; }
+            void this.uncommittedFilesWatcher.refreshUncommittedFilesByHeadBranch(branch)
+                .catch(error => console.warn(`无法刷新未提交文件: ${branch.repoOption.path}`, error));
+        }
     }
 
     private onMessage(message: unknown): void {
@@ -890,7 +904,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.pushStateToWebview();
                 break;
             case 'refresh':
-                void this.refresh();
+                this.refreshCurrentViewData();
                 break;
             case 'selectRepositories': {
                 if (!Array.isArray(effect.paths)) {
