@@ -55,9 +55,9 @@ export class MultiDiffPanel implements vscode.Disposable {
     }
 
     // 已渲染面板的轻量定位: 只发 reveal, 不 ensurePanel / 不改标题 / 不抢焦点。
-    // 返回 false 表示面板不可用, 调用方需回退到 show()。
+    // 仅当面板已是活动标签时可用; 返回 false 表示需回退到 show() 先激活标签。
     revealFile(revealPath?: string): boolean {
-        if (!this.panel || !this.webviewReady) { return false; }
+        if (!this.panel?.active || !this.webviewReady) { return false; }
         this.post({ type: 'reveal', path: revealPath });
         return true;
     }

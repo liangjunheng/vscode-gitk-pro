@@ -134,6 +134,7 @@ interface GitRefRecord {
     hash: string;
     name: string;
     label: string;
+    upstreamName?: string;
 }
 
 // 分支缓存与单飞请求；分支变更沿用 invalidateGitRefsCache 主动失效。// 批量解析 ref -> commit hash, 单次 git rev-parse 调用
@@ -183,9 +184,9 @@ async function getCommitAuthorDetails(rootUri: vscode.Uri, hashes: readonly stri
 async function readBranchRefsFromCli(rootUri: vscode.Uri, signal?: AbortSignal): Promise<{ currentBranch?: string; detachedHead?: string; local: GitRefRecord[]; remote: GitRefRecord[] }> {
     const parseRefs = (stdout: string) => stdout.split(/\r?\n/).flatMap(line => {
         if (!line) { return []; }
-        const [hash, label, name] = line.split('\t');
+        const [hash, label, name, upstream] = line.split('\t');
         if (!hash || !label || !name || label.endsWith('/HEAD')) { return []; }
-        return [{ hash, label, name }];
+        return [{ hash, label, name, upstreamName: upstream || undefined }];
     });
     const [currentResult, refsResult, headResult] = await Promise.all([
         execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, 'symbolic-ref', '--quiet', '--short', 'HEAD'], { windowsHide: true, signal }).catch(error => {
@@ -194,7 +195,7 @@ async function readBranchRefsFromCli(rootUri: vscode.Uri, signal?: AbortSignal):
         }),
         execFileAsync('git', [
             ...noOptionalLocks, '-C', rootUri.fsPath,
-            'for-each-ref', '--format=%(objectname)%09%(refname:short)%09%(refname)', 'refs/heads', 'refs/remotes',
+            'for-each-ref', '--format=%(objectname)%09%(refname:short)%09%(refname)%09%(upstream)', 'refs/heads', 'refs/remotes',
         ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
         // detached HEAD 时用裸 hash 兜底当前项；空仓库解析失败按无 HEAD 处理。
         execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, 'rev-parse', 'HEAD'], { windowsHide: true, signal }).catch(error => {
@@ -237,6 +238,7 @@ export async function getGitBranches(rootUri: vscode.Uri, signal?: AbortSignal):
             label: currentRef.label,
             hash: currentRef.hash,
             kind: 'current',
+            upstreamName: currentRef.upstreamName,
         })] : detachedHead ? [buildDetachedHeadBranch(rootUri, detachedHead)] : [];
         const branches = branchRefs.map(ref => new GitBranchOption({
             repoOption: repository,
@@ -244,6 +246,7 @@ export async function getGitBranches(rootUri: vscode.Uri, signal?: AbortSignal):
             label: ref.label,
             hash: ref.hash,
             kind: ref.name.startsWith('refs/remotes/') ? 'remote' : 'local',
+            upstreamName: ref.upstreamName,
         })).sort((left, right) => Number(left.kind === 'remote') - Number(right.kind === 'remote') || left.label.localeCompare(right.label));
         return [...current, ...branches];
     } catch (error) {

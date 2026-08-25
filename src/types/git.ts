@@ -106,6 +106,7 @@ export class GitBranchOption {
     readonly label: string;
     readonly hash: string;
     readonly kind: GitBranchKind;
+    readonly upstreamName?: string;
 
     constructor(init: {
         repoOption: GitRepositoryOption;
@@ -113,12 +114,14 @@ export class GitBranchOption {
         label: string;
         hash: string;
         kind: GitBranchKind;
+        upstreamName?: string;
     }) {
         this.repoOption = init.repoOption;
         this.name = init.name;
         this.label = init.label;
         this.hash = init.hash;
         this.kind = init.kind;
+        this.upstreamName = init.upstreamName;
     }
 
     equals(other: GitBranchOption): boolean {
@@ -126,7 +129,8 @@ export class GitBranchOption {
             && this.name === other.name
             && this.label === other.label
             && this.hash === other.hash
-            && this.kind === other.kind;
+            && this.kind === other.kind
+            && this.upstreamName === other.upstreamName;
     }
 }
 
