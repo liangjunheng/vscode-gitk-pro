@@ -223,6 +223,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         );
         this.commitPanel = new CommitPanel({
             onCommit: (repositoryPath, message, amend) => void this.runCommit(repositoryPath, message, amend),
+            onToggleDisplayMode: () => this.dispatchIntent({ type: 'toggleFilesMode' }),
             onToggleAmend: repositoryPath => void this.toggleCommitAmend(repositoryPath),
             onHistory: repositoryPath => void this.pickCommitHistoryMessage(repositoryPath),
             onWorkingTreeAction: (repositoryPath, action, section, paths, untrackedPaths) =>
@@ -296,6 +297,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 if (!event.affectsConfiguration('vscode-gitk.changedFilesDisplayMode')) { return; }
                 // scope 为 application, 生效值只来自 Global, 与 update() 的写入目标一致, 回读值必然等于刚写入值。
                 this.displayMode = vscode.workspace.getConfiguration('vscode-gitk').get<'tree' | 'flat'>('changedFilesDisplayMode', 'flat');
+                if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
             }),
         );
         context.subscriptions.push(
@@ -970,7 +972,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             unstagedFiles: repo.unstaged.map(file => ({ path: file.path, status: file.status, isUntracked: file.isUntracked })),
             committing: this.commitCommittingByRepo.has(repo.repositoryPath),
         } satisfies CommitCard));
-        return { cards };
+        return { cards, displayMode: store.getState().displayMode };
     }
 
     /** 刷新提交面板内容 (add/restore 或工作区变化后): 先同步多仓库 Store 再重建卡片。 */
@@ -1572,9 +1574,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .file-status-A { color: var(--vscode-gitDecoration-addedResourceForeground, #73c991); }
   .file-status-M { color: var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d); }
   .file-status-D { color: var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c); }
-  .working-tree-section[data-section="unstaged"] .file-item .file-path { color: var(--vscode-foreground); }
+  .working-tree-section[data-section="staged"] .file-name { color: var(--vscode-gitDecoration-addedResourceForeground, #73c991); }
+  .working-tree-section[data-section="unstaged"] .file-name { color: var(--vscode-textLink-foreground, #3794ff); }
   .working-tree-section[data-section="unstaged"] .file-item.untracked .file-status,
-  .working-tree-section[data-section="unstaged"] .file-item.untracked .file-path { color: var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c); }
+  .working-tree-section[data-section="unstaged"] .file-item.untracked .file-name { color: var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c); }
   .file-path { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .file-folder { opacity: 0.55; }
   #filesEmpty { padding: 8px 10px; color: var(--vscode-descriptionForeground); }
@@ -2347,13 +2350,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     const diffKey = section + ':' + file.path;
     return '<div class="file-item' + (diffKey === selectedPath ? ' selected' : '') + untracked + '" data-path="' + escapeAttr(file.path) + '" data-diff-key="' + escapeAttr(diffKey) + '" data-section="' + section + '" title="' + escapeAttr(file.path) + '">' +
       workingTreeKindIconHTML(file, section) + '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span>' +
-      '<span class="file-path"><span class="file-folder">' + escapeHtml(folder) + '</span>' + escapeHtml(name) + '</span><span class="file-actions">' + workingTreeActionsHTML(actions) + '</span></div>';
+      '<span class="file-path"><span class="file-name">' + escapeHtml(name) + '</span>' + (folder ? ' <span class="file-folder">' + escapeHtml(folder) + '</span>' : '') + '</span><span class="file-actions">' + workingTreeActionsHTML(actions) + '</span></div>';
   }
 
   function workingTreeSectionFilesHTML(section, sectionFiles) {
-    if (filesMode !== 'tree') return sectionFiles.map(function(file) { return workingTreeFileHTML(file, section); }).join('');
+    const orderedFiles = sectionFiles;
+    if (filesMode !== 'tree') return orderedFiles.map(function(file) { return workingTreeFileHTML(file, section); }).join('');
     const byFolder = new Map();
-    sectionFiles.slice().sort(function(left, right) { return left.path.localeCompare(right.path); }).forEach(function(file) {
+    orderedFiles.forEach(function(file) {
       const lastSlash = file.path.lastIndexOf('/');
       const folder = lastSlash >= 0 ? file.path.slice(0, lastSlash) : '';
       const folderFiles = byFolder.get(folder) || [];
@@ -2378,7 +2382,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const diffKey = section + ':' + file.path;
         const untracked = section === 'unstaged' && file.isUntracked ? ' untracked' : '';
         html += '<div class="file-item' + (diffKey === selectedPath ? ' selected' : '') + untracked + '" data-path="' + escapeAttr(file.path) + '" data-diff-key="' + escapeAttr(diffKey) + '" data-section="' + section + '" style="padding-left:' + (folder ? 30 : 10) + 'px" title="' + escapeAttr(file.path) + '">';
-        html += workingTreeKindIconHTML(file, section) + '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span><span class="file-path">' + escapeHtml(name) + '</span><span class="file-actions">' + workingTreeActionsHTML(actions) + '</span></div>';
+        html += workingTreeKindIconHTML(file, section) + '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span><span class="file-path"><span class="file-name">' + escapeHtml(name) + '</span></span><span class="file-actions">' + workingTreeActionsHTML(actions) + '</span></div>';
       });
     });
     return html;
@@ -2433,7 +2437,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       list.innerHTML = '<div id="filesEmpty">此提交没有变更文件</div>';
       return;
     }
-    const ordered = files.slice().sort(function(a, b) { return filesMode === 'tree' ? a.path.localeCompare(b.path) : 0; });
+    const ordered = files;
     let html = '';
     if (filesMode === 'tree') {
       const filesByFolder = new Map();
@@ -2465,7 +2469,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const name = lastSlash >= 0 ? file.path.slice(lastSlash + 1) : file.path;
         html += '<div class="file-item' + (file.path === selectedPath ? ' selected' : '') + '" data-path="' + escapeAttr(file.path) + '" title="' + escapeAttr(file.path) + '">';
         html += '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span>';
-        html += '<span class="file-path"><span class="file-folder">' + escapeHtml(folder) + '</span>' + escapeHtml(name) + '</span></div>';
+        html += '<span class="file-path"><span class="file-name">' + escapeHtml(name) + '</span>' + (folder ? ' <span class="file-folder">' + escapeHtml(folder) + '</span>' : '') + '</span></div>';
       }
     }
     list.innerHTML = html;

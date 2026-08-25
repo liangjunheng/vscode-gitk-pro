@@ -19,10 +19,12 @@ export interface CommitCard {
 
 export interface CommitPanelSnapshot {
     readonly cards: readonly CommitCard[];
+    readonly displayMode: 'tree' | 'flat';
 }
 
 type CommitPanelCallbacks = {
     readonly onCommit: (repositoryPath: string, message: string, amend: boolean) => void;
+    readonly onToggleDisplayMode: () => void;
     readonly onToggleAmend: (repositoryPath: string) => void;
     readonly onHistory: (repositoryPath: string) => void;
     readonly onWorkingTreeAction: (
@@ -126,6 +128,8 @@ export class CommitPanel implements vscode.Disposable {
             this.callbacks.onCommit(repo, data.message, data.amend);
         } else if (data.type === 'toggleAmend' && repo) {
             this.callbacks.onToggleAmend(repo);
+        } else if (data.type === 'toggleDisplayMode') {
+            this.callbacks.onToggleDisplayMode();
         } else if (data.type === 'history' && repo) {
             this.callbacks.onHistory(repo);
         } else if (data.type === 'workingTreeAction' && repo
@@ -151,7 +155,7 @@ export class CommitPanel implements vscode.Disposable {
 
     private publish(): void {
         if (!this.panel || !this.webviewReady || !this.snapshot) { return; }
-        this.post({ type: 'snapshot', cards: this.snapshot.cards })
+        this.post({ type: 'snapshot', cards: this.snapshot.cards, displayMode: this.snapshot.displayMode })
             .then(() => console.log('[Gitk][CommitPanel] snapshot posted', {
                 timestamp: new Date().toISOString(),
                 cardCount: this.snapshot?.cards.length,
@@ -223,10 +227,18 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .section-title .left{display:flex;align-items:center;gap:4px}
 .section-title .section-actions{display:flex;align-items:center;gap:4px;margin-left:auto}
 .section-title .codicon{font-size:14px}
-.file-row{display:flex;align-items:center;gap:6px;padding:3px 10px}
-.file-row:hover{background:var(--vscode-list-hoverBackground)}
+.display-mode-btn{margin-left:4px}
+.file-row,.folder-row{display:flex;align-items:center;gap:6px;padding:3px 10px}
+.file-row:hover,.folder-row:hover{background:var(--vscode-list-hoverBackground)}
 .file-row .status{width:14px;text-align:center;color:var(--vscode-gitDecoration-modifiedResourceForeground)}
 .file-row .path{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-row .file-folder{opacity:.55}
+.file-row.staged .file-name{color:var(--vscode-gitDecoration-addedResourceForeground,#73c991)}
+.file-row.unstaged .file-name{color:var(--vscode-textLink-foreground,#3794ff)}
+.file-row.untracked .file-name{color:var(--vscode-gitDecoration-deletedResourceForeground,#f14c4c)}
+.folder-row{cursor:pointer;font-weight:600}
+.folder-row .codicon{font-size:14px}
+.folder-row .path{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .file-row .row-actions,.file-row .row-actions .icon-btn,.file-row .row-actions .codicon{opacity:1}
 .file-row .row-actions{display:flex;gap:4px}
 .icon-btn{border:0;background:transparent;color:var(--vscode-icon-foreground);cursor:pointer;padding:2px;border-radius:3px;display:inline-flex;align-items:center}
@@ -246,7 +258,9 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
   const app=document.getElementById('app');
   // 每仓库卡片状态在 webview 端保留, 重渲染时复用 DOM 与用户已输入的提交信息。
   const cardEls=new Map();
+  const collapsedFolders=new Set();
   let selectedRepositoryPath='';
+  let displayMode='flat';
 
   function selectCard(repositoryPath){
     selectedRepositoryPath=repositoryPath;
@@ -267,16 +281,36 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     button.appendChild(iconElement);
     return button;
   }
-  function fileRowHtml(file,section){
+  function fileParts(file){
+    const lastSlash=file.path.lastIndexOf('/');
+    return {
+      folder:lastSlash>=0?file.path.slice(0,lastSlash):'',
+      name:lastSlash>=0?file.path.slice(lastSlash+1):file.path,
+    };
+  }
+
+  function fileRowHtml(file,section,treeIndent){
+    const parts=fileParts(file);
     const row=document.createElement('div');
-    row.className='file-row';
+    row.className='file-row '+(file.isUntracked?'untracked':section);
+    if(treeIndent)row.style.paddingLeft='30px';
     const status=document.createElement('span');
     status.className='status';
     status.textContent=statusLabel(file);
     const pathElement=document.createElement('span');
     pathElement.className='path';
     pathElement.title=file.path;
-    pathElement.textContent=file.path;
+    const nameElement=document.createElement('span');
+    nameElement.className='file-name';
+    nameElement.textContent=parts.name;
+    pathElement.appendChild(nameElement);
+    if(displayMode==='flat'&&parts.folder){
+      pathElement.appendChild(document.createTextNode(' '));
+      const folderElement=document.createElement('span');
+      folderElement.className='file-folder';
+      folderElement.textContent=parts.folder+'/';
+      pathElement.appendChild(folderElement);
+    }
     const actions=document.createElement('span');
     actions.className='row-actions';
     if(section==='staged'){
@@ -291,6 +325,48 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     return row;
   }
 
+  function renderFileList(container,files,section,repositoryPath){
+    container.replaceChildren();
+    if(!files.length){
+      const empty=document.createElement('div');
+      empty.className='empty';
+      empty.textContent='没有文件';
+      container.appendChild(empty);
+      return;
+    }
+    const ordered=files;
+    if(displayMode==='flat'){
+      ordered.forEach(function(file){container.appendChild(fileRowHtml(file,section,false))});
+      return;
+    }
+    const byFolder=new Map();
+    ordered.forEach(function(file){
+      const folder=fileParts(file).folder;
+      const group=byFolder.get(folder)||[];
+      group.push(file);
+      byFolder.set(folder,group);
+    });
+    byFolder.forEach(function(folderFiles,folder){
+      const folderKey=repositoryPath+':'+section+':'+folder;
+      if(folder){
+        const expanded=!collapsedFolders.has(folderKey);
+        const folderRow=document.createElement('div');
+        folderRow.className='folder-row';
+        folderRow.innerHTML='<span class="codicon codicon-chevron-'+(expanded?'down':'right')+'"></span><span class="codicon codicon-folder'+(expanded?'-opened':'')+'"></span><span class="path"></span>';
+        folderRow.querySelector('.path').textContent=folder;
+        folderRow.title=folder;
+        folderRow.addEventListener('click',function(){
+          if(expanded)collapsedFolders.add(folderKey);else collapsedFolders.delete(folderKey);
+          renderFileList(container,files,section,repositoryPath);
+          bindRowActions(container,repositoryPath,container.closest('.card')._card);
+        });
+        container.appendChild(folderRow);
+        if(!expanded)return;
+      }
+      folderFiles.forEach(function(file){container.appendChild(fileRowHtml(file,section,Boolean(folder)))});
+    });
+  }
+
   function buildCard(repo){
     const el=document.createElement('div');
     el.className='card';
@@ -301,7 +377,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
         '<div class="message-box">'+
           '<textarea class="message-input" placeholder="输入提交信息…" spellcheck="false"></textarea>'+
         '</div>'+
-        '<div class="section staged"><div class="section-title"><span class="left"><span>Staged Changes</span><span class="section-count-badge staged-count" hidden></span></span><span class="section-actions staged-actions"><button class="icon-btn staged-all" data-action="unstage" data-section="staged" title="取消暂存所有文件"><span class="codicon codicon-remove"></span></button></span></div><div class="staged-list"></div></div>'+
+        '<div class="section staged"><div class="section-title"><span class="left"><span>Staged Changes</span><span class="section-count-badge staged-count" hidden></span></span><span class="section-actions staged-actions"><button class="icon-btn display-mode-btn" title="切换树状/平铺显示"><span class="codicon codicon-list-tree"></span></button><button class="icon-btn staged-all" data-action="unstage" data-section="staged" title="取消暂存所有文件"><span class="codicon codicon-remove"></span></button></span></div><div class="staged-list"></div></div>'+
         '<div class="section unstaged"><div class="section-title collapsible"><span class="left"><span class="codicon codicon-chevron-down unstaged-chevron"></span><span>Unstaged Changes</span><span class="section-count-badge unstaged-count" hidden></span></span><span class="section-actions unstaged-actions"><button class="icon-btn discard-all" data-action="discard" data-section="unstaged" title="还原所有文件"><span class="codicon codicon-discard"></span></button><button class="icon-btn stage-all" data-action="stage" data-section="unstaged" title="暂存所有文件"><span class="codicon codicon-add"></span></button></span></div><div class="unstaged-list"></div></div>'+
         '<div class="actions">'+
           '<span class="hint"></span>'+
@@ -334,7 +410,11 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 
     amendToggle.addEventListener('click',function(){vscode.postMessage({type:'toggleAmend',repositoryPath:repo})});
     historyBtn.addEventListener('click',function(){vscode.postMessage({type:'history',repositoryPath:repo})});
-    el.querySelectorAll('.section-actions .icon-btn').forEach(function(button){
+    el.querySelector('.display-mode-btn').addEventListener('click',function(event){
+      event.stopPropagation();
+      vscode.postMessage({type:'toggleDisplayMode'});
+    });
+    el.querySelectorAll('.section-actions .icon-btn[data-action]').forEach(function(button){
       button.addEventListener('click',function(event){
         event.stopPropagation();
         const files=button.dataset.section==='staged'?el._card.stagedFiles:el._card.unstagedFiles;
@@ -430,24 +510,11 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     unstagedCount.hidden=card.unstagedFiles.length===0;
     el.querySelector('.discard-all').disabled=card.unstagedFiles.length===0;
     el.querySelector('.stage-all').disabled=card.unstagedFiles.length===0;
-    stagedList.replaceChildren();
-    if(card.stagedFiles.length){
-      card.stagedFiles.forEach(function(file){stagedList.appendChild(fileRowHtml(file,'staged'))});
-    }else{
-      const empty=document.createElement('div');
-      empty.className='empty';
-      empty.textContent='没有文件';
-      stagedList.appendChild(empty);
-    }
-    unstagedList.replaceChildren();
-    if(card.unstagedFiles.length){
-      card.unstagedFiles.forEach(function(file){unstagedList.appendChild(fileRowHtml(file,'unstaged'))});
-    }else{
-      const empty=document.createElement('div');
-      empty.className='empty';
-      empty.textContent='没有文件';
-      unstagedList.appendChild(empty);
-    }
+    const displayModeButton=el.querySelector('.display-mode-btn');
+    displayModeButton.title='显示方式（当前：'+(displayMode==='tree'?'树状':'平铺')+'）';
+    displayModeButton.querySelector('.codicon').className='codicon codicon-'+(displayMode==='tree'?'list-flat':'list-tree');
+    renderFileList(stagedList,card.stagedFiles,'staged',el.dataset.repo);
+    renderFileList(unstagedList,card.unstagedFiles,'unstaged',el.dataset.repo);
     bindRowActions(stagedList,el.dataset.repo,card);
     bindRowActions(unstagedList,el.dataset.repo,card);
   }
@@ -479,7 +546,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
   window.addEventListener('message',function(event){
     const message=event.data;
     if(!message)return;
-    if(message.type==='snapshot'){render(message.cards||[])}
+    if(message.type==='snapshot'){displayMode=message.displayMode;render(message.cards||[])}
     else if(message.type==='setMessage'){
       const el=cardEls.get(message.repositoryPath);
       if(el){el._refs.messageInput.value=message.message||'';el._refs.hint.textContent='';el._refs.messageInput.focus()}

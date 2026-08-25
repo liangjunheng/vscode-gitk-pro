@@ -46,12 +46,12 @@
             "flat"
           ],
           "enumDescriptions": [
-            "按目录树显示变更文件",
-            "以平铺列表显示变更文件"
+            "按目录树显示 Changed Files 与 Commit Editor 文件",
+            "以平铺列表显示 Changed Files 与 Commit Editor 文件"
           ],
           "default": "flat",
           "scope": "application",
-          "description": "Changed Files 的显示方式"
+          "description": "Changed Files 与 Commit Editor 的同步显示方式"
         },
         "vscode-gitk.discardUntrackedChangesToTrash": {
           "type": "boolean",
