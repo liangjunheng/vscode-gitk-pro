@@ -25,7 +25,13 @@ type CommitPanelCallbacks = {
     readonly onCommit: (repositoryPath: string, message: string, amend: boolean) => void;
     readonly onToggleAmend: (repositoryPath: string) => void;
     readonly onHistory: (repositoryPath: string) => void;
-    readonly onWorkingTreeAction: (repositoryPath: string, action: 'stage' | 'unstage' | 'discard', section: 'staged' | 'unstaged', path: string) => void;
+    readonly onWorkingTreeAction: (
+        repositoryPath: string,
+        action: 'stage' | 'unstage' | 'discard',
+        section: 'staged' | 'unstaged',
+        paths: readonly string[],
+        untrackedPaths: readonly string[],
+    ) => void;
     readonly onClose: () => void;
 };
 
@@ -125,8 +131,17 @@ export class CommitPanel implements vscode.Disposable {
         } else if (data.type === 'workingTreeAction' && repo
             && (data.action === 'stage' || data.action === 'unstage' || data.action === 'discard')
             && (data.section === 'staged' || data.section === 'unstaged')
-            && typeof data.path === 'string') {
-            this.callbacks.onWorkingTreeAction(repo, data.action, data.section, data.path);
+            && Array.isArray(data.paths)
+            && data.paths.every(filePath => typeof filePath === 'string')
+            && Array.isArray(data.untrackedPaths)
+            && data.untrackedPaths.every(filePath => typeof filePath === 'string')) {
+            this.callbacks.onWorkingTreeAction(
+                repo,
+                data.action,
+                data.section,
+                data.paths as string[],
+                data.untrackedPaths as string[],
+            );
         } else if (data.type === 'close') {
             this.callbacks.onClose();
         } else if (data.type === 'error') {
@@ -322,11 +337,14 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     el.querySelectorAll('.section-actions .icon-btn').forEach(function(button){
       button.addEventListener('click',function(event){
         event.stopPropagation();
+        const files=button.dataset.section==='staged'?el._card.stagedFiles:el._card.unstagedFiles;
         vscode.postMessage({
           type:'workingTreeAction',
           repositoryPath:repo,
           action:button.dataset.action,
           section:button.dataset.section,
+          paths:files.map(function(file){return file.path}),
+          untrackedPaths:files.filter(function(file){return file.isUntracked}).map(function(file){return file.path}),
         });
       });
     });
@@ -351,15 +369,25 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     return el;
   }
 
-  function bindRowActions(container,repo){
+  function bindRowActions(container,repo,card){
     container.querySelectorAll('.icon-btn').forEach(function(btn){
       btn.addEventListener('click',function(){
-        vscode.postMessage({type:'workingTreeAction',repositoryPath:repo,action:btn.dataset.action,section:btn.dataset.section,path:decodeURIComponent(btn.dataset.path)});
+        const filePath=btn.dataset.path;
+        const file=card[btn.dataset.section==='staged'?'stagedFiles':'unstagedFiles'].find(function(item){return item.path===filePath});
+        vscode.postMessage({
+          type:'workingTreeAction',
+          repositoryPath:repo,
+          action:btn.dataset.action,
+          section:btn.dataset.section,
+          paths:[filePath],
+          untrackedPaths:file&&file.isUntracked?[filePath]:[],
+        });
       });
     });
   }
 
   function updateCard(el,card){
+    el._card=card;
     el._amend=card.amend;
     el.querySelector('.repo-label').textContent=card.repositoryLabel;
     const refs=el._refs;
@@ -420,8 +448,8 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
       empty.textContent='没有文件';
       unstagedList.appendChild(empty);
     }
-    bindRowActions(stagedList,el.dataset.repo);
-    bindRowActions(unstagedList,el.dataset.repo);
+    bindRowActions(stagedList,el.dataset.repo,card);
+    bindRowActions(unstagedList,el.dataset.repo,card);
   }
 
   function render(cards){

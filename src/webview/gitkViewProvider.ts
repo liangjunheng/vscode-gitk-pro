@@ -226,7 +226,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             onCommit: (repositoryPath, message, amend) => void this.runCommit(repositoryPath, message, amend),
             onToggleAmend: repositoryPath => void this.toggleCommitAmend(repositoryPath),
             onHistory: repositoryPath => void this.pickCommitHistoryMessage(repositoryPath),
-            onWorkingTreeAction: (repositoryPath, action, section, filePath) => void this.runWorkingTreeAction(action, section, filePath, repositoryPath),
+            onWorkingTreeAction: (repositoryPath, action, section, paths, untrackedPaths) =>
+                void this.runCommitPanelWorkingTreeAction(repositoryPath, action, section, paths, untrackedPaths),
             onClose: () => this.commitPanel.hide(),
         });
         this.commitPanelViewTitleController = new CommitPanelViewTitleController(async () => {
@@ -1021,6 +1022,32 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             await this.refreshCommitPanel();
             void vscode.window.showErrorMessage(`Git Commit 失败：${error instanceof Error ? error.message : String(error)}`);
         }
+    }
+
+    private async runCommitPanelWorkingTreeAction(
+        repositoryPath: string,
+        action: 'stage' | 'unstage' | 'discard',
+        section: 'staged' | 'unstaged',
+        paths: readonly string[],
+        untrackedPaths: readonly string[],
+    ): Promise<void> {
+        if (paths.length === 0) { return; }
+        const rootUri = this.getRepoRootUri(repositoryPath);
+        if (!rootUri) { return; }
+        const untrackedPathSet = new Set(untrackedPaths);
+        const discardSelection = action === 'discard'
+            ? await this.confirmDiscardWorkingTreeChanges(paths, untrackedPathSet)
+            : { paths: [...paths], discardUntrackedToTrash: false };
+        if (!discardSelection) { return; }
+        this.workingTreeActionQueue.push({
+            action,
+            section,
+            paths: discardSelection.paths,
+            untrackedPaths: untrackedPathSet,
+            discardUntrackedToTrash: discardSelection.discardUntrackedToTrash,
+            rootUri,
+        });
+        void this.processWorkingTreeActionQueue();
     }
 
     private async runWorkingTreeAction(action: unknown, section: unknown, filePath?: unknown, repositoryPath?: string): Promise<void> {
