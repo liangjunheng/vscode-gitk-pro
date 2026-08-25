@@ -20,6 +20,7 @@ export type GitkIntent =
     | { type: 'workingTreeAction'; action: unknown; section: unknown; path?: unknown }
     | { type: 'rendered'; target: unknown; fileCount: unknown }
     | { type: 'openCommitEditor'; amend: unknown; repositoryPath: unknown }
+    | { type: 'openCommitPanel' }
     | { type: 'toggleFilesMode' }
     | { type: 'search'; keywords: unknown };
 

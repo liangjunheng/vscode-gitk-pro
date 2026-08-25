@@ -14,6 +14,7 @@ export type StoreEffect =
     | { type: 'workingTreeAction'; action: unknown; section: unknown; path?: unknown }
     | { type: 'rendered'; fileCount: unknown }
     | { type: 'openCommitEditor'; amend: boolean; repositoryPath: string }
+    | { type: 'openCommitPanel' }
     | { type: 'persistFilesDisplayMode'; displayMode: AppState['displayMode'] }
     | { type: 'search'; keywords: unknown };
 
@@ -120,6 +121,9 @@ export class Store {
                     partial = { commitEditorLoading: true };
                     effects = [{ type: 'openCommitEditor', amend: intent.amend, repositoryPath: intent.repositoryPath }];
                 }
+                break;
+            case 'openCommitPanel':
+                effects = [{ type: 'openCommitPanel' }];
                 break;
             case 'toggleFilesMode': {
                 const displayMode = this.state.displayMode === 'tree' ? 'flat' : 'tree';

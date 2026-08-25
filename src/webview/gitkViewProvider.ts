@@ -162,6 +162,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             state: {
                 commits,
                 workingTreeRows,
+                uncommittedRepositoryCount: s.commitRepositories.filter(repository =>
+                    repository.staged.length > 0 || repository.unstaged.length > 0).length,
                 stagedCount: workingTree.staged.length,
                 changesCount: workingTree.changes.length,
                 // 分页不在控制器职责内，暂固定为无更多。
@@ -904,6 +906,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             case 'openCommitEditor':
                 void this.runOpenCommitEditor(effect.repositoryPath, effect.amend);
                 break;
+            case 'openCommitPanel':
+                this.commitPanel.show(this.buildCommitSnapshot(), this.selectedRepositoryPath);
+                break;
             case 'persistFilesDisplayMode':
                 void vscode.workspace.getConfiguration('vscode-gitk')
                     .update('changedFilesDisplayMode', effect.displayMode, vscode.ConfigurationTarget.Global);
@@ -1390,10 +1395,17 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; margin: 0; overflow: hidden; }
   body { font-family: var(--vscode-editor-font-family, sans-serif); font-size: 12px; background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); display: flex; flex-direction: column; height: 100%; }
-  #header { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--vscode-panel-border); flex-shrink: 0; min-width: 0; }
+  #header { display: flex; align-items: center; gap: 0; padding: 6px 10px; border-bottom: 1px solid var(--vscode-panel-border); flex-shrink: 0; min-width: 0; }
   #header button { border: none; cursor: pointer; border-radius: 2px; }
   .selector { display: flex; align-items: center; gap: 4px; min-width: 0; }
+  .selector-group { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 8px; }
+  .repo-group { padding-left: 0; border-right: 1px solid var(--vscode-panel-border); }
+  #branchSelector { border-right: 1px solid var(--vscode-panel-border); }
+  .search-group { padding-left: 0; border: 0; }
   .selector-prefix { flex: 0 0 auto; color: var(--vscode-descriptionForeground); font-size: 11px; }
+  #header .uncommitted-repo-badge { flex: 0 0 16px; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 50%; background: var(--vscode-button-background, #007acc); color: #fff; font: inherit; font-size: 9px; font-weight: 600; line-height: 16px; text-align: center; }
+  .uncommitted-repo-badge:hover { background: var(--vscode-button-hoverBackground, #0062a3); }
+  .uncommitted-repo-badge[hidden] { display: none; }
   .dropdown { position: relative; flex: 0 1 auto; min-width: 0; }
   #repositoryDropdown, #branchDropdown { width: 20ch; }
   .dropdown-current { display: flex; align-items: center; gap: 6px; width: 100%; height: 26px; padding: 0 7px; color: var(--vscode-dropdown-foreground, var(--vscode-foreground)); background: var(--vscode-dropdown-background, var(--vscode-editorWidget-background)); border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border)); border-radius: 4px; font: inherit; font-size: 11px; text-align: left; cursor: pointer; }
@@ -1444,7 +1456,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .dropdown-group { padding-bottom: 1px; color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 600; cursor: default; }
   .dropdown-empty { padding: 8px 7px; color: var(--vscode-descriptionForeground); font-size: 11px; }
   #toolbarActions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
-  .locator-icon { flex: 0 0 auto; width: 24px; height: 24px; }
   .toolbar-icon { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; color: var(--vscode-icon-foreground); background: transparent; }
   .toolbar-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
   .toolbar-icon .codicon { font-size: 16px; line-height: 16px; }
@@ -1549,8 +1560,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .commit-row.expanded .commit-description { display: block; }
   .commit-description:empty { display: none; }
   .commit-row.selected { background: var(--vscode-list-activeSelectionBackground, #094771); }
-  .commit-row.located { animation: locate-commit 900ms ease-out; }
-  @keyframes locate-commit { 0% { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; } 100% { outline-color: transparent; outline-offset: -4px; } }
   .commit-row.working-tree:hover { background: var(--vscode-list-hoverBackground); }
   .commit-row.working-tree.disabled { color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground)); cursor: default; pointer-events: none; }
   .commit-row.working-tree.disabled:hover { background: transparent; }
@@ -1595,17 +1604,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   <div id="header">
-    <button class="toolbar-icon" id="refreshBtn" title="刷新提交" aria-label="刷新提交"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 6A5 5 0 1 0 13 10M13 2v4H9"/></svg></button>
-    <div class="selector"><span class="selector-prefix">repo:</span><div class="dropdown" id="repositoryDropdown">
+    <div class="selector-group repo-group"><span class="selector-prefix">repo:</span><div class="dropdown" id="repositoryDropdown">
       <button class="dropdown-current" type="button" title="切换仓库或子仓库" aria-expanded="false" disabled><span class="dropdown-label"><span class="dropdown-spinner" hidden aria-hidden="true"></span>未选择仓库</span><span class="dropdown-chevron" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></span></button>
       <div class="dropdown-menu" role="menu"><input class="dropdown-filter" type="text" placeholder="筛选仓库" aria-label="筛选仓库"><div class="dropdown-options"></div></div>
-    </div></div><button class="toolbar-icon locator-icon" id="locateCommitBtn" title="定位当前提交" aria-label="定位当前提交"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="4.5"/><circle cx="8" cy="8" r="1.25" fill="currentColor" stroke="none"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2"/></svg></button>
-    <div class="selector" id="branchSelector"><span class="selector-prefix">branchs:</span><div class="dropdown" id="branchDropdown">
+    </div><button class="uncommitted-repo-badge" id="uncommittedRepoBadge" title="Git - 0 个仓库有未提交文件" aria-label="打开存在未提交文件的仓库" hidden>0</button></div>
+    <div class="selector-group" id="branchSelector"><span class="selector-prefix">branchs:</span><div class="dropdown" id="branchDropdown">
       <button class="dropdown-current" type="button" title="切换分支" aria-expanded="false" disabled><span class="dropdown-label"><span class="dropdown-spinner" hidden aria-hidden="true"></span>加载分支...</span><span class="dropdown-chevron" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></span></button>
       <div class="dropdown-menu" role="menu"><input class="dropdown-filter" type="text" placeholder="筛选分支" aria-label="筛选分支"><div class="dropdown-options"></div><div class="dropdown-actions"><button type="button" class="toggle-all" aria-pressed="false"><input type="checkbox" tabindex="-1" aria-hidden="true"><span>全选</span></button><div class="dropdown-actions-right"><button type="button" class="confirm-selection">确定</button><button type="button" class="cancel-selection">取消</button></div></div></div>
     </div></div>
-    <div class="selector" id="searchBox"><svg id="searchIcon" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 .96-.96l3.04 3.03-1.06 1.06-2.94-3.13z"/></svg><input type="text" id="searchInput" placeholder="搜索提交..." title="输入关键词搜索, 支持作者/邮箱/消息/Hash/日期, 多个关键词用空格隔开, 回车开始搜索"><button id="searchClear" title="清除搜索">&times;</button></div>
-    <span class="count" id="countLabel"></span>
+    <div class="selector-group search-group"><div class="selector" id="searchBox"><svg id="searchIcon" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 .96-.96l3.04 3.03-1.06 1.06-2.94-3.13z"/></svg><input type="text" id="searchInput" placeholder="搜索提交..." title="输入关键词搜索, 支持作者/邮箱/消息/Hash/日期, 多个关键词用空格隔开, 回车开始搜索"><button id="searchClear" title="清除搜索">&times;</button></div><span class="count" id="countLabel"></span><button class="toolbar-icon" id="refreshBtn" title="刷新提交" aria-label="刷新提交"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 6A5 5 0 1 0 13 10M13 2v4H9"/></svg></button></div>
     <div id="toolbarActions">
       <button class="toolbar-icon" id="fetchBtn" title="Fetch" aria-label="Fetch"><span class="codicon codicon-repo-fetch" aria-hidden="true"></span></button>
       <button class="toolbar-icon" id="pullBtn" title="Pull" aria-label="Pull"><span class="codicon codicon-repo-pull" aria-hidden="true"></span></button>
@@ -1749,24 +1756,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   document.getElementById('refreshBtn').addEventListener('click', function() {
     vscode.postMessage({ type: 'refresh' });
   });
-  document.getElementById('locateCommitBtn').addEventListener('click', function() {
-    if (!selectedCommitHash) return;
-    var row = document.querySelector('.commit-row.selected') || document.querySelector('.commit-row[data-hash="' + CSS.escape(selectedCommitHash) + '"]');
-    if (row) {
-      row.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      row.classList.remove('located');
-      void row.offsetWidth;
-      row.classList.add('located');
-    }
+  document.getElementById('uncommittedRepoBadge').addEventListener('click', function() {
+    vscode.postMessage({ type: 'openCommitPanel' });
   });
   document.addEventListener('animationend', function(event) {
     var target = event.target;
-    if (target && target.classList && target.classList.contains('located')) target.classList.remove('located');
     if (target && target.id === 'refreshBtn') target.classList.remove('refresh-unchanged');
   });
   document.addEventListener('animationcancel', function(event) {
     var target = event.target;
-    if (target && target.classList && target.classList.contains('located')) target.classList.remove('located');
     if (target && target.id === 'refreshBtn') target.classList.remove('refresh-unchanged');
   });
   ['fetch', 'pull', 'push'].forEach(function(action) {
@@ -1952,6 +1950,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       selectedBranches = state.selectedBranches || [];
       var workingTreeRows = state.workingTreeRows || [];
       uncommittedEnabled = Boolean(workingTreeRows[0]?.enabled);
+      var uncommittedRepositoryCount = Number(state.uncommittedRepositoryCount) || 0;
+      var uncommittedRepoBadge = document.getElementById('uncommittedRepoBadge');
+      uncommittedRepoBadge.textContent = String(uncommittedRepositoryCount);
+      uncommittedRepoBadge.title = 'Git - ' + uncommittedRepositoryCount + ' 个仓库有未提交文件';
+      uncommittedRepoBadge.hidden = uncommittedRepositoryCount === 0;
       stagedCount = Number(state.stagedCount) || 0;
       changesCount = Number(state.changesCount) || 0;
       hasMoreCommits = Boolean(state.hasMoreCommits);
