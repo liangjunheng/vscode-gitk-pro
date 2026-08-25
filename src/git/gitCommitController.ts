@@ -33,7 +33,7 @@ const LANE_COLORS = [
  * 关键约束:
  * - 两个刷新入口 (分支变化 / 关键字变化) 走同一条流程, 内容一致则不刷新;
  * - 分支选择变化会取消旧提交列表读取，并通过内部 generation 隔离旧结果;
- * - 搜索与 forceRefresh 仍共用 loading 门禁，不打断当前分支读取;
+ * - 提交刷新只消费分支选择事件，HEAD 变化不再通过第二入口重复刷新;
  * - selectedBranches 只读不写, 任何失败都不改动它;
  * - selected 仅首次默认取首条, 刷新列表时一律不动;
  * - 两个内容读取方法是纯查询, 不写状态不发事件不受 loading 限制。
@@ -51,7 +51,6 @@ export class GitCommitController implements vscode.Disposable {
     private repositorySelectionGeneration = 0;
     private branchRepositorySelectionGeneration = -1;
     private _isLoading = false;
-    private pendingForceRefresh = false;
     private workingTree = new WorkingTreeChanges();
     private workingTreeRepositoryPath?: string;
     private _hasUncommittedChanges = false;
@@ -71,7 +70,6 @@ export class GitCommitController implements vscode.Disposable {
     private readonly presenceEmitter = new vscode.EventEmitter<boolean>();
     private readonly repositorySelectionSubscription: vscode.Disposable;
     private readonly branchSelectionSubscription: vscode.Disposable;
-    private readonly currentHeadBranchSubscription: vscode.Disposable;
     private readonly uncommittedFilesSubscription: vscode.Disposable;
 
     readonly onSearchedCommitsChanged = this.searchedEmitter.event;
@@ -91,10 +89,6 @@ export class GitCommitController implements vscode.Disposable {
         });
         this.branchSelectionSubscription = branchesController.onSelectedBranchesChanged(branchesMap => {
             this.selectBranches([...branchesMap.values()].flat());
-        });
-        this.currentHeadBranchSubscription = branchesController.onEachRepoCurrentHeadBranchChanged(event => {
-            if (!event.branch || !this.repositories.some(repository => repository.path === event.repositoryPath)) { return; }
-            this.forceRefresh();
         });
         this.uncommittedFilesSubscription = uncommittedFilesWatcher.onEachHeadBranchUncommittedFileChanged(event => {
             const current = this.branches.find(branch => branch.kind === 'current');
@@ -126,20 +120,6 @@ export class GitCommitController implements vscode.Disposable {
         );
     }
     get isLoading(): boolean { return this._isLoading; }
-
-    /**
-     * 分支头变化后的强制刷新入口。
-     * 不改 selectedBranches；在途时记账，当前刷新收尾后补跑，避免 watcher 事件丢失。
-     */
-    forceRefresh(): void {
-        if (this._isLoading) {
-            this.pendingForceRefresh = true;
-            return;
-        }
-        if (this.branches.length === 0 || this.repositories.length === 0) { return; }
-        this._isLoading = true;
-        void this.refresh(true);
-    }
 
     /** 仓库选择唯一内部入口：仅由 GitRepoController.onSelectedRepoListChanged 调用。 */
     private async selectRepositories(repositories: readonly GitRepositoryOption[]): Promise<void> {
@@ -232,7 +212,6 @@ export class GitCommitController implements vscode.Disposable {
     dispose(): void {
         this.repositorySelectionSubscription.dispose();
         this.branchSelectionSubscription.dispose();
-        this.currentHeadBranchSubscription.dispose();
         this.uncommittedFilesSubscription.dispose();
         this.commitReadAbortController?.abort();
         this.diffReader.stop();
@@ -286,10 +265,6 @@ export class GitCommitController implements vscode.Disposable {
             this.commitReadAbortController = undefined;
             this._isLoading = false;
             this.loadingEmitter.fire(false);
-            if (this.pendingForceRefresh) {
-                this.pendingForceRefresh = false;
-                this.forceRefresh();
-            }
         }
     }
 

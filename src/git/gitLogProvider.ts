@@ -499,20 +499,18 @@ export async function getGitRepositoryState(rootUri: vscode.Uri, signal?: AbortS
     return readRepositoryStateFromCli(rootUri, signal);
 }
 
-// 从 git CLI 读状态签名 (4 条命令并行)
+// 从 git CLI 读取 refs 身份；工作区状态由 UncommittedFilesWatcher 独占读取。
 async function readRepositoryStateFromCli(rootUri: vscode.Uri, signal?: AbortSignal): Promise<GitRepositoryState> {
     try {
-        const [headResult, branchResult, refsResult, statusResult] = await Promise.all([
+        const [headResult, branchResult, refsResult] = await Promise.all([
             execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, 'rev-parse', '--verify', 'HEAD'], { windowsHide: true, signal }),
             execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, 'branch', '--show-current'], { windowsHide: true, signal }),
             execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, 'for-each-ref', '--format=%(refname) %(objectname)'], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
-            execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, 'status', '--porcelain=v1', '-z', '--untracked-files=normal'], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
         ]);
         return new GitRepositoryState({
             head: headResult.stdout.trim(),
             branch: branchResult.stdout.trim() || 'HEAD',
             refs: refsResult.stdout,
-            status: statusResult.stdout,
         });
     } catch (error: any) {
         if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
@@ -583,6 +581,19 @@ export async function getWorkingTreeStatusForPaths(
     signal?: AbortSignal,
 ): Promise<WorkingTreeChanges> {
     return readWorkingTreeStatus(rootUri, paths, signal);
+}
+
+export async function getIndexChangedPaths(rootUri: vscode.Uri, signal?: AbortSignal): Promise<Set<string>> {
+    try {
+        const result = await execFileAsync('git', [
+            '--no-optional-locks', '-C', rootUri.fsPath,
+            'diff', '--cached', '--ita-visible-in-index', '--name-only', '-z', '-M', '-C',
+        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
+        return new Set(result.stdout.split('\0').filter(Boolean));
+    } catch (error: any) {
+        if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
+        throw new Error(`无法读取 index 变更路径: ${error instanceof Error ? error.message : String(error)}`);
+    }
 }
 
 async function readWorkingTreeStatus(

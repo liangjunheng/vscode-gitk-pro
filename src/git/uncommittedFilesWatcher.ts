@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { GitBranchOption, WorkingTreeChanges } from '../types';
-import { getWorkingTreeStatus, getWorkingTreeStatusForPaths } from './gitLogProvider';
+import { getIndexChangedPaths, getWorkingTreeStatus, getWorkingTreeStatusForPaths } from './gitLogProvider';
 import { RepoHeadBranchWatcher } from './gitRepoHeadBranchWatcher';
 
 const execFileAsync = promisify(execFile);
@@ -19,6 +19,9 @@ type RepositoryRefreshSlot = {
     running: boolean;
     needsRefresh: boolean;
     pendingPaths?: Set<string>;
+    fullRefreshPending: boolean;
+    indexRefreshPending: boolean;
+    indexChangedPaths: Set<string>;
     completion?: Promise<void>;
 };
 
@@ -75,7 +78,11 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         if (!slot || slot.branch?.hash !== branch.hash) {
             throw new Error('该分支不是仓库当前 HEAD');
         }
-        await this.requestRefresh(branch.repoOption.path);
+        if (slot.running) {
+            await slot.completion;
+        } else {
+            await this.requestRefresh(branch.repoOption.path);
+        }
         return copyChanges(
             this.changesByRepository.get(branch.repoOption.path)?.get(branch.hash)
             ?? new WorkingTreeChanges(),
@@ -90,6 +97,7 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         if (!slot || slot.branch?.hash !== branch.hash) {
             throw new Error('该分支不是仓库当前 HEAD');
         }
+        slot.fullRefreshPending = true;
         await this.requestRefresh(branch.repoOption.path);
     }
 
@@ -124,11 +132,18 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             generation: 0,
             running: false,
             needsRefresh: false,
+            fullRefreshPending: false,
+            indexRefreshPending: false,
+            indexChangedPaths: new Set<string>(),
         };
         const previous = slot.branch;
         if (previous?.name === branch?.name && previous?.hash === branch?.hash) { return; }
         slot.branch = branch;
         slot.generation++;
+        slot.pendingPaths = undefined;
+        slot.fullRefreshPending = false;
+        slot.indexRefreshPending = false;
+        slot.indexChangedPaths = new Set<string>();
         this.slots.set(repositoryPath, slot);
         if (!branch) {
             this.disposeRepositoryWatchers(repositoryPath);
@@ -175,7 +190,12 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             const indexWatcher = vscode.workspace.createFileSystemWatcher(
                 new vscode.RelativePattern(vscode.Uri.file(stdout.trim()), 'index'),
             );
-            const requestRefresh = () => { void this.requestRefresh(repositoryPath); };
+            const requestRefresh = () => {
+                const slot = this.slots.get(repositoryPath);
+                if (!slot?.branch) { return; }
+                slot.indexRefreshPending = true;
+                void this.requestRefresh(repositoryPath);
+            };
             this.indexWatchers.set(repositoryPath, vscode.Disposable.from(
                 indexWatcher,
                 indexWatcher.onDidCreate(requestRefresh),
@@ -254,22 +274,42 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         slot: RepositoryRefreshSlot,
     ): Promise<void> {
         try {
-            const paths = slot.pendingPaths;
-            slot.pendingPaths = undefined;
             const rootUri = vscode.Uri.parse(repositoryPath);
-            const pathChanges = paths && paths.size > 0
-                ? await getWorkingTreeStatusForPaths(rootUri, [...paths])
-                : undefined;
-            const changes = pathChanges
-                ? this.mergePathChanges(repositoryPath, branch.hash, pathChanges, paths!)
-                : await getWorkingTreeStatus(rootUri);
+            const previous = this.changesByRepository.get(repositoryPath)?.get(branch.hash);
+            const paths = slot.pendingPaths ?? new Set<string>();
+            slot.pendingPaths = undefined;
+            const fullRefresh = slot.fullRefreshPending;
+            slot.fullRefreshPending = false;
+            const reconcileIndex = slot.indexRefreshPending;
+            slot.indexRefreshPending = false;
+            let currentIndexChangedPaths: Set<string> | undefined;
+            if (reconcileIndex || !previous || fullRefresh) {
+                currentIndexChangedPaths = await getIndexChangedPaths(rootUri);
+            }
+            if (previous && reconcileIndex && currentIndexChangedPaths) {
+                slot.indexChangedPaths.forEach(filePath => paths.add(filePath));
+                currentIndexChangedPaths.forEach(filePath => paths.add(filePath));
+            }
+            const changes = !previous || fullRefresh
+                ? await getWorkingTreeStatus(rootUri)
+                : paths.size > 0
+                    ? this.mergePathChanges(
+                        repositoryPath,
+                        branch.hash,
+                        await getWorkingTreeStatusForPaths(rootUri, [...paths]),
+                        paths,
+                    )
+                    : previous;
             if (slot.generation !== generation || slot.branch?.hash !== branch.hash) {
                 console.log(`[Gitk][UncommittedWatcher] refresh discarded ${repositoryPath}`, { timestamp: new Date().toISOString() });
                 return;
             }
+            if (currentIndexChangedPaths) {
+                slot.indexChangedPaths = currentIndexChangedPaths;
+            }
             const changesByHash = this.changesByRepository.get(repositoryPath) ?? new Map<string, WorkingTreeChanges>();
-            const previous = changesByHash.get(branch.hash);
-            if (previous?.equals(changes)) {
+            const previousChanges = changesByHash.get(branch.hash);
+            if (previousChanges?.equals(changes)) {
                 console.log(`[Gitk][UncommittedWatcher] status unchanged ${repositoryPath}`, {
                     timestamp: new Date().toISOString(),
                     paths: paths ? [...paths] : [],

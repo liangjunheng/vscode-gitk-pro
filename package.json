@@ -164,23 +164,6 @@
           "when": "gitk:commitEditMsgActive",
           "group": "navigation@2"
         }
-      ],
-      "editor/content": [
-        {
-          "command": "vscode-gitk.commitEditMsg.complete",
-          "when": "gitk:commitEditMsgActive",
-          "group": "navigation@1"
-        },
-        {
-          "command": "vscode-gitk.commitEditMsg.cancel",
-          "when": "gitk:commitEditMsgActive",
-          "group": "navigation@2"
-        },
-        {
-          "command": "vscode-gitk.commitEditMsg.history",
-          "when": "gitk:commitEditMsgActive",
-          "group": "secondary@1"
-        }
       ]
     },
     "keybindings": [

@@ -776,7 +776,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private async readRepositoryStateSignature(rootUri: vscode.Uri): Promise<string | undefined> {
         try {
             const state = await getGitRepositoryState(rootUri);
-            return [state.head, state.branch, state.refs, state.status].join('\u0000');
+            return [state.head, state.branch, state.refs].join('\u0000');
         } catch {
             // 读取失败时不做抑制，交由正常刷新兜底。
             return undefined;
