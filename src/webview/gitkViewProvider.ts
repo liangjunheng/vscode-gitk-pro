@@ -1698,7 +1698,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .graph-ref { font-family: var(--vscode-editor-font-family, sans-serif); font-size: 12px; dominant-baseline: middle; }
   .col-message { text-overflow: ellipsis; }
   .col-message-head-refs { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-right: 8px; vertical-align: middle; }
-  .col-message-head-ref { display: inline-flex; align-items: center; min-height: 16px; padding: 0 5px; border-radius: 4px; color: var(--vscode-editor-background); font-size: 11px; line-height: 16px; }
+  .col-message-head-ref { display: inline-flex; align-items: center; gap: 3px; min-height: 16px; padding: 0 5px; border-radius: 4px; color: var(--vscode-editor-background); font-size: 11px; line-height: 16px; }
+  /* 选择器需两级以压过 codicon.css 的 .codicon[class*='codicon-']，否则其 16px/1 行高会让图标与标签文本错位。 */
+  .col-message-head-ref .codicon { display: flex; align-items: center; font-size: 11px; line-height: 1; }
   .col-hash { width: max-content; font-family: var(--vscode-editor-font-family, monospace); opacity: 0.85; color: var(--vscode-descriptionForeground, inherit); }
   .col-author, .col-date { width: max-content; text-overflow: clip; }
   .col-message { color: var(--vscode-foreground, inherit); }
@@ -2731,9 +2733,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     var upstream = upstreamName ? sameRepo.find(function(branch) {
       return branch.kind === 'remote' && branch.name === upstreamName;
     }) : undefined;
+    // 当前分支用靶子图标, 远程分支用云图标, 图标由 kind 决定而非标签文本。
     var labels = [];
-    if (current.hash === c.hash) labels.push(current.label);
-    if (upstream && upstream.hash === c.hash) labels.push(upstream.label);
+    if (current.hash === c.hash) labels.push({ label: current.label, icon: 'target' });
+    if (upstream && upstream.hash === c.hash) labels.push({ label: upstream.label, icon: 'cloud' });
     return labels;
   }
 
@@ -2746,9 +2749,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     var expanded = selected && expandedCommits.has(commitKey);
     var html = '<div class="commit-row' + (expanded ? ' expanded' : '') + (selected ? ' selected' : '') + '" data-hash="' + escapeAttr(c.hash) + '" data-repository-path="' + escapeAttr(c.gitBranchOption.repoOption.path) + '" data-row="' + i + '" data-has-description="true">';
     var headLabels = headBranchLabels(c);
-    var branchList = (c.refs || []).concat(headLabels.filter(function(label) {
-      return !(c.refs || []).includes(label);
-    })).join(', ');
+    var branchList = (c.refs || []).concat(headLabels.filter(function(head) {
+      return !(c.refs || []).includes(head.label);
+    }).map(function(head) { return head.label; })).join(', ');
     html += '<div class="col-graph"' + (branchList ? ' title="' + escapeAttr(branchList) + '"' : '') + '><svg class="graph-svg" width="' + graphW + '" height="' + ROW_H + '" viewBox="0 0 ' + graphW + ' ' + ROW_H + '"></svg></div>';
     var authorPreview = c.authorEmail ? c.author + ' <' + c.authorEmail + '>' : c.author;
     var commitDate = c.authorDate ? new Date(c.authorDate).toString() : c.authorDateLabel;
@@ -2762,8 +2765,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       'Author: ' + authorPreview,
       'Date: ' + commitDate,
     ].filter(Boolean).join('\\n');
-    var headRefHtml = headLabels.map(function(label) {
-      return '<span class="col-message-head-ref" style="background:' + escapeAttr(commitLaneColor(c)) + '">' + escapeHtml(label) + '</span>';
+    var headRefHtml = headLabels.map(function(head) {
+      return '<span class="col-message-head-ref" style="background:' + escapeAttr(commitLaneColor(c)) + '">'
+        + '<span class="codicon codicon-' + head.icon + '" aria-hidden="true"></span>'
+        + escapeHtml(head.label) + '</span>';
     }).join('');
     html += '<div class="col-message" title="' + escapeAttr(hoverDescription) + '">' + (headRefHtml ? '<span class="col-message-head-refs">' + headRefHtml + '</span>' : '') + escapeHtml(c.message) + '</div>';
     html += '<div class="col-author" title="' + escapeAttr(authorPreview) + '">' + escapeHtml(authorPreview) + '</div>';
