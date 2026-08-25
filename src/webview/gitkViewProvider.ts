@@ -166,10 +166,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     repository.staged.length > 0 || repository.unstaged.length > 0).length,
                 stagedCount: workingTree.staged.length,
                 changesCount: workingTree.changes.length,
-                // 分页不在控制器职责内，暂固定为无更多。
-                hasMoreCommits: false,
-                isLoadingMoreCommits: false,
-                commitPageError: '',
+                hasMoreCommits: this.commitController.canLoadMoreCommits,
+                isLoadingMoreCommits: this.commitController.isLoadingMoreCommits,
+                commitPageError: this.commitController.commitPageErrorMessage,
                 branches: this.branches,
                 selectedRepositoryPaths,
                 selectedBranches: this.selectedBranches,
@@ -863,7 +862,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 break;
             }
             case 'loadMoreCommits':
-                // 分页尚未纳入控制器职责，暂不处理。
+                void this.commitController.loadMoreCommits();
                 break;
             case 'gitSync': {
                 const repositoryPath = this.selectedRepositoryPath;
@@ -2563,12 +2562,16 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
     footer.textContent = '继续滚动以加载更多提交';
     if ('IntersectionObserver' in window) {
+      var triggerIndex = Math.max(0, commits.length - 20);
+      var graph = document.getElementById('graph');
+      var triggerRow = graph.querySelector('.commit-row[data-row="' + triggerIndex + '"]');
+      if (!triggerRow) return;
       commitLoadObserver = new IntersectionObserver(function(entries) {
         if (entries.some(function(entry) { return entry.isIntersecting; })) {
           vscode.postMessage({ type: 'loadMoreCommits' });
         }
-      }, { root: document.getElementById('graph'), rootMargin: '0px 0px 800px 0px' });
-      commitLoadObserver.observe(footer);
+      }, { root: document.getElementById('graph') });
+      commitLoadObserver.observe(triggerRow);
     }
   }
 

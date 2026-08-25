@@ -18,8 +18,8 @@ import {
     searchCommits,
 } from './gitLogProvider';
 
-/** 首页提交条数。 */
-const COMMIT_LIMIT = 200;
+/** 每页提交条数。 */
+const COMMIT_PAGE_SIZE = 50;
 
 const LANE_COLORS = [
     '#e06c75', '#61afef', '#98c379', '#c678dd', '#e5c07b',
@@ -45,6 +45,13 @@ export class GitCommitController implements vscode.Disposable {
     private keywords: string[] = [];
     private searched: CommitMetadata[] = [];
     private total: CommitMetadata[] = [];
+    private commitPageByRepository = new Map<string, CommitMetadata[]>();
+    private commitPageOffsetByRepository = new Map<string, number>();
+    private hasMoreCommits = false;
+    private isLoadingMore = false;
+    private commitPageError = '';
+    private pageAbortController?: AbortController;
+    private pageGeneration = 0;
     private selectedCommitIdentity?: { hash: string; repositoryPath: string };
     private commitReadAbortController?: AbortController;
     private commitReadGeneration = 0;
@@ -120,12 +127,65 @@ export class GitCommitController implements vscode.Disposable {
         );
     }
     get isLoading(): boolean { return this._isLoading; }
+    get canLoadMoreCommits(): boolean { return this.hasMoreCommits; }
+    get isLoadingMoreCommits(): boolean { return this.isLoadingMore; }
+    get commitPageErrorMessage(): string { return this.commitPageError; }
+
+    async loadMoreCommits(): Promise<void> {
+        if (this._isLoading || this.isLoadingMore || !this.hasMoreCommits || this.keywords.length > 0) { return; }
+        const generation = ++this.pageGeneration;
+        const abortController = new AbortController();
+        this.pageAbortController?.abort();
+        this.pageAbortController = abortController;
+        this.isLoadingMore = true;
+        this.commitPageError = '';
+        this.searchedEmitter.fire([...this.searched]);
+        try {
+            const pageResults = await Promise.all(this.repositories.map(async repository => {
+                const refs = this.branchesByRepository.get(repository.path)?.map(branch => branch.name) ?? [];
+                const offset = this.commitPageOffsetByRepository.get(repository.path) ?? 0;
+                if (refs.length === 0 || offset === 0) { return { path: repository.path, commits: [] }; }
+                const commits = await getGitCommits(vscode.Uri.parse(repository.path), COMMIT_PAGE_SIZE, refs, offset, undefined, abortController.signal);
+                return { path: repository.path, commits };
+            }));
+            if (abortController.signal.aborted || generation !== this.pageGeneration) { return; }
+            for (const result of pageResults) {
+                if (result.commits.length > 0) {
+                    const existing = this.commitPageByRepository.get(result.path) ?? [];
+                    this.commitPageByRepository.set(result.path, [...existing, ...result.commits]);
+                    this.commitPageOffsetByRepository.set(result.path, existing.length + result.commits.length);
+                }
+            }
+            const merged = this.buildPagedCommits();
+            this.searched = merged;
+            this.total = merged.map(commit => new CommitMetadata({ ...commit }));
+            this.hasMoreCommits = pageResults.some(result => result.commits.length === COMMIT_PAGE_SIZE);
+            this.searchedEmitter.fire([...this.searched]);
+            this.totalEmitter.fire([...this.total]);
+        } catch (error) {
+            if (!abortController.signal.aborted && generation === this.pageGeneration) {
+                this.commitPageError = error instanceof Error ? error.message : String(error);
+                this.searchedEmitter.fire([...this.searched]);
+            }
+        } finally {
+            if (generation === this.pageGeneration) {
+                this.isLoadingMore = false;
+                this.pageAbortController = undefined;
+                this.searchedEmitter.fire([...this.searched]);
+            }
+        }
+    }
 
     /** 仓库选择唯一内部入口：仅由 GitRepoController.onSelectedRepoListChanged 调用。 */
     private async selectRepositories(repositories: readonly GitRepositoryOption[]): Promise<void> {
         if (this.sameRepositories(this.repositories, repositories)) { return; }
         this.commitReadAbortController?.abort();
+        this.pageAbortController?.abort();
         this.repositories = [...repositories];
+        this.commitPageByRepository.clear();
+        this.commitPageOffsetByRepository.clear();
+        this.hasMoreCommits = false;
+        this.commitPageError = '';
         this.repositorySelectionGeneration++;
         // 分支事件将携带新仓库对应的分支；强制该次事件按新数据源重新读取。
     }
@@ -143,6 +203,11 @@ export class GitCommitController implements vscode.Disposable {
         if (!repositoryChanged && this.sameBranches(this.branches, branches)) { return; }
         // 新分支或新仓库选择必须立即淘汰旧提交列表读取，不能因 loading 丢弃最新数据源。
         this.commitReadAbortController?.abort();
+        this.pageAbortController?.abort();
+        this.commitPageByRepository.clear();
+        this.commitPageOffsetByRepository.clear();
+        this.hasMoreCommits = false;
+        this.commitPageError = '';
         this._isLoading = true;
         this.branches = [...branches];
         this.branchRepositorySelectionGeneration = this.repositorySelectionGeneration;
@@ -214,6 +279,7 @@ export class GitCommitController implements vscode.Disposable {
         this.branchSelectionSubscription.dispose();
         this.uncommittedFilesSubscription.dispose();
         this.commitReadAbortController?.abort();
+        this.pageAbortController?.abort();
         this.diffReader.stop();
         this.searchedEmitter.dispose();
         this.totalEmitter.dispose();
@@ -240,6 +306,7 @@ export class GitCommitController implements vscode.Disposable {
             const searched = await searchedPromise;
             if (abortController.signal.aborted || generation !== this.commitReadGeneration) { return; }
             this.searched = searched;
+            this.resetCommitPages(searched);
             this.searchedEmitter.fire([...this.searched]);
             if (branchesChanged) {
                 // 无搜索时 searched 就是完整展示列表；复制对象即可隔离 buildGraph 写入，无需重复执行 git log。
@@ -281,13 +348,43 @@ export class GitCommitController implements vscode.Disposable {
             const rootUri = vscode.Uri.parse(repository.path);
             const commits = keywords.length > 0
                 ? await searchCommits(rootUri, [...keywords], refs, signal)
-                : await getGitCommits(rootUri, COMMIT_LIMIT, refs, 0, undefined, signal);
+                : await getGitCommits(rootUri, COMMIT_PAGE_SIZE, refs, 0, undefined, signal);
             // 每个列表各自建图: buildGraph 原地改图形字段, 共享对象会互相污染。
             return this.buildGraph(commits).map(commit => new CommitMetadata({
                 ...commit,
                 gitBranchOption: this.branchesByRepository.get(repository.path)?.[0]!,
             }));
         }));
+        return pages.flat();
+    }
+
+    private resetCommitPages(commits: readonly CommitMetadata[]): void {
+        this.commitPageByRepository.clear();
+        this.commitPageOffsetByRepository.clear();
+        const byRepository = new Map<string, CommitMetadata[]>();
+        for (const commit of commits) {
+            const repositoryPath = commit.gitBranchOption?.repoOption.path;
+            if (!repositoryPath) { continue; }
+            const page = byRepository.get(repositoryPath) ?? [];
+            page.push(new CommitMetadata({ ...commit, lane: undefined, inputSwimlanes: undefined, outputSwimlanes: undefined }));
+            byRepository.set(repositoryPath, page);
+        }
+        for (const [repositoryPath, page] of byRepository) {
+            this.commitPageByRepository.set(repositoryPath, page);
+            this.commitPageOffsetByRepository.set(repositoryPath, page.length);
+        }
+        this.hasMoreCommits = this.keywords.length === 0
+            && [...byRepository.values()].some(page => page.length === COMMIT_PAGE_SIZE);
+        this.commitPageError = '';
+    }
+
+    private buildPagedCommits(): CommitMetadata[] {
+        const pages = [...this.commitPageByRepository.entries()].map(([repositoryPath, commits]) =>
+            this.buildGraph(commits.map(commit => new CommitMetadata({
+                ...commit,
+                gitBranchOption: this.branchesByRepository.get(repositoryPath)?.[0],
+            }))),
+        );
         return pages.flat();
     }
 
