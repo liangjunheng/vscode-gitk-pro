@@ -1531,26 +1531,25 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .folder-item .file-path { margin-left: 4px; }
   .file-item:hover, .folder-item:hover { background: var(--vscode-list-hoverBackground); }
   .file-item.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
-  .working-tree-content { display: grid; grid-template-columns: minmax(100%, max-content); width: max-content; min-width: 100%; }
+  #filesList > .working-tree-content { display: inline-grid; grid-template-columns: 1fr; width: max-content; min-width: 100%; }
   .working-tree-section-body { position: relative; width: 100%; min-width: 0; background: var(--working-tree-row-background); }
   .working-tree-section-body::before { content: ''; position: absolute; top: 0; bottom: 0; left: 7px; z-index: 1; width: 1px; pointer-events: none; }
   .working-tree-section[data-section="staged"] .working-tree-section-body::before { background: var(--vscode-gitDecoration-addedResourceForeground, #73c991); }
   .working-tree-section[data-section="unstaged"] .working-tree-section-body::before { background: var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d); }
   .working-tree-section + .working-tree-section { border-top: 1px solid var(--vscode-panel-border); }
   .working-tree-section { --working-tree-header-background: var(--vscode-sideBarSectionHeader-background, var(--vscode-editorWidget-background)); --working-tree-row-background: var(--vscode-editor-background); position: relative; width: 100%; min-width: 0; }
-  .working-tree-section.has-selected { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .working-tree-section-header { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; width: 100%; min-width: 0; height: 26px; padding: 0 0 0 10px; box-sizing: border-box; font-weight: 600; background: var(--working-tree-header-background); }
   .working-tree-section-body .file-item { width: max-content; min-width: 100%; padding-left: 15px; padding-right: 0; background: var(--working-tree-row-background); }
-  .working-tree-section:not(.has-selected) .working-tree-section-body .file-item:hover { --working-tree-row-background: var(--vscode-list-hoverBackground); }
-  .working-tree-section-body .file-item.selected { color: inherit; background: var(--working-tree-row-background); outline: none; }
+  .working-tree-section-body .file-item:hover { --working-tree-row-background: var(--vscode-list-hoverBackground); }
+  .working-tree-section-body .file-item.selected { --working-tree-row-background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .working-tree-section-header.disabled { color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground)); }
   .working-tree-section-leading { position: sticky; left: 10px; z-index: 2; display: inline-flex; align-items: center; flex: 0 0 auto; min-width: 0; padding-right: 4px; background: var(--working-tree-header-background); }
   .working-tree-section-title { min-width: 0; }
   .working-tree-section-count { margin-left: 5px; color: var(--vscode-descriptionForeground); font-weight: 400; }
   .working-tree-section-actions, .file-actions { position: sticky; right: 0; isolation: isolate; overflow: hidden; display: flex; align-items: center; flex: 0 0 auto; margin-left: auto; gap: 2px; box-sizing: border-box; padding: 1px 0 1px 4px; }
-  .working-tree-section-actions { --working-tree-actions-background: var(--working-tree-header-background); z-index: 3; }
-  .file-actions { --working-tree-actions-background: var(--working-tree-row-background); }
-  .working-tree-section-actions::before, .file-actions::before { content: ''; position: absolute; inset: 0; z-index: 0; background-color: var(--working-tree-actions-background); }
+  .working-tree-section-actions { --working-tree-actions-background: var(--working-tree-header-background); --working-tree-actions-base: var(--vscode-editorWidget-background, var(--vscode-editor-background)); z-index: 3; }
+  .file-actions { --working-tree-actions-background: var(--working-tree-row-background); --working-tree-actions-base: var(--vscode-editor-background); }
+  .working-tree-section-actions::before, .file-actions::before { content: ''; position: absolute; inset: 0; z-index: 0; background: linear-gradient(var(--working-tree-actions-background), var(--working-tree-actions-background)), var(--working-tree-actions-base); }
   .working-tree-action { position: relative; z-index: 1; display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 5px; color: inherit; background: transparent; cursor: pointer; appearance: none; }
   .working-tree-actions-spacer { position: relative; z-index: 1; flex: 0 0 8px; width: 8px; align-self: stretch; }
   .working-tree-action:hover { background: var(--vscode-toolbar-hoverBackground); }
