@@ -95,8 +95,8 @@ export class Store {
             }
             case 'selectFile':
                 if (typeof intent.path !== 'string' || !this.state.files.some(file => (file.diffKey || file.path) === intent.path)) { break; }
-                if (intent.path === this.state.selectedPath) { break; }
-                partial = { selectedPath: intent.path };
+                if (intent.path !== this.state.selectedPath) { partial = { selectedPath: intent.path }; }
+                // 重复点击仍需激活 MultiDiff 标签，不能因 selectedPath 未变化而吞掉命令副作用。
                 effects = [{ type: 'selectFile', path: intent.path }];
                 break;
             case 'copyFilePath':

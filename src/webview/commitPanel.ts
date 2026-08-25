@@ -27,6 +27,7 @@ type CommitPanelCallbacks = {
     readonly onToggleDisplayMode: () => void;
     readonly onToggleAmend: (repositoryPath: string) => void;
     readonly onHistory: (repositoryPath: string) => void;
+    readonly onSelectFile: (repositoryPath: string, section: 'staged' | 'unstaged', path: string) => void;
     readonly onWorkingTreeAction: (
         repositoryPath: string,
         action: 'stage' | 'unstage' | 'discard',
@@ -132,6 +133,10 @@ export class CommitPanel implements vscode.Disposable {
             this.callbacks.onToggleDisplayMode();
         } else if (data.type === 'history' && repo) {
             this.callbacks.onHistory(repo);
+        } else if (data.type === 'selectFile' && repo
+            && (data.section === 'staged' || data.section === 'unstaged')
+            && typeof data.path === 'string') {
+            this.callbacks.onSelectFile(repo, data.section, data.path);
         } else if (data.type === 'workingTreeAction' && repo
             && (data.action === 'stage' || data.action === 'unstage' || data.action === 'discard')
             && (data.section === 'staged' || data.section === 'unstaged')
@@ -293,6 +298,8 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     const parts=fileParts(file);
     const row=document.createElement('div');
     row.className='file-row '+(file.isUntracked?'untracked':section);
+    row.dataset.path=file.path;
+    row.dataset.section=section;
     if(treeIndent)row.style.paddingLeft='30px';
     const status=document.createElement('span');
     status.className='status';
@@ -450,8 +457,14 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
   }
 
   function bindRowActions(container,repo,card){
+    container.querySelectorAll('.file-row').forEach(function(row){
+      row.addEventListener('click',function(){
+        vscode.postMessage({type:'selectFile',repositoryPath:repo,section:row.dataset.section,path:row.dataset.path});
+      });
+    });
     container.querySelectorAll('.icon-btn').forEach(function(btn){
-      btn.addEventListener('click',function(){
+      btn.addEventListener('click',function(event){
+        event.stopPropagation();
         const filePath=btn.dataset.path;
         const file=card[btn.dataset.section==='staged'?'stagedFiles':'unstagedFiles'].find(function(item){return item.path===filePath});
         vscode.postMessage({

@@ -29,6 +29,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     // 异步控制 / 内部状态 (不存入 Store)
     private refreshAbortController?: AbortController;
     private commitFilesAbortController?: AbortController;
+    private commitPanelDiffAbortController?: AbortController;
     private commitFilesGeneration = 0;
     // 等待 Diff 渲染完成后再显示 Changed Files 列表的代次标记。
     private pendingFilesRevealGeneration?: number;
@@ -226,6 +227,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             onToggleDisplayMode: () => this.dispatchIntent({ type: 'toggleFilesMode' }),
             onToggleAmend: repositoryPath => void this.toggleCommitAmend(repositoryPath),
             onHistory: repositoryPath => void this.pickCommitHistoryMessage(repositoryPath),
+            onSelectFile: (repositoryPath, section, filePath) =>
+                void this.openCommitPanelWorkingTreeDiff(repositoryPath, section, filePath),
             onWorkingTreeAction: (repositoryPath, action, section, paths, untrackedPaths) =>
                 void this.runCommitPanelWorkingTreeAction(repositoryPath, action, section, paths, untrackedPaths),
             onClose: () => this.commitPanel.hide(),
@@ -940,6 +943,92 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    /** Commit Panel 文件点击统一切到对应仓库的虚拟提交，再由同一 MultiDiff 入口激活并定位。 */
+    private async openCommitPanelWorkingTreeDiff(
+        repositoryPath: string,
+        section: 'staged' | 'unstaged',
+        filePath: string,
+    ): Promise<void> {
+        this.commitPanelDiffAbortController?.abort();
+        const abortController = new AbortController();
+        this.commitPanelDiffAbortController = abortController;
+        try {
+            const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+                .find(candidate => candidate.repoOption.path === repositoryPath);
+            if (!branch) { return; }
+            const revealPath = `${section}:${filePath}`;
+            const isCurrentWorkingTree = this.currentHash === 'uncommitted'
+                && this.currentRepositoryPath === repositoryPath;
+            if (!isCurrentWorkingTree) {
+                const selectedBranch = await this.selectCommitPanelRepository(branch, abortController.signal);
+                if (!selectedBranch || abortController.signal.aborted) { return; }
+                const nextGeneration = this.commitFilesGeneration + 1;
+                const changed = this.commitController.selectCommit(new CommitMetadata({ hash: 'uncommitted', gitBranchOption: selectedBranch }));
+                const selectionIsLoading = this.currentHash === 'uncommitted'
+                    && this.currentRepositoryPath === repositoryPath
+                    && store.getState().diffLoading;
+                if (changed || selectionIsLoading) {
+                    const generation = changed ? nextGeneration : this.commitFilesGeneration;
+                    const loaded = await this.waitForWorkingTreeSelection(repositoryPath, generation, abortController.signal);
+                    if (!loaded || abortController.signal.aborted) { return; }
+                }
+            }
+            if (this.currentHash !== 'uncommitted'
+                || this.currentRepositoryPath !== repositoryPath
+                || store.getState().diffLoading
+                || !this.files.some(file => (file.diffKey || file.path) === revealPath)) { return; }
+            store.setState({ selectedPath: revealPath });
+            this.openDiff(revealPath);
+        } finally {
+            if (this.commitPanelDiffAbortController === abortController) {
+                this.commitPanelDiffAbortController = undefined;
+            }
+        }
+    }
+
+    private selectCommitPanelRepository(branch: GitBranchOption, signal: AbortSignal): Promise<GitBranchOption | undefined> {
+        const selected = this.branchesController.getSelectedCurrentBranch();
+        if (selected?.repoOption.path === branch.repoOption.path) { return Promise.resolve(selected); }
+        return new Promise(resolve => {
+            const finish = (result?: GitBranchOption): void => {
+                subscription.dispose();
+                signal.removeEventListener('abort', cancel);
+                resolve(result);
+            };
+            const cancel = (): void => finish();
+            const subscription = this.branchesController.onSelectedBranchesChanged(branchesByRepository => {
+                const current = [...branchesByRepository.values()].flat()
+                    .find(candidate => candidate.kind === 'current' && candidate.repoOption.path === branch.repoOption.path);
+                if (current) { finish(current); }
+            });
+            signal.addEventListener('abort', cancel, { once: true });
+            this.repoController.selectRepositories([branch.repoOption]);
+        });
+    }
+
+    private waitForWorkingTreeSelection(repositoryPath: string, generation: number, signal: AbortSignal): Promise<boolean> {
+        return new Promise(resolve => {
+            const complete = (): boolean => this.commitFilesGeneration >= generation
+                && this.currentHash === 'uncommitted'
+                && this.currentRepositoryPath === repositoryPath
+                && !store.getState().diffLoading;
+            if (complete()) { resolve(true); return; }
+            const finish = (loaded: boolean): void => {
+                unsubscribe();
+                signal.removeEventListener('abort', cancel);
+                resolve(loaded);
+            };
+            const cancel = (): void => finish(false);
+            const unsubscribe = store.subscribeSelector(
+                state => `${state.currentRepositoryPath ?? ''}\u0000${state.currentHash ?? ''}\u0000${state.diffGeneration}\u0000${state.diffLoading}`,
+                () => {
+                    if (complete()) { finish(true); }
+                },
+            );
+            signal.addEventListener('abort', cancel, { once: true });
+        });
+    }
+
     /** 拉取所有当前分支仓库的工作区数据, 写入扩展层多仓库 Store (commitRepositories)。 */
     private async syncCommitRepositories(): Promise<void> {
         // 覆盖全部仓库 (来自 watcher), 不再限于已选仓库的 this.branches。
@@ -1312,12 +1401,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         return resolvedPath;
     }
 
-    // 点击 Changed Files 文件: Store dispatch 已校验路径并写好 selectedPath, 这里只需定位。
-    // Changed Files 列表在 Diff 渲染完成后才显示, 因此面板必然已就绪, 直接轻量 reveal;
-    // 面板被手动关闭等异常情形回退到 openDiff 重建。
+    // 文件点击是“激活目标标签并定位”的命令，不是后台轻量同步；统一走 show()。
     private selectChangedFile(filePath: string): void {
         if (!this.canShowMultiDiff() || !this.view?.visible) { return; }
-        if (this.multiDiffPanel.revealFile(filePath)) { return; }
         this.openDiff(filePath);
     }
 
