@@ -1530,30 +1530,36 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .folder-item .file-path { margin-left: 4px; }
   .file-item:hover, .folder-item:hover { background: var(--vscode-list-hoverBackground); }
   .file-item.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
-  .working-tree-section-body { position: relative; width: 100%; min-width: 100%; }
+  .working-tree-content { display: grid; grid-template-columns: minmax(100%, max-content); width: max-content; min-width: 100%; }
+  .working-tree-section-body { position: relative; width: 100%; min-width: 0; background: var(--working-tree-row-background); }
   .working-tree-section-body::before { content: ''; position: absolute; top: 0; bottom: 0; left: 7px; z-index: 1; width: 1px; pointer-events: none; }
   .working-tree-section[data-section="staged"] .working-tree-section-body::before { background: var(--vscode-gitDecoration-addedResourceForeground, #73c991); }
   .working-tree-section[data-section="unstaged"] .working-tree-section-body::before { background: var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d); }
   .working-tree-section + .working-tree-section { border-top: 1px solid var(--vscode-panel-border); }
-  .working-tree-section { position: relative; width: 100%; min-width: 100%; }
-  .working-tree-section-header { position: sticky; left: 0; top: 0; z-index: 3; display: flex; align-items: center; height: 26px; padding: 0 10px; font-weight: 600; background: var(--vscode-sideBarSectionHeader-background, var(--vscode-editorWidget-background)); border: 1px solid transparent; }
-  .working-tree-section.has-selected .working-tree-section-header { border-color: var(--vscode-focusBorder); }
-  .working-tree-section-body .file-item.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
-  .working-tree-section-body .file-item { padding-left: 15px; }
+  .working-tree-section { --working-tree-header-background: var(--vscode-sideBarSectionHeader-background, var(--vscode-editorWidget-background)); --working-tree-row-background: var(--vscode-editor-background); position: relative; width: 100%; min-width: 0; }
+  .working-tree-section.has-selected { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  .working-tree-section-header { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; width: 100%; min-width: 0; height: 26px; padding: 0 0 0 10px; box-sizing: border-box; font-weight: 600; background: var(--working-tree-header-background); }
+  .working-tree-section-body .file-item { width: max-content; min-width: 100%; padding-left: 15px; padding-right: 0; background: var(--working-tree-row-background); }
+  .working-tree-section:not(.has-selected) .working-tree-section-body .file-item:hover { --working-tree-row-background: var(--vscode-list-hoverBackground); }
+  .working-tree-section-body .file-item.selected { color: inherit; background: var(--working-tree-row-background); outline: none; }
   .working-tree-section-header.disabled { color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground)); }
+  .working-tree-section-leading { position: sticky; left: 10px; z-index: 2; display: inline-flex; align-items: center; flex: 0 0 auto; min-width: 0; padding-right: 4px; background: var(--working-tree-header-background); }
   .working-tree-section-title { min-width: 0; }
   .working-tree-section-count { margin-left: 5px; color: var(--vscode-descriptionForeground); font-weight: 400; }
-  .working-tree-section-actions, .file-actions { display: flex; align-items: center; margin-left: auto; gap: 2px; }
-  .working-tree-action { display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 5px; color: inherit; background: transparent; cursor: pointer; appearance: none; }
+  .working-tree-section-actions, .file-actions { position: sticky; right: 0; isolation: isolate; overflow: hidden; display: flex; align-items: center; flex: 0 0 auto; margin-left: auto; gap: 2px; box-sizing: border-box; padding: 1px 0 1px 4px; }
+  .working-tree-section-actions { --working-tree-actions-background: var(--working-tree-header-background); z-index: 3; }
+  .file-actions { --working-tree-actions-background: var(--working-tree-row-background); }
+  .working-tree-section-actions::before, .file-actions::before { content: ''; position: absolute; inset: 0; z-index: 0; background-color: var(--working-tree-actions-background); }
+  .working-tree-action { position: relative; z-index: 1; display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 5px; color: inherit; background: transparent; cursor: pointer; appearance: none; }
+  .working-tree-actions-spacer { position: relative; z-index: 1; flex: 0 0 8px; width: 8px; align-self: stretch; }
   .working-tree-action:hover { background: var(--vscode-toolbar-hoverBackground); }
   .working-tree-action:active { background: var(--vscode-toolbar-activeBackground, var(--vscode-toolbar-hoverBackground)); }
   .working-tree-action:focus { outline: none; }
   .working-tree-action:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .working-tree-action .codicon { font-size: 16px; }
   .working-tree-section-header.disabled .working-tree-section-actions { display: none; }
-  .file-item .file-actions { flex: 0 0 auto; align-self: stretch; }
+  .file-item .file-actions { z-index: 2; align-self: stretch; }
   .file-item .file-path { flex: 1 1 auto; }
-  .file-actions { padding: 1px 2px 1px 4px; }
   /* 选择器需两级以压过 codicon.css 的 .codicon[class*='codicon-']，否则其 display:inline-block 与 16px/1 行高会让图标顶对齐。 */
   .folder-item .tree-chevron, .folder-item .tree-folder-icon { display: flex; align-items: center; justify-content: center; flex: 0 0 14px; width: 14px; height: 100%; color: var(--vscode-icon-foreground); font-size: 13px; line-height: 1; }
   .working-tree-kind { display: inline-grid; place-items: center; flex: 0 0 20px; width: 20px; height: 20px; box-sizing: border-box; }
@@ -2317,6 +2323,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       (path ? ' data-path="' + escapeAttr(path) + '"' : '') + ' title="' + title + '" aria-label="' + title + '"><span class="codicon codicon-' + icon + '" aria-hidden="true"></span></button>';
   }
 
+  function workingTreeActionsHTML(actions) {
+    return actions + '<span class="working-tree-actions-spacer" aria-hidden="true"></span>';
+  }
+
   function workingTreeKindIconHTML(file, section) {
     if (section === 'staged') {
       return '<span class="working-tree-kind working-tree-kind-staged" title="Staged：已暂存" aria-label="Staged：已暂存"><svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="6.25"/><path d="m5.8 9 2.1 2.1 4.35-4.45" stroke-width="2"/></svg></span>';
@@ -2338,7 +2348,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     const diffKey = section + ':' + file.path;
     return '<div class="file-item' + (diffKey === selectedPath ? ' selected' : '') + untracked + '" data-path="' + escapeAttr(file.path) + '" data-diff-key="' + escapeAttr(diffKey) + '" data-section="' + section + '" title="' + escapeAttr(file.path) + '">' +
       workingTreeKindIconHTML(file, section) + '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span>' +
-      '<span class="file-path"><span class="file-folder">' + escapeHtml(folder) + '</span>' + escapeHtml(name) + '</span><span class="file-actions">' + actions + '</span></div>';
+      '<span class="file-path"><span class="file-folder">' + escapeHtml(folder) + '</span>' + escapeHtml(name) + '</span><span class="file-actions">' + workingTreeActionsHTML(actions) + '</span></div>';
   }
 
   function workingTreeSectionFilesHTML(section, sectionFiles) {
@@ -2369,7 +2379,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const diffKey = section + ':' + file.path;
         const untracked = section === 'unstaged' && file.isUntracked ? ' untracked' : '';
         html += '<div class="file-item' + (diffKey === selectedPath ? ' selected' : '') + untracked + '" data-path="' + escapeAttr(file.path) + '" data-diff-key="' + escapeAttr(diffKey) + '" data-section="' + section + '" style="padding-left:' + (folder ? 30 : 10) + 'px" title="' + escapeAttr(file.path) + '">';
-        html += workingTreeKindIconHTML(file, section) + '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span><span class="file-path">' + escapeHtml(name) + '</span><span class="file-actions">' + actions + '</span></div>';
+        html += workingTreeKindIconHTML(file, section) + '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span><span class="file-path">' + escapeHtml(name) + '</span><span class="file-actions">' + workingTreeActionsHTML(actions) + '</span></div>';
       });
     });
     return html;
@@ -2383,7 +2393,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       ? workingTreeActionButton('unstage', section, '', 'remove', '取消暂存此分组的所有文件（全部移回 Unstaged Changes）')
       : workingTreeActionButton('discard', section, '', 'discard', '放弃此分组所有文件的未暂存更改（不可撤销）') + workingTreeActionButton('stage', section, '', 'add', '暂存此分组的所有文件（全部移入 Staged Changes）');
     return '<section class="working-tree-section' + (hasSelected ? ' has-selected' : '') + '" data-section="' + section + '">' +
-      '<div class="working-tree-section-header' + (disabled ? ' disabled' : '') + '"><span class="working-tree-section-title">' + label + '</span><span class="working-tree-section-count">' + sectionFiles.length + '</span><span class="working-tree-section-actions">' + actions + '</span></div>' +
+      '<div class="working-tree-section-header' + (disabled ? ' disabled' : '') + '"><span class="working-tree-section-leading"><span class="working-tree-section-title">' + label + '</span><span class="working-tree-section-count">' + sectionFiles.length + '</span></span><span class="working-tree-section-actions">' + workingTreeActionsHTML(actions) + '</span></div>' +
       '<div class="working-tree-section-body">' + workingTreeSectionFilesHTML(section, sectionFiles) + '</div></section>';
   }
 
@@ -2413,7 +2423,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     modeIcon.setAttribute('d', isTree ? 'M2.5 3h5M5 3v4M5 7h5M7.5 7v4M7.5 11h6' : 'M3 4h10M3 8h10M3 12h10');
     modeButton.title = '显示方式（当前：' + (isTree ? '树状' : '平铺') + '）';
     if (selectedCommitHash === 'uncommitted') {
-      list.innerHTML = workingTreeSectionHTML('staged', 'Staged Changes', stagedFiles) + workingTreeSectionHTML('unstaged', 'Unstaged Changes', unstagedFiles);
+      list.innerHTML = '<div class="working-tree-content">' + workingTreeSectionHTML('staged', 'Staged Changes', stagedFiles) + workingTreeSectionHTML('unstaged', 'Unstaged Changes', unstagedFiles) + '</div>';
       bindWorkingTreeActions(list);
       bindFolderItems(list);
       bindFileItems(list);
