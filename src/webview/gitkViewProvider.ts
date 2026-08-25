@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { type ChangeSetMode, type ChangedFile, type GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, WorkingTreeChanges } from '../types';
-import { getCommitFiles, getGitRepositoryState, runGitCommand, runGitReadCommand, readCommitHistoryMessages } from '../git/gitLogProvider';
+import { getCommitFiles, getGitRepositoryState, runGitCommand, runGitReadCommand, readCommitHistoryMessages, readCurrentCommitMessage } from '../git/gitLogProvider';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { CommitPanel, type CommitPanelSnapshot, type CommitCard } from './commitPanel';
 import { CommitPanelViewTitleController } from './commitPanelViewTitleController';
@@ -50,6 +50,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private readonly commitPanelViewTitleController: CommitPanelViewTitleController;
     // 每仓库独立的 amend / committing 状态 (多卡片各自提交)。
     private readonly commitAmendByRepo = new Map<string, boolean>();
+    private readonly commitMessageBeforeAmendByRepo = new Map<string, string>();
     private readonly commitCommittingByRepo = new Set<string>();
     private readonly diffReader: DiffReader;
     private readonly gitActions: GitActionRunner;
@@ -225,7 +226,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.commitPanel = new CommitPanel({
             onCommit: (repositoryPath, message, amend) => void this.runCommit(repositoryPath, message, amend),
             onToggleDisplayMode: () => this.dispatchIntent({ type: 'toggleFilesMode' }),
-            onToggleAmend: repositoryPath => void this.toggleCommitAmend(repositoryPath),
+            onToggleAmend: (repositoryPath, message) => void this.toggleCommitAmend(repositoryPath, message),
             onHistory: repositoryPath => void this.pickCommitHistoryMessage(repositoryPath),
             onSelectFile: (repositoryPath, section, filePath) =>
                 void this.openCommitPanelWorkingTreeDiff(repositoryPath, section, filePath),
@@ -1071,10 +1072,23 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.commitPanel.update(this.buildCommitSnapshot());
     }
 
-    private async toggleCommitAmend(repositoryPath: string): Promise<void> {
+    private async toggleCommitAmend(repositoryPath: string, message: string): Promise<void> {
         // 由宿主权威状态翻转该仓库的 amend, 不接收 webview 传来的目标值。
-        this.commitAmendByRepo.set(repositoryPath, !(this.commitAmendByRepo.get(repositoryPath) === true));
+        const amend = !(this.commitAmendByRepo.get(repositoryPath) === true);
+        if (amend) {
+            this.commitMessageBeforeAmendByRepo.set(repositoryPath, message);
+        }
+        this.commitAmendByRepo.set(repositoryPath, amend);
         await this.refreshCommitPanel();
+        const rootUri = this.getRepoRootUri(repositoryPath);
+        if (!rootUri) { return; }
+        const nextMessage = amend
+            ? await readCurrentCommitMessage(rootUri)
+            : this.commitMessageBeforeAmendByRepo.get(repositoryPath) ?? '';
+        this.commitPanel.setMessage(repositoryPath, nextMessage);
+        if (!amend) {
+            this.commitMessageBeforeAmendByRepo.delete(repositoryPath);
+        }
     }
 
     /** 历史提交信息选择器: 选中后填入指定仓库卡片的信息框。 */
@@ -1589,15 +1603,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   #filesActions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
   #commitSplitGroup { display: flex; align-items: stretch; margin-right: 4px; border-radius: 5px; overflow: hidden; background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
   #commitSplitGroup[hidden] { display: none; }
-  #commitPrimaryBtn, #commitToggleBtn { height: 24px; border: 0; border-radius: 0; color: inherit; background: transparent; font: inherit; cursor: pointer; }
-  #commitPrimaryBtn { min-width: calc(8.5em + 16px); padding: 0 8px; white-space: nowrap; }
-  #commitToggleBtn { display: inline-flex; align-items: center; justify-content: center; width: 24px; padding: 0; border-left: 1px solid color-mix(in srgb, var(--vscode-button-foreground) 30%, transparent); }
-  #commitPrimaryBtn:hover:not(:disabled), #commitToggleBtn:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
-  #commitPrimaryBtn:disabled, #commitToggleBtn:disabled { cursor: wait; opacity: .7; }
+  #commitPrimaryBtn { height: 24px; border: 0; border-radius: 0; padding: 0 8px; color: inherit; background: transparent; font: inherit; white-space: nowrap; cursor: pointer; }
+  #commitPrimaryBtn:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
+  #commitPrimaryBtn:disabled { cursor: wait; opacity: .7; }
   #commitSplitGroup.loading #commitPrimaryBtn::before { content: ''; display: inline-block; width: 10px; height: 10px; margin-right: 6px; border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: dropdown-spin .8s linear infinite; vertical-align: -1px; }
-  #commitPrimaryBtn:focus-visible, #commitToggleBtn:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
-  #commitToggleBtn .codicon { font-size: 11px; line-height: 1; }
-  #commitToggleBtn.amend { background: color-mix(in srgb, var(--vscode-button-foreground) 22%, transparent); }
+  #commitPrimaryBtn:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   #filesActions .action-group { display: flex; align-items: center; gap: 2px; }
   #filesActions .action-group + .action-group:not([hidden])::before { content: ''; display: inline-block; width: 1px; height: 14px; margin: 0 4px; background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.3)); }
   #filesHeader [hidden] { display: none !important; }
@@ -1759,7 +1769,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     </div>
     <div id="panelResizeHandle" role="separator" aria-label="调整提交图与变更文件宽度" aria-orientation="vertical"></div>
     <section id="filesSection">
-      <div id="filesHeader"><div id="filesTitle"><span>Changed Files</span><span id="filesCommitHash"></span><span class="action-group" aria-label="复制操作"><button class="toolbar-icon commit-action" data-action="copyHash" title="Copy Commit Hash to Clipboard" aria-label="Copy Commit Hash to Clipboard"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="7.5" height="8" rx="1"/><path d="M3 10.5v-7A1.5 1.5 0 0 1 4.5 2H10"/></svg></button></span></div><div id="filesActions"><div class="action-group commit-history-action-group" aria-label="提交操作"><button class="toolbar-icon commit-action" data-action="addTag" title="Add Tag..." aria-label="Add Tag"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 7.75 7.25 3h5.75v5.75L8.25 13.5 2.5 7.75Z"/><circle cx="10.25" cy="5.75" r=".75" fill="currentColor" stroke="none"/></svg></button><button class="toolbar-icon commit-action" data-action="createBranch" title="Create Branch..." aria-label="Create Branch"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3v10M4 5.5c0 2.1 1.4 3.5 3.5 3.5H11"/><circle cx="4" cy="3" r="1.25"/><circle cx="4" cy="13" r="1.25"/><circle cx="12" cy="9" r="1.25"/></svg></button><button class="toolbar-icon commit-action" data-action="checkout" title="Checkout..." aria-label="Checkout"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3v8m0 0-2-2m2 2 2-2M4 11h4.5A3.5 3.5 0 0 0 12 7.5V5"/><path d="m10 6 2-2 2 2"/></svg></button><button class="toolbar-icon commit-action" data-action="cherryPick" title="Cherry Pick..." aria-label="Cherry Pick"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="4" r="1.25"/><circle cx="12" cy="12" r="1.25"/><path d="M4 5.25v2.5A3.25 3.25 0 0 0 7.25 11H12M6 3h3"/></svg></button><button class="toolbar-icon commit-action" data-action="revert" title="Revert..." aria-label="Revert"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 4 3 6.5 5.5 9M3.5 6.5h6A3.5 3.5 0 1 1 6 10"/></svg></button><button class="toolbar-icon commit-action" data-action="drop" title="Drop..." aria-label="Drop"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6 4.5V3h4v1.5M5 6.5v6h6v-6M7 8.5v2.5M9 8.5v2.5"/></svg></button></div><div class="action-group commit-history-action-group" aria-label="分支操作"><button class="toolbar-icon commit-action" data-action="merge" title="Merge into current branch..." aria-label="Merge into current branch"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3v10M4 10c0-2.5 1.75-4 4.25-4H11"/><circle cx="4" cy="3" r="1.25"/><circle cx="4" cy="13" r="1.25"/><circle cx="12" cy="6" r="1.25"/></svg></button><button class="toolbar-icon commit-action" data-action="rebase" title="Rebase current branch on this Commit..." aria-label="Rebase current branch on this Commit"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h7M8.5 2 11 4 8.5 6M13 12H6M7.5 10 5 12l2.5 2"/></svg></button><button class="toolbar-icon commit-action" data-action="reset" title="Reset current branch to this Commit..." aria-label="Reset current branch to this Commit"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.5" y="5.5" width="8" height="8" rx="1"/><path d="M2.5 6A4.5 4.5 0 0 1 7 2.5h2M7 2.5l2 2-2 2"/></svg></button></div><div id="commitSplitGroup" class="action-group" hidden><button id="commitPrimaryBtn" type="button" title="创建新的提交">Commit</button><button id="commitToggleBtn" type="button" title="切换到 Commit (Amend)" aria-label="切换提交方式"><span class="codicon codicon-arrow-swap" aria-hidden="true"></span></button></div><div class="action-group"><button class="toolbar-icon" id="filesModeBtn" title="显示方式（当前：树状）" aria-label="显示方式"><svg viewBox="0 0 16 16" aria-hidden="true"><path id="filesModeIcon" d="M2.5 3h5M5 3v4M5 7h5M7.5 7v4M7.5 11h6"/></svg></button></div></div></div>
+      <div id="filesHeader"><div id="filesTitle"><span>Changed Files</span><span id="filesCommitHash"></span><span class="action-group" aria-label="复制操作"><button class="toolbar-icon commit-action" data-action="copyHash" title="Copy Commit Hash to Clipboard" aria-label="Copy Commit Hash to Clipboard"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="7.5" height="8" rx="1"/><path d="M3 10.5v-7A1.5 1.5 0 0 1 4.5 2H10"/></svg></button></span></div><div id="filesActions"><div class="action-group commit-history-action-group" aria-label="提交操作"><button class="toolbar-icon commit-action" data-action="addTag" title="Add Tag..." aria-label="Add Tag"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 7.75 7.25 3h5.75v5.75L8.25 13.5 2.5 7.75Z"/><circle cx="10.25" cy="5.75" r=".75" fill="currentColor" stroke="none"/></svg></button><button class="toolbar-icon commit-action" data-action="createBranch" title="Create Branch..." aria-label="Create Branch"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3v10M4 5.5c0 2.1 1.4 3.5 3.5 3.5H11"/><circle cx="4" cy="3" r="1.25"/><circle cx="4" cy="13" r="1.25"/><circle cx="12" cy="9" r="1.25"/></svg></button><button class="toolbar-icon commit-action" data-action="checkout" title="Checkout..." aria-label="Checkout"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3v8m0 0-2-2m2 2 2-2M4 11h4.5A3.5 3.5 0 0 0 12 7.5V5"/><path d="m10 6 2-2 2 2"/></svg></button><button class="toolbar-icon commit-action" data-action="cherryPick" title="Cherry Pick..." aria-label="Cherry Pick"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="4" r="1.25"/><circle cx="12" cy="12" r="1.25"/><path d="M4 5.25v2.5A3.25 3.25 0 0 0 7.25 11H12M6 3h3"/></svg></button><button class="toolbar-icon commit-action" data-action="revert" title="Revert..." aria-label="Revert"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 4 3 6.5 5.5 9M3.5 6.5h6A3.5 3.5 0 1 1 6 10"/></svg></button><button class="toolbar-icon commit-action" data-action="drop" title="Drop..." aria-label="Drop"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6 4.5V3h4v1.5M5 6.5v6h6v-6M7 8.5v2.5M9 8.5v2.5"/></svg></button></div><div class="action-group commit-history-action-group" aria-label="分支操作"><button class="toolbar-icon commit-action" data-action="merge" title="Merge into current branch..." aria-label="Merge into current branch"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3v10M4 10c0-2.5 1.75-4 4.25-4H11"/><circle cx="4" cy="3" r="1.25"/><circle cx="4" cy="13" r="1.25"/><circle cx="12" cy="6" r="1.25"/></svg></button><button class="toolbar-icon commit-action" data-action="rebase" title="Rebase current branch on this Commit..." aria-label="Rebase current branch on this Commit"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h7M8.5 2 11 4 8.5 6M13 12H6M7.5 10 5 12l2.5 2"/></svg></button><button class="toolbar-icon commit-action" data-action="reset" title="Reset current branch to this Commit..." aria-label="Reset current branch to this Commit"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.5" y="5.5" width="8" height="8" rx="1"/><path d="M2.5 6A4.5 4.5 0 0 1 7 2.5h2M7 2.5l2 2-2 2"/></svg></button></div><div id="commitSplitGroup" class="action-group" hidden><button id="commitPrimaryBtn" type="button" title="创建新的提交">Go Commit</button></div><div class="action-group"><button class="toolbar-icon" id="filesModeBtn" title="显示方式（当前：树状）" aria-label="显示方式"><svg viewBox="0 0 16 16" aria-hidden="true"><path id="filesModeIcon" d="M2.5 3h5M5 3v4M5 7h5M7.5 7v4M7.5 11h6"/></svg></button></div></div></div>
       <div id="filesList"><div id="filesEmpty">选择一个提交以查看变更文件</div></div>
       <div id="fileContextMenu" hidden><button type="button" data-copy-path="relative">复制相对路径</button><button type="button" data-copy-path="absolute">复制完整路径</button></div>
     </section>
@@ -1905,23 +1915,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       vscode.postMessage({ type: 'commitAction', action: button.dataset.action, hash: selectedCommitHash, repositoryPath: selectedCommitRepositoryPath });
     });
   });
-  var commitAmend = false;
   document.getElementById('commitPrimaryBtn').addEventListener('click', function() {
     if (this.disabled) return;
     this.disabled = true;
-    document.getElementById('commitToggleBtn').disabled = true;
     document.getElementById('commitSplitGroup').classList.add('loading');
     document.getElementById('commitSplitGroup').setAttribute('aria-busy', 'true');
-    vscode.postMessage({ type: 'openCommitEditor', amend: commitAmend, repositoryPath: selectedCommitRepositoryPath });
-  });
-  document.getElementById('commitToggleBtn').addEventListener('click', function() {
-    commitAmend = !commitAmend;
-    var primary = document.getElementById('commitPrimaryBtn');
-    var toggle = document.getElementById('commitToggleBtn');
-    primary.textContent = commitAmend ? 'Commit (Amend)' : 'Commit';
-    primary.title = commitAmend ? '修改当前提交' : '创建新的提交';
-    toggle.title = commitAmend ? '切换到 Commit' : '切换到 Commit (Amend)';
-    toggle.classList.toggle('amend', commitAmend);
+    vscode.postMessage({ type: 'openCommitEditor', amend: false, repositoryPath: selectedCommitRepositoryPath });
   });
   document.getElementById('filesModeBtn').addEventListener('click', function() {
     vscode.postMessage({ type: 'toggleFilesMode' });
@@ -2094,7 +2093,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       filesLoading = Boolean(state.filesLoading);
       var commitEditorLoading = Boolean(state.commitEditorLoading);
       document.getElementById('commitPrimaryBtn').disabled = commitEditorLoading;
-      document.getElementById('commitToggleBtn').disabled = commitEditorLoading;
       document.getElementById('commitSplitGroup').classList.toggle('loading', commitEditorLoading);
       document.getElementById('commitSplitGroup').setAttribute('aria-busy', String(commitEditorLoading));
       var diffProgress = state.diffProgress || { completed: 0, total: 0 };

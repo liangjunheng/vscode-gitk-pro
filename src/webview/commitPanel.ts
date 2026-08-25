@@ -25,7 +25,7 @@ export interface CommitPanelSnapshot {
 type CommitPanelCallbacks = {
     readonly onCommit: (repositoryPath: string, message: string, amend: boolean) => void;
     readonly onToggleDisplayMode: () => void;
-    readonly onToggleAmend: (repositoryPath: string) => void;
+    readonly onToggleAmend: (repositoryPath: string, message: string) => void;
     readonly onHistory: (repositoryPath: string) => void;
     readonly onSelectFile: (repositoryPath: string, section: 'staged' | 'unstaged', path: string) => void;
     readonly onWorkingTreeAction: (
@@ -127,8 +127,8 @@ export class CommitPanel implements vscode.Disposable {
             });
         } else if (data.type === 'commit' && repo && typeof data.message === 'string' && typeof data.amend === 'boolean') {
             this.callbacks.onCommit(repo, data.message, data.amend);
-        } else if (data.type === 'toggleAmend' && repo) {
-            this.callbacks.onToggleAmend(repo);
+        } else if (data.type === 'toggleAmend' && repo && typeof data.message === 'string') {
+            this.callbacks.onToggleAmend(repo, data.message);
         } else if (data.type === 'toggleDisplayMode') {
             this.callbacks.onToggleDisplayMode();
         } else if (data.type === 'history' && repo) {
@@ -415,7 +415,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
       cardChevron.className='codicon codicon-chevron-'+(state.cardCollapsed?'right':'down')+' card-chevron';
     });
 
-    amendToggle.addEventListener('click',function(){vscode.postMessage({type:'toggleAmend',repositoryPath:repo})});
+    amendToggle.addEventListener('click',function(){vscode.postMessage({type:'toggleAmend',repositoryPath:repo,message:messageInput.value})});
     historyBtn.addEventListener('click',function(){vscode.postMessage({type:'history',repositoryPath:repo})});
     el.querySelector('.display-mode-btn').addEventListener('click',function(event){
       event.stopPropagation();

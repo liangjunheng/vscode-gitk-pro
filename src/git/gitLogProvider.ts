@@ -373,6 +373,11 @@ export interface CommitHistoryMessage {
     readonly message: string;
 }
 
+export async function readCurrentCommitMessage(rootUri: vscode.Uri): Promise<string> {
+    const output = await runGitReadCommand(rootUri, ['log', '-1', '--format=%B']);
+    return output.replace(/\s+$/, '');
+}
+
 export async function readCommitHistoryMessages(rootUri: vscode.Uri): Promise<CommitHistoryMessage[]> {
     const output = await runGitReadCommand(rootUri, [
         'log', '--max-count=50', '--all', '--format=%h%x1f%s%x1f%B%x1e',
