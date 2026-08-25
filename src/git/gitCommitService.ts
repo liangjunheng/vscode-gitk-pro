@@ -5,11 +5,7 @@ import * as path from 'path';
 import { randomUUID } from 'crypto';
 import * as vscode from 'vscode';
 
-/**
- * 提交服务: 不走 GIT_EDITOR 命名管道, 直接用 git commit -F <临时消息文件> 执行提交。
- * 展示模板取 git commit -v -v 生成的完整 COMMIT_EDITMSG 原文
- * (含分支状态、文件清单, 以及 scissors 之后 staged 与 unstaged 的完整 diff)。
- */
+/** 提交服务: 使用临时消息文件执行提交。 */
 
 function runGit(rootUri: vscode.Uri, args: string[], env?: NodeJS.ProcessEnv): Promise<{ code: number; stdout: string; stderr: string }> {
     return new Promise(resolve => {
@@ -34,31 +30,6 @@ async function resolveGitDir(rootUri: vscode.Uri): Promise<string> {
         throw new Error(result.stderr.trim() || '无法定位 .git 目录');
     }
     return gitDir;
-}
-
-/**
- * 取 git 生成的完整 COMMIT_EDITMSG 内容 (git commit -v -v)。
- * 做法: 用一个必定失败的 GIT_EDITOR 触发 git commit -v -v, git 会先写出完整模板
- * (注释 + scissors + staged diff + unstaged diff) 再因编辑器失败而中止, 不产生任何提交,
- * 随后读取 .git/COMMIT_EDITMSG。
- */
-export async function readCommitTemplate(rootUri: vscode.Uri, amend: boolean): Promise<string> {
-    const gitDir = await resolveGitDir(rootUri);
-    const commitEditMsgPath = path.join(gitDir, 'COMMIT_EDITMSG');
-    // 跨平台的"必定失败"编辑器: node -e process.exit(1)
-    const failingEditor = `"${process.execPath.replace(/"/g, '\\"')}" -e "process.exit(1)"`;
-    // -v -v: 在模板中附带 staged 与 unstaged 两份完整 diff。
-    await runGit(rootUri, ['commit', ...(amend ? ['--amend'] : []), '-v', '-v'], {
-        ...process.env,
-        ELECTRON_RUN_AS_NODE: '1',
-        GIT_EDITOR: failingEditor,
-    });
-    // git 中止提交时仍会留下模板文件; 读失败则回退为空。
-    try {
-        return await fs.readFile(commitEditMsgPath, 'utf8');
-    } catch {
-        return '';
-    }
 }
 
 /** 用临时消息文件执行提交, 完成后删除临时文件。 */

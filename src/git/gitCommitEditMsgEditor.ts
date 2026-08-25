@@ -3,13 +3,9 @@ import { randomUUID } from 'crypto';
 import * as net from 'net';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { runGitReadCommand } from './gitLogProvider';
+import { readCommitHistoryMessages, runGitReadCommand, type CommitHistoryMessage } from './gitLogProvider';
 
-interface HistoryMessage {
-    readonly shortHash: string;
-    readonly subject: string;
-    readonly message: string;
-}
+type HistoryMessage = CommitHistoryMessage;
 
 interface CommitEditSession {
     readonly rootUri: vscode.Uri;
@@ -26,6 +22,7 @@ export interface GitCommitEditMsgSession {
 
 export class GitCommitEditMsgEditor implements vscode.Disposable {
     private readonly sessions = new Map<string, CommitEditSession>();
+    private readonly startingRepositories = new Set<string>();
     private readonly disposables: vscode.Disposable[];
 
     constructor(private readonly extensionPath: string) {
@@ -39,16 +36,25 @@ export class GitCommitEditMsgEditor implements vscode.Disposable {
     }
 
     async edit(rootUri: vscode.Uri, amend: boolean): Promise<GitCommitEditMsgSession> {
-        if ([...this.sessions.values()].some(session => session.rootUri.toString() === rootUri.toString())) {
+        const repositoryKey = rootUri.toString();
+        if (this.startingRepositories.has(repositoryKey)
+            || [...this.sessions.values()].some(session => session.rootUri.toString() === repositoryKey)) {
             throw new Error('该仓库已有正在进行的提交编辑会话。');
         }
+        this.startingRepositories.add(repositoryKey);
         const pipeName = `\\\\.\\pipe\\vscode-gitk-${process.pid}-${randomUUID()}`;
         const server = net.createServer();
         const editorReady = new Promise<void>((resolve, reject) => {
             server.once('error', reject);
             server.listen(pipeName, resolve);
         });
-        await editorReady;
+        try {
+            await editorReady;
+        } catch (error) {
+            this.startingRepositories.delete(repositoryKey);
+            server.close();
+            throw error;
+        }
         let resolveOpened!: () => void;
         let rejectOpened!: (reason?: unknown) => void;
         const opened = new Promise<void>((resolve, reject) => {
@@ -110,6 +116,7 @@ export class GitCommitEditMsgEditor implements vscode.Disposable {
                 await gitResult;
                 return true;
             } finally {
+                this.startingRepositories.delete(repositoryKey);
                 server.close();
             }
         })();
@@ -133,11 +140,10 @@ export class GitCommitEditMsgEditor implements vscode.Disposable {
         resolveEditor: (accepted: boolean) => void,
     ): Promise<void> {
         const documentUri = vscode.Uri.file(filePath);
-        const key = documentUri.toString();
         const opened = await vscode.workspace.openTextDocument(documentUri);
         // 语言不通过 filenames 关联, 避免与内置 Git 争抢 COMMIT_EDITMSG; 由本扩展打开时显式指定。
         const document = await vscode.languages.setTextDocumentLanguage(opened, 'COMMIT_MSG_EDITOR');
-        this.sessions.set(key, { rootUri, documentUri, socket, resolveEditor, completing: false });
+        this.sessions.set(rootUri.toString(), { rootUri, documentUri, socket, resolveEditor, completing: false });
         await vscode.window.showTextDocument(document, {
             viewColumn: vscode.ViewColumn.Active,
             preserveFocus: false,
@@ -197,24 +203,8 @@ export class GitCommitEditMsgEditor implements vscode.Disposable {
         }
     }
 
-    /** 读取历史提交信息, 按完整消息去重后保留最新 10 条。 */
-    private async readHistoryMessages(rootUri: vscode.Uri): Promise<HistoryMessage[]> {
-        // 多读一段用于去重, 重复消息不占用最终 10 条名额。
-        const output = await runGitReadCommand(rootUri, [
-            'log', '--max-count=50', '--all', '--format=%h%x1f%s%x1f%B%x1e',
-        ]);
-        const seen = new Set<string>();
-        const messages: HistoryMessage[] = [];
-        for (const record of output.split('\x1e')) {
-            const [shortHash, subject, body] = record.replace(/^\r?\n/, '').split('\x1f');
-            if (!shortHash) { continue; }
-            const message = (body ?? '').replace(/\s+$/, '');
-            if (!message || seen.has(message)) { continue; }
-            seen.add(message);
-            messages.push({ shortHash, subject: subject || message.split('\n')[0], message });
-            if (messages.length >= 10) { break; }
-        }
-        return messages;
+    private readHistoryMessages(rootUri: vscode.Uri): Promise<HistoryMessage[]> {
+        return readCommitHistoryMessages(rootUri);
     }
 
     /**
@@ -247,14 +237,17 @@ export class GitCommitEditMsgEditor implements vscode.Disposable {
     private handleTabsClosed(tabs: readonly vscode.Tab[]): void {
         for (const tab of tabs) {
             if (!(tab.input instanceof vscode.TabInputText)) { continue; }
-            const session = this.sessions.get(tab.input.uri.toString());
+            const documentUri = tab.input.uri;
+            const session = [...this.sessions.values()].find(candidate => candidate.documentUri.toString() === documentUri.toString());
             if (session) { this.finishSession(session, false); }
         }
     }
 
     private getActiveSession(): CommitEditSession | undefined {
         const uri = vscode.window.activeTextEditor?.document.uri;
-        return uri ? this.sessions.get(uri.toString()) : undefined;
+        return uri
+            ? [...this.sessions.values()].find(session => session.documentUri.toString() === uri.toString())
+            : undefined;
     }
 
     private async updateActiveContext(): Promise<void> {
@@ -262,8 +255,8 @@ export class GitCommitEditMsgEditor implements vscode.Disposable {
     }
 
     private finishSession(session: CommitEditSession, accepted: boolean): void {
-        const key = session.documentUri.toString();
-        if (!this.sessions.delete(key)) { return; }
+        const repositoryPath = session.rootUri.toString();
+        if (!this.sessions.delete(repositoryPath)) { return; }
         session.socket.end(accepted ? 'commit\n' : 'cancel\n');
         session.resolveEditor(accepted);
         void this.updateActiveContext();

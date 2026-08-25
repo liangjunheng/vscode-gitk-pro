@@ -75,14 +75,19 @@ export class GitActionRunner {
             }
             progress.report({ message: '正在打开 COMMIT_EDITMSG 编辑器...' });
             const session = await this.commitEditMsgEditor.edit(rootUri, amend);
-            void session.completed.then(async committed => {
+            const completed = session.completed.then(async committed => {
                 if (committed) {
                     await this.onMutated(rootUri);
                 }
             }).catch(error => {
                 vscode.window.setStatusBarMessage(`$(warning) Git Commit 失败：${error instanceof Error ? error.message : String(error)}`, 3000);
             });
-            await session.opened;
+            try {
+                await session.opened;
+            } catch (error) {
+                await completed;
+                return;
+            }
         });
     }
 

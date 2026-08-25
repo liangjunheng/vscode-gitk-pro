@@ -7,7 +7,7 @@ export interface CommitPanelFile {
     readonly isUntracked?: boolean;
 }
 
-/** 单个仓库卡片数据; 不含 template (重开销, 展开时按需向宿主取)。 */
+/** 单个仓库提交卡片数据。 */
 export interface CommitCard {
     readonly repositoryPath: string;
     readonly repositoryLabel: string;
@@ -25,7 +25,6 @@ type CommitPanelCallbacks = {
     readonly onCommit: (repositoryPath: string, message: string, amend: boolean) => void;
     readonly onToggleAmend: (repositoryPath: string) => void;
     readonly onHistory: (repositoryPath: string) => void;
-    readonly onRequestTemplate: (repositoryPath: string) => void;
     readonly onWorkingTreeAction: (repositoryPath: string, action: 'stage' | 'unstage' | 'discard', section: 'staged' | 'unstaged', path: string) => void;
     readonly onClose: () => void;
 };
@@ -33,7 +32,6 @@ type CommitPanelCallbacks = {
 /**
  * Commit 面板: 编辑器区 webview, 纵向排列所有仓库卡片(标题=仓库名),
  * 每张卡片=一个仓库的提交信息框 + staged/unstaged 列表。
- * 卡片外壳廉价全渲染; 完整 Git Commit 内容(git commit -v -v)按需懒加载, 避免多仓库时批量 spawn git 卡顿。
  */
 export class CommitPanel implements vscode.Disposable {
     private panel?: vscode.WebviewPanel;
@@ -66,11 +64,6 @@ export class CommitPanel implements vscode.Disposable {
             this.panel.reveal(this.panel.viewColumn ?? vscode.ViewColumn.Active, false);
             this.post({ type: 'focus', repositoryPath });
         }
-    }
-
-    /** 返回请求的仓库模板 (懒加载结果)。 */
-    provideTemplate(repositoryPath: string, template: string): void {
-        if (this.panel && this.webviewReady) { this.post({ type: 'templateResult', repositoryPath, template }); }
     }
 
     /** 把历史提交信息填入指定仓库卡片的信息框。 */
@@ -129,8 +122,6 @@ export class CommitPanel implements vscode.Disposable {
             this.callbacks.onToggleAmend(repo);
         } else if (data.type === 'history' && repo) {
             this.callbacks.onHistory(repo);
-        } else if (data.type === 'requestTemplate' && repo) {
-            this.callbacks.onRequestTemplate(repo);
         } else if (data.type === 'workingTreeAction' && repo
             && (data.action === 'stage' || data.action === 'unstage' || data.action === 'discard')
             && (data.section === 'staged' || data.section === 'unstaged')
@@ -187,7 +178,8 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 /* 折叠后只剩标题栏: 去掉多余底边框, 让标题栏自身呈完整卡片外观。 */
 .card.collapsed .card-header{border-bottom:0;border-radius:var(--card-radius);box-shadow:none}
 .card.collapsible-card .card-header:hover{background:var(--vscode-list-hoverBackground)}
-.card-empty-tag{margin-left:auto;color:var(--vscode-descriptionForeground);font-weight:400;font-size:calc(var(--vscode-editor-font-size) * .9)}
+.card-empty-tag{margin-left:6px;padding:2px 7px;border-radius:9px;background:#2e7d32;color:#fff;font-weight:600;font-size:calc(var(--vscode-editor-font-size) * .85);line-height:16px}
+.card-empty-tag:empty{display:none}
 .section-count-badge,.repository-status-badge{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--vscode-badge-background);color:var(--vscode-badge-foreground);font-size:11px;font-weight:600;line-height:18px}
 .section-count-badge[hidden],.repository-status-badge[hidden]{display:none}
 .card-body{display:flex;flex-direction:column;gap:10px;padding:10px 12px}
@@ -195,12 +187,6 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .card-body[hidden]{display:none}
 .message-box{display:flex;flex-direction:column;border:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:6px;overflow:hidden}
 .message-input{width:100%;min-height:80px;resize:vertical;border:0;outline:0;padding:10px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);font-family:var(--vscode-editor-font-family);font-size:var(--vscode-editor-font-size);line-height:1.5}
-.template-box{display:flex;flex-direction:column;border:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:6px;overflow:hidden}
-.template-toggle{display:flex;align-items:center;gap:6px;padding:6px 10px;cursor:pointer;background:var(--vscode-editorWidget-background);color:var(--vscode-descriptionForeground);user-select:none;font-size:calc(var(--vscode-font-size) * .95)}
-.template-toggle:hover{color:var(--vscode-foreground)}
-.template-toggle .codicon{font-size:14px}
-.template-body{margin:0;padding:8px 10px;white-space:pre;color:var(--vscode-descriptionForeground);font-family:var(--vscode-editor-font-family);font-size:calc(var(--vscode-editor-font-size) * .92);background:var(--vscode-textCodeBlock-background,var(--vscode-editorWidget-background));border-top:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));max-height:50vh;overflow:auto}
-.template-body[hidden]{display:none}
 .actions{display:flex;gap:8px;align-items:center;justify-content:flex-end}
 .hint{margin-right:auto;color:var(--vscode-descriptionForeground);font-size:calc(var(--vscode-font-size) * .9)}
 .history-btn{border:0;padding:6px 8px;background:transparent;color:var(--vscode-icon-foreground);cursor:pointer;display:inline-flex;align-items:center;border-radius:4px}
@@ -220,8 +206,8 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .section-title{display:flex;align-items:center;justify-content:space-between;padding:5px 10px;background:var(--vscode-editorWidget-background);font-weight:600;font-size:calc(var(--vscode-font-size) * .95)}
 .section-title.collapsible{cursor:pointer;user-select:none}
 .section-title .left{display:flex;align-items:center;gap:4px}
+.section-title .section-actions{display:flex;align-items:center;gap:4px;margin-left:auto}
 .section-title .codicon{font-size:14px}
-.section.unstaged .section-title,.section.unstaged .file-row>.status,.section.unstaged .file-row>.path,.section.unstaged .empty{opacity:.55}
 .file-row{display:flex;align-items:center;gap:6px;padding:3px 10px}
 .file-row:hover{background:var(--vscode-list-hoverBackground)}
 .file-row .status{width:14px;text-align:center;color:var(--vscode-gitDecoration-modifiedResourceForeground)}
@@ -230,6 +216,8 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .file-row .row-actions{display:flex;gap:4px}
 .icon-btn{border:0;background:transparent;color:var(--vscode-icon-foreground);cursor:pointer;padding:2px;border-radius:3px;display:inline-flex;align-items:center}
 .icon-btn:hover{background:var(--vscode-toolbar-hoverBackground)}
+.icon-btn:disabled{opacity:.35;cursor:default}
+.icon-btn:disabled:hover{background:transparent}
 .icon-btn .codicon{font-size:14px}
 .empty{padding:6px 10px;color:var(--vscode-descriptionForeground)}
 .no-repos{padding:20px;color:var(--vscode-descriptionForeground);text-align:center}
@@ -253,13 +241,39 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
   function statusLabel(file){return file.isUntracked?'U':(file.status||'M').slice(0,1).toUpperCase()}
 
   function actionButton(action,section,path,icon,title){
-    return '<button class="icon-btn" data-action="'+action+'" data-section="'+section+'" data-path="'+encodeURIComponent(path)+'" title="'+title+'"><span class="codicon codicon-'+icon+'"></span></button>';
+    const button=document.createElement('button');
+    button.className='icon-btn';
+    button.dataset.action=action;
+    button.dataset.section=section;
+    button.dataset.path=path;
+    button.title=title;
+    const iconElement=document.createElement('span');
+    iconElement.className='codicon codicon-'+icon;
+    button.appendChild(iconElement);
+    return button;
   }
   function fileRowHtml(file,section){
-    const actions=section==='staged'
-      ? actionButton('unstage',section,file.path,'remove','取消暂存')
-      : actionButton('discard',section,file.path,'discard','放弃更改')+actionButton('stage',section,file.path,'add','暂存');
-    return '<div class="file-row"><span class="status">'+statusLabel(file)+'</span><span class="path" title="'+file.path+'">'+file.path+'</span><span class="row-actions">'+actions+'</span></div>';
+    const row=document.createElement('div');
+    row.className='file-row';
+    const status=document.createElement('span');
+    status.className='status';
+    status.textContent=statusLabel(file);
+    const pathElement=document.createElement('span');
+    pathElement.className='path';
+    pathElement.title=file.path;
+    pathElement.textContent=file.path;
+    const actions=document.createElement('span');
+    actions.className='row-actions';
+    if(section==='staged'){
+      actions.appendChild(actionButton('unstage',section,file.path,'remove','取消暂存'));
+    }else{
+      actions.appendChild(actionButton('discard',section,file.path,'discard','放弃更改'));
+      actions.appendChild(actionButton('stage',section,file.path,'add','暂存'));
+    }
+    row.appendChild(status);
+    row.appendChild(pathElement);
+    row.appendChild(actions);
+    return row;
   }
 
   function buildCard(repo){
@@ -272,24 +286,16 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
         '<div class="message-box">'+
           '<textarea class="message-input" placeholder="输入提交信息…" spellcheck="false"></textarea>'+
         '</div>'+
-        '<div class="section staged"><div class="section-title"><span class="left"><span>Staged Changes</span><span class="section-count-badge staged-count" hidden></span></span></div><div class="staged-list"></div></div>'+
-        '<div class="section unstaged"><div class="section-title collapsible"><span class="left"><span class="codicon codicon-chevron-right unstaged-chevron"></span><span>Unstaged Changes</span><span class="section-count-badge unstaged-count" hidden></span></span></div><div class="unstaged-list" hidden></div></div>'+
-        '<div class="template-box">'+
-          '<div class="template-toggle"><span class="codicon codicon-chevron-right template-chevron"></span><span class="template-label">显示完整 Git Commit 内容</span></div>'+
-          '<pre class="template-body" hidden></pre>'+
-        '</div>'+
+        '<div class="section staged"><div class="section-title"><span class="left"><span>Staged Changes</span><span class="section-count-badge staged-count" hidden></span></span><span class="section-actions staged-actions"><button class="icon-btn staged-all" data-action="unstage" data-section="staged" title="取消暂存所有文件"><span class="codicon codicon-remove"></span></button></span></div><div class="staged-list"></div></div>'+
+        '<div class="section unstaged"><div class="section-title collapsible"><span class="left"><span class="codicon codicon-chevron-down unstaged-chevron"></span><span>Unstaged Changes</span><span class="section-count-badge unstaged-count" hidden></span></span><span class="section-actions unstaged-actions"><button class="icon-btn discard-all" data-action="discard" data-section="unstaged" title="还原所有文件"><span class="codicon codicon-discard"></span></button><button class="icon-btn stage-all" data-action="stage" data-section="unstaged" title="暂存所有文件"><span class="codicon codicon-add"></span></button></span></div><div class="unstaged-list"></div></div>'+
         '<div class="actions">'+
           '<span class="hint"></span>'+
           '<button class="history-btn" title="历史提交信息"><span class="codicon codicon-history"></span></button>'+
           '<span class="commit-split"><button class="commit-btn">Commit</button><button class="amend-toggle" title="切换到 Commit (Amend)"><span class="codicon codicon-arrow-swap"></span></button></span>'+
         '</div>'+
       '</div>';
-    const state={templateOpen:false,templateLoaded:false,unstagedOpen:false,rawTemplate:''};
+    const state={unstagedOpen:true};
     const messageInput=el.querySelector('.message-input');
-    const templateToggle=el.querySelector('.template-toggle');
-    const templateChevron=el.querySelector('.template-chevron');
-    const templateLabel=el.querySelector('.template-label');
-    const templateBody=el.querySelector('.template-body');
     const commitBtn=el.querySelector('.commit-btn');
     const amendToggle=el.querySelector('.amend-toggle');
     const historyBtn=el.querySelector('.history-btn');
@@ -311,32 +317,25 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
       cardChevron.className='codicon codicon-chevron-'+(state.cardCollapsed?'right':'down')+' card-chevron';
     });
 
-    templateToggle.addEventListener('click',function(){
-      state.templateOpen=!state.templateOpen;
-      templateBody.hidden=!state.templateOpen;
-      templateChevron.className='codicon codicon-chevron-'+(state.templateOpen?'down':'right')+' template-chevron';
-      templateLabel.textContent=state.templateOpen?'隐藏完整 Git Commit 内容':'显示完整 Git Commit 内容';
-      // 展开时才向宿主取模板 (git commit -v -v), 避免多仓库批量 spawn。
-      if(state.templateOpen&&!state.templateLoaded){
-        templateBody.textContent='正在加载…';
-        vscode.postMessage({type:'requestTemplate',repositoryPath:repo});
-      }
-    });
     amendToggle.addEventListener('click',function(){vscode.postMessage({type:'toggleAmend',repositoryPath:repo})});
     historyBtn.addEventListener('click',function(){vscode.postMessage({type:'history',repositoryPath:repo})});
+    el.querySelectorAll('.section-actions .icon-btn').forEach(function(button){
+      button.addEventListener('click',function(event){
+        event.stopPropagation();
+        vscode.postMessage({
+          type:'workingTreeAction',
+          repositoryPath:repo,
+          action:button.dataset.action,
+          section:button.dataset.section,
+        });
+      });
+    });
     commitBtn.addEventListener('click',function(){
       const message=messageInput.value.trim();
       if(!message){hint.textContent='提交信息不能为空';messageInput.focus();return}
       vscode.postMessage({type:'commit',repositoryPath:repo,message:messageInput.value,amend:el._amend===true});
     });
-    // 展开内容 = 编辑框当前提交信息 + git 生成的模板 (模板正文区本就留空给消息)。
-    function composeTemplate(){
-      if(!state.templateLoaded)return;
-      const msg=messageInput.value.replace(/\\s+$/,'');
-      templateBody.textContent=(msg?msg+'\\n':'')+state.rawTemplate;
-    }
-    el._composeTemplate=composeTemplate;
-    messageInput.addEventListener('input',function(){hint.textContent='';composeTemplate()});
+    messageInput.addEventListener('input',function(){hint.textContent=''});
     messageInput.addEventListener('keydown',function(event){
       if((event.ctrlKey||event.metaKey)&&event.key==='Enter'){event.preventDefault();commitBtn.click()}
     });
@@ -348,7 +347,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 
     state.cardCollapsed=false;
     el._state=state;
-    el._refs={messageInput,templateBody,commitBtn,amendToggle,hint,unstagedList,cardChevron,cardBody,cardHeader};
+    el._refs={messageInput,commitBtn,amendToggle,hint,unstagedList,cardChevron,cardBody,cardHeader};
     return el;
   }
 
@@ -382,10 +381,6 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     el.classList.toggle('collapsed',el._state.cardCollapsed);
     refs.cardChevron.hidden=!isEmpty;
     refs.cardChevron.className='codicon codicon-chevron-'+(el._state.cardCollapsed?'right':'down')+' card-chevron';
-    // 模板随 amend/内容变化失效, 下次展开重新取。
-    el._state.templateLoaded=false;
-    if(el._state.templateOpen){refs.templateBody.textContent='正在加载…';vscode.postMessage({type:'requestTemplate',repositoryPath:el.dataset.repo})}
-
     const untrackedCount=card.unstagedFiles.filter(file=>file.isUntracked).length;
     const unstagedHeaderCount=card.unstagedFiles.length-untrackedCount;
     const updateRepositoryStatusBadge=function(selector,label,count){
@@ -401,11 +396,30 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     const stagedCount=el.querySelector('.staged-count');
     stagedCount.textContent=card.stagedFiles.length?String(card.stagedFiles.length):'';
     stagedCount.hidden=card.stagedFiles.length===0;
+    el.querySelector('.staged-all').disabled=card.stagedFiles.length===0;
     const unstagedCount=el.querySelector('.unstaged-count');
     unstagedCount.textContent=card.unstagedFiles.length?String(card.unstagedFiles.length):'';
     unstagedCount.hidden=card.unstagedFiles.length===0;
-    stagedList.innerHTML=card.stagedFiles.length?card.stagedFiles.map(function(f){return fileRowHtml(f,'staged')}).join(''):'<div class="empty">没有文件</div>';
-    unstagedList.innerHTML=card.unstagedFiles.length?card.unstagedFiles.map(function(f){return fileRowHtml(f,'unstaged')}).join(''):'<div class="empty">没有文件</div>';
+    el.querySelector('.discard-all').disabled=card.unstagedFiles.length===0;
+    el.querySelector('.stage-all').disabled=card.unstagedFiles.length===0;
+    stagedList.replaceChildren();
+    if(card.stagedFiles.length){
+      card.stagedFiles.forEach(function(file){stagedList.appendChild(fileRowHtml(file,'staged'))});
+    }else{
+      const empty=document.createElement('div');
+      empty.className='empty';
+      empty.textContent='没有文件';
+      stagedList.appendChild(empty);
+    }
+    unstagedList.replaceChildren();
+    if(card.unstagedFiles.length){
+      card.unstagedFiles.forEach(function(file){unstagedList.appendChild(fileRowHtml(file,'unstaged'))});
+    }else{
+      const empty=document.createElement('div');
+      empty.className='empty';
+      empty.textContent='没有文件';
+      unstagedList.appendChild(empty);
+    }
     bindRowActions(stagedList,el.dataset.repo);
     bindRowActions(unstagedList,el.dataset.repo);
   }
@@ -438,12 +452,9 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     const message=event.data;
     if(!message)return;
     if(message.type==='snapshot'){render(message.cards||[])}
-    else if(message.type==='templateResult'){
+    else if(message.type==='setMessage'){
       const el=cardEls.get(message.repositoryPath);
-      if(el){el._state.templateLoaded=true;el._state.rawTemplate=message.template||'(无内容)';el._composeTemplate()}
-    }else if(message.type==='setMessage'){
-      const el=cardEls.get(message.repositoryPath);
-      if(el){el._refs.messageInput.value=message.message||'';el._refs.hint.textContent='';el._composeTemplate();el._refs.messageInput.focus()}
+      if(el){el._refs.messageInput.value=message.message||'';el._refs.hint.textContent='';el._refs.messageInput.focus()}
     }else if(message.type==='focus'){
       const el=cardEls.get(message.repositoryPath);
       if(el){selectCard(message.repositoryPath);el.scrollIntoView({behavior:'auto',block:'start'});el._refs.messageInput.focus()}

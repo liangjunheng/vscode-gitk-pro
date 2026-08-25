@@ -1,10 +1,11 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { type ChangeSetMode, type ChangedFile, type GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, WorkingTreeChanges } from '../types';
-import { getCommitFiles, getGitRepositoryState, runGitCommand, runGitReadCommand } from '../git/gitLogProvider';
+import { getCommitFiles, getGitRepositoryState, runGitCommand, runGitReadCommand, readCommitHistoryMessages } from '../git/gitLogProvider';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { CommitPanel, type CommitPanelSnapshot, type CommitCard } from './commitPanel';
-import { readCommitTemplate, commitWithMessage } from '../git/gitCommitService';
+import { CommitPanelViewTitleController } from './commitPanelViewTitleController';
+import { commitWithMessage } from '../git/gitCommitService';
 import { DiffReader } from '../git/diffReader';
 import { GitCommitEditMsgEditor } from '../git/gitCommitEditMsgEditor';
 import { GitActionRunner } from '../services/gitActions';
@@ -45,6 +46,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private gitWatchDisposables: vscode.Disposable[] = [];
     private readonly multiDiffPanel: MultiDiffPanel;
     private readonly commitPanel: CommitPanel;
+    private readonly commitPanelViewTitleController: CommitPanelViewTitleController;
     // 每仓库独立的 amend / committing 状态 (多卡片各自提交)。
     private readonly commitAmendByRepo = new Map<string, boolean>();
     private readonly commitCommittingByRepo = new Set<string>();
@@ -130,6 +132,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (!this.view) { return; }
         const s = store.getState();
         const files = s.files;
+        this.commitPanelViewTitleController.update(s.commitRepositories);
         // 提交列表 loading 只由 GitCommitController 的加载事件驱动。
         const commitListLoading = this.commitController.isLoading;
         const commitListLoadingMessage = commitListLoading ? '正在加载提交历史' : undefined;
@@ -221,9 +224,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             onCommit: (repositoryPath, message, amend) => void this.runCommit(repositoryPath, message, amend),
             onToggleAmend: repositoryPath => void this.toggleCommitAmend(repositoryPath),
             onHistory: repositoryPath => void this.pickCommitHistoryMessage(repositoryPath),
-            onRequestTemplate: repositoryPath => void this.provideCommitTemplate(repositoryPath),
             onWorkingTreeAction: (repositoryPath, action, section, filePath) => void this.runWorkingTreeAction(action, section, filePath, repositoryPath),
             onClose: () => this.commitPanel.hide(),
+        });
+        this.commitPanelViewTitleController = new CommitPanelViewTitleController(async () => {
+            await this.syncCommitRepositories();
+            this.commitPanel.show(this.buildCommitSnapshot());
         });
         this.diffReader = new DiffReader();
         this.gitActions = new GitActionRunner(
@@ -294,6 +300,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.onDidChangeDiffAvailabilityEmitter,
             this.multiDiffPanel,
             this.commitPanel,
+            this.commitPanelViewTitleController,
             new vscode.Disposable(() => {
                 this.storeUnsubscribe?.();
                 this.storeUnsubscribe = undefined;
@@ -512,6 +519,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             ? existing.map((repo, i) => (i === index ? entry : repo))
             : [...existing, entry];
         store.setState({ commitRepositories: next });
+        this.commitPanelViewTitleController.update(next);
         if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
     }
 
@@ -602,6 +610,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const viewGeneration = ++this.viewGeneration;
         this.view = view;
         this.updateViewVisible();
+        this.commitPanelViewTitleController.bindView(view, store.getState().commitRepositories);
         view.webview.options = {
             enableScripts: true,
             localResourceRoots: [
@@ -623,6 +632,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             }),
             view.onDidDispose(() => {
                 if (this.view === view) {
+                    this.commitPanelViewTitleController.unbindView(view);
                     this.view = undefined;
                     this.updateViewVisible();
                     this.storeUnsubscribe?.();
@@ -965,14 +975,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.commitPanel.update(this.buildCommitSnapshot());
     }
 
-    /** 按需向面板提供某仓库的完整 Git Commit 内容 (git commit -v -v)。 */
-    private async provideCommitTemplate(repositoryPath: string): Promise<void> {
-        const rootUri = this.getRepoRootUri(repositoryPath);
-        if (!rootUri) { return; }
-        const template = await readCommitTemplate(rootUri, this.commitAmendByRepo.get(repositoryPath) === true).catch(() => '');
-        this.commitPanel.provideTemplate(repositoryPath, template);
-    }
-
     private async toggleCommitAmend(repositoryPath: string): Promise<void> {
         // 由宿主权威状态翻转该仓库的 amend, 不接收 webview 传来的目标值。
         this.commitAmendByRepo.set(repositoryPath, !(this.commitAmendByRepo.get(repositoryPath) === true));
@@ -983,18 +985,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private async pickCommitHistoryMessage(repositoryPath: string): Promise<void> {
         const rootUri = this.getRepoRootUri(repositoryPath);
         if (!rootUri) { return; }
-        const output = await runGitReadCommand(rootUri, ['log', '--max-count=50', '--all', '--format=%h%x1f%s%x1f%B%x1e']);
-        const seen = new Set<string>();
-        const items: (vscode.QuickPickItem & { message: string })[] = [];
-        for (const record of output.split('\x1e')) {
-            const [shortHash, subject, body] = record.replace(/^\r?\n/, '').split('\x1f');
-            if (!shortHash) { continue; }
-            const message = (body ?? '').replace(/\s+$/, '');
-            if (seen.has(message)) { continue; }
-            seen.add(message);
-            items.push({ label: subject ?? '', description: shortHash, message });
-            if (items.length >= 10) { break; }
-        }
+        const history = await readCommitHistoryMessages(rootUri);
+        const items: (vscode.QuickPickItem & { message: string })[] = history.map(item => ({
+            label: item.subject,
+            description: item.shortHash,
+            message: item.message,
+        }));
         if (items.length === 0) {
             void vscode.window.showInformationMessage('没有可用的历史提交信息。');
             return;

@@ -364,6 +364,30 @@ export async function updateGitSubmodules(
     }
 }
 
+export interface CommitHistoryMessage {
+    readonly shortHash: string;
+    readonly subject: string;
+    readonly message: string;
+}
+
+export async function readCommitHistoryMessages(rootUri: vscode.Uri): Promise<CommitHistoryMessage[]> {
+    const output = await runGitReadCommand(rootUri, [
+        'log', '--max-count=50', '--all', '--format=%h%x1f%s%x1f%B%x1e',
+    ]);
+    const seen = new Set<string>();
+    const messages: CommitHistoryMessage[] = [];
+    for (const record of output.split('\x1e')) {
+        const [shortHash, subject, body] = record.replace(/^\r?\n/, '').split('\x1f');
+        if (!shortHash) { continue; }
+        const message = (body ?? '').replace(/\s+$/, '');
+        if (!message || seen.has(message)) { continue; }
+        seen.add(message);
+        messages.push({ shortHash, subject: subject || message.split('\n')[0], message });
+        if (messages.length >= 10) { break; }
+    }
+    return messages;
+}
+
 export async function runGitReadCommand(rootUri: vscode.Uri, args: string[]): Promise<string> {
     try {
         const { stdout } = await execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, ...args], {

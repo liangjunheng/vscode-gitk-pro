@@ -45,12 +45,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('vscode-gitk.refresh', () => {
-            provider.refresh();
-        })
-    );
-
-    context.subscriptions.push(
         vscode.commands.registerCommand('vscode-gitk.selectCommit', (hash: string) => provider.selectCommit(hash)),
         vscode.commands.registerCommand('vscode-gitk.multiDiff.previousChange', () => provider.navigateMultiDiffChange(-1)),
         vscode.commands.registerCommand('vscode-gitk.multiDiff.nextChange', () => provider.navigateMultiDiffChange(1))
