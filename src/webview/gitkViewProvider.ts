@@ -1680,7 +1680,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   #filesEmpty:has(.files-loading-spinner) { display: flex; align-items: center; gap: 7px; }
   .files-loading-spinner { width: 12px; height: 12px; flex: 0 0 auto; border: 2px solid var(--vscode-progressBar-background); border-top-color: transparent; border-radius: 50%; animation: files-loading-spin .8s linear infinite; }
   @keyframes files-loading-spin { to { transform: rotate(360deg); } }
-  .commit-header, .commit-row { display: grid; grid-template-columns: max(var(--graph-width), var(--graph-lane-width)) var(--message-width) var(--author-width) var(--hash-width) var(--date-width); align-items: center; min-width: max-content; }
+  .commit-header, .commit-row { display: grid; grid-template-columns: max(8ch, var(--graph-width), var(--graph-lane-width)) var(--message-width) var(--author-width) var(--hash-width) var(--date-width); align-items: center; min-width: max-content; }
   .commit-header { position: sticky; top: 0; z-index: 1; height: 30px; margin: 0; padding: 0 10px; color: var(--vscode-tab-activeForeground); background: var(--vscode-editorWidget-background, var(--vscode-tab-activeBackground)); border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); box-sizing: border-box; font-weight: 600; }
   .commit-row { min-height: 26px; height: auto; box-sizing: border-box; cursor: pointer; }
   .commit-row:hover { background: var(--vscode-list-hoverBackground); }
