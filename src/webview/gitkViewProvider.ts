@@ -9,6 +9,7 @@ import { commitWithMessage } from '../git/gitCommitService';
 import { DiffReader } from '../git/diffReader';
 import { GitCommitEditMsgEditor } from '../git/gitCommitEditMsgEditor';
 import { GitActionRunner } from '../services/gitActions';
+import { RepoSubmoduleWatcher } from '../git/gitRepoSubmoduleWatcher';
 import { GitRepoController } from '../git/gitRepoController';
 import { RepoHeadBranchWatcher } from '../git/gitRepoHeadBranchWatcher';
 import { UncommittedFilesWatcher } from '../git/uncommittedFilesWatcher';
@@ -55,7 +56,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private readonly diffReader: DiffReader;
     private readonly gitActions: GitActionRunner;
     // 仓库 / 分支 / 提交状态的唯一写入者，Provider 只读不写。
-    private readonly repoController = new GitRepoController();
+    private readonly repoSubmoduleWatcher = new RepoSubmoduleWatcher();
+    private readonly repoController = new GitRepoController(this.repoSubmoduleWatcher);
     private readonly repoHeadBranchWatcher = new RepoHeadBranchWatcher(this.repoController);
     private readonly branchesController: GitBranchesController;
     private readonly uncommittedFilesWatcher: UncommittedFilesWatcher;
@@ -257,6 +259,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         // 三个控制器只发通知；推 Webview 与串联下游都由 Provider 承担。
         context.subscriptions.push(
             this.repoController,
+            this.repoSubmoduleWatcher,
             this.repoHeadBranchWatcher,
             this.uncommittedFilesWatcher,
             // 保持 selectedRepoSubscription 在构造阶段的订阅顺序；不要移到 Controller 创建之后。
@@ -737,17 +740,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private initializeGitWatchers(): void {
         if (this.gitWatchDisposables.some(disposable => disposable === this.gitWatcherSentinel)) { return; }
         // 仓库缓存已由 GitRepoController 自己持有，重扫直接走它的 rescan。
-        const refreshWorkspaceRepositories = () => this.queueLifecycleRefresh();
+        const refreshWorkspaceRepositories = () => {
+            this.hasStartedRepositoryScan = false;
+            void this.repoSubmoduleWatcher.initialize();
+        };
         const refreshRepositoryState = () => this.queueRepositoryStateRefresh();
-        const gitmodulesWatcher = vscode.workspace.createFileSystemWatcher('**/.gitmodules');
         const gitRefsWatcher = vscode.workspace.createFileSystemWatcher('**/.git/refs/**');
         this.gitWatchDisposables.push(
             this.gitWatcherSentinel,
             vscode.workspace.onDidChangeWorkspaceFolders(refreshWorkspaceRepositories),
-            gitmodulesWatcher,
-            gitmodulesWatcher.onDidCreate(refreshWorkspaceRepositories),
-            gitmodulesWatcher.onDidChange(refreshWorkspaceRepositories),
-            gitmodulesWatcher.onDidDelete(refreshWorkspaceRepositories),
             gitRefsWatcher,
             gitRefsWatcher.onDidCreate(refreshRepositoryState),
             gitRefsWatcher.onDidChange(refreshRepositoryState),
