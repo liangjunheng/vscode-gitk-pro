@@ -2298,8 +2298,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     if (!item) return;
     const itemRect = item.getBoundingClientRect();
     const listRect = list.getBoundingClientRect();
-    if (itemRect.bottom > listRect.bottom) list.scrollTop += itemRect.bottom - listRect.bottom;
-    else if (itemRect.top < listRect.top) list.scrollTop -= listRect.top - itemRect.top;
+    const viewportTop = listRect.top + list.clientTop;
+    const viewportBottom = viewportTop + list.clientHeight;
+    const sectionHeader = item.closest('.working-tree-section')?.querySelector('.working-tree-section-header');
+    const visibleTop = sectionHeader ? Math.max(viewportTop, sectionHeader.getBoundingClientRect().bottom) : viewportTop;
+    if (itemRect.bottom > viewportBottom) list.scrollTop += itemRect.bottom - viewportBottom;
+    else if (itemRect.top < visibleTop) list.scrollTop -= visibleTop - itemRect.top;
   }
 
   function updateFilesCommitHash() {
