@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto';
 import * as net from 'net';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { readCommitHistoryMessages, runGitReadCommand, type CommitHistoryMessage } from './gitLogProvider';
+import { readCommitHistoryMessages, runGitReadCommand, type CommitHistoryMessage } from '../git/gitLogProvider';
 
 type HistoryMessage = CommitHistoryMessage;
 

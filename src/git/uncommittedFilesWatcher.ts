@@ -4,7 +4,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { GitBranchOption, WorkingTreeChanges } from '../types';
 import { getIndexChangedPaths, getWorkingTreeStatus, getWorkingTreeStatusForPaths } from './gitLogProvider';
-import { RepoHeadBranchWatcher } from './gitRepoHeadBranchWatcher';
+import { RepoHeadBranchWatcher } from './eachRepoHeadBranchWatcher';
 
 const execFileAsync = promisify(execFile);
 

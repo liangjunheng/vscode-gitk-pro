@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { GitkViewProvider } from './webview/gitkViewProvider';
 import { GitkStatusBar } from './statusBar';
 import { store } from './state/store';
-import { GitCommitEditMsgEditor } from './git/gitCommitEditMsgEditor';
+import { GitCommitEditMsgEditor } from './webview/gitCommitEditMsgEditor';
 
 // 插件激活入口
 export async function activate(context: vscode.ExtensionContext): Promise<void> {

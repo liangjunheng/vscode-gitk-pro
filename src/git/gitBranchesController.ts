@@ -1,37 +1,18 @@
 import * as vscode from 'vscode';
 import { GitBranchOption, type GitBranchKind, type GitRepositoryOption } from '../types';
-import { getGitBranches } from './gitLogProvider';
 
-import { RepoHeadBranchWatcher } from './gitRepoHeadBranchWatcher';
+import { SelectedRepoTotalBranchWatcher } from './selectedRepoTotalBranchWatcher';
 import { GitRepoController } from './gitRepoController';
 
-/** 已选分支带仓库归属: 分支名在不同仓库间会重名, 裸名字无法定位归属。 */
 /**
- * 分支维度状态的唯一写入者。
- *
- * 只管分支, 不涉及仓库发现/提交/变更文件, 也不直接操作 Webview。
- * 全部行为只有五条:
- * 1. 监听仓库变化 (selectRepositories 是唯一输入入口);
- * 2. 内容与已消费快照一致则整个调用返回, 不改状态不发通知不发起 IO;
- * 3. loading 期间收到不同仓库选择时，取消旧的当前分支/分支列表读取并立即启动新流程;
- * 4. branchesMap 变化不影响 selected, 唯一例外是新仓库快路径落地时追加其当前分支;
- * 5. forceRefresh 跳过第 2 条去重, 强制重读全部分片。
- *
- * 关键约束:
- * - 每轮内部创建 AbortController，并以代次阻止旧流程落地或关闭新流程 loading;
- * - repositories 快照的替换必须与刷新绑定;
- * - 内部一律以 path 为 key, 因选项不可变、copy 后引用会变, Map 引用判等必然 miss;
- * - 分支/仓库选项判等一律走 equals 而非 ===。
+ * 分支选择维度的控制器。
+ * 分支总列表由 SelectedRepoTotalBranchWatcher 唯一持有，本类只负责仓库范围聚合、HEAD/选择事件和用户选择状态。
  */
 export class GitBranchesController implements vscode.Disposable {
     // 已消费的仓库选择快照; 仓库集合的唯一存放处。
     private repositories: GitRepositoryOption[] = [];
-    // key 用 path: 选项对象经 copy 后引用会变, Map 按引用判等会查不到。
-    private readonly branches = new Map<string, GitBranchOption[]>();
     private readonly selectedBranchNamesByRepository = new Map<string, Set<string>>();
 
-    private branchReadAbortController?: AbortController;
-    private branchReadGeneration = 0;
     private _isLoading = false;
 
     private readonly branchesEmitter = new vscode.EventEmitter<Map<GitRepositoryOption, GitBranchOption[]>>();
@@ -40,7 +21,8 @@ export class GitBranchesController implements vscode.Disposable {
     private readonly selectedEmitter = new vscode.EventEmitter<Map<GitRepositoryOption, GitBranchOption[]>>();
     private readonly loadingEmitter = new vscode.EventEmitter<boolean>();
     private readonly repositorySelectionSubscription: vscode.Disposable;
-    private readonly headBranchSubscription: vscode.Disposable;
+    private readonly totalBranchesSubscription: vscode.Disposable;
+    private readonly totalBranchesLoadingSubscription: vscode.Disposable;
 
     readonly onTotalBranchesListChanged = this.branchesEmitter.event;
     readonly onBranchHeadCommitChanged = this.branchHeadEmitter.event;
@@ -49,18 +31,29 @@ export class GitBranchesController implements vscode.Disposable {
     // 加载态与分支列表分开发事件, 避免调用方靠覆盖顺序抢某一帧。
     readonly onBranchesLoadingChanged = this.loadingEmitter.event;
 
-    constructor(repoController: GitRepoController, private readonly repoHeadBranchWatcher: RepoHeadBranchWatcher) {
+    constructor(
+        repoController: GitRepoController,
+        private readonly totalBranchWatcher: SelectedRepoTotalBranchWatcher,
+    ) {
         this.repositorySelectionSubscription = repoController.onSelectedRepoListChanged(repositories => {
             void this.selectRepositories(repositories);
         });
-        this.headBranchSubscription = repoHeadBranchWatcher.onEachRepoHeadBranchChanged(event => {
-            this.applyHeadBranchChanged(event.repositoryPath, event.headBranch);
+        this.totalBranchesSubscription = totalBranchWatcher.onRepositoryBranchesChanged(snapshot => {
+            this.applyTotalBranches(snapshot.repository, snapshot.branches, snapshot.headChanged);
+        });
+        for (const snapshot of totalBranchWatcher.getRepositorySnapshots()) {
+            this.applyTotalBranches(snapshot.repository, snapshot.branches, snapshot.headChanged);
+        }
+        this._isLoading = totalBranchWatcher.isLoading;
+        this.totalBranchesLoadingSubscription = totalBranchWatcher.onBranchesLoadingChanged(loading => {
+            this._isLoading = loading;
+            this.loadingEmitter.fire(loading);
         });
     }
 
     /** 当前仓库集合的分支列表; 传 kind 则只返回该类。 */
     getBranches(kind?: GitBranchKind): readonly GitBranchOption[] {
-        const all = this.repositories.flatMap(repository => this.branches.get(repository.path) ?? []);
+        const all = this.repositories.flatMap(repository => this.totalBranchWatcher.getTotalBranches(repository));
         return kind ? all.filter(branch => branch.kind === kind) : all;
     }
 
@@ -72,7 +65,7 @@ export class GitBranchesController implements vscode.Disposable {
     private get selectedBranches(): GitBranchOption[] {
         return this.repositories.flatMap(repository => {
             const names = this.selectedBranchNamesByRepository.get(repository.path);
-            return (this.branches.get(repository.path) ?? []).filter(branch => names?.has(branch.name));
+            return this.totalBranchWatcher.getTotalBranches(repository).filter(branch => names?.has(branch.name));
         });
     }
 
@@ -88,7 +81,7 @@ export class GitBranchesController implements vscode.Disposable {
 
     /** 指定仓库的当前分支。 */
     getCurrentBranch(repository: GitRepositoryOption): GitBranchOption | undefined {
-        return this.branches.get(repository.path)?.find(branch => branch.kind === 'current');
+        return this.totalBranchWatcher.getTotalBranches(repository).find(branch => branch.kind === 'current');
     }
 
     /**
@@ -97,8 +90,10 @@ export class GitBranchesController implements vscode.Disposable {
      */
     private async selectRepositories(repositories: readonly GitRepositoryOption[]): Promise<void> {
         if (this.sameRepositories(this.repositories, repositories)) { return; }
-        this.branchReadAbortController?.abort();
-        await this.refresh(repositories, false);
+        this.repositories = [...repositories];
+        const keep = new Set(this.repositories.map(repository => repository.path));
+        this.pruneSelected(keep);
+        this.fireBranches();
     }
 
     /**
@@ -106,8 +101,7 @@ export class GitBranchesController implements vscode.Disposable {
      * 用于 checkout / fetch / watcher 后 —— 清缓存本身不触发读取, 这里才是「去读」的入口。
      */
     forceRefresh(): void {
-        if (this._isLoading) { return; }
-        void this.refresh(this.repositories, true);
+        this.totalBranchWatcher.refreshSelectedRepositories();
     }
 
     /**
@@ -138,8 +132,8 @@ export class GitBranchesController implements vscode.Disposable {
 
     dispose(): void {
         this.repositorySelectionSubscription.dispose();
-        this.headBranchSubscription.dispose();
-        this.branchReadAbortController?.abort();
+        this.totalBranchesSubscription.dispose();
+        this.totalBranchesLoadingSubscription.dispose();
         this.branchesEmitter.dispose();
         this.branchHeadEmitter.dispose();
         this.currentHeadBranchEmitter.dispose();
@@ -147,148 +141,21 @@ export class GitBranchesController implements vscode.Disposable {
         this.loadingEmitter.dispose();
     }
 
-    /**
-     * 两阶段刷新。loading 必须在任何 await 之前同步置位, 否则两个请求都能通过门禁。
-     * repositories 的替换与刷新绑定: 被丢弃的那轮快照不动, 下次事件比较必然不一致可自行修正。
-     */
-    private async refresh(repositories: readonly GitRepositoryOption[], force: boolean): Promise<void> {
-        const generation = ++this.branchReadGeneration;
-        const abortController = new AbortController();
-        this.branchReadAbortController = abortController;
-        this._isLoading = true;
-        this.loadingEmitter.fire(true);
-        this.repositories = [...repositories];
-        const keep = new Set(this.repositories.map(repository => repository.path));
-        const removedCurrentPaths = [...this.branches.entries()]
-            .filter(([repositoryPath, branches]) => !keep.has(repositoryPath) && branches.some(branch => branch.kind === 'current'))
-            .map(([repositoryPath]) => repositoryPath);
-        // 先更新内部选择但不立即通知，避免仓库切换时先发布空分支并触发一次无效提交读取。
-        this.pruneSelected(keep);
-        this.pruneRemoved(keep);
-        for (const repositoryPath of removedCurrentPaths) {
-            this.currentHeadBranchEmitter.fire({ repositoryPath, branch: undefined });
-        }
-        // force 时对全部入选仓库重读; 否则只处理还没有分片的仓库。
-        const targets = force
-            ? [...this.repositories]
-            : this.repositories.filter(repository => !this.branches.has(repository.path));
-        this.fireBranches();
-        try {
-            // 当前 HEAD 与完整分支列表独立读取：先启动两者，当前 HEAD 完成即发布默认选择。
-            const currentBranchesPromise = !force
-                ? Promise.all(this.repositories.map(
-                    repository => this.applyCurrentBranch(repository, abortController.signal, generation),
-                ))
-                : undefined;
-            const loadedPromise = Promise.all(targets.map(async repository => {
-                try {
-                    const [branches, current] = await Promise.all([
-                        getGitBranches(vscode.Uri.parse(repository.path), abortController.signal),
-                        this.repoHeadBranchWatcher.getHeadBranchByRepo(repository),
-                    ]);
-                    return {
-                        repository,
-                        branches: this.withCurrentHead(repository, branches, current),
-                    };
-                } catch (error) {
-                    if (!abortController.signal.aborted) {
-                        // 单仓库失败不影响其他仓库落地; 快路径写入的当前分支保留。
-                        console.warn('无法读取分支列表:', error);
-                    }
-                    return undefined;
-                }
-            }));
-            if (currentBranchesPromise) {
-                const currentBranches = await currentBranchesPromise;
-                if (abortController.signal.aborted || generation !== this.branchReadGeneration) { return; }
-                const defaults = currentBranches.flatMap(entry => entry ? [entry] : []);
-                this.replaceSelected([...this.selectedBranches, ...defaults]);
-                this.fireSelected();
-            }
-            const loaded = await loadedPromise;
-            if (abortController.signal.aborted || generation !== this.branchReadGeneration) { return; }
-            let changed = false;
-            let headChanged = false;
-            for (const entry of loaded) {
-                // 期间可能已被移出选择, 落地前再确认一次。
-                if (!entry || !keep.has(entry.repository.path)) { continue; }
-                const previous = this.branches.get(entry.repository.path);
-                const previousHead = previous?.find(branch => branch.kind === 'current');
-                const nextHead = entry.branches.find(branch => branch.kind === 'current');
-                if (previousHead && nextHead && previousHead.hash !== nextHead.hash) {
-                    headChanged = true;
-                }
-                if (previous && this.sameBranches(previous, entry.branches)) { continue; }
-                // 整体替换, 不是「先清空再填充」。
-                this.branches.set(entry.repository.path, [...entry.branches]);
-                if (previousHead?.name !== nextHead?.name || previousHead?.hash !== nextHead?.hash) {
-                    this.currentHeadBranchEmitter.fire({ repositoryPath: entry.repository.path, branch: nextHead });
-                }
-                changed = true;
-            }
-            // 全量落地一律不碰 selected: 初值已由快路径给出, 重算只会多 fire 一次。
-            if (changed) { this.fireBranches(); }
-            if (headChanged) { this.branchHeadEmitter.fire(); }
-        } finally {
-            // 旧流程被取消后不能结束新流程的 loading，也不能清空新流程的取消控制器。
-            if (generation !== this.branchReadGeneration) { return; }
-            this.branchReadAbortController = undefined;
-            this._isLoading = false;
-            this.loadingEmitter.fire(false);
-        }
-    }
-
-    /** 新仓库快路径：当前 HEAD 由 RepoHeadBranchWatcher 唯一提供。 */
-    private async applyCurrentBranch(
-        repository: GitRepositoryOption,
-        signal: AbortSignal,
-        generation: number,
-    ): Promise<GitBranchOption | undefined> {
-        const current = await this.repoHeadBranchWatcher.getHeadBranchByRepo(repository);
-        // 空仓库无 HEAD 或旧流程已取消, 均不再落地。
-        if (!current || signal.aborted || generation !== this.branchReadGeneration) { return undefined; }
-        // 期间可能已被移出选择。
-        if (!this.repositories.some(option => option.path === repository.path)) { return undefined; }
-        if (!this.branches.has(repository.path)) {
-            this.branches.set(repository.path, [current]);
-            this.fireBranches();
-            this.currentHeadBranchEmitter.fire({ repositoryPath: repository.path, branch: current });
-        }
-        return current;
-    }
-
-    private withCurrentHead(
+    private applyTotalBranches(
         repository: GitRepositoryOption,
         branches: readonly GitBranchOption[],
-        current: GitBranchOption | undefined,
-    ): GitBranchOption[] {
-        const withoutCurrent = branches.filter(branch => branch.kind !== 'current');
-        return current ? [current, ...withoutCurrent] : withoutCurrent;
-    }
-
-    private applyHeadBranchChanged(repositoryPath: string, headBranch: GitBranchOption | undefined): void {
-        const repository = this.repositories.find(candidate => candidate.path === repositoryPath);
-        if (!repository) { return; }
-        const previous = this.branches.get(repositoryPath) ?? [];
-        const next = this.withCurrentHead(repository, previous, headBranch);
-        const previousHead = previous.find(branch => branch.kind === 'current');
-        const nextHead = next.find(branch => branch.kind === 'current');
-        if (previousHead?.name === nextHead?.name && previousHead?.hash === nextHead?.hash) { return; }
-        this.branches.set(repositoryPath, next);
-        const selected = this.selectedBranches.filter(branch => !(branch.repoOption.path === repositoryPath && branch.kind === 'current'));
-        if (nextHead) { selected.push(nextHead); }
-        this.replaceSelected(selected);
-        this.fireBranches();
-        this.fireSelected();
-        this.currentHeadBranchEmitter.fire({ repositoryPath, branch: nextHead });
-        this.branchHeadEmitter.fire();
-    }
-
-    /** 剔除不再入选的仓库分片。 */
-    private pruneRemoved(keep: Set<string>): void {
-        for (const path of [...this.branches.keys()]) {
-            if (!keep.has(path)) { this.branches.delete(path); }
+        headChanged: boolean,
+    ): void {
+        if (!this.repositories.some(candidate => candidate.path === repository.path)) { return; }
+        if (headChanged) {
+            this.currentHeadBranchEmitter.fire({
+                repositoryPath: repository.path,
+                branch: branches.find(branch => branch.kind === 'current'),
+            });
+            this.branchHeadEmitter.fire();
         }
+        this.fireBranches();
+        if (headChanged) { this.fireSelected(); }
     }
 
     /** 仓库集合变化时先删除旧仓库的勾选，避免新列表与旧勾选组合成一帧。 */
@@ -315,7 +182,7 @@ export class GitBranchesController implements vscode.Disposable {
         let hashMatch: GitBranchOption | undefined;
         let nameMatch: GitBranchOption | undefined;
         for (const repository of this.repositories) {
-            for (const branch of this.branches.get(repository.path) ?? []) {
+            for (const branch of this.totalBranchWatcher.getTotalBranches(repository)) {
                 const entry = branch;
                 if (branch.equals(candidate)) { return entry; }
                 if (branch.name === candidate.name && branch.hash === candidate.hash) { hashMatch ??= entry; }
@@ -333,11 +200,6 @@ export class GitBranchesController implements vscode.Disposable {
             const other = byPath.get(option.path);
             return other !== undefined && option.equals(other);
         });
-    }
-
-    private sameBranches(left: readonly GitBranchOption[], right: readonly GitBranchOption[]): boolean {
-        return left.length === right.length
-            && left.every((branch, index) => branch.equals(right[index]));
     }
 
     private sameSelected(left: readonly GitBranchOption[], right: readonly GitBranchOption[]): boolean {
@@ -364,7 +226,7 @@ export class GitBranchesController implements vscode.Disposable {
     private fireBranches(): void {
         const snapshot = new Map<GitRepositoryOption, GitBranchOption[]>();
         for (const repository of this.repositories) {
-            snapshot.set(repository, [...(this.branches.get(repository.path) ?? [])]);
+            snapshot.set(repository, [...this.totalBranchWatcher.getTotalBranches(repository)]);
         }
         this.branchesEmitter.fire(snapshot);
     }

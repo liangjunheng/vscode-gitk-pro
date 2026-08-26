@@ -5,7 +5,7 @@ import {
     runGitSync,
     updateGitSubmodules,
 } from '../git/gitLogProvider';
-import { GitCommitEditMsgEditor } from '../git/gitCommitEditMsgEditor';
+import { GitCommitEditMsgEditor } from '../webview/gitCommitEditMsgEditor';
 
 /**
  * Git 操作执行器: 处理用户触发的 Git 命令 (tag, branch, checkout, merge, rebase, reset 等)

@@ -7,12 +7,13 @@ import { CommitPanel, type CommitPanelSnapshot, type CommitCard } from './commit
 import { CommitPanelViewTitleController } from './commitPanelViewTitleController';
 import { commitWithMessage } from '../git/gitCommitService';
 import { DiffReader } from '../git/diffReader';
-import { GitCommitEditMsgEditor } from '../git/gitCommitEditMsgEditor';
+import { GitCommitEditMsgEditor } from './gitCommitEditMsgEditor';
 import { GitActionRunner } from '../services/gitActions';
 import { RepoSubmoduleWatcher } from '../git/gitRepoSubmoduleWatcher';
 import { GitRepoController } from '../git/gitRepoController';
-import { RepoHeadBranchWatcher } from '../git/gitRepoHeadBranchWatcher';
+import { RepoHeadBranchWatcher } from '../git/eachRepoHeadBranchWatcher';
 import { UncommittedFilesWatcher } from '../git/uncommittedFilesWatcher';
+import { SelectedRepoTotalBranchWatcher } from '../git/selectedRepoTotalBranchWatcher';
 import { GitBranchesController } from '../git/gitBranchesController';
 import { GitCommitController } from '../git/gitCommitController';
 import { store, type StoreEffect } from '../state/store';
@@ -59,6 +60,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private readonly repoSubmoduleWatcher = new RepoSubmoduleWatcher();
     private readonly repoController = new GitRepoController(this.repoSubmoduleWatcher);
     private readonly repoHeadBranchWatcher = new RepoHeadBranchWatcher(this.repoController);
+    private readonly selectedRepoTotalBranchWatcher = new SelectedRepoTotalBranchWatcher(
+        this.repoController,
+        this.repoHeadBranchWatcher,
+    );
     private readonly branchesController: GitBranchesController;
     private readonly uncommittedFilesWatcher: UncommittedFilesWatcher;
     private readonly commitController: GitCommitController;
@@ -208,7 +213,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.reposLoadingSnapshot = loading;
             this.view?.webview.postMessage({ type: 'repoLoadingChanged', loading });
         });
-        this.branchesController = new GitBranchesController(this.repoController, this.repoHeadBranchWatcher);
+        this.branchesController = new GitBranchesController(
+            this.repoController,
+            this.selectedRepoTotalBranchWatcher,
+        );
         this.uncommittedFilesWatcher = new UncommittedFilesWatcher(this.repoHeadBranchWatcher);
         // 分支显示必须先订阅；提交 Controller 的监听器会在回调中启动刷新。
         this.selectedBranchesSubscription = this.branchesController.onSelectedBranchesChanged(branches => this.onSelectedBranchesChanged(branches));
@@ -261,6 +269,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.repoController,
             this.repoSubmoduleWatcher,
             this.repoHeadBranchWatcher,
+            this.selectedRepoTotalBranchWatcher,
             this.uncommittedFilesWatcher,
             // 保持 selectedRepoSubscription 在构造阶段的订阅顺序；不要移到 Controller 创建之后。
             this.selectedRepoSubscription,
