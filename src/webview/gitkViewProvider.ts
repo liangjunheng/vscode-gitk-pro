@@ -1664,7 +1664,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   @keyframes refresh-unchanged { 0%, 100% { color: var(--vscode-icon-foreground); } 45% { color: var(--vscode-descriptionForeground); } }
   #header .count { opacity: 0.7; font-size: 11px; white-space: nowrap; }
   #workspace { display: grid; grid-template-columns: minmax(180px, 1fr) 5px minmax(180px, 1fr); flex: 1; min-height: 0; }
-  #graph { --graph-width: 22px; --graph-lane-width: 22px; --hash-width: max-content; --message-width: 60ch; --author-width: max-content; --date-width: max-content; min-width: 0; min-height: 0; overflow: auto; }
+  #graph { --graph-lane-width: 22px; --main-width: calc(var(--graph-lane-width) + 60ch); --hash-width: max-content; --author-width: max-content; --date-width: max-content; min-width: 0; min-height: 0; overflow: auto; }
   #panelResizeHandle { cursor: col-resize; background: var(--vscode-panel-border); }
   #panelResizeHandle:hover, #panelResizeHandle.resizing { background: var(--vscode-focusBorder); }
   #filesSection { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
@@ -1751,14 +1751,17 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   #filesEmpty:has(.files-loading-spinner) { display: flex; align-items: center; gap: 7px; }
   .files-loading-spinner { width: 12px; height: 12px; flex: 0 0 auto; border: 2px solid var(--vscode-progressBar-background); border-top-color: transparent; border-radius: 50%; animation: files-loading-spin .8s linear infinite; }
   @keyframes files-loading-spin { to { transform: rotate(360deg); } }
-  .commit-header, .commit-row { display: grid; grid-template-columns: max(8ch, var(--graph-width), var(--graph-lane-width)) var(--message-width) var(--author-width) var(--hash-width) var(--date-width); align-items: center; min-width: max-content; }
+  .commit-header, .commit-row { display: grid; grid-template-columns: var(--main-width) var(--author-width) var(--hash-width) var(--date-width); align-items: center; min-width: max-content; }
   .commit-header { position: sticky; top: 0; z-index: 1; height: 30px; margin: 0; padding: 0 10px; color: var(--vscode-tab-activeForeground); background: var(--vscode-editorWidget-background, var(--vscode-tab-activeBackground)); border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); box-sizing: border-box; font-weight: 600; }
-  .commit-row { min-height: 26px; height: auto; box-sizing: border-box; cursor: pointer; }
+  .commit-row { min-height: 26px; height: auto; box-sizing: border-box; cursor: pointer; align-items: start; }
   .commit-row:hover { background: var(--vscode-list-hoverBackground); }
-  .commit-row.expanded { grid-template-rows: 26px auto; }
-  .commit-row.expanded .col-graph { grid-row: 1 / 3; }
-  .commit-row.expanded .col-message, .commit-row.expanded .col-author, .commit-row.expanded .col-hash, .commit-row.expanded .col-date { grid-row: 1; align-self: center; }
-  .commit-description { display: none; grid-column: 2 / -1; grid-row: 2; padding: 7px 5px; border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 12%, transparent); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vscode-descriptionForeground); line-height: 17px; cursor: text; }
+  /* 分支图与描述合并为 col-main 单列: SVG 画泳道(左), 摘要行与描述(右)在同一字段内竖排。 */
+  .col-main { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 26px; align-items: center; min-width: 0; overflow: hidden; }
+  .commit-row.expanded .col-main { grid-template-rows: 26px auto; }
+  .col-main .graph-svg { grid-column: 1; grid-row: 1 / -1; align-self: stretch; flex: 0 0 auto; }
+  .col-main-summary { grid-column: 2; grid-row: 1; display: flex; align-items: center; min-width: 0; overflow: hidden; padding: 0 5px; }
+  .col-main-summary .commit-message-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-foreground, inherit); }
+  .commit-description { display: none; grid-column: 2; grid-row: 2; padding: 7px 5px; border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 12%, transparent); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vscode-descriptionForeground); line-height: 17px; cursor: text; }
   .commit-row.expanded .commit-description { display: block; }
   .commit-description:empty { display: none; }
   .commit-description-refs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; white-space: normal; }
@@ -1773,19 +1776,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .commit-header > div { position: relative; min-width: 0; padding: 5px 14px 5px 0; overflow: hidden; white-space: nowrap; text-align: left; }
   .commit-header .resize-handle { position: absolute; top: 0; right: 0; width: 7px; height: 100%; cursor: col-resize; }
   .commit-header .resize-handle:hover { background: var(--vscode-focusBorder); }
-  .col-graph, .col-hash, .col-message, .col-author, .col-date { min-width: 0; overflow: hidden; white-space: nowrap; padding: 0 5px; text-align: left; }
-  .col-graph { display: flex; align-self: stretch; align-items: flex-start; justify-content: flex-start; padding: 0; overflow: hidden; }
+  .col-main, .col-hash, .col-author, .col-date { min-width: 0; overflow: hidden; white-space: nowrap; text-align: left; }
+  .col-hash, .col-author, .col-date { padding: 0 5px; height: 26px; display: flex; align-items: center; }
   .graph-svg { flex: 0 0 auto; }
-  .graph-ref { font-family: var(--vscode-editor-font-family, sans-serif); font-size: 12px; dominant-baseline: middle; }
-  .graph-ref-icon { font-family: codicon; font-size: 12px; dominant-baseline: middle; }
-  .col-message { text-overflow: ellipsis; }
-  .col-message-head-refs { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-right: 8px; vertical-align: middle; }
+  .col-message-head-refs { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-right: 8px; vertical-align: middle; flex: 0 0 auto; }
   .col-message-head-ref { display: inline-flex; align-items: center; gap: 3px; min-height: 16px; padding: 0 5px; border-radius: 4px; color: var(--vscode-editor-background); font-size: 11px; line-height: 16px; }
   /* 选择器需两级以压过 codicon.css 的 .codicon[class*='codicon-']，否则其 16px/1 行高会让图标与标签文本错位。 */
   .col-message-head-ref .codicon { display: flex; align-items: center; font-size: 11px; line-height: 1; }
   .col-hash { width: max-content; font-family: var(--vscode-editor-font-family, monospace); opacity: 0.85; color: var(--vscode-descriptionForeground, inherit); }
   .col-author, .col-date { width: max-content; text-overflow: clip; }
-  .col-message { color: var(--vscode-foreground, inherit); }
   .col-author { opacity: 0.75; }
   .col-date { opacity: 0.65; font-variant-numeric: tabular-nums; }
   svg { display: block; }
@@ -1830,7 +1829,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   </div>
   <main id="workspace">
     <div id="graph">
-      <div id="commitHeader" class="commit-header"><div>分支图</div><div>描述</div><div>作者</div><div>Commit ID</div><div>时间</div></div>
+      <div id="commitHeader" class="commit-header"><div>描述</div><div>作者</div><div>Commit ID</div><div>时间</div></div>
       <div id="loading" style="display:none;">
         <div id="loadingText">加载中...</div>
         <div id="progressBar"><div id="progressBarFill"></div></div>
@@ -1889,7 +1888,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   // 增量渲染状态
   let currentMaxLane = 0;
   let currentGraphW = LANE_W + 10;
-  const REF_GAP = 10;
 
   window.addEventListener('focus', function() { vscode.postMessage({ type: 'focus' }); });
   window.addEventListener('blur', function() { closeDropdowns(); vscode.postMessage({ type: 'blur' }); });
@@ -2754,50 +2752,29 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     return Math.max(circleIndex, inputCount - 1, outputCount - 1, 0);
   }
 
-  // 全局: 计算行 ref 列起始 X
-  function rowRefX(c) {
-    return (rowMaxSwimlane(c) + 1) * LANE_W + 5 + REF_GAP;
+  // 单行 SVG 宽度 = 该行实际泳道所需宽度; 描述随每行泳道紧贴, 泳道少的行不再留全表最大空白。
+  // 坐标系与 width 同值保证 1:1 不缩放; (max+1)*LANE_W + 10 含节点半径余量。
+  function rowGraphW(c) {
+    return (rowMaxSwimlane(c) + 1) * LANE_W + 10;
   }
 
-  // 图区标签图标: 当前分支=靶子, 远程分支=云。图标类型由 branches 的 kind 决定,
+  // 分支标签图标(可多个): 当前分支=靶子, 远程分支=云, 本地分支=显示器。图标类型由 branches 的 kind 决定,
   // 不按 ref 文本猜测。ref 文本 (git log %D 的 short 名) 与 branch.label (%(refname:short)) 同源可直接匹配。
-  function refIconFor(ref, repositoryPath) {
+  // 特例: 远程 HEAD 符号指针命名恒为 "<remote>/HEAD" (git 规范), %(refname:short) 会被简化成 "<remote>",
+  // 与 %D 文本 "origin/HEAD" 对不上; 它既是该远程的 HEAD 指针(靶子)又是远程(云), 故返回 [target, cloud]。
+  function refIconsFor(ref, repositoryPath) {
+    if (/\\/HEAD$/.test(ref)) return ['target', 'cloud'];
     var match = branches.find(function(branch) {
       return branch.repoOption.path === repositoryPath && branch.label === ref;
     });
-    if (!match) return '';
-    if (match.kind === 'current') return 'target';
-    if (match.kind === 'remote') return 'cloud';
-    return '';
+    if (!match) return [];
+    // 当前分支同时也是本地分支: 靶子在前, 本地分支图标(显示器)在后。
+    if (match.kind === 'current') return ['target', 'device-desktop'];
+    if (match.kind === 'remote') return ['cloud'];
+    if (match.kind === 'local') return ['device-desktop'];
+    return [];
   }
 
-  // codicon 私用区字形: cloud=\ebaa, target=\ebf8。用 HTML 实体避免文件出现不可见字符。
-  function refIconChar(icon) {
-    if (icon === 'cloud') return '&#xebaa;';
-    if (icon === 'target') return '&#xebf8;';
-    return '';
-  }
-
-  // 标签文本与其矩形宽度的唯一来源, SVG 画布宽度与实际绘制共用。
-  // icon 存在时在文字前预留一个字形宽度 (14px), 保证画布宽度与实际绘制一致。
-  function refLabelItem(ref, icon) {
-    var label = ref.length > 18 ? ref.slice(0, 17) + '…' : ref;
-    var iconWidth = icon ? 14 : 0;
-    return { ref: ref, label: label, icon: icon || '', width: Math.max(30, label.length * 7 + 12 + iconWidth) };
-  }
-
-  // SVG 画布宽度必须覆盖泳道与标签的全部绘制范围, 否则标签会被画布边界裁断;
-  // 列宽仍只由泳道决定, 超出部分由 .col-graph 的 overflow 裁剪。
-  function calcGraphCanvasW(naturalGraphW) {
-    return commits.reduce(function(width, c) {
-      if (!c.refs || c.refs.length === 0) return width;
-      var repositoryPath = c.gitBranchOption.repoOption.path;
-      var labelsWidth = c.refs.reduce(function(total, ref) {
-        return total + refLabelItem(ref, refIconFor(ref, repositoryPath)).width + 4;
-      }, 0);
-      return Math.max(width, rowRefX(c) + labelsWidth + 8);
-    }, naturalGraphW);
-  }
 
   // 提交节点颜色由其所在泳道决定；分支图标签与描述标签共用该颜色。
   function commitLaneColor(c) {
@@ -2840,11 +2817,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     // 描述只能在当前高亮 commit 上显示。
     var expanded = selected && expandedCommits.has(commitKey);
     var html = '<div class="commit-row' + (expanded ? ' expanded' : '') + (selected ? ' selected' : '') + '" data-hash="' + escapeAttr(c.hash) + '" data-repository-path="' + escapeAttr(c.gitBranchOption.repoOption.path) + '" data-row="' + i + '" data-has-description="true">';
-    var headLabels = headBranchLabels(c);
-    var branchList = (c.refs || []).concat(headLabels.filter(function(head) {
-      return !(c.refs || []).includes(head.label);
-    }).map(function(head) { return head.label; })).join(', ');
-    html += '<div class="col-graph"' + (branchList ? ' title="' + escapeAttr(branchList) + '"' : '') + '><svg class="graph-svg" width="' + graphW + '" height="' + ROW_H + '" viewBox="0 0 ' + graphW + ' ' + ROW_H + '"></svg></div>';
+    var repositoryPath = c.gitBranchOption.repoOption.path;
+    var branchList = (c.refs || []).join(', ');
     var authorPreview = c.authorEmail ? c.author + ' <' + c.authorEmail + '>' : c.author;
     var commitDate = c.authorDate ? new Date(c.authorDate).toString() : c.authorDateLabel;
     var descriptionText = [c.message, c.body || ''].filter(Boolean).join('\\n')
@@ -2857,15 +2831,21 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       'Author: ' + authorPreview,
       'Date: ' + commitDate,
     ].filter(Boolean).join('\\n');
-    var headRefHtml = headLabels.map(function(head) {
+    // 分支标签(全部 c.refs)以 chip 形式并入描述字段的摘要行; 图标按 kind 决定: 当前=靶子, 远程=云, 本地=分支; 可多个。
+    var refChipsHtml = (c.refs || []).map(function(ref) {
+      var iconHtml = refIconsFor(ref, repositoryPath).map(function(icon) {
+        return '<span class="codicon codicon-' + icon + '" aria-hidden="true"></span>';
+      }).join('');
       return '<span class="col-message-head-ref" style="background:' + escapeAttr(commitLaneColor(c)) + '">'
-        + '<span class="codicon codicon-' + head.icon + '" aria-hidden="true"></span>'
-        + escapeHtml(head.label) + '</span>';
+        + iconHtml + escapeHtml(ref) + '</span>';
     }).join('');
-    html += '<div class="col-message" title="' + escapeAttr(hoverDescription) + '">' + (headRefHtml ? '<span class="col-message-head-refs">' + headRefHtml + '</span>' : '') + escapeHtml(c.message) + '</div>';
-    html += '<div class="col-author" title="' + escapeAttr(authorPreview) + '">' + escapeHtml(authorPreview) + '</div>';
-    html += '<div class="col-hash">' + escapeHtml(c.shortHash) + '</div>';
-    html += '<div class="col-date" title="' + escapeAttr(c.authorDateLabel) + '">' + escapeHtml(c.authorDateLabel) + '</div>';
+    // col-main: SVG(仅泳道, 按本行泳道宽) + 摘要行(chip + 提交信息) + 展开后的描述, 同属一个字段。
+    var rowW = rowGraphW(c);
+    html += '<div class="col-main"' + (branchList ? ' title="' + escapeAttr(branchList) + '"' : '') + '>';
+    html += '<svg class="graph-svg" width="' + rowW + '" height="' + ROW_H + '" viewBox="0 0 ' + rowW + ' ' + ROW_H + '"></svg>';
+    html += '<div class="col-main-summary" title="' + escapeAttr(hoverDescription) + '">'
+      + (refChipsHtml ? '<span class="col-message-head-refs">' + refChipsHtml + '</span>' : '')
+      + '<span class="commit-message-text">' + escapeHtml(c.message) + '</span></div>';
     var committerPreview = c.committerEmail ? c.committer + ' <' + c.committerEmail + '>' : c.committer;
     var parentList = (c.parents || []).join(' ');
     var description = [
@@ -2877,11 +2857,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       'Parents: ' + parentList,
       'Committer: ' + committerPreview,
     ].filter(Boolean).join('\\n');
-    var refColor = commitLaneColor(c);
-    var descriptionRefs = (c.refs || []).map(function(ref) {
-      return '<span class="commit-description-ref" style="background:' + escapeAttr(refColor) + '">' + escapeHtml(ref) + '</span>';
-    }).join('');
-    html += '<div class="commit-description">' + (descriptionRefs ? '<div class="commit-description-refs">' + descriptionRefs + '</div>' : '') + escapeHtml(description) + '</div>';
+    html += '<div class="commit-description">' + escapeHtml(description) + '</div>';
+    html += '</div>';
+    html += '<div class="col-author" title="' + escapeAttr(authorPreview) + '">' + escapeHtml(authorPreview) + '</div>';
+    html += '<div class="col-hash">' + escapeHtml(c.shortHash) + '</div>';
+    html += '<div class="col-date" title="' + escapeAttr(c.authorDateLabel) + '">' + escapeHtml(c.authorDateLabel) + '</div>';
     html += '</div>';
     return html;
   }
@@ -2900,9 +2880,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       var svg = row.querySelector('svg');
       var index = Number(row.getAttribute('data-row'));
       if (svg && Number.isInteger(index) && commits[index]) {
+        var rowW = rowGraphW(commits[index]);
+        svg.setAttribute('width', String(rowW));
         svg.setAttribute('height', String(ROW_H));
-        svg.setAttribute('viewBox', '0 0 ' + currentGraphW + ' ' + ROW_H);
-        drawSvg(svg, index, currentGraphW, ROW_H, LANE_W, DOT_R, rowRefX(commits[index]));
+        svg.setAttribute('viewBox', '0 0 ' + rowW + ' ' + ROW_H);
+        drawSvg(svg, index, rowW, ROW_H, LANE_W, DOT_R);
       }
     });
     document.querySelectorAll('.commit-row.selected').forEach(function(row) {
@@ -2933,9 +2915,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     var svg = row.querySelector('svg');
     if (svg) {
       var idx = Number(row.getAttribute('data-row'));
+      // 每行按自身泳道宽度绘制, 使描述紧贴泳道; graphW 仅作无对应 commit 时的兜底。
+      var rowW = commits[idx] ? rowGraphW(commits[idx]) : graphW;
+      svg.setAttribute('width', String(rowW));
       svg.setAttribute('height', String(ROW_H));
-      svg.setAttribute('viewBox', '0 0 ' + graphW + ' ' + ROW_H);
-      drawSvg(svg, idx, graphW, ROW_H, LANE_W, DOT_R, rowRefX(commits[idx]));
+      svg.setAttribute('viewBox', '0 0 ' + rowW + ' ' + ROW_H);
+      drawSvg(svg, idx, rowW, ROW_H, LANE_W, DOT_R);
     }
     row.addEventListener('click', function(event) {
       if (row.classList.contains('disabled')) return;
@@ -3008,7 +2993,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     const selected = selectedCommitHash === hash ? ' selected' : '';
     const disabled = enabled ? '' : ' disabled';
     return '<div class="commit-row working-tree' + selected + disabled + '" data-hash="' + hash + '" data-repository-path="' + escapeHtml(repositoryPath) + '" aria-disabled="' + String(!enabled) + '">' +
-      '<div class="col-graph"></div><div class="col-message working-tree-label">' + label + '</div>' +
+      '<div class="col-main"><span class="graph-svg"></span><div class="col-main-summary working-tree-label">' + label + '</div></div>' +
       '<div class="col-author"></div><div class="col-hash">—</div><div class="col-date"></div></div>';
   }
 
@@ -3087,16 +3072,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     loading.style.display = 'none';
     list.style.display = 'block';
 
-    // 分支图宽度 = 全列表最大泳道数所需宽度; 分支标签不参与。
+    // 分支图 SVG 宽度 = 全列表最大泳道数所需宽度; 分支标签已迁出 SVG 不参与。
     var laneCount = calcMaxLane(0) + 1;
     currentMaxLane = laneCount - 1;
     var naturalGraphW = laneCount * LANE_W + 10;
     graphViewportWidth = graph ? graph.clientWidth : 0;
-    var graphW = calcGraphCanvasW(naturalGraphW);
+    var graphW = naturalGraphW;
     currentGraphW = graphW;
-    var graphColumnW = naturalGraphW + 'px';
     document.getElementById('commitHeader').innerHTML =
-      headerCell('分支图', 'graph') + headerCell('描述', 'message') +
+      headerCell('描述', 'main') +
       headerCell('作者', 'author') + headerCell('Commit ID', 'hash') + headerCell('时间', 'date');
     var html = '';
     var selectedBranch = getSelectedCurrentBranch();
@@ -3104,10 +3088,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     for (let i = 0; i < commits.length; i++) {
       html += buildCommitRowHTML(i, graphW);
     }
-    setColumnWidth(list, 'graph', graphColumnW);
+    // SVG 泳道子列宽随泳道数变化; col-main 总宽由 --main-width (默认 = 泳道宽 + 60ch) 决定。
     graph.style.setProperty('--graph-lane-width', naturalGraphW + 'px');
     list.style.setProperty('--graph-lane-width', naturalGraphW + 'px');
-    setColumnWidth(list, 'message', '60ch');
     updateColumnWidths(commits, 0);
     list.innerHTML = html;
 
@@ -3121,7 +3104,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     restoreVisibleCommitAnchor(graph, list, visibleCommitAnchor, scrollTop);
   }
 
-  function drawSvg(svg, idx, graphW, rowH, laneW, dotR, refColumnX) {
+  function drawSvg(svg, idx, graphW, rowH, laneW, dotR) {
     const c = commits[idx];
     const expanded = selectedCommitHash === c.hash
       && selectedCommitRepositoryPath === c.gitBranchOption.repoOption.path
@@ -3201,24 +3184,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     if (cx !== undefined) {
-      if (c.refs && c.refs.length > 0) {
-        const lineStart = cx + dotR;
-        let refX = refColumnX;
-        const repositoryPath = c.gitBranchOption.repoOption.path;
-        const labels = c.refs.map(function(ref) { return refLabelItem(ref, refIconFor(ref, repositoryPath)); });
-        content += '<line x1="' + lineStart + '" y1="' + y + '" x2="' + refX + '" y2="' + y + '" stroke="' + commitColor + '" stroke-width="1.5"/>';
-        for (const item of labels) {
-          content += '<rect x="' + refX + '" y="4" width="' + item.width + '" height="18" rx="5" ry="5" fill="' + commitColor + '"/>';
-          // 图标画在文字前面, 占 14px; 文字随之右移, 与 refLabelItem 的宽度预留保持一致。
-          var textX = refX + 6;
-          if (item.icon) {
-            content += '<text class="graph-ref-icon" x="' + textX + '" y="' + y + '" fill="var(--vscode-editor-background)">' + refIconChar(item.icon) + '</text>';
-            textX += 14;
-          }
-          content += '<text class="graph-ref" x="' + textX + '" y="' + y + '" fill="var(--vscode-editor-background)" title="' + escapeAttr(item.ref) + '">' + escapeHtml(item.label) + '</text>';
-          refX += item.width + 4;
-        }
-      }
+      // 分支标签已迁至描述字段的摘要行(chip), SVG 只保留泳道与节点。
       const isHead = c.refs && c.refs.some(function(r) { return r === 'HEAD'; });
       const isJoin = (c.parents && c.parents.length > 1) || inputSwimlanes.filter(function(lane) { return lane.hash === c.hash; }).length > 1;
       const r = isHead ? dotR + 2 : dotR;
@@ -3288,7 +3254,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
   document.addEventListener('mousemove', function(event) {
     if (resizing) {
-      const minimumWidths = { graph: LANE_W + 10, message: 160, author: 80, hash: 80, date: 100 };
+      const minimumWidths = { main: LANE_W + 170, author: 80, hash: 80, date: 100 };
       const width = Math.max(minimumWidths[resizing.key] || 40, resizing.startWidth + event.clientX - resizing.startX);
       columnWidths[resizing.key] = width + 'px';
       applyColumnWidths();
