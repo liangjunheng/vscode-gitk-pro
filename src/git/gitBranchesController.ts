@@ -12,6 +12,8 @@ export class GitBranchesController implements vscode.Disposable {
     // 已消费的仓库选择快照; 仓库集合的唯一存放处。
     private repositories: GitRepositoryOption[] = [];
     private readonly selectedBranchNamesByRepository = new Map<string, Set<string>>();
+    // 与 GitRepoController.hasUserSelection 对称: 用户手动选过分支后不再自动回填默认当前分支。
+    private hasUserSelection = false;
 
     private _isLoading = false;
 
@@ -93,7 +95,28 @@ export class GitBranchesController implements vscode.Disposable {
         this.repositories = [...repositories];
         const keep = new Set(this.repositories.map(repository => repository.path));
         this.pruneSelected(keep);
+        // 已缓存当前分支的仓库立即回填默认选择; 尚未读到 HEAD 的仓库由 applyTotalBranches 到达时补。
+        const defaulted = this.ensureDefaultSelection();
         this.fireBranches();
+        if (defaulted) { this.fireSelected(); }
+    }
+
+    /**
+     * 默认选择: 用户从未手动选过分支时, 为已选仓库中尚无勾选的仓库自动选中其当前分支 (kind==='current')。
+     * 与 GitRepoController「默认选第一个仓库」对称; 当前分支 HEAD 是异步读入的, 故到达处 (applyTotalBranches) 也要调用。
+     * 返回是否新增了默认选择。
+     */
+    private ensureDefaultSelection(): boolean {
+        if (this.hasUserSelection) { return false; }
+        let changed = false;
+        for (const repository of this.repositories) {
+            if (this.selectedBranchNamesByRepository.has(repository.path)) { continue; }
+            const current = this.totalBranchWatcher.getTotalBranches(repository).find(branch => branch.kind === 'current');
+            if (!current) { continue; }
+            this.selectedBranchNamesByRepository.set(repository.path, new Set([current.name]));
+            changed = true;
+        }
+        return changed;
     }
 
     /**
@@ -121,6 +144,7 @@ export class GitBranchesController implements vscode.Disposable {
         }
         // 校验 2: 与当前选择完全相同直接返回, 避免重复点击引发无意义的提交重载。
         if (this.sameSelected(this.selectedBranches, next)) { return false; }
+        this.hasUserSelection = true;
         this._isLoading = true;
         this.loadingEmitter.fire(true);
         this.replaceSelected(next);
@@ -154,8 +178,10 @@ export class GitBranchesController implements vscode.Disposable {
             });
             this.branchHeadEmitter.fire();
         }
+        // 当前分支此刻才异步到达, 是回填默认选择的关键时机 (仓库变化时该仓库 HEAD 可能尚未读到)。
+        const defaulted = this.ensureDefaultSelection();
         this.fireBranches();
-        if (headChanged) { this.fireSelected(); }
+        if (headChanged || defaulted) { this.fireSelected(); }
     }
 
     /** 仓库集合变化时先删除旧仓库的勾选，避免新列表与旧勾选组合成一帧。 */

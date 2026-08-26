@@ -1777,6 +1777,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .col-graph { display: flex; align-self: stretch; align-items: flex-start; justify-content: flex-start; padding: 0; overflow: hidden; }
   .graph-svg { flex: 0 0 auto; }
   .graph-ref { font-family: var(--vscode-editor-font-family, sans-serif); font-size: 12px; dominant-baseline: middle; }
+  .graph-ref-icon { font-family: codicon; font-size: 12px; dominant-baseline: middle; }
   .col-message { text-overflow: ellipsis; }
   .col-message-head-refs { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-right: 8px; vertical-align: middle; }
   .col-message-head-ref { display: inline-flex; align-items: center; gap: 3px; min-height: 16px; padding: 0 5px; border-radius: 4px; color: var(--vscode-editor-background); font-size: 11px; line-height: 16px; }
@@ -2758,10 +2759,31 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     return (rowMaxSwimlane(c) + 1) * LANE_W + 5 + REF_GAP;
   }
 
+  // 图区标签图标: 当前分支=靶子, 远程分支=云。图标类型由 branches 的 kind 决定,
+  // 不按 ref 文本猜测。ref 文本 (git log %D 的 short 名) 与 branch.label (%(refname:short)) 同源可直接匹配。
+  function refIconFor(ref, repositoryPath) {
+    var match = branches.find(function(branch) {
+      return branch.repoOption.path === repositoryPath && branch.label === ref;
+    });
+    if (!match) return '';
+    if (match.kind === 'current') return 'target';
+    if (match.kind === 'remote') return 'cloud';
+    return '';
+  }
+
+  // codicon 私用区字形: cloud=\ebaa, target=\ebf8。用 HTML 实体避免文件出现不可见字符。
+  function refIconChar(icon) {
+    if (icon === 'cloud') return '&#xebaa;';
+    if (icon === 'target') return '&#xebf8;';
+    return '';
+  }
+
   // 标签文本与其矩形宽度的唯一来源, SVG 画布宽度与实际绘制共用。
-  function refLabelItem(ref) {
+  // icon 存在时在文字前预留一个字形宽度 (14px), 保证画布宽度与实际绘制一致。
+  function refLabelItem(ref, icon) {
     var label = ref.length > 18 ? ref.slice(0, 17) + '…' : ref;
-    return { ref: ref, label: label, width: Math.max(30, label.length * 7 + 12) };
+    var iconWidth = icon ? 14 : 0;
+    return { ref: ref, label: label, icon: icon || '', width: Math.max(30, label.length * 7 + 12 + iconWidth) };
   }
 
   // SVG 画布宽度必须覆盖泳道与标签的全部绘制范围, 否则标签会被画布边界裁断;
@@ -2769,8 +2791,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   function calcGraphCanvasW(naturalGraphW) {
     return commits.reduce(function(width, c) {
       if (!c.refs || c.refs.length === 0) return width;
+      var repositoryPath = c.gitBranchOption.repoOption.path;
       var labelsWidth = c.refs.reduce(function(total, ref) {
-        return total + refLabelItem(ref).width + 4;
+        return total + refLabelItem(ref, refIconFor(ref, repositoryPath)).width + 4;
       }, 0);
       return Math.max(width, rowRefX(c) + labelsWidth + 8);
     }, naturalGraphW);
@@ -3181,11 +3204,18 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       if (c.refs && c.refs.length > 0) {
         const lineStart = cx + dotR;
         let refX = refColumnX;
-        const labels = c.refs.map(refLabelItem);
+        const repositoryPath = c.gitBranchOption.repoOption.path;
+        const labels = c.refs.map(function(ref) { return refLabelItem(ref, refIconFor(ref, repositoryPath)); });
         content += '<line x1="' + lineStart + '" y1="' + y + '" x2="' + refX + '" y2="' + y + '" stroke="' + commitColor + '" stroke-width="1.5"/>';
         for (const item of labels) {
           content += '<rect x="' + refX + '" y="4" width="' + item.width + '" height="18" rx="5" ry="5" fill="' + commitColor + '"/>';
-          content += '<text class="graph-ref" x="' + (refX + 6) + '" y="' + y + '" fill="var(--vscode-editor-background)" title="' + escapeAttr(item.ref) + '">' + escapeHtml(item.label) + '</text>';
+          // 图标画在文字前面, 占 14px; 文字随之右移, 与 refLabelItem 的宽度预留保持一致。
+          var textX = refX + 6;
+          if (item.icon) {
+            content += '<text class="graph-ref-icon" x="' + textX + '" y="' + y + '" fill="var(--vscode-editor-background)">' + refIconChar(item.icon) + '</text>';
+            textX += 14;
+          }
+          content += '<text class="graph-ref" x="' + textX + '" y="' + y + '" fill="var(--vscode-editor-background)" title="' + escapeAttr(item.ref) + '">' + escapeHtml(item.label) + '</text>';
           refX += item.width + 4;
         }
       }
