@@ -73,7 +73,7 @@ export class GitCommitController implements vscode.Disposable {
     private readonly totalEmitter = new vscode.EventEmitter<CommitMetadata[]>();
     private readonly selectedEmitter = new vscode.EventEmitter<CommitMetadata | undefined>();
     private readonly loadingEmitter = new vscode.EventEmitter<boolean>();
-    private readonly workingTreeEmitter = new vscode.EventEmitter<WorkingTreeChanges>();
+    private readonly workingTreeEmitter = new vscode.EventEmitter<{ changes: WorkingTreeChanges; affectedPaths?: readonly string[] }>();
     private readonly presenceEmitter = new vscode.EventEmitter<boolean>();
     private readonly repositorySelectionSubscription: vscode.Disposable;
     private readonly branchSelectionSubscription: vscode.Disposable;
@@ -102,7 +102,7 @@ export class GitCommitController implements vscode.Disposable {
             if (current?.repoOption.path !== event.branch.repoOption.path || current.hash !== event.branch.hash) {
                 return;
             }
-            this.applyWorkingTreeSnapshot(event.branch.repoOption.path, event.changes);
+            this.applyWorkingTreeSnapshot(event.branch.repoOption.path, event.changes, event.affectedPaths);
         });
     }
 
@@ -472,12 +472,18 @@ export class GitCommitController implements vscode.Disposable {
         }
     }
 
-    private applyWorkingTreeSnapshot(repositoryPath: string | undefined, changes: WorkingTreeChanges): void {
+    private applyWorkingTreeSnapshot(
+        repositoryPath: string | undefined,
+        changes: WorkingTreeChanges,
+        affectedPaths?: readonly string[],
+    ): void {
         if (repositoryPath === this.workingTreeRepositoryPath && this.workingTree.equals(changes)) { return; }
         this.workingTreeRepositoryPath = repositoryPath;
         this.workingTree = changes;
         this.setHasUncommittedChanges(changes.staged.length + changes.changes.length > 0);
-        this.workingTreeEmitter.fire(this.workingTreeChanges);
+        // affectedPaths 透传给下游: 状态通道据此识别哪些已展示文件需连内容一起重读,
+        // 弥补工作区文件无 objectId 导致 CommitFile.equals 看不见内容变化的缺口。
+        this.workingTreeEmitter.fire({ changes: this.workingTreeChanges, affectedPaths });
     }
 
     private setHasUncommittedChanges(value: boolean): void {

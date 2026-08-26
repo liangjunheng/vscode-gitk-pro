@@ -363,10 +363,23 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         const previous = this.changesByRepository.get(repositoryPath)?.get(branchHash) ?? new WorkingTreeChanges();
         const isAffected = (file: WorkingTreeChanges['staged'][number]) =>
             paths.has(file.path) || (!!file.oldPath && paths.has(file.oldPath));
-        const mergeSection = (allFiles: WorkingTreeChanges['staged'], changedFiles: WorkingTreeChanges['staged']) => [
-            ...allFiles.filter(file => !isAffected(file)),
-            ...changedFiles,
-        ];
+        // 就地替换受影响项, 保持原有顺序。追加末尾会打乱列表, 让按下标比较的 WorkingTreeChanges.equals
+        // 误判为状态变化, 使纯内容编辑被错误分流到状态通道而漏读内容。
+        const mergeSection = (allFiles: WorkingTreeChanges['staged'], changedFiles: WorkingTreeChanges['staged']) => {
+            const changedByPath = new Map(changedFiles.map(file => [file.path, file]));
+            const merged = allFiles.flatMap(file => {
+                if (!isAffected(file)) { return [file]; }
+                const replacement = changedByPath.get(file.path);
+                // 命中即消费, 避免同路径重复; 未命中表示该受影响项已消失, 从列表移除。
+                if (replacement) { changedByPath.delete(file.path); }
+                return replacement ? [replacement] : [];
+            });
+            // 本轮新出现的受影响文件追加到末尾。
+            for (const file of changedFiles) {
+                if (changedByPath.has(file.path)) { merged.push(file); }
+            }
+            return merged;
+        };
         return new WorkingTreeChanges({
             staged: mergeSection(previous.staged, changes.staged),
             changes: mergeSection(previous.changes, changes.changes),

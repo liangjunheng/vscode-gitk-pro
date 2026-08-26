@@ -298,7 +298,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.onSelectedCommitChanged(this.commitController.selectedCommit);
             }),
             this.commitController.onSelectedCommitChanged(commit => this.onSelectedCommitChanged(commit)),
-            this.commitController.onWorkingTreeChangesChanged(changes => this.onWorkingTreeChangesChanged(changes)),
+            this.commitController.onWorkingTreeChangesChanged(event => this.onWorkingTreeChangesChanged(event.changes, event.affectedPaths)),
             this.commitController.onUncommittedPresenceChanged(() => this.schedulePushState()),
             // 状态事件维护所有仓库的未提交卡片；内容事件只刷新当前虚拟提交的对应 Diff。
             this.uncommittedFilesWatcher.onEachHeadBranchUncommittedFileChanged(event => {
@@ -590,15 +590,22 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         });
     }
 
-    private onWorkingTreeChangesChanged(changes: { staged: ChangedFile[]; changes: ChangedFile[] }): void {
+    private onWorkingTreeChangesChanged(
+        changes: { staged: ChangedFile[]; changes: ChangedFile[] },
+        eventAffectedPaths?: readonly string[],
+    ): void {
         this.schedulePushState();
-        const affectedPaths = this.pendingWorkingTreeDiffPaths;
+        // 显式 Git 操作的 pending 路径与 watcher 事件携带的受影响路径取并集,
+        // 后者覆盖"状态与内容同时变化"时被编辑文件需连内容重读的场景。
+        const pending = this.pendingWorkingTreeDiffPaths;
         this.pendingWorkingTreeDiffPaths = undefined;
+        const affectedPaths = pending || eventAffectedPaths
+            ? new Set<string>([...(pending ?? []), ...(eventAffectedPaths ?? [])])
+            : undefined;
         const selectedBranch = this.commitController.selectedCommit?.gitBranchOption;
         if (this.currentHash !== 'uncommitted'
             || !selectedBranch
             || selectedBranch.repoOption.path !== this.commitController.uncommittedRepositoryPath) { return; }
-        // 显式 Git 操作只重读受影响路径的 Diff；外部 watcher 事件保持全量快照语义。
         void this.selectWorkingTreeChanges(changes, false, affectedPaths).then(() => this.refreshCommitPanel());
     }
 
