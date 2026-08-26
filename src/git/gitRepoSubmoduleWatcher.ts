@@ -99,6 +99,10 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
             const localParents = new Map<string, string>();
             const layer = roots.filter((root): root is GitRepositoryOption => Boolean(root));
             for (const root of layer) { found.set(repoKey(vscode.Uri.parse(root.path).fsPath), root); }
+            // 根仓库已识别即可发布；子模块扫描继续进行，不能阻塞初始化默认选择。
+            if (isFull) {
+                this.applyTotal(this.withSubmoduleFlags([...found.values()]));
+            }
             let currentLayer = layer;
             while (currentLayer.length > 0) {
                 const candidates = (await Promise.all(currentLayer.map(async parent => {

@@ -502,6 +502,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             repository: this.selectedRepoDisplaySnapshot,
         });
         console.log('[GitkViewProvider] selectedRepoDisplayChanged postMessage after', performance.now());
+        // 选择事件产生后立即同步完整状态，不能等待提交或分支事件。
+        this.pushStateToWebview();
     }
 
     /** 分支选择变化后的唯一下游入口：更新显示快照，提交加载只由 CommitController 事件驱动。 */
@@ -522,6 +524,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             type: 'selectedBranchDisplayChanged',
             display: this.selectedBranchDisplaySnapshot,
         });
+        // 当前分支选择产生后立即同步完整状态，不能依赖提交列表事件。
+        this.pushStateToWebview();
     }
 
     /** 提交列表变化后的唯一下游入口：仅推送提交列表状态。 */

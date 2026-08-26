@@ -25,7 +25,12 @@ export class GitRepoController implements vscode.Disposable {
         this.totalSubscription = submoduleWatcher.onTotalRepoListChanged(repositories => {
             this._totalRepoList = [...repositories];
             this.totalEmitter.fire([...this._totalRepoList]);
-            this.applySelected(this.selectedRepoList);
+            // 根仓库列表已发布时立即默认选择；后续扫描更新不得覆盖已有选择。
+            if (!this.hasUserSelection && this._selectedRepoPaths.length === 0 && repositories.length > 0) {
+                this.applySelected([repositories[0]]);
+            } else {
+                this.applySelected(this.selectedRepoList);
+            }
         });
         this.loadingSubscription = submoduleWatcher.onLoadingChanged(loading => {
             this.reposLoadingEmitter.fire(loading);
