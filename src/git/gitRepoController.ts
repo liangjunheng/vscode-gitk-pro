@@ -78,7 +78,12 @@ export class GitRepoController implements vscode.Disposable {
 
     private applySelected(options: readonly GitRepositoryOption[]): void {
         const paths = options.map(repository => repoKey(new URL(repository.path).pathname));
-        if (paths.length === this._selectedRepoPaths.length && paths.every((value, index) => value === this._selectedRepoPaths[index])) { return; }
+        const selected = this.selectedRepoList;
+        const same = paths.length === this._selectedRepoPaths.length
+            && paths.every((value, index) => value === this._selectedRepoPaths[index])
+            && options.length === selected.length
+            && options.every((option, index) => option.equals(selected[index]));
+        if (same) { return; }
         this._selectedRepoPaths = paths;
         this.selectedEmitter.fire([...this.selectedRepoList]);
     }

@@ -71,24 +71,45 @@ export type FileStatus = 'A' | 'M' | 'D' | 'R' | 'C' | 'T' | 'U' | '?';
  * 属性不可变，修改时创建新的 GitRepositoryOption 实例。
  * 属性全同的两个实例视为同一个对象, 判等直接调用实例 equals。
  */
+export interface GitRepositoryAncestor {
+    readonly path: string;
+    readonly label: string;
+    readonly hasSubmodules: boolean;
+}
+
 export class GitRepositoryOption {
     readonly path: string;
     readonly label: string;
     readonly description?: string;
     readonly hasSubmodules?: boolean;
+    readonly ancestry: readonly GitRepositoryAncestor[];
 
-    constructor(init: { path: string; label: string; description?: string; hasSubmodules?: boolean }) {
+    constructor(init: {
+        path: string;
+        label: string;
+        description?: string;
+        hasSubmodules?: boolean;
+        ancestry?: readonly GitRepositoryAncestor[];
+    }) {
         this.path = init.path;
         this.label = init.label;
         this.description = init.description;
         this.hasSubmodules = init.hasSubmodules;
+        this.ancestry = init.ancestry ?? [];
     }
 
     equals(other: GitRepositoryOption): boolean {
         return this.path === other.path
             && this.label === other.label
             && this.description === other.description
-            && this.hasSubmodules === other.hasSubmodules;
+            && this.hasSubmodules === other.hasSubmodules
+            && this.ancestry.length === other.ancestry.length
+            && this.ancestry.every((ancestor, index) => {
+                const otherAncestor = other.ancestry[index];
+                return ancestor.path === otherAncestor.path
+                    && ancestor.label === otherAncestor.label
+                    && ancestor.hasSubmodules === otherAncestor.hasSubmodules;
+            });
     }
 }
 

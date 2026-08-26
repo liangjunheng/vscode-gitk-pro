@@ -238,14 +238,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             onToggleDisplayMode: () => this.dispatchIntent({ type: 'toggleFilesMode' }),
             onToggleAmend: (repositoryPath, message) => void this.toggleCommitAmend(repositoryPath, message),
             onHistory: repositoryPath => void this.pickCommitHistoryMessage(repositoryPath),
+            onFocusRepository: repositoryPath => this.commitPanel.focus(repositoryPath),
             onSelectFile: (repositoryPath, section, filePath) =>
                 void this.openCommitPanelWorkingTreeDiff(repositoryPath, section, filePath),
             onWorkingTreeAction: (repositoryPath, action, section, paths, untrackedPaths) =>
                 void this.runCommitPanelWorkingTreeAction(repositoryPath, action, section, paths, untrackedPaths),
             onClose: () => this.commitPanel.hide(),
         });
-        this.commitPanelViewTitleController = new CommitPanelViewTitleController(async () => {
-            await this.syncCommitRepositories();
+        this.commitPanelViewTitleController = new CommitPanelViewTitleController(() => {
+            this.syncCommitRepositories();
             this.commitPanel.show(this.buildCommitSnapshot());
         });
         this.diffReader = new DiffReader();
@@ -278,6 +279,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.totalRepoListSnapshot = [...repositories];
                 this.view?.webview.postMessage({ type: 'totalRepoListChanged', repositories });
                 this.onSelectedRepoListChanged(this.repoController.selectedRepoList);
+                if (this.commitPanel.isVisible()) {
+                    this.syncCommitRepositories();
+                    this.commitPanel.update(this.buildCommitSnapshot());
+                }
             }),
             this.branchesController,
             this.branchesController.onTotalBranchesListChanged(branchesMap => {
@@ -398,6 +403,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (updateWorkingTreeState) {
             const commitRepositories = store.getState().commitRepositories;
             const commitRepository = {
+                repository: selectedBranch.repoOption,
                 repositoryPath: selectedBranch.repoOption.path,
                 repositoryLabel: selectedBranch.repoOption.label ?? path.basename(vscode.Uri.parse(selectedBranch.repoOption.path).fsPath),
                 staged: [...workingTreeChanges.staged],
@@ -539,6 +545,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const label = branch.repoOption.label ?? path.basename(vscode.Uri.parse(repositoryPath).fsPath);
         const existing = store.getState().commitRepositories;
         const entry = {
+            repository: branch.repoOption,
             repositoryPath,
             repositoryLabel: label,
             staged: [...changes.staged],
@@ -1018,7 +1025,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private async runOpenCommitEditor(repositoryPath: string, amend: boolean): Promise<void> {
         try {
             this.commitAmendByRepo.set(repositoryPath, amend);
-            await this.syncCommitRepositories();
+            this.syncCommitRepositories();
             // 打开时展示所有仓库卡片, 并定位到触发提交的那个仓库。
             this.commitPanel.show(this.buildCommitSnapshot(), repositoryPath);
         } finally {
@@ -1112,21 +1119,24 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         });
     }
 
-    /** 拉取所有当前分支仓库的工作区数据, 写入扩展层多仓库 Store (commitRepositories)。 */
-    private async syncCommitRepositories(): Promise<void> {
-        // 覆盖全部仓库 (来自 watcher), 不再限于已选仓库的 this.branches。
-        const currentBranches = this.uncommittedFilesWatcher.listCurrentHeadBranches();
+    /** 以完整仓库拓扑构造 Commit editor 卡片；HEAD 与工作区状态仅补充卡片内容。 */
+    private syncCommitRepositories(): void {
+        const currentBranchesByPath = new Map(this.uncommittedFilesWatcher.listCurrentHeadBranches()
+            .map(branch => [branch.repoOption.path, branch]));
         const selectedRepositoryPath = this.commitController.uncommittedRepositoryPath;
-        const repositories = currentBranches.map(branch => {
-            const repositoryPath = branch.repoOption.path;
-            // 当前选中仓库复用 Changed Files 共用的 Store 清单; 其余仓库只消费 watcher 已发布快照，避免最慢仓库阻塞面板打开。
+        const repositories = this.repoController.totalRepoList.map(repository => {
+            const repositoryPath = repository.path;
+            const branch = currentBranchesByPath.get(repositoryPath);
             const changes = repositoryPath === selectedRepositoryPath
                 ? { staged: store.getState().stagedFiles, changes: store.getState().unstagedFiles }
-                : this.uncommittedFilesWatcher.getCachedUncommittedFilesByHeadBranch(branch)
-                    ?? { staged: [], changes: [] };
+                : branch
+                    ? this.uncommittedFilesWatcher.getCachedUncommittedFilesByHeadBranch(branch)
+                        ?? { staged: [], changes: [] }
+                    : { staged: [], changes: [] };
             return {
+                repository,
                 repositoryPath,
-                repositoryLabel: branch.repoOption.label ?? path.basename(vscode.Uri.parse(repositoryPath).fsPath),
+                repositoryLabel: repository.label,
                 staged: [...changes.staged],
                 unstaged: [...changes.changes],
             };
@@ -1139,6 +1149,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const cards = store.getState().commitRepositories.map(repo => ({
             repositoryPath: repo.repositoryPath,
             repositoryLabel: repo.repositoryLabel,
+            repositoryHasSubmodules: Boolean(repo.repository.hasSubmodules),
+            repositoryAncestry: repo.repository.ancestry,
             amend: this.commitAmendByRepo.get(repo.repositoryPath) === true,
             stagedFiles: repo.staged.map(file => ({ path: file.path, status: file.status, isUntracked: file.isUntracked })),
             unstagedFiles: repo.unstaged.map(file => ({ path: file.path, status: file.status, isUntracked: file.isUntracked })),
@@ -1150,7 +1162,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     /** 刷新提交面板内容 (add/restore 或工作区变化后): 先同步多仓库 Store 再重建卡片。 */
     private async refreshCommitPanel(): Promise<void> {
         if (!this.commitPanel.isVisible()) { return; }
-        await this.syncCommitRepositories();
+        this.syncCommitRepositories();
         this.commitPanel.update(this.buildCommitSnapshot());
     }
 

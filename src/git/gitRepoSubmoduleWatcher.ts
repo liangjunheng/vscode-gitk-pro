@@ -29,6 +29,24 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
     get totalRepoList(): readonly GitRepositoryOption[] { return this._totalRepoList; }
     get isLoading(): boolean { return this._isLoading; }
 
+    /** 返回从根仓库到指定仓库的模块归属链。 */
+    getRepositoryAncestry(repositoryPath: string): readonly GitRepositoryOption[] {
+        const repositoriesByKey = new Map(this._totalRepoList.map(repository => [
+            repoKey(vscode.Uri.parse(repository.path).fsPath), repository,
+        ]));
+        const ancestry: GitRepositoryOption[] = [];
+        let currentKey = repoKey(vscode.Uri.parse(repositoryPath).fsPath);
+        let repository = repositoriesByKey.get(currentKey);
+        while (repository) {
+            ancestry.unshift(repository);
+            const parentKey = this.parentByRepository.get(currentKey);
+            if (!parentKey) { break; }
+            currentKey = parentKey;
+            repository = repositoriesByKey.get(currentKey);
+        }
+        return ancestry;
+    }
+
     async initialize(): Promise<GitRepositoryOption[]> {
         const nextRootPaths = new Map<string, string>();
         for (const folder of vscode.workspace.workspaceFolders ?? []) {
@@ -165,12 +183,35 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
     }
 
     private withSubmoduleFlags(repositories: GitRepositoryOption[]): GitRepositoryOption[] {
-        return repositories.map(repository => new GitRepositoryOption({
-            path: repository.path,
-            label: repository.label,
-            description: repository.description,
-            hasSubmodules: [...this.parentByRepository.values()].includes(repoKey(vscode.Uri.parse(repository.path).fsPath)),
-        })).sort((left, right) => {
+        const repositoriesByKey = new Map(repositories.map(repository => [
+            repoKey(vscode.Uri.parse(repository.path).fsPath), repository,
+        ]));
+        const parentKeys = new Set(this.parentByRepository.values());
+        const ancestryFor = (repositoryKey: string) => {
+            const ancestry = [];
+            let parentKey = this.parentByRepository.get(repositoryKey);
+            while (parentKey) {
+                const parent = repositoriesByKey.get(parentKey);
+                if (!parent) { break; }
+                ancestry.unshift({
+                    path: parent.path,
+                    label: parent.label,
+                    hasSubmodules: parentKeys.has(parentKey),
+                });
+                parentKey = this.parentByRepository.get(parentKey);
+            }
+            return ancestry;
+        };
+        return repositories.map(repository => {
+            const key = repoKey(vscode.Uri.parse(repository.path).fsPath);
+            return new GitRepositoryOption({
+                path: repository.path,
+                label: repository.label,
+                description: repository.description,
+                hasSubmodules: parentKeys.has(key),
+                ancestry: ancestryFor(key),
+            });
+        }).sort((left, right) => {
             const leftSub = left.description === 'subrepo';
             const rightSub = right.description === 'subrepo';
             return Number(leftSub) - Number(rightSub) || left.label.localeCompare(right.label);

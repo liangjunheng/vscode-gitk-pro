@@ -7,10 +7,18 @@ export interface CommitPanelFile {
     readonly isUntracked?: boolean;
 }
 
+export interface CommitCardRepository {
+    readonly path: string;
+    readonly label: string;
+    readonly hasSubmodules: boolean;
+}
+
 /** 单个仓库提交卡片数据。 */
 export interface CommitCard {
     readonly repositoryPath: string;
     readonly repositoryLabel: string;
+    readonly repositoryHasSubmodules: boolean;
+    readonly repositoryAncestry: readonly CommitCardRepository[];
     readonly amend: boolean;
     readonly stagedFiles: readonly CommitPanelFile[];
     readonly unstagedFiles: readonly CommitPanelFile[];
@@ -27,6 +35,7 @@ type CommitPanelCallbacks = {
     readonly onToggleDisplayMode: () => void;
     readonly onToggleAmend: (repositoryPath: string, message: string) => void;
     readonly onHistory: (repositoryPath: string) => void;
+    readonly onFocusRepository: (repositoryPath: string) => void;
     readonly onSelectFile: (repositoryPath: string, section: 'staged' | 'unstaged', path: string) => void;
     readonly onWorkingTreeAction: (
         repositoryPath: string,
@@ -133,6 +142,8 @@ export class CommitPanel implements vscode.Disposable {
             this.callbacks.onToggleDisplayMode();
         } else if (data.type === 'history' && repo) {
             this.callbacks.onHistory(repo);
+        } else if (data.type === 'focusRepository' && repo) {
+            this.callbacks.onFocusRepository(repo);
         } else if (data.type === 'selectFile' && repo
             && (data.section === 'staged' || data.section === 'unstaged')
             && typeof data.path === 'string') {
@@ -195,6 +206,15 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .card{position:relative;width:100%;margin:0 0 14px;display:flex;flex-direction:column;border:var(--card-border) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:var(--card-radius);background:var(--vscode-editor-background);box-shadow:0 1px 4px rgba(0,0,0,.08);overflow:hidden}
 /* 卡片标题吸顶, 与 MultiDiff 的 file-header 行为一致。 */
 .card-header{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--header-surface);font-weight:600;border-bottom:var(--card-border) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:var(--card-radius) var(--card-radius) 0 0;box-shadow:0 1px 3px rgba(0,0,0,.18)}
+.repo-label{white-space:nowrap}
+.repository-ancestry{display:inline-flex;align-items:center;gap:3px;min-width:0;color:var(--vscode-descriptionForeground);font-size:inherit;font-weight:400;opacity:.65}
+.repository-ancestry[hidden]{display:none}
+.repository-ancestry-link{border:0;padding:0;background:transparent;color:inherit;font:inherit;cursor:pointer;white-space:nowrap}
+.repository-ancestry-link:hover{text-decoration:underline;color:var(--vscode-textLink-foreground)}
+.repository-ancestry-separator{opacity:.8}
+.repository-icon{display:inline-flex;width:16px;height:16px;flex:0 0 16px;color:var(--vscode-icon-foreground)}
+.repository-icon.has-submodules{color:var(--vscode-gitDecoration-addedResourceForeground,var(--vscode-icon-foreground))}
+.repository-icon svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
 .card.selected-card{border-color:var(--vscode-focusBorder);box-shadow:0 0 0 1px var(--vscode-focusBorder),0 1px 4px rgba(0,0,0,.12)}
 .card.selected-card .card-header{border-bottom-color:var(--vscode-focusBorder)}
 .card-header .codicon{font-size:15px;color:var(--vscode-icon-foreground)}
@@ -379,7 +399,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     el.className='card';
     el.dataset.repo=repo;
     el.innerHTML=
-      '<div class="card-header"><span class="codicon codicon-chevron-down card-chevron"></span><span class="codicon codicon-repo"></span><span class="repo-label"></span><span class="repository-status-badge untracked-count"></span><span class="repository-status-badge unstaged-header-count"></span><span class="repository-status-badge staged-header-count"></span><span class="card-empty-tag"></span></div>'+
+      '<div class="card-header"><span class="codicon codicon-chevron-down card-chevron"></span><span class="repository-icon card-repository-icon" aria-hidden="true"></span><span class="repo-label"></span><span class="repository-ancestry" hidden></span><span class="repository-status-badge untracked-count"></span><span class="repository-status-badge unstaged-header-count"></span><span class="repository-status-badge staged-header-count"></span><span class="card-empty-tag"></span></div>'+
       '<div class="card-body">'+
         '<div class="message-box">'+
           '<textarea class="message-input" placeholder="输入提交信息…" spellcheck="false"></textarea>'+
@@ -482,7 +502,45 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
   function updateCard(el,card){
     el._card=card;
     el._amend=card.amend;
+    const repositoryIcon=el.querySelector('.card-repository-icon');
+    repositoryIcon.classList.toggle('has-submodules',card.repositoryHasSubmodules);
+    repositoryIcon.innerHTML=card.repositoryHasSubmodules
+      ? '<svg viewBox="0 0 16 16"><path d="M2 4.5h4.5L8 6h6v5.5H2z"/><rect x="5" y="7.5" width="6" height="3.5" rx="0.5"/></svg>'
+      : '<svg viewBox="0 0 16 16"><path d="M2 4.5h4.5L8 6h6v5.5H2z"/></svg>';
     el.querySelector('.repo-label').textContent=card.repositoryLabel;
+    const ancestry=el.querySelector('.repository-ancestry');
+    ancestry.replaceChildren();
+    card.repositoryAncestry.forEach(function(repository,index){
+      if(index===0){
+        const marker=document.createElement('span');
+        marker.className='repository-ancestry-marker';
+        marker.textContent='⌘';
+        ancestry.appendChild(marker);
+      }
+      if(index>0){
+        const separator=document.createElement('span');
+        separator.className='repository-ancestry-separator';
+        separator.textContent='/';
+        ancestry.appendChild(separator);
+      }
+      const link=document.createElement('button');
+      link.type='button';
+      link.className='repository-ancestry-link';
+      link.textContent=repository.label;
+      link.title='跳转到 '+repository.label+' 的提交卡片';
+      link.addEventListener('click',function(event){
+        event.stopPropagation();
+        vscode.postMessage({type:'focusRepository',repositoryPath:repository.path});
+      });
+      ancestry.appendChild(link);
+    });
+    if(card.repositoryAncestry.length){
+      const trailingSeparator=document.createElement('span');
+      trailingSeparator.className='repository-ancestry-separator';
+      trailingSeparator.textContent='/';
+      ancestry.appendChild(trailingSeparator);
+    }
+    ancestry.hidden=card.repositoryAncestry.length===0;
     const refs=el._refs;
     el.classList.toggle('selected-card',el.dataset.repo===selectedRepositoryPath);
     const isEmpty=card.stagedFiles.length===0&&card.unstagedFiles.length===0;

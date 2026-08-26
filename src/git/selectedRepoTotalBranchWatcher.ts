@@ -98,7 +98,14 @@ export class SelectedRepoTotalBranchWatcher implements vscode.Disposable {
             this.totalBranches.delete(key);
         }
         for (const [key, repository] of nextByKey) {
+            const previousRepository = this.repositories.get(key);
             this.repositories.set(key, repository);
+            const cachedBranches = this.totalBranches.get(key);
+            if (cachedBranches && (!previousRepository || !repository.equals(previousRepository))) {
+                const reboundBranches = cachedBranches.map(branch => new GitBranchOption({ ...branch, repoOption: repository }));
+                this.totalBranches.set(key, reboundBranches);
+                this.snapshotEmitter.fire({ repository, branches: reboundBranches, headChanged: false });
+            }
             if (!this.repoWatchers.has(key)) {
                 const watcher = await this.createRepositoryWatcher(key, repository);
                 if (watcher && this.repositories.get(key)?.path === repository.path) {
