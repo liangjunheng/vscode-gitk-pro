@@ -1,4 +1,4 @@
-import { AppState, createInitialState, GitkIntent } from '../types';
+import { AppState, createInitialState, GitkIntent, isWorkingTreeHash } from '../types';
 
 export type StoreEffect =
     | { type: 'webviewReady' }
@@ -87,7 +87,9 @@ export class Store {
                 effects = [{ type: 'commitAction', action: intent.action, hash: intent.hash, repositoryPath: intent.repositoryPath }];
                 break;
             case 'selectCommit': {
-                const isWorkingTree = intent.hash === 'uncommitted';
+                // 工作区虚拟行拆分为 'changes'/'staged' 两个 hash, 点击时只带 hash 不带 repositoryPath;
+                //   守卫必须用 isWorkingTreeHash 识别, 不能再写死 'uncommitted', 否则 effect 不派发、Changed Files 空白。
+                const isWorkingTree = isWorkingTreeHash(intent.hash);
                 const isCommit = typeof intent.hash === 'string' && typeof intent.repositoryPath === 'string';
                 if (!isWorkingTree && !isCommit) { break; }
                 effects = [{ type: 'selectCommit', hash: intent.hash, repositoryPath: intent.repositoryPath }];

@@ -7,7 +7,6 @@ import { getIndexChangedPaths, getWorkingTreeStatus, getWorkingTreeStatusForPath
 import { RepoHeadBranchWatcher } from './eachRepoHeadBranchWatcher';
 
 const execFileAsync = promisify(execFile);
-let visibleDiffTraceSequence = 0;
 
 type HeadBranchUncommittedFilesChangedEvent = {
     branch: GitBranchOption;
@@ -24,8 +23,6 @@ type HeadBranchUncommittedFileContentChangedEvent = {
 type VisibleDiffFileContentChangedEvent = {
     branch: GitBranchOption;
     affectedPaths: readonly string[];
-    traceId: string;
-    observedAt: number;
 };
 
 type RepositoryRefreshSlot = {
@@ -86,11 +83,6 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         if (repositoryPath && paths.length > 0) {
             this.visibleDiffPathsByRepository.set(repositoryPath, new Set(paths));
         }
-        console.log('[Gitk][VisibleDiffPerformance][UncommittedWatcher] setVisibleDiffPaths:', {
-            repositoryPath: repositoryPath ?? '(none)',
-            paths,
-            repositoryCount: this.visibleDiffPathsByRepository.size,
-        });
     }
 
     getCachedUncommittedFilesByHeadBranch(branch: GitBranchOption): WorkingTreeChanges | undefined {
@@ -263,7 +255,6 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         uri: vscode.Uri,
         eventType: 'create' | 'change' | 'delete',
     ): Promise<void> {
-        console.log(`[Gitk][UncommittedWatcher] workspace file ${eventType}: ${uri.fsPath}`);
         const slot = this.slots.get(repositoryPath);
         if (!slot?.branch || uri.scheme !== 'file') { return; }
         const rootPath = vscode.Uri.parse(repositoryPath).fsPath;
@@ -276,14 +267,9 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         //   所以 staged 卡片重读后"内容不变"是符合语义的; 不要据此误判为链路断裂。
         const isVisibleDiff = this.visibleDiffPathsByRepository.get(repositoryPath)?.has(normalizedPath) ?? false;
         if (isVisibleDiff) {
-            const observedAt = Date.now();
-            const traceId = `${observedAt}-${++visibleDiffTraceSequence}`;
-            console.log(`[Gitk][VisibleDiffPerformance][${traceId}] watcher visible file: ${uri.fsPath}`);
             this.visibleDiffContentEmitter.fire({
                 branch: slot.branch,
                 affectedPaths: [normalizedPath],
-                traceId,
-                observedAt,
             });
         }
         // 已存在且可视的文件发生普通内容变化时，内容通道已经完成职责，不再触发状态队列。
@@ -305,17 +291,9 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         if (!slot?.branch) { return Promise.resolve(); }
         if (slot.running) {
             slot.needsRefresh = true;
-            console.log(`[Gitk][UncommittedWatcher] refresh merged ${repositoryPath}`, {
-                timestamp: new Date().toISOString(),
-                pendingPaths: slot.pendingPaths ? [...slot.pendingPaths] : [],
-            });
             return slot.completion ?? Promise.resolve();
         }
         slot.running = true;
-        console.log(`[Gitk][UncommittedWatcher] refresh started ${repositoryPath}`, {
-            timestamp: new Date().toISOString(),
-            pendingPaths: slot.pendingPaths ? [...slot.pendingPaths] : [],
-        });
         const completion = this.drainRefresh(repositoryPath, slot);
         slot.completion = completion;
         return completion;
@@ -330,10 +308,8 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
                 slot.needsRefresh = false;
                 await this.refreshSlot(repositoryPath, branch, generation, slot);
                 if (!slot.needsRefresh) { return; }
-                console.log(`[Gitk][UncommittedWatcher] refresh retry ${repositoryPath}`, { timestamp: new Date().toISOString() });
             }
         } finally {
-            console.log(`[Gitk][UncommittedWatcher] refresh finished ${repositoryPath}`, { timestamp: new Date().toISOString() });
             slot.needsRefresh = false;
             slot.running = false;
             slot.completion = undefined;
@@ -376,7 +352,6 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
                     )
                     : previous;
             if (slot.generation !== generation || slot.branch?.hash !== branch.hash) {
-                console.log(`[Gitk][UncommittedWatcher] refresh discarded ${repositoryPath}`, { timestamp: new Date().toISOString() });
                 return;
             }
             if (currentIndexChangedPaths) {
@@ -396,22 +371,11 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             if (previousChanges?.equals(changes)) {
                 if (contentChangedPaths.length > 0) {
                     this.contentChangesEmitter.fire({ branch, changes: copyChanges(changes), affectedPaths: contentChangedPaths });
-                } else {
-                    console.log(`[Gitk][UncommittedWatcher] status unchanged ${repositoryPath}`, {
-                        timestamp: new Date().toISOString(),
-                        paths: affectedPaths,
-                    });
                 }
                 return;
             }
             changesByHash.set(branch.hash, changes);
             this.changesByRepository.set(repositoryPath, changesByHash);
-            console.log(`[Gitk][UncommittedWatcher] status changed ${repositoryPath}`, {
-                timestamp: new Date().toISOString(),
-                paths: affectedPaths,
-                stagedCount: changes.staged.length,
-                unstagedCount: changes.changes.length,
-            });
             this.changesEmitter.fire({ branch, changes: copyChanges(changes), affectedPaths });
         } catch (error) {
             console.warn(`无法读取未提交文件: ${repositoryPath}`, error);

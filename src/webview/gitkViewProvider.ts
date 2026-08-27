@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { type ChangeSetMode, type ChangedFile, type GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, WorkingTreeChanges } from '../types';
+import { type ChangeSetMode, type ChangedFile, type GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, WorkingTreeChanges, isWorkingTreeHash } from '../types';
 import { getCommitFiles, getGitRepositoryState, runGitCommand, runGitReadCommand, readCommitHistoryMessages, readCurrentCommitMessage } from '../git/gitLogProvider';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { CommitPanel, type CommitPanelSnapshot, type CommitCard } from './commitPanel';
@@ -57,7 +57,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private readonly diffReader: DiffReader;
     private visibleDiffGeneration = 0;
     private visibleDiffPaths = new Set<string>();
-    private visibleDiffPerformanceTrace?: { id: string; startedAt: number; paths: readonly string[] };
     private readonly gitActions: GitActionRunner;
     // 仓库 / 分支 / 提交状态的唯一写入者，Provider 只读不写。
     private readonly repoSubmoduleWatcher = new RepoSubmoduleWatcher();
@@ -148,15 +147,27 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         // 提交列表 loading 只由 GitCommitController 的加载事件驱动。
         const commitListLoading = this.commitController.isLoading;
         const commitListLoadingMessage = commitListLoading ? '正在加载提交历史' : undefined;
-        // HEAD 在已选分支中时始终显示虚拟提交，轻量 Presence 只控制是否置灰。
+        // 两个工作区虚拟行始终产出(未暂存在上, 已暂存在下), 空分组置灰(enabled=false)而非隐藏; 共用底层 WorkingTreeChanges。
+        // 搜索非空时, 虚拟行不是真实 commit 不经 searchCommits 过滤, 按 label 是否命中关键词决定是否产出; 未命中则不出现。
         const workingTree = this.commitController.workingTreeChanges;
         const workingTreeRepositoryPath = this.commitController.uncommittedRepositoryPath;
-        const workingTreeRows = workingTreeRepositoryPath ? [{
-            hash: 'uncommitted' as const,
-            label: 'Uncommitted Changes',
-            repositoryPath: workingTreeRepositoryPath,
-            enabled: this.commitController.hasUncommittedChanges,
-        }] : [];
+        const searchKeywords = this.commitController.searchKeywords;
+        const matchesSearch = (label: string): boolean =>
+            searchKeywords.length === 0
+            || searchKeywords.some(keyword => label.toLowerCase().includes(keyword.toLowerCase()));
+        const workingTreeRows = workingTreeRepositoryPath
+            ? ([
+                { hash: 'changes' as const, label: 'Unstaged Changes', count: workingTree.changes.length },
+                { hash: 'staged' as const, label: 'Staged Changes', count: workingTree.staged.length },
+            ]
+                .filter(row => matchesSearch(row.label))
+                .map(row => ({
+                    hash: row.hash,
+                    label: row.label,
+                    repositoryPath: workingTreeRepositoryPath,
+                    enabled: row.count > 0,
+                })))
+            : [];
         const selectedRepositoryPaths = this.selectedRepositoryPaths;
         const commits = this.commitController.searchedCommitList.map(commit => ({
             ...commit,
@@ -167,7 +178,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             key: `${selectedCommitMetadata.gitBranchOption?.repoOption.path ?? ''}:${selectedCommitMetadata.hash}`,
             hash: selectedCommitMetadata.hash,
             repositoryPath: selectedCommitMetadata.gitBranchOption?.repoOption.path ?? '',
-            kind: selectedCommitMetadata.hash === 'uncommitted' ? 'changes' : 'commit',
+            kind: (isWorkingTreeHash(selectedCommitMetadata.hash) ? selectedCommitMetadata.hash : 'commit') as ChangeSetMode,
         } : null;
         this.view.webview.postMessage({
             type: 'stateUpdate',
@@ -236,7 +247,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             (path, content) => void this.saveWorkspaceFile(path, content),
             (action, section, path) => void this.runWorkingTreeAction(action, section, path),
             paths => this.updateVisibleDiffPaths(paths),
-            () => this.visibleDiffPerformanceTrace,
         );
         this.commitPanel = new CommitPanel({
             onCommit: (repositoryPath, message, amend) => void this.runCommit(repositoryPath, message, amend),
@@ -321,8 +331,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 void this.refreshVisibleWorkingTreeDiffs(
                     event.branch,
                     event.affectedPaths,
-                    event.traceId,
-                    event.observedAt,
                 );
             }),
             this.commitController.onCommitsLoadingChanged(loading => {
@@ -398,11 +406,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     ): Promise<void> {
         const generation = ++this.commitFilesGeneration;
         const selectedBranch = this.commitController.selectedCommit?.gitBranchOption;
-        if (!selectedBranch || this.commitController.selectedCommit?.hash !== 'uncommitted') { return; }
+        const selectedHash = this.commitController.selectedCommit?.hash;
+        if (!selectedBranch || !isWorkingTreeHash(selectedHash)) { return; }
         const workingTreeChanges = changes ?? await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(selectedBranch);
         if (generation !== this.commitFilesGeneration
-            || this.currentHash !== 'uncommitted'
-            || this.currentRepositoryPath !== selectedBranch.repoOption.path) { return; }
+            || !isWorkingTreeHash(this.currentHash)
+            || this.currentRepositoryPath !== selectedBranch.repoOption.path) {
+            return;
+        }
+        // 'staged' 行只展示已暂存文件, 'changes' 行只展示未暂存/未跟踪文件; 两行共用同一 WorkingTreeChanges 数据源。
         const staged = workingTreeChanges.staged.map(file => new CommitFile({
             ...file,
             workingTreeKind: 'staged',
@@ -413,7 +425,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             workingTreeKind: file.isUntracked ? 'untracked' : 'unstaged',
             diffKey: `unstaged:${file.path}`,
         }));
-        const files = [...staged, ...unstaged];
+        const files = selectedHash === 'staged' ? staged : unstaged;
         if (updateWorkingTreeState) {
             const commitRepositories = store.getState().commitRepositories;
             const commitRepository = {
@@ -458,7 +470,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             return new DiffPayload({ ...payload, ...file, index });
         });
         if (generation !== this.commitFilesGeneration
-            || this.currentHash !== 'uncommitted'
+            || !isWorkingTreeHash(this.currentHash)
             || this.currentRepositoryPath !== selectedBranch.repoOption.path) { return; }
         const selectedFile = diffs.find(file => (file.diffKey || file.path) === this.selectedPath)
             ?? diffs.find(file => file.path === previousSelectedFile?.path)
@@ -511,17 +523,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     /** 仓库选择变化后的唯一下游入口：更新显示快照，分支和提交由各自控制器负责加载。 */
     private onSelectedRepoListChanged(selected: readonly GitRepositoryOption[]): void {
-        console.log('[GitkViewProvider] onSelectedRepoListChanged', performance.now());
         const repository = selected.length === 1 ? selected[0] : undefined;
         this.selectedRepoDisplaySnapshot = repository
             ? { label: repository.label, path: repository.path, hasSubmodules: Boolean(repository.hasSubmodules) }
             : undefined;
-        console.log('[GitkViewProvider] selectedRepoDisplayChanged postMessage before', performance.now());
         this.view?.webview.postMessage({
             type: 'selectedRepoDisplayChanged',
             repository: this.selectedRepoDisplaySnapshot,
         });
-        console.log('[GitkViewProvider] selectedRepoDisplayChanged postMessage after', performance.now());
         // 选择事件产生后立即同步完整状态，不能等待提交或分支事件。
         this.pushStateToWebview();
     }
@@ -582,13 +591,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private updateVisibleDiffPaths(paths: readonly string[]): void {
         const selectedBranch = this.commitController.selectedCommit?.gitBranchOption;
         const validPaths = [...paths];
-        console.log('[Gitk][VisibleDiffPerformance] updateVisibleDiffPaths:', {
-            currentHash: this.currentHash,
-            hasBranch: !!selectedBranch,
-            incoming: paths,
-            valid: validPaths,
-            fileKinds: this.files.map(file => `${file instanceof DiffPayload ? 'diff' : 'plain'}:${file.workingTreeKind ?? '-'}:${file.path}`),
-        });
         this.visibleDiffGeneration++;
         this.visibleDiffPaths = new Set(validPaths);
         this.uncommittedFilesWatcher.setVisibleDiffPaths(selectedBranch?.repoOption.path, validPaths);
@@ -600,7 +602,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         affectedPaths: readonly string[],
     ): void {
         const selectedCommit = this.commitController.selectedCommit;
-        if (selectedCommit?.hash !== 'uncommitted'
+        if (!isWorkingTreeHash(selectedCommit?.hash)
             || selectedCommit.gitBranchOption?.repoOption.path !== branch.repoOption.path
             || selectedCommit.gitBranchOption.hash !== branch.hash) { return; }
         // 内容事件覆盖两类来源: 工作区内容变化(unstaged/untracked) 与 index 内容变化(staged, 由 git add/reset 触发)。
@@ -624,7 +626,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const rootUri = vscode.Uri.parse(branch.repoOption.path);
         const refreshed = await this.diffReader.readDiffs(rootUri, 'uncommitted', files, 'uncommitted');
         if (generation !== this.commitFilesGeneration
-            || this.currentHash !== 'uncommitted'
+            || !isWorkingTreeHash(this.currentHash)
             || this.currentRepositoryPath !== branch.repoOption.path
             || this.commitController.selectedCommit?.gitBranchOption?.hash !== branch.hash) { return; }
         const refreshedByKey = new Map(refreshed.map(file => [file.diffKey || file.path, file]));
@@ -650,8 +652,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private async refreshVisibleWorkingTreeDiffs(
         branch: GitBranchOption,
         affectedPaths: readonly string[],
-        traceId: string,
-        observedAt: number,
     ): Promise<void> {
         const paths = affectedPaths.filter(filePath => this.visibleDiffPaths.has(filePath));
         if (paths.length === 0) { return; }
@@ -663,9 +663,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const generation = ++this.visibleDiffGeneration;
         const rootUri = vscode.Uri.parse(branch.repoOption.path);
         const refreshed = await this.diffReader.readDiffs(rootUri, 'uncommitted', files, 'uncommitted');
-        console.log(`[Gitk][VisibleDiffPerformance][${traceId}] diff read complete: +${Date.now() - observedAt}ms`);
         if (generation !== this.visibleDiffGeneration
-            || this.currentHash !== 'uncommitted'
+            || !isWorkingTreeHash(this.currentHash)
             || this.currentRepositoryPath !== branch.repoOption.path
             || this.commitController.selectedCommit?.gitBranchOption?.hash !== branch.hash
             || paths.some(filePath => !this.visibleDiffPaths.has(filePath))) { return; }
@@ -674,14 +673,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const refreshedFile = refreshedByKey.get(file.diffKey || file.path);
             return refreshedFile ? new DiffPayload({ ...refreshedFile, index }) : file;
         });
-        this.visibleDiffPerformanceTrace = { id: traceId, startedAt: observedAt, paths };
         store.setState({
             files: nextFiles,
             diffLoading: false,
             diffError: undefined,
             diffProgress: { completed: nextFiles.length, total: nextFiles.length },
         });
-        console.log(`[Gitk][VisibleDiffPerformance][${traceId}] store updated: +${Date.now() - observedAt}ms`);
     }
 
     private onWorkingTreeChangesChanged(
@@ -697,7 +694,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             ? new Set<string>([...(pending ?? []), ...(eventAffectedPaths ?? [])])
             : undefined;
         const selectedBranch = this.commitController.selectedCommit?.gitBranchOption;
-        if (this.currentHash !== 'uncommitted'
+        if (!isWorkingTreeHash(this.currentHash)
             || !selectedBranch
             || selectedBranch.repoOption.path !== this.commitController.uncommittedRepositoryPath) { return; }
         void this.selectWorkingTreeChanges(changes, false, affectedPaths).then(() => this.refreshCommitPanel());
@@ -712,11 +709,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.schedulePushState();
             return;
         }
-        const isVirtual = hash === 'uncommitted';
+        const isVirtual = isWorkingTreeHash(hash);
         store.setState({
             currentHash: hash,
             currentRepositoryPath: repositoryPath,
-            currentChangeSet: isVirtual ? 'uncommitted' : 'commit',
+            currentChangeSet: isVirtual ? hash : 'commit',
             selectedPath: undefined,
             files: [],
             stagedFiles: [],
@@ -1055,10 +1052,17 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 }
                 break;
             case 'selectCommit':
-                if (effect.hash === 'uncommitted') {
+                if (isWorkingTreeHash(effect.hash)) {
                     const branch = this.branchesController.getSelectedCurrentBranch();
                     if (!branch || !this.commitController.uncommittedRepositoryPath) { break; }
-                    this.commitController.selectCommit(new CommitMetadata({ hash: effect.hash, gitBranchOption: branch }));
+                    const changed = this.commitController.selectCommit(new CommitMetadata({ hash: effect.hash, gitBranchOption: branch }));
+                    // 工作区虚拟行的底层数据是动态的: 若 identity 未变化(selectCommit 去重 return false)但当前尚未加载出该行文件,
+                    //   必须显式重新加载, 否则"此前加载失败/被门禁 bail 过"的虚拟行会因去重被永久挡死、点击无反应。
+                    if (!changed
+                        && this.currentHash === effect.hash
+                        && this.currentRepositoryPath === branch.repoOption.path) {
+                        void this.selectWorkingTreeChanges().then(() => this.refreshCommitPanel());
+                    }
                 } else if (typeof effect.hash === 'string' && typeof effect.repositoryPath === 'string') {
                     const commit = this.findCommit(effect.hash, effect.repositoryPath);
                     if (commit) { this.commitController.selectCommit(commit); }
@@ -1130,23 +1134,25 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 .find(candidate => candidate.repoOption.path === repositoryPath);
             if (!branch) { return; }
             const revealPath = `${section}:${filePath}`;
-            const isCurrentWorkingTree = this.currentHash === 'uncommitted'
+            // Commit 面板的 staged 分组对应 'staged' 虚拟行, unstaged/untracked 对应 'changes' 虚拟行。
+            const targetHash = section === 'staged' ? 'staged' : 'changes';
+            const isCurrentWorkingTree = this.currentHash === targetHash
                 && this.currentRepositoryPath === repositoryPath;
             if (!isCurrentWorkingTree) {
                 const selectedBranch = await this.selectCommitPanelRepository(branch, abortController.signal);
                 if (!selectedBranch || abortController.signal.aborted) { return; }
                 const nextGeneration = this.commitFilesGeneration + 1;
-                const changed = this.commitController.selectCommit(new CommitMetadata({ hash: 'uncommitted', gitBranchOption: selectedBranch }));
-                const selectionIsLoading = this.currentHash === 'uncommitted'
+                const changed = this.commitController.selectCommit(new CommitMetadata({ hash: targetHash, gitBranchOption: selectedBranch }));
+                const selectionIsLoading = this.currentHash === targetHash
                     && this.currentRepositoryPath === repositoryPath
                     && store.getState().diffLoading;
                 if (changed || selectionIsLoading) {
                     const generation = changed ? nextGeneration : this.commitFilesGeneration;
-                    const loaded = await this.waitForWorkingTreeSelection(repositoryPath, generation, abortController.signal);
+                    const loaded = await this.waitForWorkingTreeSelection(repositoryPath, targetHash, generation, abortController.signal);
                     if (!loaded || abortController.signal.aborted) { return; }
                 }
             }
-            if (this.currentHash !== 'uncommitted'
+            if (this.currentHash !== targetHash
                 || this.currentRepositoryPath !== repositoryPath
                 || store.getState().diffLoading
                 || !this.files.some(file => (file.diffKey || file.path) === revealPath)) { return; }
@@ -1179,10 +1185,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         });
     }
 
-    private waitForWorkingTreeSelection(repositoryPath: string, generation: number, signal: AbortSignal): Promise<boolean> {
+    private waitForWorkingTreeSelection(repositoryPath: string, targetHash: 'changes' | 'staged', generation: number, signal: AbortSignal): Promise<boolean> {
         return new Promise(resolve => {
             const complete = (): boolean => this.commitFilesGeneration >= generation
-                && this.currentHash === 'uncommitted'
+                && this.currentHash === targetHash
                 && this.currentRepositoryPath === repositoryPath
                 && !store.getState().diffLoading;
             if (complete()) { resolve(true); return; }
@@ -1619,7 +1625,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     // 工作区 Diff 右侧编辑后回写文件。
     private async saveWorkspaceFile(filePath: string, content: string): Promise<void> {
-        if (this.currentChangeSet !== 'changes' && this.currentChangeSet !== 'uncommitted') { return; }
+        // 只有 'changes' 行右侧是工作区文件, 可回写; 'staged' 行右侧是 index 内容, 回写工作区会篡改语义。
+        if (this.currentChangeSet !== 'changes') { return; }
         const rootUri = this.getRepoRootUri();
         if (!rootUri) { return; }
         const fileUri = vscode.Uri.joinPath(rootUri, ...filePath.split('/'));
@@ -1874,10 +1881,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .commit-description-ref { display: inline-flex; align-items: center; min-height: 18px; padding: 0 6px; border-radius: 5px; color: var(--vscode-editor-background); font-size: 12px; line-height: 18px; }
   .commit-row.selected { background: var(--vscode-list-activeSelectionBackground, #094771); }
   .commit-row.working-tree:hover { background: var(--vscode-list-hoverBackground); }
-  .commit-row.working-tree.disabled { color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground)); cursor: default; pointer-events: none; }
+  /* 空分组虚拟行置灰: 降透明度 + 默认光标; 不用 pointer-events:none(曾导致点击完全不触发无法排查), 点击拦截由 JS 的 classList.contains('disabled') 负责。 */
+  .commit-row.working-tree.disabled { opacity: .5; cursor: default; }
   .commit-row.working-tree.disabled:hover { background: transparent; }
-  .commit-row.working-tree.disabled .working-tree-label, .commit-row.working-tree.disabled .working-tree-count { color: inherit; }
   .working-tree-label { color: var(--vscode-textLink-foreground); font-weight: 600; }
+  /* staged 固定蓝色, unstaged/changes 固定红色; 不用 gitDecoration 变量(部分主题解析为绿色)。 */
+  .working-tree-label--staged { color: var(--vscode-charts-blue, #3794ff); }
+  .working-tree-label--changes { color: var(--vscode-charts-red, #f14c4c); }
   .working-tree-count { color: var(--vscode-descriptionForeground); }
   .commit-header > div { position: relative; min-width: 0; padding: 5px 14px 5px 0; overflow: hidden; white-space: nowrap; text-align: left; }
   .commit-header .resize-handle { position: absolute; top: 0; right: 0; width: 7px; height: 100%; cursor: col-resize; }
@@ -1961,6 +1971,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   let uncommittedEnabled = false;
   let stagedCount = 0;
   let changesCount = 0;
+  // 工作区虚拟提交行(changes/staged)由后端下发, webview 循环渲染, 不再写死单行。
+  let workingTreeRowsState = [];
   let files = [];
   let stagedFiles = [];
   let unstagedFiles = [];
@@ -2087,7 +2099,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   });
   document.querySelectorAll('.commit-action').forEach(function(button) {
     button.addEventListener('click', function() {
-      if (!selectedCommitHash || selectedCommitHash === 'uncommitted' || !selectedCommitRepositoryPath) return;
+      if (!selectedCommitHash || isWorkingTreeHash(selectedCommitHash) || !selectedCommitRepositoryPath) return;
       vscode.postMessage({ type: 'commitAction', action: button.dataset.action, hash: selectedCommitHash, repositoryPath: selectedCommitRepositoryPath });
     });
   });
@@ -2251,7 +2263,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       branches = state.branches || [];
       selectedBranches = state.selectedBranches || [];
       var workingTreeRows = state.workingTreeRows || [];
-      uncommittedEnabled = Boolean(workingTreeRows[0]?.enabled);
+      workingTreeRowsState = workingTreeRows;
+      uncommittedEnabled = workingTreeRows.some(function(row) { return row.enabled; });
       var uncommittedRepositoryCount = Number(state.uncommittedRepositoryCount) || 0;
       var uncommittedRepoBadge = document.getElementById('uncommittedRepoBadge');
       uncommittedRepoBadge.textContent = String(uncommittedRepositoryCount);
@@ -2372,7 +2385,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       : '<span class="repository-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2 4.5h4.5L8 6h6v5.5H2z"/></svg></span>';
   }
   function updateSelectedRepoDisplay(repository) {
-    console.log('[Webview] updateSelectedRepoDisplay', performance.now(), repository);
     const loading = repositoryDropdown.current.dataset.loading === 'true';
     repositoryDropdown.current.disabled = !repository;
     repositoryDropdown.label.innerHTML = (repository
@@ -2574,8 +2586,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   }
 
   function updateFilesCommitHash() {
-    const isCommit = selectedCommitHash && selectedCommitHash !== 'uncommitted';
-    const isUncommitted = selectedCommitHash === 'uncommitted' && Boolean(selectedCommitRepositoryPath);
+    const isCommit = selectedCommitHash && !isWorkingTreeHash(selectedCommitHash);
+    const isUncommitted = isWorkingTreeHash(selectedCommitHash) && Boolean(selectedCommitRepositoryPath);
     const hashLabel = document.getElementById('filesCommitHash');
     if (hashLabel) hashLabel.textContent = isCommit ? selectedCommitHash.slice(0, 8) : '';
     document.getElementById('commitSplitGroup').hidden = !isUncommitted;
@@ -2695,8 +2707,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     const isTree = filesMode === 'tree';
     modeIcon.setAttribute('d', isTree ? 'M2.5 3h5M5 3v4M5 7h5M7.5 7v4M7.5 11h6' : 'M3 4h10M3 8h10M3 12h10');
     modeButton.title = '显示方式（当前：' + (isTree ? '树状' : '平铺') + '）';
-    if (selectedCommitHash === 'uncommitted') {
-      list.innerHTML = '<div class="working-tree-content">' + workingTreeSectionHTML('staged', 'Staged Changes', stagedFiles) + workingTreeSectionHTML('unstaged', 'Unstaged Changes', unstagedFiles) + '</div>';
+    if (isWorkingTreeHash(selectedCommitHash)) {
+      // 'staged' 行只显示已暂存分组, 'changes' 行只显示未暂存/未跟踪分组; 两行共用底层数据。
+      const sectionHTML = selectedCommitHash === 'staged'
+        ? workingTreeSectionHTML('staged', 'Staged Changes', stagedFiles)
+        : workingTreeSectionHTML('unstaged', 'Unstaged Changes', unstagedFiles);
+      list.innerHTML = '<div class="working-tree-content">' + sectionHTML + '</div>';
       bindWorkingTreeActions(list);
       bindFolderItems(list);
       bindFileItems(list);
@@ -3005,7 +3021,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       if (row.getAttribute('data-hash') !== hash) return;
       var rowRepositoryPath = row.getAttribute('data-repository-path') || '';
       if (rowRepositoryPath === repositoryPath
-          || (!repositoryPath && (hash === 'uncommitted'))) {
+          || (!repositoryPath && isWorkingTreeHash(hash))) {
         row.classList.add('selected');
       }
     });
@@ -3018,8 +3034,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   // 为单行设置 SVG 和点击监听
 
   function setupRow(row, graphW) {
+    // 工作区虚拟行(changes/staged)的 SVG 由 workingTreeGraphSvg 在模板中直接生成, 不走 commit 的 drawSvg。
+    var isWorkingTree = row.classList.contains('working-tree');
     var svg = row.querySelector('svg');
-    if (svg) {
+    if (svg && !isWorkingTree) {
       var idx = Number(row.getAttribute('data-row'));
       // 每行按自身泳道宽度绘制, 使描述紧贴泳道; graphW 仅作无对应 commit 时的兜底。
       var rowW = commits[idx] ? rowGraphW(commits[idx]) : graphW;
@@ -3038,10 +3056,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       var wasExpanded = expandedCommits.has(commitKey);
       // 展开属于本地展示细节；提交选择只通过 intent 更新 Store。
       if (!hash || !repositoryPath || row.dataset.hasDescription !== 'true') {
-        if (hash === 'uncommitted') {
-          var virtualRepositoryPath = row.getAttribute('data-repository-path') || selectedRepositoryPaths[0] || '';
-          applyCommitSelection(hash, virtualRepositoryPath);
-          vscode.postMessage({ type: 'selectCommit', hash: hash });
+      if (isWorkingTreeHash(hash)) {
+        var virtualRepositoryPath = row.getAttribute('data-repository-path') || selectedRepositoryPaths[0] || '';
+        applyCommitSelection(hash, virtualRepositoryPath);
+        vscode.postMessage({ type: 'selectCommit', hash: hash });
         } else if (hash && repositoryPath) {
           applyCommitSelection(hash, repositoryPath);
           vscode.postMessage({ type: 'selectCommit', hash: hash, repositoryPath: repositoryPath });
@@ -3083,7 +3101,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       return;
     }
     var total = commits.length;
-    if (selectedCommitHash && selectedCommitHash !== 'uncommitted') {
+    if (selectedCommitHash && !isWorkingTreeHash(selectedCommitHash)) {
       var idx = commits.findIndex(function(c) { return c.hash === selectedCommitHash; });
       if (idx >= 0) {
         label.textContent = (idx + 1) + '/' + total + ' 条提交';
@@ -3093,13 +3111,29 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     label.textContent = '—/' + total + ' 条提交';
   }
 
+  // 虚拟行泳道: 与首个 commit 对齐(cx = LANE_W/2 + 5 = 11), 画空心圆节点。
+  // 'staged' 行向下用虚线连接到下方节点(HEAD); 'changes' 行只画空心圆, 不向下连接到 staged。
+  function workingTreeGraphSvg(hash) {
+    const cx = LANE_W / 2 + 5;
+    const cy = ROW_H / 2;
+    const r = DOT_R;
+    const width = LANE_W + 10;
+    const color = 'var(--vscode-descriptionForeground, #999)';
+    let inner = '';
+    if (hash === 'staged') {
+      inner += '<path d="M ' + cx + ' ' + (cy + r) + ' V ' + ROW_H + '" fill="none" stroke="' + color + '" stroke-width="1.5" stroke-dasharray="2 2" stroke-linecap="round"/>';
+    }
+    inner += '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="var(--vscode-editor-background)" stroke="' + color + '" stroke-width="1.5"/>';
+    return '<svg width="' + width + '" height="' + ROW_H + '" viewBox="0 0 ' + width + ' ' + ROW_H + '">' + inner + '</svg>';
+  }
+
   function workingTreeRowHTML(hash, label, enabled) {
     const selectedBranch = getSelectedCurrentBranch();
     const repositoryPath = selectedBranch?.repoOption.path || selectedCommitRepositoryPath || selectedRepositoryPaths[0] || '';
     const selected = selectedCommitHash === hash ? ' selected' : '';
     const disabled = enabled ? '' : ' disabled';
     return '<div class="commit-row working-tree' + selected + disabled + '" data-hash="' + hash + '" data-repository-path="' + escapeHtml(repositoryPath) + '" aria-disabled="' + String(!enabled) + '">' +
-      '<div class="col-main"><span class="graph-svg"></span><div class="col-main-summary working-tree-label">' + label + '</div></div>' +
+      '<div class="col-main"><span class="graph-svg">' + workingTreeGraphSvg(hash) + '</span><div class="col-main-summary working-tree-label working-tree-label--' + hash + '">' + label + '</div></div>' +
       '<div class="col-author"></div><div class="col-hash">—</div><div class="col-date"></div></div>';
   }
 
@@ -3111,13 +3145,24 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
+  function isWorkingTreeHash(hash) {
+    return hash === 'changes' || hash === 'staged';
+  }
+
+  function workingTreeRowsHTML() {
+    // 后端已按顺序下发(changes 在前, staged 在后); insertAdjacentHTML('afterbegin') 会反转顺序, 故倒序拼接。
+    return workingTreeRowsState.slice().reverse().map(function(row) {
+      return workingTreeRowHTML(row.hash, row.label, row.enabled);
+    }).join('');
+  }
+
   function updateWorkingTreeRows() {
     const list = document.getElementById('commitList');
     if (!list) return;
     list.querySelectorAll('.working-tree').forEach(function(row) { row.remove(); });
     const branch = getSelectedCurrentBranch();
     if (!branch) return;
-    list.insertAdjacentHTML('afterbegin', workingTreeRowHTML('uncommitted', 'Uncommitted Changes', uncommittedEnabled));
+    list.insertAdjacentHTML('afterbegin', workingTreeRowsHTML());
     list.querySelectorAll('.working-tree').forEach(function(row) { setupRow(row, currentGraphW); });
   }
 
@@ -3190,7 +3235,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       headerCell('作者', 'author') + headerCell('Commit ID', 'hash') + headerCell('时间', 'date');
     var html = '';
     var selectedBranch = getSelectedCurrentBranch();
-    if (selectedBranch) html += workingTreeRowHTML('uncommitted', 'Uncommitted Changes', uncommittedEnabled);
+    // 正序拼接(changes 在前, staged 在后), 与后端下发顺序一致; 此处用 innerHTML 不会反转。
+    if (selectedBranch) {
+      html += workingTreeRowsState.map(function(row) {
+        return workingTreeRowHTML(row.hash, row.label, row.enabled);
+      }).join('');
+    }
     for (let i = 0; i < commits.length; i++) {
       html += buildCommitRowHTML(i, graphW);
     }
@@ -3287,6 +3337,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       if (c.parents.length > 0) {
         content += '<path d="M ' + cx + ' ' + y + ' V ' + detailsBottom + '" fill="none" stroke="' + commitColor + '" stroke-width="1.5" stroke-linecap="round"/>';
       }
+    }
+
+    // 工作区虚拟行插在列表最前(afterbegin), 其正下方就是 commits[0]。staged 行向下垂一段虚线,
+    //   需在该首行 commit 节点上方补一段虚线衔接, 使 Staged Changes 与节点视觉连通。
+    //   判定用 idx===0(布局上紧邻虚拟行)而非 refs 含 'HEAD'(部分仓库首行 refs 无字面量 HEAD, 导致永不命中)。
+    //   仅 staged 行会向下画虚线(unstaged 只画空心圆不连接), 故条件是"存在 staged 行"。
+    var hasStagedRow = workingTreeRowsState.some(function(row) { return row.hash === 'staged'; });
+    if (idx === 0 && hasStagedRow && inputIndex < 0) {
+      content += '<path d="M ' + cx + ' 0 V ' + y + '" fill="none" stroke="var(--vscode-descriptionForeground, #999)" stroke-width="1.5" stroke-dasharray="2 2" stroke-linecap="round"/>';
     }
 
     if (cx !== undefined) {

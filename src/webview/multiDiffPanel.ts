@@ -7,7 +7,6 @@ type DiffSnapshot = {
     type: 'snapshot';
     revision: number;
     identity: string;
-    performanceTrace?: { id: string; startedAt: number; paths: readonly string[] };
     loading: boolean;
     completed: number;
     total: number;
@@ -34,7 +33,6 @@ export class MultiDiffPanel implements vscode.Disposable {
         private readonly onSaveFile?: (path: string, content: string) => void,
         private readonly onWorkingTreeAction?: (action: 'stage' | 'unstage' | 'discard', section: 'staged' | 'unstaged', path: string) => void,
         private readonly onVisibleDiffPathsChanged?: (paths: readonly string[]) => void,
-        private readonly getPerformanceTrace?: () => { id: string; startedAt: number; paths: readonly string[] } | undefined,
     ) {
         this.unsubscribers = [
             store.subscribeSelector(state => state.diffLoading, () => this.schedulePublish()),
@@ -121,7 +119,6 @@ export class MultiDiffPanel implements vscode.Disposable {
             } else if (message?.type === 'visibleDiffPaths'
                 && Array.isArray(message.paths)
                 && message.paths.every((item: unknown) => typeof item === 'string')) {
-                console.log('[Gitk][VisibleDiffPerformance][MultiDiffPanel] received visibleDiffPaths message:', message.paths);
                 this.onVisibleDiffPathsChanged?.(message.paths);
             } else if (message?.type === 'rendered') {
                 // Diff 卡片与行号渲染完成, 通知 Provider 放行 Changed Files 列表。
@@ -165,7 +162,6 @@ export class MultiDiffPanel implements vscode.Disposable {
             type: 'snapshot',
             revision: ++this.revision,
             identity: `${state.currentRepositoryPath ?? ''}\u0000${state.currentHash ?? ''}`,
-            performanceTrace: this.getPerformanceTrace?.(),
             // 与 CustomDiffPanel 一致：只由 Store 的 diffLoading 决定加载态；完成空快照也必须结束 loading。
             loading: state.diffLoading,
             completed: state.diffProgress.completed,
@@ -176,10 +172,6 @@ export class MultiDiffPanel implements vscode.Disposable {
             editable: state.currentChangeSet === 'changes' || state.currentChangeSet === 'uncommitted',
             diffs,
         };
-        console.log(`[gitk-multi-diff] publish #${snapshot.revision}: loading=${snapshot.loading}, progress=${snapshot.completed}/${snapshot.total}, diffs=${snapshot.diffs.length}, error=${snapshot.error ?? 'none'}`);
-        if (snapshot.performanceTrace) {
-            console.log(`[Gitk][VisibleDiffPerformance][${snapshot.performanceTrace.id}] snapshot posted: +${Date.now() - snapshot.performanceTrace.startedAt}ms`);
-        }
         this.post(snapshot);
     }
 
@@ -302,9 +294,7 @@ function diffKey(diff){return diff.diffKey||diff.path}
 function publishVisibleDiffPaths(){
   const paths=cards.filter(function(entry){return entry.mounted&&!entry.collapsed}).map(function(entry){return entry.diff.path}).sort();
   const serialized=JSON.stringify(paths);
-  log('[Gitk][VisibleDiffPerformance] publishVisibleDiffPaths: cards='+cards.length+', mounted='+cards.filter(function(e){return e.mounted}).length+', kinds='+cards.map(function(e){return e.diff.workingTreeKind}).join('|')+', paths='+serialized+', deduped='+(serialized===lastVisibleDiffPaths));
   if(serialized===lastVisibleDiffPaths)return;lastVisibleDiffPaths=serialized;
-  log('[Gitk][VisibleDiffPerformance] publishVisibleDiffPaths -> postMessage: '+serialized);
   try{window.gitkVscode.postMessage({type:'visibleDiffPaths',paths:paths})}catch(_){}
 }
 let activeChangeIndex=-1,activeChangePage=0;
@@ -841,7 +831,6 @@ function render(snapshot){
     updateVirtualization();
     list.classList.remove('rendering');loading.hidden=true;lastIdentity=snapshot.identity;
     log('render #'+snapshot.revision+': cards='+total+', mounted='+cards.filter(function(entry){return entry.mounted}).length+', reveal='+(sameIdentity?'anchor':target));
-    if(snapshot.performanceTrace)log('[Gitk][VisibleDiffPerformance]['+snapshot.performanceTrace.id+'] card updated: +'+(Date.now()-snapshot.performanceTrace.startedAt)+'ms, paths='+snapshot.performanceTrace.paths.join(','));
     // 外壳和首屏 Monaco 已开始挂载即可放行 Changed Files；后续由滚动虚拟化管理。
     notifyRendered(snapshot.revision);
   }catch(error){fail(error)}

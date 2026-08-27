@@ -42,7 +42,7 @@ export interface AppState {
     files: ChangedFile[];
     stagedFiles: ChangedFile[];
     unstagedFiles: ChangedFile[];
-    workingTreeRows: Array<{ hash: 'uncommitted'; label: string; repositoryPath: string; enabled: boolean }>;
+    workingTreeRows: Array<{ hash: 'changes' | 'staged'; label: string; repositoryPath: string; enabled: boolean }>;
     // 多仓库工作区数据: Commit 面板每张卡片从此读各自仓库的 staged/unstaged, 与 Changed Files 单仓库视图并存。
     commitRepositories: Array<{
         repository: GitRepositoryOption;

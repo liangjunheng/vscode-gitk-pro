@@ -7,6 +7,7 @@ import {
     GraphLane,
     type GitRepositoryOption,
     WorkingTreeChanges,
+    isWorkingTreeHash,
 } from '../types';
 import { DiffReader } from './diffReader';
 import { GitBranchesController } from './gitBranchesController';
@@ -113,7 +114,7 @@ export class GitCommitController implements vscode.Disposable {
     get selectedCommit(): CommitMetadata | undefined {
         const identity = this.selectedCommitIdentity;
         if (!identity) { return undefined; }
-        if (identity.hash === 'uncommitted') {
+        if (isWorkingTreeHash(identity.hash)) {
             const branch = this.branches.find(candidate => candidate.kind === 'current' && candidate.repoOption.path === identity.repositoryPath);
             return branch ? new CommitMetadata({ hash: identity.hash, gitBranchOption: branch }) : undefined;
         }
