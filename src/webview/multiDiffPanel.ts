@@ -79,6 +79,9 @@ export class MultiDiffPanel implements vscode.Disposable {
 
     hide(): void { this.panel?.dispose(); }
 
+    // 面板是否已创建(打开)。用于区分"面板开着但文件清空"(应保留面板显示空态)与"面板本就未开"(不主动弹出)。
+    isOpen(): boolean { return !!this.panel; }
+
     dispose(): void {
         this.unsubscribers.forEach(unsubscribe => unsubscribe());
         this.panel?.dispose();
@@ -819,7 +822,7 @@ function render(snapshot){
     dispose();
     const token=renderToken;
     editable=snapshot.editable===true;
-    if(!snapshot.diffs.length){list.classList.remove('rendering');list.textContent='没有可显示的 Diff 内容';loading.hidden=true;list.hidden=false;lastIdentity=snapshot.identity;log('render #'+snapshot.revision+': empty');notifyRendered(snapshot.revision);return}
+    if(!snapshot.diffs.length){list.classList.remove('rendering');list.textContent='暂无变更文件';loading.hidden=true;list.hidden=false;lastIdentity=snapshot.identity;log('render #'+snapshot.revision+': empty');notifyRendered(snapshot.revision);return}
     const total=snapshot.diffs.length;
     // 同一提交刷新保留当前页面，不展示读取或创建 Diff 的中间界面。
     if(!sameIdentity){list.classList.add('rendering');loading.textContent='正在创建 Diff 列表...';loading.hidden=false}

@@ -489,7 +489,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.commitPanel.update(this.buildCommitSnapshot());
         }
         if (diffs.length === 0) {
-            this.multiDiffPanel.hide();
+            // 面板已打开时保留并展示空态("暂无变更文件"), 不 dispose; 面板未开则不弹出。
+            if (this.multiDiffPanel.isOpen()) {
+                this.multiDiffPanel.show(this.currentHash ?? '', this.commitController.selectedCommit?.message ?? '');
+            }
             return;
         }
         if (showLoading && this.canShowMultiDiff() && this.view?.visible) {
