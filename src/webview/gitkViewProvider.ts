@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { type ChangeSetMode, type ChangedFile, type GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, WorkingTreeChanges, isWorkingTreeHash } from '../types';
-import { getCommitFiles, getGitRepositoryState, runGitCommand, runGitReadCommand, readCommitHistoryMessages, readCurrentCommitMessage } from '../git/gitLogProvider';
+import { getCommitFiles, runGitCommand, runGitReadCommand, readCommitHistoryMessages, readCurrentCommitMessage } from '../git/gitLogProvider';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { CommitPanel, type CommitPanelSnapshot, type CommitCard } from './commitPanel';
 import { CommitPanelViewTitleController } from './commitPanelViewTitleController';
@@ -41,9 +41,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private viewDisposables: vscode.Disposable[] = [];
     private readonly onDidChangeDiffAvailabilityEmitter = new vscode.EventEmitter<void>();
     readonly onDidChangeDiffAvailability = this.onDidChangeDiffAvailabilityEmitter.event;
-    private repositoryStateDebounceTimer?: ReturnType<typeof setTimeout>;
     private lastLoadingProgress?: { phase: string; message: string; current: number; total: number };
-    private repositoryStateSignature?: string;
     private storeUnsubscribe?: () => void;
     private pushStatePending = false;
     private gitWatchDisposables: vscode.Disposable[] = [];
@@ -858,15 +856,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.hasStartedRepositoryScan = false;
             void this.repoSubmoduleWatcher.initialize();
         };
-        const refreshRepositoryState = () => this.queueRepositoryStateRefresh();
-        const gitRefsWatcher = vscode.workspace.createFileSystemWatcher('**/.git/refs/**');
         this.gitWatchDisposables.push(
             this.gitWatcherSentinel,
             vscode.workspace.onDidChangeWorkspaceFolders(refreshWorkspaceRepositories),
-            gitRefsWatcher,
-            gitRefsWatcher.onDidCreate(refreshRepositoryState),
-            gitRefsWatcher.onDidChange(refreshRepositoryState),
-            gitRefsWatcher.onDidDelete(refreshRepositoryState),
         );
     }
 
@@ -899,61 +891,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
 
-    private queueRepositoryStateRefresh(): void {
-        if (this.repositoryStateDebounceTimer) {
-            clearTimeout(this.repositoryStateDebounceTimer);
-        }
-        this.repositoryStateDebounceTimer = setTimeout(() => {
-            this.repositoryStateDebounceTimer = undefined;
-            void this.refreshOnRepositoryStateChanged();
-        }, 300);
-    }
-
-    // 自身的 git status / diff 会回写 .git/index 的 stat 缓存并触发 watcher。
-    // 首次初始化期间一律忽略，其余情况按 HEAD + refs 内容签名判定是否真的变了。
-    private async refreshOnRepositoryStateChanged(): Promise<void> {
-        // 视图初始化中或首次加载尚未产出提交时，一律不打断当前加载。
-        if (this.initializingViewGeneration === this.viewGeneration) { return; }
-        if (this.refreshAbortController && this.commits.length === 0) { return; }
-        const rootUri = this.getRepoRootUri();
-        if (!rootUri) {
-            void this.refresh(false);
-            return;
-        }
-        const signature = await this.readRepositoryStateSignature(rootUri);
-        if (signature && signature === this.repositoryStateSignature) { return; }
-        this.repositoryStateSignature = signature;
-        // 工作树、暂存区和 refs 变化不改变仓库集合，禁止重扫子模块。
-        void this.refresh(false);
-    }
-
-    private async captureRepositoryStateSignature(): Promise<void> {
-        const rootUri = this.getRepoRootUri();
-        if (!rootUri) { return; }
-        const signature = await this.readRepositoryStateSignature(rootUri);
-        if (signature) { this.repositoryStateSignature = signature; }
-    }
-
     /** 当前仓库根 URI：优先取选中提交所属仓库，回退到已选仓库。 */
     private getRepoRootUri(repositoryPath = this.currentRepositoryPath): vscode.Uri | undefined {
         const target = repositoryPath ?? this.selectedRepositoryPath;
         return target ? vscode.Uri.parse(target) : undefined;
     }
 
-    private async readRepositoryStateSignature(rootUri: vscode.Uri): Promise<string | undefined> {
-        try {
-            const state = await getGitRepositoryState(rootUri);
-            return [state.head, state.branch, state.refs].join('\u0000');
-        } catch {
-            // 读取失败时不做抑制，交由正常刷新兜底。
-            return undefined;
-        }
-    }
-
-    /**
-     * 生命周期刷新入口：只负责仓库扫描与加载态。
-     * 分支由 GitBranchesController 接管，提交由 GitCommitController 接管。
-     */
+    /** 生命周期刷新入口：只负责仓库扫描与加载态。 */
     private async refreshInternal(refreshGen: number, signal?: AbortSignal, reloadSelectors = true): Promise<void> {
         if (signal?.aborted) { return; }
         if (!this.hasRepositorySelection) {
@@ -964,8 +908,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (this.hasRepositorySelection && this.repositories.length === 0) {
             return;
         }
-        // 记录基线，使本轮加载自身写入 .git/index 引发的 watcher 事件不再触发重复刷新。
-        void this.captureRepositoryStateSignature();
         this.updateViewVisible();
     }
 
@@ -1308,9 +1250,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             await commitWithMessage(rootUri, message, amend);
             this.commitCommittingByRepo.delete(repositoryPath);
             this.commitAmendByRepo.delete(repositoryPath);
-            // 提交后的 staged/unstaged 状态由 uncommitted watcher 监听 index 与新 HEAD 后发布。
-            // 这里仅刷新提交历史，不能立即读取 Commit 面板，否则可能读到旧 HEAD 缓存。
-            await this.refresh();
+            // 提交成功后直接刷新提交控制器；refresh() 只负责生命周期扫描，不会重读历史列表。
+            await this.commitController.forceRefreshCurrentSelection();
         } catch (error) {
             this.commitCommittingByRepo.delete(repositoryPath);
             await this.refreshCommitPanel();
