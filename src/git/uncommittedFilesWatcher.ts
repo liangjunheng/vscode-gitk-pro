@@ -400,14 +400,16 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             this.changesEmitter.fire({ branch, changes: copyChanges(changes), affectedPaths });
         } catch (error: any) {
             if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') {
-                const pendingPaths = slot.pendingPaths ?? new Set<string>();
-                paths.forEach(filePath => pendingPaths.add(filePath));
-                slot.pendingPaths = pendingPaths;
-                const pendingWorkspaceContentPaths = slot.pendingWorkspaceContentPaths ?? new Set<string>();
-                workspaceContentPaths.forEach(filePath => pendingWorkspaceContentPaths.add(filePath));
-                slot.pendingWorkspaceContentPaths = pendingWorkspaceContentPaths;
-                slot.fullRefreshPending ||= fullRefresh;
-                slot.indexRefreshPending ||= reconcileIndex;
+                if (slot.generation === generation && slot.branch?.hash === branch.hash) {
+                    const pendingPaths = slot.pendingPaths ?? new Set<string>();
+                    paths.forEach(filePath => pendingPaths.add(filePath));
+                    slot.pendingPaths = pendingPaths;
+                    const pendingWorkspaceContentPaths = slot.pendingWorkspaceContentPaths ?? new Set<string>();
+                    workspaceContentPaths.forEach(filePath => pendingWorkspaceContentPaths.add(filePath));
+                    slot.pendingWorkspaceContentPaths = pendingWorkspaceContentPaths;
+                    slot.fullRefreshPending ||= fullRefresh;
+                    slot.indexRefreshPending ||= reconcileIndex;
+                }
                 slot.needsRefresh = true;
                 throw error;
             }
