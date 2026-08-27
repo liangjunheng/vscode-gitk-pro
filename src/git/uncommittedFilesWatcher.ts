@@ -35,6 +35,7 @@ type RepositoryRefreshSlot = {
     fullRefreshPending: boolean;
     indexRefreshPending: boolean;
     indexChangedPaths: Set<string>;
+    refreshAbortController?: AbortController;
     completion?: Promise<void>;
 };
 
@@ -294,6 +295,7 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         if (!slot?.branch) { return Promise.resolve(); }
         if (slot.running) {
             slot.needsRefresh = true;
+            slot.refreshAbortController?.abort();
             return slot.completion ?? Promise.resolve();
         }
         slot.running = true;
@@ -307,12 +309,23 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             while (slot.branch) {
                 const branch = slot.branch;
                 const generation = slot.generation;
-                // 此轮开始前消费已有请求；读取期间到达的新请求将驱动下一轮。
                 slot.needsRefresh = false;
-                await this.refreshSlot(repositoryPath, branch, generation, slot);
+                const refreshAbortController = new AbortController();
+                slot.refreshAbortController = refreshAbortController;
+                try {
+                    await this.refreshSlot(repositoryPath, branch, generation, slot, refreshAbortController.signal);
+                } catch (error: any) {
+                    if (error?.name !== 'AbortError' && error?.code !== 'ABORT_ERR') { throw error; }
+                } finally {
+                    if (slot.refreshAbortController === refreshAbortController) {
+                        slot.refreshAbortController = undefined;
+                    }
+                }
                 if (!slot.needsRefresh) { return; }
             }
         } finally {
+            slot.refreshAbortController?.abort();
+            slot.refreshAbortController = undefined;
             slot.needsRefresh = false;
             slot.running = false;
             slot.completion = undefined;
@@ -324,6 +337,7 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         branch: GitBranchOption,
         generation: number,
         slot: RepositoryRefreshSlot,
+        signal: AbortSignal,
     ): Promise<void> {
         try {
             const rootUri = vscode.Uri.parse(repositoryPath);
@@ -338,19 +352,19 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             slot.indexRefreshPending = false;
             let currentIndexChangedPaths: Set<string> | undefined;
             if (reconcileIndex || !previous || fullRefresh) {
-                currentIndexChangedPaths = await getIndexChangedPaths(rootUri);
+                currentIndexChangedPaths = await getIndexChangedPaths(rootUri, signal);
             }
             if (previous && reconcileIndex && currentIndexChangedPaths) {
                 slot.indexChangedPaths.forEach(filePath => paths.add(filePath));
                 currentIndexChangedPaths.forEach(filePath => paths.add(filePath));
             }
             const changes = !previous || fullRefresh
-                ? await getWorkingTreeStatus(rootUri)
+                ? await getWorkingTreeStatus(rootUri, signal)
                 : paths.size > 0
                     ? this.mergePathChanges(
                         repositoryPath,
                         branch.hash,
-                        await getWorkingTreeStatusForPaths(rootUri, [...paths]),
+                        await getWorkingTreeStatusForPaths(rootUri, [...paths], signal),
                         paths,
                     )
                     : previous;
