@@ -147,10 +147,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         // 提交列表 loading 只由 GitCommitController 的加载事件驱动。
         const commitListLoading = this.commitController.isLoading;
         const commitListLoadingMessage = commitListLoading ? '正在加载提交历史' : undefined;
-        // 两个工作区虚拟行始终产出(未暂存在上, 已暂存在下), 空分组置灰(enabled=false)而非隐藏; 共用底层 WorkingTreeChanges。
+        // 两个工作区虚拟行始终产出(未暂存在上, 已暂存在下), 空分组置灰(enabled=false)而非隐藏。
+        // 与 Commit editor 共用当前 HEAD 的 watcher 缓存，不能读取 Controller 的副本，否则两处会出现状态不同步。
         // 搜索非空时, 虚拟行不是真实 commit 不经 searchCommits 过滤, 按 label 是否命中关键词决定是否产出; 未命中则不出现。
-        const workingTree = this.commitController.workingTreeChanges;
-        const workingTreeRepositoryPath = this.commitController.uncommittedRepositoryPath;
+        const currentBranch = this.commitController.selectedBranches.find(branch => branch.kind === 'current');
+        const workingTree = currentBranch
+            ? this.uncommittedFilesWatcher.getCachedUncommittedFilesByHeadBranch(currentBranch) ?? new WorkingTreeChanges()
+            : new WorkingTreeChanges();
+        const workingTreeRepositoryPath = currentBranch?.repoOption.path;
         const searchKeywords = this.commitController.searchKeywords;
         const matchesSearch = (label: string): boolean =>
             searchKeywords.length === 0
@@ -320,9 +324,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.commitController.onSelectedCommitChanged(commit => this.onSelectedCommitChanged(commit)),
             this.commitController.onWorkingTreeChangesChanged(event => this.onWorkingTreeChangesChanged(event.changes, event.affectedPaths)),
             this.commitController.onUncommittedPresenceChanged(() => this.schedulePushState()),
-            // 状态事件维护所有仓库的未提交卡片；内容事件只刷新当前虚拟提交的对应 Diff。
+            // 状态事件维护所有仓库的未提交卡片，并同步提交图当前仓库的虚拟行。
             this.uncommittedFilesWatcher.onEachHeadBranchUncommittedFileChanged(event => {
                 this.onRepositoryUncommittedFilesChanged(event.branch, event.changes);
+                if (this.commitController.uncommittedRepositoryPath === event.branch.repoOption.path) {
+                    this.schedulePushState();
+                }
             }),
             this.uncommittedFilesWatcher.onEachHeadBranchUncommittedFileContentChanged(event => {
                 this.onWorkingTreeFileContentChanged(event.branch, event.affectedPaths);
