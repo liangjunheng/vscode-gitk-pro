@@ -629,6 +629,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             || !isWorkingTreeHash(this.currentHash)
             || this.currentRepositoryPath !== branch.repoOption.path
             || this.commitController.selectedCommit?.gitBranchOption?.hash !== branch.hash) { return; }
+        this.applyRefreshedDiffs(refreshed);
+    }
+
+    // 将重读到的 Diff 负载按 diffKey/path 就地替换回 store.files, 保持原有下标与未受影响项不变。
+    // 两条重读链路 (全量内容事件 refreshWorkingTreeDiffs 与可视快通道 refreshVisibleWorkingTreeDiffs)
+    //   的门禁语义不同, 但落地写回完全一致, 统一在此避免结构改动时两处漏改。
+    private applyRefreshedDiffs(refreshed: readonly DiffPayload[]): void {
         const refreshedByKey = new Map(refreshed.map(file => [file.diffKey || file.path, file]));
         const nextFiles = this.files.map((file, index) => {
             const refreshedFile = refreshedByKey.get(file.diffKey || file.path);
@@ -668,17 +675,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             || this.currentRepositoryPath !== branch.repoOption.path
             || this.commitController.selectedCommit?.gitBranchOption?.hash !== branch.hash
             || paths.some(filePath => !this.visibleDiffPaths.has(filePath))) { return; }
-        const refreshedByKey = new Map(refreshed.map(file => [file.diffKey || file.path, file]));
-        const nextFiles = this.files.map((file, index) => {
-            const refreshedFile = refreshedByKey.get(file.diffKey || file.path);
-            return refreshedFile ? new DiffPayload({ ...refreshedFile, index }) : file;
-        });
-        store.setState({
-            files: nextFiles,
-            diffLoading: false,
-            diffError: undefined,
-            diffProgress: { completed: nextFiles.length, total: nextFiles.length },
-        });
+        this.applyRefreshedDiffs(refreshed);
     }
 
     private onWorkingTreeChangesChanged(
@@ -2709,6 +2706,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     modeButton.title = '显示方式（当前：' + (isTree ? '树状' : '平铺') + '）';
     if (isWorkingTreeHash(selectedCommitHash)) {
       // 'staged' 行只显示已暂存分组, 'changes' 行只显示未暂存/未跟踪分组; 两行共用底层数据。
+      const sectionFiles = selectedCommitHash === 'staged' ? stagedFiles : unstagedFiles;
+      // 选中的虚拟行对应分组为空时, 与普通提交一致显示"暂无变更文件", 不渲染空 section。
+      if (!sectionFiles.length) {
+        list.innerHTML = '<div id="filesEmpty">暂无变更文件</div>';
+        return;
+      }
       const sectionHTML = selectedCommitHash === 'staged'
         ? workingTreeSectionHTML('staged', 'Staged Changes', stagedFiles)
         : workingTreeSectionHTML('unstaged', 'Unstaged Changes', unstagedFiles);
