@@ -265,16 +265,19 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         //   让 Host 只重读该文件的 Diff, 绕开全量 status 队列, 实现所见卡片的低延迟刷新。
         // 注意: staged 卡片虽然也会命中白名单并触发本通道, 但其 Diff 内容源自 index, 工作区内容变化不会改变它,
         //   所以 staged 卡片重读后"内容不变"是符合语义的; 不要据此误判为链路断裂。
+        // 严格契约: 快通道只服务可视文件的"内容变化(change)"。create/delete 是结构变化(卡片出现/消失),
+        //   只能由状态通道经 git status 重建文件清单来正确增删卡片。
+        //   若让 delete 也 fire 快通道, 会与状态通道形成两条独立代次、互不作废的异步写 store.files 链,
+        //   在文件系统未稳定期交替落地, 导致 Diff 卡片"消失→出现→消失"闪烁 (回归警示)。
         const isVisibleDiff = this.visibleDiffPathsByRepository.get(repositoryPath)?.has(normalizedPath) ?? false;
-        if (isVisibleDiff) {
+        if (isVisibleDiff && eventType === 'change') {
             this.visibleDiffContentEmitter.fire({
                 branch: slot.branch,
                 affectedPaths: [normalizedPath],
             });
+            // 内容通道已完成职责, 不再进入状态队列。
+            return;
         }
-        // 已存在且可视的文件发生普通内容变化时，内容通道已经完成职责，不再触发状态队列。
-        // create/delete 仍需进入状态队列，用于处理临时文件替换、删除和文件结构变化。
-        if (isVisibleDiff && eventType === 'change') { return; }
         const pendingPaths = slot.pendingPaths ?? new Set<string>();
         pendingPaths.add(normalizedPath);
         slot.pendingPaths = pendingPaths;
