@@ -7,6 +7,7 @@ type DiffSnapshot = {
     type: 'snapshot';
     revision: number;
     identity: string;
+    performanceTrace?: { id: string; startedAt: number; paths: readonly string[] };
     loading: boolean;
     completed: number;
     total: number;
@@ -32,6 +33,8 @@ export class MultiDiffPanel implements vscode.Disposable {
         private readonly onOpenFileAtLine?: (path: string, line?: number, column?: number, side?: 'original' | 'modified') => void,
         private readonly onSaveFile?: (path: string, content: string) => void,
         private readonly onWorkingTreeAction?: (action: 'stage' | 'unstage' | 'discard', section: 'staged' | 'unstaged', path: string) => void,
+        private readonly onVisibleDiffPathsChanged?: (paths: readonly string[]) => void,
+        private readonly getPerformanceTrace?: () => { id: string; startedAt: number; paths: readonly string[] } | undefined,
     ) {
         this.unsubscribers = [
             store.subscribeSelector(state => state.diffLoading, () => this.schedulePublish()),
@@ -115,6 +118,11 @@ export class MultiDiffPanel implements vscode.Disposable {
                 && (message.section === 'staged' || message.section === 'unstaged')
                 && typeof message.path === 'string') {
                 this.onWorkingTreeAction?.(message.action, message.section, message.path);
+            } else if (message?.type === 'visibleDiffPaths'
+                && Array.isArray(message.paths)
+                && message.paths.every((item: unknown) => typeof item === 'string')) {
+                console.log('[Gitk][VisibleDiffPerformance][MultiDiffPanel] received visibleDiffPaths message:', message.paths);
+                this.onVisibleDiffPathsChanged?.(message.paths);
             } else if (message?.type === 'rendered') {
                 // Diff 卡片与行号渲染完成, 通知 Provider 放行 Changed Files 列表。
                 this.onRendered?.();
@@ -125,7 +133,12 @@ export class MultiDiffPanel implements vscode.Disposable {
             }
         });
         // 面板被关闭后不会再有渲染完成信号, 通知 Provider 兜底放行 Changed Files 列表。
-        this.panel.onDidDispose(() => { this.panel = undefined; this.webviewReady = false; this.onRendered?.(); });
+        this.panel.onDidDispose(() => {
+            this.panel = undefined;
+            this.webviewReady = false;
+            this.onVisibleDiffPathsChanged?.([]);
+            this.onRendered?.();
+        });
         this.panel.webview.html = this.getHtml(monacoRoot, codiconsRoot);
     }
 
@@ -152,6 +165,7 @@ export class MultiDiffPanel implements vscode.Disposable {
             type: 'snapshot',
             revision: ++this.revision,
             identity: `${state.currentRepositoryPath ?? ''}\u0000${state.currentHash ?? ''}`,
+            performanceTrace: this.getPerformanceTrace?.(),
             // 与 CustomDiffPanel 一致：只由 Store 的 diffLoading 决定加载态；完成空快照也必须结束 loading。
             loading: state.diffLoading,
             completed: state.diffProgress.completed,
@@ -163,6 +177,9 @@ export class MultiDiffPanel implements vscode.Disposable {
             diffs,
         };
         console.log(`[gitk-multi-diff] publish #${snapshot.revision}: loading=${snapshot.loading}, progress=${snapshot.completed}/${snapshot.total}, diffs=${snapshot.diffs.length}, error=${snapshot.error ?? 'none'}`);
+        if (snapshot.performanceTrace) {
+            console.log(`[Gitk][VisibleDiffPerformance][${snapshot.performanceTrace.id}] snapshot posted: +${Date.now() - snapshot.performanceTrace.startedAt}ms`);
+        }
         this.post(snapshot);
     }
 
@@ -275,8 +292,21 @@ const loading=document.getElementById('loading'),list=document.getElementById('l
 const report=message=>{try{window.gitkVscode.postMessage({type:'error',message})}catch(_){}};
 const log=message=>{try{window.gitkVscode.postMessage({type:'log',message})}catch(_){}};
 const notifyRendered=revision=>{try{window.gitkVscode.postMessage({type:'rendered',revision})}catch(_){}};
-let monacoReady=false,lastRevision=0,lastIdentity='',pending,cards=[],cardByPath=new Map(),activePath='',clickedPath='',suppressSyncUntil=0,scrollAnimationFrame=0,renderToken=0,editable=false,virtualFrame=0,editorPool=[],syncingGlobalHScroll=false,hScrollFrame=0,pinnedAnchor=null;
+let monacoReady=false,lastRevision=0,lastIdentity='',pending,cards=[],cardByPath=new Map(),activePath='',clickedPath='',suppressSyncUntil=0,scrollAnimationFrame=0,renderToken=0,editable=false,virtualFrame=0,editorPool=[],syncingGlobalHScroll=false,hScrollFrame=0,pinnedAnchor=null,lastVisibleDiffPaths='';
 function diffKey(diff){return diff.diffKey||diff.path}
+// 上报当前可视的 Diff 卡片路径给 Host, 作为工作区 **/* 事件即时刷新的白名单。
+// 收集条件只看"卡片是否真正呈现内容"(已挂载 && 未折叠), 不按 staged/unstaged/untracked 过滤;
+//   类型差异由 Host 侧 refreshVisibleWorkingTreeDiffs 按 workingTreeKind 正确读取。
+// lastVisibleDiffPaths 做去重, 避免同一集合反复上报; 它必须随卡片集合销毁而在 dispose() 中一并清空,
+//   否则重建出相同路径时会被误判为"未变化"而永不重发 (回归警示)。
+function publishVisibleDiffPaths(){
+  const paths=cards.filter(function(entry){return entry.mounted&&!entry.collapsed}).map(function(entry){return entry.diff.path}).sort();
+  const serialized=JSON.stringify(paths);
+  log('[Gitk][VisibleDiffPerformance] publishVisibleDiffPaths: cards='+cards.length+', mounted='+cards.filter(function(e){return e.mounted}).length+', kinds='+cards.map(function(e){return e.diff.workingTreeKind}).join('|')+', paths='+serialized+', deduped='+(serialized===lastVisibleDiffPaths));
+  if(serialized===lastVisibleDiffPaths)return;lastVisibleDiffPaths=serialized;
+  log('[Gitk][VisibleDiffPerformance] publishVisibleDiffPaths -> postMessage: '+serialized);
+  try{window.gitkVscode.postMessage({type:'visibleDiffPaths',paths:paths})}catch(_){}
+}
 let activeChangeIndex=-1,activeChangePage=0;
 function activeEntry(){return activePath&&cardByPath.get(activePath)}
 function navigableChanges(entry){
@@ -421,6 +451,9 @@ function dispose(){
   if(virtualFrame){cancelAnimationFrame(virtualFrame);virtualFrame=0}
   for(const entry of cards)disposeEntry(entry);
   while(editorPool.length)destroySlot(editorPool.pop());
+  // 去重键必须随卡片集合一起归零：卡片全部销毁后旧的可视路径不再成立，
+  // 否则重建出相同路径时会被误判为"未变化"而永不重新上报，使 Host 集合停留在空态。
+  lastVisibleDiffPaths='';
   cards=[];cardByPath=new Map();activePath='';clickedPath='';activeChangeIndex=-1;activeChangePage=0;pinnedAnchor=null;list.replaceChildren();globalHScroll.hidden=true;globalHScroll.scrollLeft=0
 }
 function language(path){const ext=path.slice(path.lastIndexOf('.')+1).toLowerCase();return languages[ext]||'plaintext'}
@@ -735,12 +768,14 @@ function updateVirtualization(fromScroll=false){
     if(rect.bottom>=0&&rect.top<=window.innerHeight){if(first<0)first=index;last=index}
   }
   if(first<0){const visible=topVisibleCard();first=last=visible?visible.index:0}
+  const mounts=[];
   for(let index=0;index<cards.length;index++){
     const entry=cards[index];
     if(index>=first&&index<=last&&!entry.collapsed){
-      mountEntry(entry,fromScroll).catch(function(error){markCardFailed(entry,error)});
+      mounts.push(mountEntry(entry,fromScroll).catch(function(error){markCardFailed(entry,error)}));
     }else if(entry.mounted||entry.mounting){disposeEntry(entry)}
   }
+  Promise.all(mounts).then(publishVisibleDiffPaths);
 }
 function scheduleVirtualization(){if(virtualFrame)return;virtualFrame=requestAnimationFrame(function(){virtualFrame=0;updateVirtualization()})}
 let scrollFrame=0;
@@ -806,6 +841,7 @@ function render(snapshot){
     updateVirtualization();
     list.classList.remove('rendering');loading.hidden=true;lastIdentity=snapshot.identity;
     log('render #'+snapshot.revision+': cards='+total+', mounted='+cards.filter(function(entry){return entry.mounted}).length+', reveal='+(sameIdentity?'anchor':target));
+    if(snapshot.performanceTrace)log('[Gitk][VisibleDiffPerformance]['+snapshot.performanceTrace.id+'] card updated: +'+(Date.now()-snapshot.performanceTrace.startedAt)+'ms, paths='+snapshot.performanceTrace.paths.join(','));
     // 外壳和首屏 Monaco 已开始挂载即可放行 Changed Files；后续由滚动虚拟化管理。
     notifyRendered(snapshot.revision);
   }catch(error){fail(error)}

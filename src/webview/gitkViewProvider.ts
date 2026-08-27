@@ -55,6 +55,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private readonly commitMessageBeforeAmendByRepo = new Map<string, string>();
     private readonly commitCommittingByRepo = new Set<string>();
     private readonly diffReader: DiffReader;
+    private visibleDiffGeneration = 0;
+    private visibleDiffPaths = new Set<string>();
+    private visibleDiffPerformanceTrace?: { id: string; startedAt: number; paths: readonly string[] };
     private readonly gitActions: GitActionRunner;
     // 仓库 / 分支 / 提交状态的唯一写入者，Provider 只读不写。
     private readonly repoSubmoduleWatcher = new RepoSubmoduleWatcher();
@@ -232,6 +235,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             (path, line, column, side) => void this.openWorkspaceFileAtLine(path, line, column, side),
             (path, content) => void this.saveWorkspaceFile(path, content),
             (action, section, path) => void this.runWorkingTreeAction(action, section, path),
+            paths => this.updateVisibleDiffPaths(paths),
+            () => this.visibleDiffPerformanceTrace,
         );
         this.commitPanel = new CommitPanel({
             onCommit: (repositoryPath, message, amend) => void this.runCommit(repositoryPath, message, amend),
@@ -312,6 +317,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.uncommittedFilesWatcher.onEachHeadBranchUncommittedFileContentChanged(event => {
                 this.onWorkingTreeFileContentChanged(event.branch, event.affectedPaths);
             }),
+            this.uncommittedFilesWatcher.onVisibleDiffFileContentChanged(event => {
+                void this.refreshVisibleWorkingTreeDiffs(
+                    event.branch,
+                    event.affectedPaths,
+                    event.traceId,
+                    event.observedAt,
+                );
+            }),
             this.commitController.onCommitsLoadingChanged(loading => {
                 this.setLoading(loading, loading ? '正在加载历史提交列表...' : undefined);
                 if (loading) { this.postLoadingProgress('commit', '正在加载历史提交列表...', 0, 0); }
@@ -356,6 +369,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     async selectCommit(hash: string, repositoryPath?: string): Promise<void> {
         const generation = ++this.commitFilesGeneration;
+        this.updateVisibleDiffPaths([]);
         this.pendingFilesRevealGeneration = undefined;
         // 先废弃在途请求的数据: 推进各 generation 使回程结果被丢弃; abort 只做通知不阻塞。
         this.commitFilesAbortController?.abort();
@@ -560,6 +574,26 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
     }
 
+    // 记录 Webview 当前可视的 Diff 卡片路径, 下发给 watcher 作为工作区 **/* 事件的过滤白名单。
+    // 语义约定: 这里不按卡片类型 (staged/unstaged/untracked) 过滤, 所有可视卡片一律纳入,
+    //   类型差异统一交由 refreshVisibleWorkingTreeDiffs -> DiffReader.readDiffs 按 workingTreeKind 正确读取。
+    // 回归警示: 不要在此重新加入 currentHash / workingTreeKind !== 'staged' / files.some(...) 之类过滤,
+    //   否则 staged 卡片会被挡在 watcher 白名单外, 导致可视集合与实际卡片不一致。
+    private updateVisibleDiffPaths(paths: readonly string[]): void {
+        const selectedBranch = this.commitController.selectedCommit?.gitBranchOption;
+        const validPaths = [...paths];
+        console.log('[Gitk][VisibleDiffPerformance] updateVisibleDiffPaths:', {
+            currentHash: this.currentHash,
+            hasBranch: !!selectedBranch,
+            incoming: paths,
+            valid: validPaths,
+            fileKinds: this.files.map(file => `${file instanceof DiffPayload ? 'diff' : 'plain'}:${file.workingTreeKind ?? '-'}:${file.path}`),
+        });
+        this.visibleDiffGeneration++;
+        this.visibleDiffPaths = new Set(validPaths);
+        this.uncommittedFilesWatcher.setVisibleDiffPaths(selectedBranch?.repoOption.path, validPaths);
+    }
+
     /** 文件内容变化不改变未提交状态，仅替换当前虚拟提交中受影响路径的 Diff 负载。 */
     private onWorkingTreeFileContentChanged(
         branch: GitBranchOption,
@@ -569,7 +603,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (selectedCommit?.hash !== 'uncommitted'
             || selectedCommit.gitBranchOption?.repoOption.path !== branch.repoOption.path
             || selectedCommit.gitBranchOption.hash !== branch.hash) { return; }
-        void this.refreshWorkingTreeDiffs(branch, affectedPaths);
+        // 内容事件覆盖两类来源: 工作区内容变化(unstaged/untracked) 与 index 内容变化(staged, 由 git add/reset 触发)。
+        // 不能再用 visibleDiffPaths 排除可视路径: 工作区快通道(visibleDiffContentEmitter)只处理工作区文件变化,
+        //   index 变化不经过它, 若在此排除可视路径, 可视的 staged 卡片在 git add 后将无人重读而漏刷新。
+        // refreshWorkingTreeDiffs 用 DiffReader 按 workingTreeKind 正确读取(staged 读 index), 覆盖可视路径也语义正确,
+        //   diffGeneration 门禁保证与快通道的偶发重复刷新不会相互覆盖。
+        if (affectedPaths.length > 0) { void this.refreshWorkingTreeDiffs(branch, affectedPaths); }
     }
 
     /** 内容事件只读取并替换已展示的目标 Diff，不重建文件清单或 Commit Panel。 */
@@ -599,6 +638,50 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             diffError: undefined,
             diffProgress: { completed: nextFiles.length, total: nextFiles.length },
         });
+    }
+
+    // 可视 Diff 卡片对应的工作区文件发生变化时, 只重读受影响路径的 Diff 内容, 不触碰未提交状态本身。
+    // 读取必须走 DiffReader.readDiffs('uncommitted') 而非手写 fs.readFile: 它按 workingTreeKind 分流,
+    //   staged 读 index (`:path`), unstaged 读工作区, untracked 左侧空。
+    // 关键语义 (回归警示):
+    //   staged 卡片右侧是 index 内容, 编辑工作区文件不会改变 index, 因此重读结果与旧值相同、卡片"看不到变化"是正确行为;
+    //   staged 真正的刷新时机是 git add/reset 引起的 .git/index 变化, 由 indexWatcher 走全量 status 通道处理, 不归本快通道。
+    //   严禁为了让 staged "看起来会刷新"而改成读工作区正文, 那会把 HEAD↔index 的 diff 篡改成 HEAD↔工作区, 语义错误。
+    private async refreshVisibleWorkingTreeDiffs(
+        branch: GitBranchOption,
+        affectedPaths: readonly string[],
+        traceId: string,
+        observedAt: number,
+    ): Promise<void> {
+        const paths = affectedPaths.filter(filePath => this.visibleDiffPaths.has(filePath));
+        if (paths.length === 0) { return; }
+        const pathSet = new Set(paths);
+        const files = this.files.filter((file): file is DiffPayload =>
+            file instanceof DiffPayload && pathSet.has(file.path),
+        );
+        if (files.length === 0) { return; }
+        const generation = ++this.visibleDiffGeneration;
+        const rootUri = vscode.Uri.parse(branch.repoOption.path);
+        const refreshed = await this.diffReader.readDiffs(rootUri, 'uncommitted', files, 'uncommitted');
+        console.log(`[Gitk][VisibleDiffPerformance][${traceId}] diff read complete: +${Date.now() - observedAt}ms`);
+        if (generation !== this.visibleDiffGeneration
+            || this.currentHash !== 'uncommitted'
+            || this.currentRepositoryPath !== branch.repoOption.path
+            || this.commitController.selectedCommit?.gitBranchOption?.hash !== branch.hash
+            || paths.some(filePath => !this.visibleDiffPaths.has(filePath))) { return; }
+        const refreshedByKey = new Map(refreshed.map(file => [file.diffKey || file.path, file]));
+        const nextFiles = this.files.map((file, index) => {
+            const refreshedFile = refreshedByKey.get(file.diffKey || file.path);
+            return refreshedFile ? new DiffPayload({ ...refreshedFile, index }) : file;
+        });
+        this.visibleDiffPerformanceTrace = { id: traceId, startedAt: observedAt, paths };
+        store.setState({
+            files: nextFiles,
+            diffLoading: false,
+            diffError: undefined,
+            diffProgress: { completed: nextFiles.length, total: nextFiles.length },
+        });
+        console.log(`[Gitk][VisibleDiffPerformance][${traceId}] store updated: +${Date.now() - observedAt}ms`);
     }
 
     private onWorkingTreeChangesChanged(
