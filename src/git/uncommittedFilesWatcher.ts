@@ -339,16 +339,20 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         slot: RepositoryRefreshSlot,
         signal: AbortSignal,
     ): Promise<void> {
+        const paths = new Set<string>();
+        const workspaceContentPaths = new Set<string>();
+        let fullRefresh = false;
+        let reconcileIndex = false;
         try {
             const rootUri = vscode.Uri.parse(repositoryPath);
             const previous = this.changesByRepository.get(repositoryPath)?.get(branch.hash);
-            const paths = slot.pendingPaths ?? new Set<string>();
+            slot.pendingPaths?.forEach(filePath => paths.add(filePath));
             slot.pendingPaths = undefined;
-            const workspaceContentPaths = slot.pendingWorkspaceContentPaths ?? new Set<string>();
+            slot.pendingWorkspaceContentPaths?.forEach(filePath => workspaceContentPaths.add(filePath));
             slot.pendingWorkspaceContentPaths = undefined;
-            const fullRefresh = slot.fullRefreshPending;
+            fullRefresh = slot.fullRefreshPending;
             slot.fullRefreshPending = false;
-            const reconcileIndex = slot.indexRefreshPending;
+            reconcileIndex = slot.indexRefreshPending;
             slot.indexRefreshPending = false;
             let currentIndexChangedPaths: Set<string> | undefined;
             if (reconcileIndex || !previous || fullRefresh) {
@@ -394,7 +398,19 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             changesByHash.set(branch.hash, changes);
             this.changesByRepository.set(repositoryPath, changesByHash);
             this.changesEmitter.fire({ branch, changes: copyChanges(changes), affectedPaths });
-        } catch (error) {
+        } catch (error: any) {
+            if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') {
+                const pendingPaths = slot.pendingPaths ?? new Set<string>();
+                paths.forEach(filePath => pendingPaths.add(filePath));
+                slot.pendingPaths = pendingPaths;
+                const pendingWorkspaceContentPaths = slot.pendingWorkspaceContentPaths ?? new Set<string>();
+                workspaceContentPaths.forEach(filePath => pendingWorkspaceContentPaths.add(filePath));
+                slot.pendingWorkspaceContentPaths = pendingWorkspaceContentPaths;
+                slot.fullRefreshPending ||= fullRefresh;
+                slot.indexRefreshPending ||= reconcileIndex;
+                slot.needsRefresh = true;
+                throw error;
+            }
             console.warn(`无法读取未提交文件: ${repositoryPath}`, error);
         }
     }
