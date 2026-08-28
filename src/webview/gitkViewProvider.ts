@@ -53,6 +53,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private readonly commitMessageBeforeAmendByRepo = new Map<string, string>();
     private readonly commitCommittingByRepo = new Set<string>();
     private readonly diffReader: DiffReader;
+    // 方案B 预读: 进入工作区虚拟行时后台把 staged 与 unstaged 两套 Diff 都读出来缓存, 切换时零等待、不进 loading。
+    // 必须用独立 reader: 主 diffReader.stop() 会在切换/重读时被调用, 若共用会把预读子进程一并 kill。
+    private readonly prewarmDiffReader: DiffReader = new DiffReader();
+    // 跨切换持久缓存, key = diffKey('staged:path' / 'unstaged:path'), 同时容纳两套视图。
+    private readonly workingTreeDiffCache = new Map<string, DiffPayload>();
+    // 缓存所属上下文 = 仓库路径 + HEAD hash; 上下文变化(切分支/新提交/换仓库)即整体失效。
+    private workingTreeDiffCacheContext?: string;
+    // 预读代次门禁: 上下文变化或新一轮切换推进代次, 使在途预读结果被丢弃。
+    private prewarmGeneration = 0;
     private visibleDiffGeneration = 0;
     private visibleDiffPaths = new Set<string>();
     private readonly gitActions: GitActionRunner;
@@ -403,6 +412,47 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    // 缓存上下文键: 仓库 + HEAD hash。切分支 / 新提交 / 换仓库都会改变它, 使旧的两套 Diff 缓存整体失效。
+    private computeWorkingTreeCacheContext(branch: GitBranchOption): string {
+        return `${branch.repoOption.path}\u0000${branch.hash}`;
+    }
+
+    // 若上下文变化则清空缓存并推进预读代次(丢弃在途预读结果), 保证 staged/unstaged 两套缓存始终属于同一 HEAD。
+    private ensureWorkingTreeCacheContext(context: string): void {
+        if (this.workingTreeDiffCacheContext === context) { return; }
+        this.workingTreeDiffCacheContext = context;
+        this.workingTreeDiffCache.clear();
+        this.prewarmGeneration++;
+    }
+
+    // 受影响路径的两套缓存(staged+unstaged)一并失效。工作区文件无 objectId, equals 看不见内容变化,
+    //   故失效只能靠 affectedPaths 精准驱动, 不能依赖 CommitFile.equals。
+    private invalidateWorkingTreeDiffCache(affectedPaths: ReadonlySet<string>): void {
+        for (const filePath of affectedPaths) {
+            this.workingTreeDiffCache.delete(`staged:${filePath}`);
+            this.workingTreeDiffCache.delete(`unstaged:${filePath}`);
+        }
+    }
+
+    // 预读: 后台把"当前未展示的另一套视图"缺失的文件读出来填缓存, 切换到该视图时即命中、不进 loading。
+    // 用独立 prewarmDiffReader, 不受主 reader 的 stop() 影响。
+    private prewarmWorkingTreeDiffs(
+        rootUri: vscode.Uri,
+        context: string,
+        otherFiles: readonly CommitFile[],
+    ): void {
+        const missing = otherFiles.filter(file => !this.workingTreeDiffCache.has(file.diffKey || file.path));
+        if (missing.length === 0) { return; }
+        const generation = this.prewarmGeneration;
+        void this.prewarmDiffReader.readDiffs(rootUri, 'uncommitted', [...missing], 'uncommitted').then(payloads => {
+            // 门禁: 预读期间上下文未变(仓库/HEAD 未切、缓存未整体失效)才允许落地, 否则丢弃。
+            if (generation !== this.prewarmGeneration || context !== this.workingTreeDiffCacheContext) { return; }
+            for (const payload of payloads) {
+                this.workingTreeDiffCache.set(payload.diffKey || payload.path, payload);
+            }
+        }, () => { /* 预读失败不影响主流程, 切换时会按需重读 */ });
+    }
+
     private async selectWorkingTreeChanges(
         changes?: { staged: ChangedFile[]; changes: ChangedFile[] },
         showLoading = true,
@@ -455,36 +505,45 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
         const previousSelectedFile = this.files.find(file => (file.diffKey || file.path) === this.selectedPath);
         const rootUri = vscode.Uri.parse(selectedBranch.repoOption.path);
-        const previousDiffs = new Map(this.files
-            .filter((file): file is DiffPayload => file instanceof DiffPayload)
-            .map(file => [file.diffKey || file.path, file]));
+        // 方案B: 复用来源改为跨切换持久缓存(而非仅当前视图 this.files)。
+        // 先按上下文做整体失效, 再按 affectedPaths 精准失效, 命中缓存的文件不再重读、不进 loading。
+        const context = this.computeWorkingTreeCacheContext(selectedBranch);
+        this.ensureWorkingTreeCacheContext(context);
+        if (affectedPaths && affectedPaths.size > 0) { this.invalidateWorkingTreeDiffCache(affectedPaths); }
         const isAffected = (file: CommitFile) => affectedPaths?.has(file.path) || (!!file.oldPath && affectedPaths?.has(file.oldPath));
         const filesToRead = files.filter(file => {
-            const previous = previousDiffs.get(file.diffKey || file.path);
-            return !previous || isAffected(file) || !file.equals(previous);
+            const key = file.diffKey || file.path;
+            return !this.workingTreeDiffCache.has(key) || isAffected(file);
         });
         this.diffReader.stop();
         store.setState({ diffGeneration: store.getState().diffGeneration + 1 });
         const readDiffs = filesToRead.length > 0
             ? await this.diffReader.readDiffs(rootUri, 'uncommitted', filesToRead, 'uncommitted')
             : [];
-        const readDiffsByKey = new Map(readDiffs.map(file => [file.diffKey || file.path, file]));
-        const diffs = files.map((file, index) => {
-            const key = file.diffKey || file.path;
-            const payload = readDiffsByKey.get(key) ?? previousDiffs.get(key);
-            return new DiffPayload({ ...payload, ...file, index });
-        });
         if (generation !== this.commitFilesGeneration
             || !isWorkingTreeHash(this.currentHash)
-            || this.currentRepositoryPath !== selectedBranch.repoOption.path) { return; }
+            || this.currentRepositoryPath !== selectedBranch.repoOption.path
+            || context !== this.workingTreeDiffCacheContext) { return; }
+        // 读到的结果写回缓存, 供后续切换/预读命中。
+        for (const payload of readDiffs) {
+            this.workingTreeDiffCache.set(payload.diffKey || payload.path, payload);
+        }
+        const diffs = files.map((file, index) => {
+            const key = file.diffKey || file.path;
+            const payload = this.workingTreeDiffCache.get(key);
+            return new DiffPayload({ ...payload, ...file, index });
+        });
         const selectedFile = diffs.find(file => (file.diffKey || file.path) === this.selectedPath)
             ?? diffs.find(file => file.path === previousSelectedFile?.path)
             ?? diffs[0];
         const selectedFilePath = selectedFile?.diffKey || selectedFile?.path;
-        this.pendingFilesRevealGeneration = showLoading && diffs.length > 0 ? generation : undefined;
+        // 方案B: 全部命中缓存(无需重读)时数据已就绪, 列表立即显示、不进 loading, 也不必等 Diff 渲染完成信号;
+        //   编辑器仍照常异步更新。只有真正重读了内容才走"等渲染完成再放行列表"的原逻辑。
+        const allCached = filesToRead.length === 0;
+        this.pendingFilesRevealGeneration = showLoading && !allCached && diffs.length > 0 ? generation : undefined;
         store.setState({
             files: diffs,
-            filesLoading: showLoading && diffs.length > 0,
+            filesLoading: showLoading && !allCached && diffs.length > 0,
             diffLoading: false,
             diffError: undefined,
             diffProgress: { completed: diffs.length, total: diffs.length },
@@ -493,6 +552,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (this.commitPanel.isVisible()) {
             this.commitPanel.update(this.buildCommitSnapshot());
         }
+        // 方案B: 当前视图就位后, 后台预读"另一套"视图填缓存, 使反向切换零等待。
+        const otherFiles = selectedHash === 'staged' ? unstaged : staged;
+        this.prewarmWorkingTreeDiffs(rootUri, context, otherFiles);
         if (diffs.length === 0) {
             // 面板已打开时保留并展示空态("暂无变更文件"), 不 dispose; 面板未开则不弹出。
             if (this.multiDiffPanel.isOpen()) {
@@ -517,6 +579,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.commitFilesAbortController?.abort();
         this.refreshAbortController = undefined;
         this.commitFilesAbortController = undefined;
+        // 方案B: 终止在途预读并推进代次, 使回程预读结果被丢弃。
+        this.prewarmDiffReader.stop();
+        this.prewarmGeneration++;
     }
 
     /** 请求仓库扫描；首轮由控制器自行初始化，其后只做重扫。 */
@@ -624,6 +689,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     /** 内容事件只读取并替换已展示的目标 Diff，不重建文件清单或 Commit Panel。 */
     private async refreshWorkingTreeDiffs(branch: GitBranchOption, affectedPaths: readonly string[]): Promise<void> {
         const paths = new Set(affectedPaths);
+        // 方案B: 内容变化通道不经过 selectWorkingTreeChanges, 需在此让受影响路径的两套缓存失效;
+        //   当前视图会重读回填, 未展示的另一套失效后切回时重读, 避免另一套显示过期内容。
+        this.invalidateWorkingTreeDiffCache(paths);
         const files = this.files.filter((file): file is DiffPayload =>
             file instanceof DiffPayload && (paths.has(file.path) || (!!file.oldPath && paths.has(file.oldPath))),
         );
@@ -645,6 +713,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     //   的门禁语义不同, 但落地写回完全一致, 统一在此避免结构改动时两处漏改。
     private applyRefreshedDiffs(refreshed: readonly DiffPayload[]): void {
         const refreshedByKey = new Map(refreshed.map(file => [file.diffKey || file.path, file]));
+        // 方案B: 重读到的最新内容同步写回持久缓存, 否则切走再切回会命中过期缓存显示旧内容。
+        for (const payload of refreshed) {
+            this.workingTreeDiffCache.set(payload.diffKey || payload.path, payload);
+        }
         const nextFiles = this.files.map((file, index) => {
             const refreshedFile = refreshedByKey.get(file.diffKey || file.path);
             return refreshedFile ? new DiffPayload({ ...refreshedFile, index }) : file;
