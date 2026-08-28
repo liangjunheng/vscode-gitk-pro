@@ -272,6 +272,13 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .meta-line{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .meta-rename-from{color:var(--vscode-gitDecoration-deletedResourceForeground)}
 .meta-rename-to{color:var(--vscode-gitDecoration-addedResourceForeground)}
+.gitlink-label{display:inline-block;margin-left:6px;padding:1px 5px;border:1px solid var(--vscode-badge-background,var(--vscode-widget-border));border-radius:3px;color:var(--vscode-badge-foreground,var(--vscode-descriptionForeground));font-size:10px;font-weight:400;line-height:14px;vertical-align:middle}
+.meta-gitlink{color:var(--vscode-foreground)}
+.gitlink-commits{padding:4px 0;background:var(--vscode-editor-background)}
+.gitlink-commit{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px;padding:7px 10px;border-bottom:1px solid var(--vscode-editorWidget-border,var(--vscode-panel-border));font-family:var(--vscode-editor-font-family,monospace);line-height:1.45}
+.gitlink-commit:last-child{border-bottom:0}
+.gitlink-commit-hash{color:var(--vscode-textLink-foreground);white-space:nowrap}
+.gitlink-commit-message{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
 .diff-body{border-radius:0 0 calc(var(--card-radius) - var(--card-border)) calc(var(--card-radius) - var(--card-border));overflow:hidden}
 .diff.collapsed>.diff-body{display:none}
 .editor{position:relative;width:100%;min-width:0;height:80px}
@@ -459,7 +466,13 @@ function workingTreeKindHtml(kind){
   if(kind==='unstaged')return '<span class="working-tree-kind working-tree-kind-unstaged" title="Unstaged：未暂存" aria-label="Unstaged：未暂存"><svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="6.25"/><path d="M9 5.25v4.5M9 12.4v.1" stroke-width="2"/></svg></span>';
   return '';
 }
-function headerHtml(diff){const chevron='<svg class="diff-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 5.5 5 5 5-5"/></svg>';const kind=workingTreeKindHtml(diff.workingTreeKind);const stats='<span class="line-stats"><span class="line-stat-added"></span><span class="line-stat-removed"></span></span>';const renamed=diff.status==='R'&&diff.oldPath&&diff.oldPath!==diff.path;const leftPath=renamed?diff.oldPath:diff.path;const left=chevron+kind+stats+statusHtml(diff.status)+pathHtml(leftPath,diff.status==='D'||renamed);if(!renamed)return '<span class="title-side title-side-left">'+left+'</span>';return '<span class="title-side title-side-left">'+left+'</span><span class="title-side title-side-right">'+statusHtml(diff.status)+pathHtml(diff.path,false)+'</span>'}
+function gitlinkLabelHtml(){return '<span class="gitlink-label" title="Submodule commit update">Submodule</span>'}
+function gitlinkBodyHtml(diff){
+  const commits=diff.gitlinkRangeCommits&&diff.gitlinkRangeCommits.length?diff.gitlinkRangeCommits:(diff.newGitlinkCommit?[diff.newGitlinkCommit]:[]);
+  if(!commits.length)return '<div class="empty">没有可显示的子模块提交。</div>';
+  return '<div class="gitlink-commits">'+commits.map(function(commit){return '<div class="gitlink-commit"><span class="gitlink-commit-hash" title="'+escapeHtml(commit.hash)+'">'+escapeHtml(commit.shortHash||String(commit.hash||'').slice(0,7))+'</span><span class="gitlink-commit-message">'+escapeHtml(commit.message||commit.subject||'')+'</span></div>'}).join('')+'</div>';
+}
+function headerHtml(diff){const chevron='<svg class="diff-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 5.5 5 5 5-5"/></svg>';const kind=workingTreeKindHtml(diff.workingTreeKind);const stats='<span class="line-stats"><span class="line-stat-added"></span><span class="line-stat-removed"></span></span>';const gitlink=diff.isGitlink?gitlinkLabelHtml():'';const renamed=diff.status==='R'&&diff.oldPath&&diff.oldPath!==diff.path;const leftPath=renamed?diff.oldPath:diff.path;const left=gitlink+chevron+kind+stats+statusHtml(diff.status)+pathHtml(leftPath,diff.status==='D'||renamed);if(!renamed)return '<span class="title-side title-side-left">'+left+'</span>';return '<span class="title-side title-side-left">'+left+'</span><span class="title-side title-side-right">'+statusHtml(diff.status)+pathHtml(diff.path,false)+'</span>'}
 // 对象 id 按 git 惯例截断到 7 位; 全 0 表示该侧不存在(新增或删除)。
 function shortObjectId(id){const value=String(id==null?'':id);return value?value.slice(0,7):'0000000'}
 // 标题栏下方的元信息: index <old>..<new> <mode>, 以及重命名的来源与目标。
@@ -537,6 +550,9 @@ function createCardShell(diff,order,parent){
     try{window.gitkVscode.postMessage({type:'openFileAtLine',path:diff.path})}catch(_){}
   });
   cards.push(entry);cardByPath.set(key,entry);
+  if(diff.isGitlink){
+    body.innerHTML=gitlinkBodyHtml(diff);entry.staticContent=true;return entry;
+  }
   if(diff.error||diff.isBinary){
     const message=document.createElement('div');message.className='empty';
     message.textContent=diff.error?('无法读取此文件：'+diff.error):'二进制文件不同，无法显示文本差异。';

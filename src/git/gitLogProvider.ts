@@ -718,7 +718,16 @@ function parseRawStatus(output: string): CommitFile[] {
         const oldPath = code === 'R' || code === 'C' ? firstPath : undefined;
         const path = oldPath ? fields[index++] : firstPath;
         if (!path) { continue; }
-        files.push(new CommitFile({ path, oldPath, status: porcelainStatus(code), oldObjectId, newObjectId, oldMode, newMode }));
+        files.push(new CommitFile({
+            path,
+            oldPath,
+            status: porcelainStatus(code),
+            oldObjectId,
+            newObjectId,
+            oldMode,
+            newMode,
+            isGitlink: oldMode === '160000' || newMode === '160000',
+        }));
     }
     return files;
 }

@@ -155,6 +155,13 @@ export class GitBranchOption {
     }
 }
 
+export interface GitlinkCommit {
+    hash: string;
+    shortHash: string;
+    subject?: string;
+    message?: string;
+}
+
 export class CommitFile {
     path = '';
     status: FileStatus = 'M';
@@ -163,6 +170,10 @@ export class CommitFile {
     newObjectId?: string;
     oldMode?: string;
     newMode?: string;
+    isGitlink?: boolean;
+    oldGitlinkCommit?: GitlinkCommit;
+    newGitlinkCommit?: GitlinkCommit;
+    gitlinkRangeCommits?: GitlinkCommit[];
     isBinary?: boolean;
     isUntracked?: boolean;
     workingTreeKind?: 'untracked' | 'unstaged' | 'staged';
@@ -180,6 +191,20 @@ export class CommitFile {
             && this.newObjectId === other.newObjectId
             && this.oldMode === other.oldMode
             && this.newMode === other.newMode
+            && this.isGitlink === other.isGitlink
+            && this.oldGitlinkCommit?.hash === other.oldGitlinkCommit?.hash
+            && this.oldGitlinkCommit?.shortHash === other.oldGitlinkCommit?.shortHash
+            && this.oldGitlinkCommit?.subject === other.oldGitlinkCommit?.subject
+            && this.oldGitlinkCommit?.message === other.oldGitlinkCommit?.message
+            && this.newGitlinkCommit?.hash === other.newGitlinkCommit?.hash
+            && this.newGitlinkCommit?.shortHash === other.newGitlinkCommit?.shortHash
+            && this.newGitlinkCommit?.subject === other.newGitlinkCommit?.subject
+            && this.newGitlinkCommit?.message === other.newGitlinkCommit?.message
+            && this.gitlinkRangeCommits?.length === other.gitlinkRangeCommits?.length
+            && this.gitlinkRangeCommits?.every((commit, index) => commit.hash === other.gitlinkRangeCommits?.[index]?.hash
+                && commit.shortHash === other.gitlinkRangeCommits[index]?.shortHash
+                && commit.subject === other.gitlinkRangeCommits[index]?.subject
+                && commit.message === other.gitlinkRangeCommits[index]?.message) !== false
             && this.isBinary === other.isBinary
             && this.isUntracked === other.isUntracked
             && this.workingTreeKind === other.workingTreeKind

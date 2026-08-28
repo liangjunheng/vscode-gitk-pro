@@ -70,7 +70,7 @@ export class DiffReader {
         onProgress: (completed: number) => void,
     ): Promise<DiffPayload[]> {
         const objects = files.flatMap(file => {
-            if (file.isBinary) { return []; }
+            if (file.isBinary || file.isGitlink) { return []; }
             const refs: string[] = [];
             if (file.status !== 'A') { refs.push(`${hash}^:${file.oldPath || file.path}`); }
             if (file.status !== 'D') { refs.push(`${hash}:${file.path}`); }
@@ -81,7 +81,7 @@ export class DiffReader {
             if (!isCurrent()) { return; }
             while (nextFile < files.length) {
                 const file = files[nextFile];
-                const required = file.isBinary ? [] : [
+                const required = file.isBinary || file.isGitlink ? [] : [
                     ...(file.status !== 'A' ? [`${hash}^:${file.oldPath || file.path}`] : []),
                     ...(file.status !== 'D' ? [`${hash}:${file.path}`] : []),
                 ];
@@ -116,12 +116,23 @@ export class DiffReader {
         }
         const objects: string[] = [];
         for (const file of files) {
-            if (file.isBinary) { continue; }
+            if (file.isBinary || file.isGitlink) { continue; }
             if (file.status !== 'A') { objects.push(`${hash}^:${file.oldPath || file.path}`); }
             if (file.status !== 'D') { objects.push(`${hash}:${file.path}`); }
         }
         const contents = await this.readGitObjects(rootUri, objects);
         return this.createCommitPayloads(rootUri, hash, files, contents, indexOffset);
+    }
+
+    private createGitlinkText(commit: CommitFile['oldGitlinkCommit'] | undefined, objectId: string | undefined): string {
+        const hash = commit?.shortHash || objectId?.slice(0, 7);
+        return hash ? `Submodule commit ${hash}${commit?.message ? `\n\n${commit.message}` : ''}` : '';
+    }
+
+    private createGitlinkRangeText(commits: readonly NonNullable<CommitFile['gitlinkRangeCommits']>[number][], fallback: CommitFile['newGitlinkCommit'] | undefined, objectId: string | undefined): string {
+        const range = commits.length > 0 ? commits : (fallback ? [fallback] : []);
+        if (range.length === 0) { return this.createGitlinkText(undefined, objectId); }
+        return range.map(commit => this.createGitlinkText(commit, commit.hash)).join('\n\n');
     }
 
     private createCommitPayloads(
@@ -132,6 +143,28 @@ export class DiffReader {
         indexOffset = 0,
     ): DiffPayload[] {
         return files.map((file, index) => {
+            if (file.isGitlink) {
+                return new DiffPayload({
+                    index: index + indexOffset,
+                    path: file.path,
+                    fullPath: path.join(rootUri.fsPath, file.path),
+                    oldPath: file.oldPath,
+                    status: file.status,
+                    oldObjectId: file.oldObjectId,
+                    newObjectId: file.newObjectId,
+                    oldMode: file.oldMode,
+                    newMode: file.newMode,
+                    isGitlink: true,
+                    oldGitlinkCommit: file.oldGitlinkCommit,
+                    newGitlinkCommit: file.newGitlinkCommit,
+                    gitlinkRangeCommits: file.gitlinkRangeCommits,
+                    isUntracked: file.isUntracked,
+                    workingTreeKind: file.workingTreeKind,
+                    diffKey: file.diffKey,
+                    original: file.status === 'A' ? '' : this.createGitlinkText(file.oldGitlinkCommit, file.oldObjectId),
+                    modified: file.status === 'D' ? '' : this.createGitlinkRangeText(file.gitlinkRangeCommits ?? [], file.newGitlinkCommit, file.newObjectId),
+                });
+            }
             const originalObject = file.isBinary || file.status === 'A' ? undefined : `${hash}^:${file.oldPath || file.path}`;
             const modifiedObject = file.isBinary || file.status === 'D' ? undefined : `${hash}:${file.path}`;
             const original = originalObject ? contents.get(originalObject) : '';
@@ -151,12 +184,34 @@ export class DiffReader {
         const originalRef = (file: CommitFile) => readsIndex(file) ? 'HEAD' : '';
         const objects: string[] = [];
         for (const file of files) {
-            if (file.isBinary) { continue; }
+            if (file.isBinary || file.isGitlink) { continue; }
             if (file.status !== 'A') { objects.push(`${originalRef(file)}:${file.oldPath || file.path}`); }
             if (readsIndex(file) && file.status !== 'D') { objects.push(`:${file.path}`); }
         }
         const contents = await this.readGitObjects(rootUri, objects);
         return Promise.all(files.map(async (file, index) => {
+            if (file.isGitlink) {
+                return new DiffPayload({
+                    index: index + indexOffset,
+                    path: file.path,
+                    fullPath: path.join(rootUri.fsPath, file.path),
+                    oldPath: file.oldPath,
+                    status: file.status,
+                    oldObjectId: file.oldObjectId,
+                    newObjectId: file.newObjectId,
+                    oldMode: file.oldMode,
+                    newMode: file.newMode,
+                    isGitlink: true,
+                    oldGitlinkCommit: file.oldGitlinkCommit,
+                    newGitlinkCommit: file.newGitlinkCommit,
+                    gitlinkRangeCommits: file.gitlinkRangeCommits,
+                    isUntracked: file.isUntracked,
+                    workingTreeKind: file.workingTreeKind,
+                    diffKey: file.diffKey,
+                    original: file.status === 'A' ? '' : this.createGitlinkText(file.oldGitlinkCommit, file.oldObjectId),
+                    modified: file.status === 'D' ? '' : this.createGitlinkRangeText(file.gitlinkRangeCommits ?? [], file.newGitlinkCommit, file.newObjectId),
+                });
+            }
             const fromIndex = readsIndex(file);
             const originalObject = file.isBinary || file.status === 'A' ? undefined : `${originalRef(file)}:${file.oldPath || file.path}`;
             const modifiedObject = file.isBinary || file.status === 'D' || !fromIndex ? undefined : `:${file.path}`;

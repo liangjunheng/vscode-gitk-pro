@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { type ChangeSetMode, type ChangedFile, type GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, WorkingTreeChanges, isWorkingTreeHash } from '../types';
+import { type ChangeSetMode, type ChangedFile, type GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
 import { getCommitFiles, runGitCommand, runGitReadCommand, readCommitHistoryMessages, readCurrentCommitMessage } from '../git/gitLogProvider';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { CommitPanel, type CommitPanelSnapshot, type CommitCard } from './commitPanel';
@@ -1532,6 +1532,43 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    private async readGitlinkCommitSubjects(rootUri: vscode.Uri, files: CommitFile[]): Promise<void> {
+        const gitlinkFiles = files.filter(file => file.isGitlink);
+        await Promise.all(gitlinkFiles.map(async file => {
+            const submodule = this.repoSubmoduleWatcher.findSubmoduleRepository(rootUri.toString(), file.path);
+            if (!submodule) { return; }
+            const submoduleUri = vscode.Uri.parse(submodule.path);
+            const hashes = [file.oldObjectId, file.newObjectId].filter((hash): hash is string => Boolean(hash) && !/^0+$/.test(hash));
+            if (hashes.length === 0) { return; }
+            try {
+                const output = await runGitReadCommand(submoduleUri, ['show', '-s', '--format=%H%x1f%h%x1f%B%x1e', ...hashes]);
+                const commits = new Map<string, GitlinkCommit>();
+                for (const record of output.split('\x1e')) {
+                    const [hash, shortHash, message] = record.split('\x1f');
+                    const normalizedMessage = message?.trim();
+                    const subject = normalizedMessage?.split(/\r?\n/).find(line => line.trim().length > 0)?.trim();
+                    if (hash && shortHash) { commits.set(hash, { hash, shortHash, subject, message: normalizedMessage || undefined }); }
+                }
+                file.oldGitlinkCommit = file.oldObjectId ? commits.get(file.oldObjectId) : undefined;
+                file.newGitlinkCommit = file.newObjectId ? commits.get(file.newObjectId) : undefined;
+                if (file.status !== 'A' && file.status !== 'D' && file.oldObjectId && file.newObjectId) {
+                    await runGitReadCommand(submoduleUri, ['merge-base', '--is-ancestor', file.oldObjectId, file.newObjectId]);
+                    const rangeOutput = await runGitReadCommand(submoduleUri, [
+                        'log', '--format=%H%x1f%h%x1f%B%x1e', `${file.oldObjectId}..${file.newObjectId}`,
+                    ]);
+                    file.gitlinkRangeCommits = rangeOutput.split('\x1e').flatMap(record => {
+                        const [hash, shortHash, message] = record.split('\x1f');
+                        const normalizedMessage = message?.trim();
+                        const subject = normalizedMessage?.split(/\r?\n/).find(line => line.trim().length > 0)?.trim();
+                        return hash && shortHash ? [{ hash, shortHash, subject, message: normalizedMessage || undefined }] : [];
+                    });
+                }
+            } catch {
+                // SHA 仍由父仓库 gitlink 保存；子模块本地缺少对象或两端非线性时仅不显示范围消息。
+            }
+        }));
+    }
+
     private async setCommitFiles(hash: string, repositoryPath: string | undefined, generation: number, signal?: AbortSignal): Promise<void> {
         const rootUri = this.getRepoRootUri(repositoryPath);
         if (!rootUri) {
@@ -1555,6 +1592,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         try {
             // 文件清单与 Diff 正文先在局部完成，Store.files 只接收完整 DiffPayload[]。
             const files = await getCommitFiles(rootUri, hash, signal, reportProgress);
+            if (signal?.aborted || generation !== this.commitFilesGeneration) { return; }
+            await this.readGitlinkCommitSubjects(rootUri, files);
             if (signal?.aborted || generation !== this.commitFilesGeneration) { return; }
             const diffs = files.length > 0
                 ? await this.diffReader.readDiffs(rootUri, hash, files, 'commit')
@@ -1880,6 +1919,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .working-tree-section[data-section="unstaged"] .file-item.untracked .file-name { color: var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c); }
   .file-path { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .file-folder { opacity: 0.55; }
+  .gitlink-label { flex: 0 0 auto; padding: 1px 5px; border: 1px solid var(--vscode-badge-background, var(--vscode-panel-border)); border-radius: 3px; color: var(--vscode-badge-foreground, var(--vscode-descriptionForeground)); font-size: 10px; line-height: 14px; }
   #filesEmpty { padding: 8px 10px; color: var(--vscode-descriptionForeground); }
   #filesEmpty:has(.files-loading-spinner) { display: flex; align-items: center; gap: 7px; }
   .files-loading-spinner { width: 12px; height: 12px; flex: 0 0 auto; border: 2px solid var(--vscode-progressBar-background); border-top-color: transparent; border-radius: 50%; animation: files-loading-spin .8s linear infinite; }
@@ -2771,7 +2811,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
           const lastSlash = file.path.lastIndexOf('/');
           const name = lastSlash >= 0 ? file.path.slice(lastSlash + 1) : file.path;
           html += '<div class="file-item' + (file.path === selectedPath ? ' selected' : '') + '" data-path="' + escapeAttr(file.path) + '" style="padding-left:' + (folder ? 30 : 10) + 'px" title="' + escapeAttr(file.path) + '">';
-          html += '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span><span class="file-path">' + escapeHtml(name) + '</span></div>';
+          html += (file.isGitlink ? '<span class="gitlink-label">Submodule</span>' : '') + '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span><span class="file-path">' + escapeHtml(name) + '</span></div>';
         });
       });
     } else {
@@ -2780,8 +2820,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const folder = lastSlash >= 0 ? file.path.slice(0, lastSlash + 1) : '';
         const name = lastSlash >= 0 ? file.path.slice(lastSlash + 1) : file.path;
         html += '<div class="file-item' + (file.path === selectedPath ? ' selected' : '') + '" data-path="' + escapeAttr(file.path) + '" title="' + escapeAttr(file.path) + '">';
-        html += '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span>';
-        html += '<span class="file-path"><span class="file-name">' + escapeHtml(name) + '</span>' + (folder ? ' <span class="file-folder">' + escapeHtml(folder) + '</span>' : '') + '</span></div>';
+        html += (file.isGitlink ? '<span class="gitlink-label">Submodule</span>' : '') + '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span>';
+        html += '<span class="file-path"><span class="file-name">' + escapeHtml(name) + '</span>' + (folder ? ' <span class="file-folder">' + escapeHtml(folder) + '</span>' : '') + '</span>' + (file.isGitlink ? '<span class="gitlink-label">Submodule</span>' : '') + '</div>';
       }
     }
     list.innerHTML = html;
