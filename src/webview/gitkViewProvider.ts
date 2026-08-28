@@ -1833,9 +1833,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .commit-row.working-tree.disabled { opacity: .5; cursor: default; }
   .commit-row.working-tree.disabled:hover { background: transparent; }
   .working-tree-label { color: var(--vscode-textLink-foreground); font-weight: 600; }
-  /* staged 固定蓝色, unstaged/changes 固定红色; 不用 gitDecoration 变量(部分主题解析为绿色)。 */
-  .working-tree-label--staged { color: var(--vscode-charts-blue, #3794ff); }
-  .working-tree-label--changes { color: var(--vscode-charts-red, #f14c4c); }
+  /* staged 与 unstaged/changes 统一用白色文字。 */
+  .working-tree-label--staged { color: #ffffff; }
+  .working-tree-label--changes { color: #ffffff; }
   .working-tree-count { color: var(--vscode-descriptionForeground); }
   .commit-header > div { position: relative; min-width: 0; padding: 5px 14px 5px 0; overflow: hidden; white-space: nowrap; text-align: left; }
   .commit-header .resize-handle { position: absolute; top: 0; right: 0; width: 7px; height: 100%; cursor: col-resize; }
