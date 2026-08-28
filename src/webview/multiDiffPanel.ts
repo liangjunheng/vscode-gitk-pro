@@ -472,7 +472,7 @@ function gitlinkBodyHtml(diff){
   if(!commits.length)return '<div class="empty">没有可显示的子模块提交。</div>';
   return '<div class="gitlink-commits">'+commits.map(function(commit){return '<div class="gitlink-commit"><span class="gitlink-commit-hash" title="'+escapeHtml(commit.hash)+'">'+escapeHtml(commit.shortHash||String(commit.hash||'').slice(0,7))+'</span><span class="gitlink-commit-message">'+escapeHtml(commit.message||commit.subject||'')+'</span></div>'}).join('')+'</div>';
 }
-function headerHtml(diff){const chevron='<svg class="diff-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 5.5 5 5 5-5"/></svg>';const kind=workingTreeKindHtml(diff.workingTreeKind);const stats='<span class="line-stats"><span class="line-stat-added"></span><span class="line-stat-removed"></span></span>';const gitlink=diff.isGitlink?gitlinkLabelHtml():'';const renamed=diff.status==='R'&&diff.oldPath&&diff.oldPath!==diff.path;const leftPath=renamed?diff.oldPath:diff.path;const left=gitlink+chevron+kind+stats+statusHtml(diff.status)+pathHtml(leftPath,diff.status==='D'||renamed);if(!renamed)return '<span class="title-side title-side-left">'+left+'</span>';return '<span class="title-side title-side-left">'+left+'</span><span class="title-side title-side-right">'+statusHtml(diff.status)+pathHtml(diff.path,false)+'</span>'}
+function headerHtml(diff){const chevron='<svg class="diff-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 5.5 5 5 5-5"/></svg>';const kind=workingTreeKindHtml(diff.workingTreeKind);const stats='<span class="line-stats"><span class="line-stat-added"></span><span class="line-stat-removed"></span></span>';const gitlink=diff.isGitlink?gitlinkLabelHtml():'';const renamed=diff.status==='R'&&diff.oldPath&&diff.oldPath!==diff.path;const leftPath=renamed?diff.oldPath:diff.path;const left=chevron+gitlink+kind+stats+statusHtml(diff.status)+pathHtml(leftPath,diff.status==='D'||renamed);if(!renamed)return '<span class="title-side title-side-left">'+left+'</span>';return '<span class="title-side title-side-left">'+left+'</span><span class="title-side title-side-right">'+statusHtml(diff.status)+pathHtml(diff.path,false)+'</span>'}
 // 对象 id 按 git 惯例截断到 7 位; 全 0 表示该侧不存在(新增或删除)。
 function shortObjectId(id){const value=String(id==null?'':id);return value?value.slice(0,7):'0000000'}
 // 标题栏下方的元信息: index <old>..<new> <mode>, 以及重命名的来源与目标。
@@ -484,6 +484,11 @@ function metaHtml(diff){
     lines.push('<span class="meta-line meta-rename-to" title="'+escapeHtml(diff.path)+'">rename to '+escapeHtml(diff.path)+'</span>');
   }
   const oldId=shortObjectId(diff.oldObjectId),newId=shortObjectId(diff.newObjectId);
+  if(diff.isGitlink){
+    const oldCommit=diff.oldGitlinkCommit,newCommit=diff.newGitlinkCommit;
+    if(diff.status!=='A')lines.push('<span class="meta-line meta-gitlink" title="'+escapeHtml(oldCommit?.hash||diff.oldObjectId||'')+'">Submodule commit '+escapeHtml(oldCommit?.shortHash||oldId)+(oldCommit?.subject?': '+escapeHtml(oldCommit.subject):'')+'</span>');
+    if(diff.status!=='D')lines.push('<span class="meta-line meta-gitlink" title="'+escapeHtml(newCommit?.hash||diff.newObjectId||'')+'">Submodule commit '+escapeHtml(newCommit?.shortHash||newId)+(newCommit?.subject?': '+escapeHtml(newCommit.subject):'')+'</span>');
+  }
   const mode=diff.newMode&&diff.newMode!=='000000'?diff.newMode:(diff.oldMode||'');
   const modeChanged=diff.oldMode&&diff.newMode&&diff.oldMode!==diff.newMode&&diff.oldMode!=='000000'&&diff.newMode!=='000000';
   if(modeChanged){

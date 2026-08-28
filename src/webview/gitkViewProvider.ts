@@ -1556,12 +1556,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     const rangeOutput = await runGitReadCommand(submoduleUri, [
                         'log', '--format=%H%x1f%h%x1f%B%x1e', `${file.oldObjectId}..${file.newObjectId}`,
                     ]);
-                    file.gitlinkRangeCommits = rangeOutput.split('\x1e').flatMap(record => {
+                    const rangeCommits = rangeOutput.split('\x1e').flatMap(record => {
                         const [hash, shortHash, message] = record.split('\x1f');
                         const normalizedMessage = message?.trim();
                         const subject = normalizedMessage?.split(/\r?\n/).find(line => line.trim().length > 0)?.trim();
                         return hash && shortHash ? [{ hash, shortHash, subject, message: normalizedMessage || undefined }] : [];
                     });
+                    file.gitlinkRangeCommits = rangeCommits;
+                    file.newGitlinkCommit = rangeCommits.find(commit => commit.hash === file.newObjectId) ?? file.newGitlinkCommit;
                 }
             } catch {
                 // SHA 仍由父仓库 gitlink 保存；子模块本地缺少对象或两端非线性时仅不显示范围消息。
