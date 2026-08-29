@@ -5,6 +5,7 @@ export interface CommitPanelFile {
     readonly path: string;
     readonly status: string;
     readonly isUntracked?: boolean;
+    readonly isSubmodule?: boolean;
 }
 
 export interface CommitCardRepository {
@@ -18,8 +19,11 @@ export interface CommitCard {
     readonly repositoryPath: string;
     readonly repositoryLabel: string;
     readonly repositoryHasSubmodules: boolean;
+    readonly repositoryIsSubmodule: boolean;
     readonly repositoryAncestry: readonly CommitCardRepository[];
     readonly amend: boolean;
+    readonly committedFiles: readonly CommitPanelFile[];
+    readonly committedFilesLoading: boolean;
     readonly stagedFiles: readonly CommitPanelFile[];
     readonly unstagedFiles: readonly CommitPanelFile[];
     readonly committing: boolean;
@@ -32,6 +36,7 @@ export interface CommitPanelSnapshot {
 
 type CommitPanelCallbacks = {
     readonly onCommit: (repositoryPath: string, message: string, amend: boolean) => void;
+    readonly onPush: (repositoryPaths: readonly string[]) => void;
     readonly onToggleDisplayMode: () => void;
     readonly onToggleAmend: (repositoryPath: string, message: string) => void;
     readonly onHistory: (repositoryPath: string) => void;
@@ -138,6 +143,10 @@ export class CommitPanel implements vscode.Disposable {
             this.callbacks.onCommit(repo, data.message, data.amend);
         } else if (data.type === 'toggleAmend' && repo && typeof data.message === 'string') {
             this.callbacks.onToggleAmend(repo, data.message);
+        } else if (data.type === 'gitSync' && data.action === 'push'
+            && Array.isArray(data.repositoryPaths)
+            && data.repositoryPaths.every(repositoryPath => typeof repositoryPath === 'string')) {
+            this.callbacks.onPush(data.repositoryPaths as string[]);
         } else if (data.type === 'toggleDisplayMode') {
             this.callbacks.onToggleDisplayMode();
         } else if (data.type === 'history' && repo) {
@@ -231,22 +240,31 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .card-body[hidden]{display:none}
 .message-box{display:flex;flex-direction:column;border:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:6px;overflow:hidden}
 .message-input{width:100%;min-height:80px;resize:vertical;border:0;outline:0;padding:10px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);font-family:var(--vscode-editor-font-family);font-size:var(--vscode-editor-font-size);line-height:1.5}
-.actions{display:flex;gap:8px;align-items:center;justify-content:flex-end}
-.hint{margin-right:auto;color:var(--vscode-descriptionForeground);font-size:calc(var(--vscode-font-size) * .9)}
+.actions{display:flex;gap:10px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
+.hint{margin-right:auto;min-width:120px;color:var(--vscode-descriptionForeground);font-size:calc(var(--vscode-font-size) * .9)}
+.action-groups{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.action-group{display:inline-flex;align-items:center;gap:6px;padding:3px 5px;border:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:5px;background:var(--vscode-editorWidget-background)}
+.commit-group{border-color:var(--vscode-button-background)}
+.submodule-group{max-width:100%;overflow:hidden}
+.commit-options{display:inline-flex;align-items:center;gap:8px}
 .history-btn{border:0;padding:6px 8px;background:transparent;color:var(--vscode-icon-foreground);cursor:pointer;display:inline-flex;align-items:center;border-radius:4px}
 .history-btn:hover{background:var(--vscode-toolbar-hoverBackground)}
 .history-btn .codicon{font-size:14px}
-.commit-split{display:inline-flex;border-radius:4px;overflow:hidden}
-.commit-btn{border:0;padding:6px 14px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);cursor:pointer;font:inherit}
-.commit-btn:hover{background:var(--vscode-button-hoverBackground)}
-.commit-btn:disabled{opacity:.5;cursor:default}
-.amend-toggle{border:0;border-left:1px solid var(--vscode-button-separator,rgba(255,255,255,.2));padding:6px 8px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);cursor:pointer;display:inline-flex;align-items:center}
-.amend-toggle:hover{background:var(--vscode-button-hoverBackground)}
-.amend-toggle:disabled{opacity:.5;cursor:default}
-.amend-toggle:disabled:hover{background:var(--vscode-button-background)}
-.amend-toggle .codicon{font-size:12px}
-.amend-toggle.amend{background:color-mix(in srgb,var(--vscode-button-foreground) 22%,var(--vscode-button-background))}
+.submodule-selector{display:inline-flex;align-items:center;gap:8px;max-width:45vw;overflow:auto;white-space:nowrap}
+.submodule-selector .commit-option{font-size:calc(var(--vscode-editor-font-size) * .9)}
+.submodule-selector .submodule-all+span{font-weight:600}
+.submodule-empty-text{color:var(--vscode-descriptionForeground);font-size:calc(var(--vscode-editor-font-size) * .85)}
+.commit-option{display:inline-flex;align-items:center;gap:4px;color:var(--vscode-foreground);font-size:var(--vscode-editor-font-size);cursor:pointer;user-select:none}
+.commit-option input{margin:0;accent-color:var(--vscode-button-background)}
+.commit-option input:disabled+span{opacity:.5}
+.commit-btn,.push-btn{border:0;border-radius:5px;padding:6px 14px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);cursor:pointer;font:inherit}
+.commit-btn:hover,.push-btn:hover{background:var(--vscode-button-hoverBackground)}
+.commit-btn:disabled,.push-btn:disabled{opacity:1;cursor:pointer}
+.commit-option input:disabled{cursor:default}
+.commit-option input:disabled+span{cursor:default}
 .section{display:flex;flex-direction:column;border:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:6px;overflow:hidden}
+.section[hidden]{display:none}
+.section.committed .file-row{cursor:default}
 .section-title{display:flex;align-items:center;justify-content:space-between;padding:5px 10px;background:var(--vscode-editorWidget-background);font-weight:600;font-size:calc(var(--vscode-font-size) * .95)}
 .section-title.collapsible{cursor:pointer;user-select:none}
 .section-title .left{display:flex;align-items:center;gap:4px}
@@ -256,7 +274,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .file-row,.folder-row{display:flex;align-items:center;gap:6px;padding:3px 10px}
 .file-row:hover,.folder-row:hover{background:var(--vscode-list-hoverBackground)}
 .file-row .status{width:14px;text-align:center;color:var(--vscode-gitDecoration-modifiedResourceForeground)}
-.file-row .path{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-row .path{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:calc(var(--vscode-editor-font-size) * .9)}
 .file-row .file-folder{opacity:.55}
 .file-row.staged .file-name{color:var(--vscode-gitDecoration-addedResourceForeground,#73c991)}
 .file-row.unstaged .file-name{color:var(--vscode-textLink-foreground,#3794ff)}
@@ -286,6 +304,8 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
   const collapsedFolders=new Set();
   let selectedRepositoryPath='';
   let displayMode='flat';
+  let currentCards=[];
+  const selectedSubmodules=new Set();
 
   function selectCard(repositoryPath){
     selectedRepositoryPath=repositoryPath;
@@ -293,6 +313,48 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
   }
 
   function statusLabel(file){return file.isUntracked?'U':(file.status||'M').slice(0,1).toUpperCase()}
+  function syncSelectedSubmoduleMessages(sourceRepo,message){
+    cardEls.forEach(function(card,repositoryPath){
+      if(repositoryPath===sourceRepo)return;
+      const cardData=card._card;
+      if(!cardData||!cardData.stagedFiles.some(function(file){return file.isSubmodule===true}))return;
+      const selected=cardData.stagedFiles.some(function(file){return file.isSubmodule===true&&selectedSubmodules.has(repositoryPath+'\0'+file.path)});
+      if(selected)card._refs.messageInput.value=message;
+    });
+  }
+  function updatePushSelector(el,card){
+    const selector=el.querySelector('.submodule-selector');
+    selector.hidden=!card.repositoryHasSubmodules;
+    const submodules=currentCards.filter(function(item){return item.repositoryIsSubmodule&&item.stagedFiles.length>0});
+    selector.replaceChildren();
+    if(!submodules.length){
+      const empty=document.createElement('label');empty.className='commit-option submodule-empty';
+      empty.innerHTML='<input class="submodule-all" type="checkbox" disabled><span>Submodule</span><span class="submodule-empty-text">暂无子模块变更</span>';
+      selector.appendChild(empty);
+      return;
+    }
+    const all=document.createElement('label');all.className='commit-option';
+    all.innerHTML='<input class="submodule-all" type="checkbox"><span>Submodule</span>';
+    const allInput=all.querySelector('input');
+    const items=submodules.map(function(submodule){
+      const label=document.createElement('label');label.className='commit-option';
+      label.innerHTML='<input class="submodule-item" type="checkbox"><span></span>';
+      label.querySelector('span').textContent=submodule.repositoryLabel;
+      label.querySelector('input').checked=selectedSubmodules.has(submodule.repositoryPath);
+      label.querySelector('input').dataset.path=submodule.repositoryPath;
+      label.querySelector('input').addEventListener('change',function(){
+        if(this.checked)selectedSubmodules.add(submodule.repositoryPath);else selectedSubmodules.delete(submodule.repositoryPath);
+        allInput.checked=items.every(function(input){return input.checked});
+        allInput.indeterminate=!allInput.checked&&items.some(function(input){return input.checked});
+      });
+      return label.querySelector('input');
+    });
+    allInput.checked=items.length>0&&items.every(function(input){return input.checked});
+    allInput.indeterminate=!allInput.checked&&items.some(function(input){return input.checked});
+    allInput.addEventListener('change',function(){items.forEach(function(input){input.checked=allInput.checked;input.dispatchEvent(new Event('change'))})});
+    selector.appendChild(all);
+    items.forEach(function(input){selector.appendChild(input.parentElement)});
+  }
 
   function actionButton(action,section,path,icon,title){
     const button=document.createElement('button');
@@ -342,7 +404,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     actions.className='row-actions';
     if(section==='staged'){
       actions.appendChild(actionButton('unstage',section,file.path,'remove','取消暂存'));
-    }else{
+    }else if(section==='unstaged'){
       actions.appendChild(actionButton('discard',section,file.path,'discard','放弃更改'));
       actions.appendChild(actionButton('stage',section,file.path,'add','暂存'));
     }
@@ -404,23 +466,40 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
         '<div class="message-box">'+
           '<textarea class="message-input" placeholder="输入提交信息…" spellcheck="false"></textarea>'+
         '</div>'+
-        '<div class="section staged"><div class="section-title"><span class="left"><span>Staged Changes</span><span class="section-count-badge staged-count" hidden></span></span><span class="section-actions staged-actions"><button class="icon-btn display-mode-btn" title="切换树状/平铺显示"><span class="codicon codicon-list-tree"></span></button><button class="icon-btn staged-all" data-action="unstage" data-section="staged" title="取消暂存所有文件"><span class="codicon codicon-remove"></span></button></span></div><div class="staged-list"></div></div>'+
         '<div class="section unstaged"><div class="section-title collapsible"><span class="left"><span class="codicon codicon-chevron-down unstaged-chevron"></span><span>Unstaged Changes</span><span class="section-count-badge unstaged-count" hidden></span></span><span class="section-actions unstaged-actions"><button class="icon-btn discard-all" data-action="discard" data-section="unstaged" title="还原所有文件"><span class="codicon codicon-discard"></span></button><button class="icon-btn stage-all" data-action="stage" data-section="unstaged" title="暂存所有文件"><span class="codicon codicon-add"></span></button></span></div><div class="unstaged-list"></div></div>'+
+        '<div class="section staged"><div class="section-title collapsible"><span class="left"><span class="codicon codicon-chevron-down staged-chevron"></span><span>Staged Changes</span><span class="section-count-badge staged-count" hidden></span></span><span class="section-actions staged-actions"><button class="icon-btn display-mode-btn" title="切换树状/平铺显示"><span class="codicon codicon-list-tree"></span></button><button class="icon-btn staged-all" data-action="unstage" data-section="staged" title="取消暂存所有文件"><span class="codicon codicon-remove"></span></button></span></div><div class="staged-list"></div></div>'+
+        '<div class="section committed" hidden><div class="section-title collapsible"><span class="left"><span class="codicon codicon-chevron-down committed-chevron"></span><span>Committed Changes</span><span class="section-count-badge committed-count" hidden></span></span></div><div class="committed-list"></div></div>'+
         '<div class="actions">'+
           '<span class="hint"></span>'+
           '<button class="history-btn" title="历史提交信息"><span class="codicon codicon-history"></span></button>'+
-          '<span class="commit-split"><button class="commit-btn">Commit</button><button class="amend-toggle" title="切换到 Commit (Amend)"><span class="codicon codicon-arrow-swap"></span></button></span>'+
+          '<div class="action-groups">'+
+            '<span class="action-group commit-group">'+
+              '<label class="commit-option"><input class="amend-checkbox" type="checkbox"><span>Amend</span></label>'+
+              '<button class="commit-btn">Commit</button>'+
+            '</span>'+
+            '<span class="action-group submodule-group">'+
+              '<span class="submodule-selector"></span>'+
+              '<button class="push-btn">Push</button>'+
+            '</span>'+
+          '</div>'+
         '</div>'+
       '</div>';
-    const state={unstagedOpen:true};
+    const state={unstagedOpen:true,stagedOpen:true,committedOpen:true};
     const messageInput=el.querySelector('.message-input');
     const commitBtn=el.querySelector('.commit-btn');
-    const amendToggle=el.querySelector('.amend-toggle');
+    const pushBtn=el.querySelector('.push-btn');
+    const amendCheckbox=el.querySelector('.amend-checkbox');
     const historyBtn=el.querySelector('.history-btn');
     const hint=el.querySelector('.hint');
-    const unstagedTitle=el.querySelector('.section-title.collapsible');
+    const unstagedTitle=el.querySelector('.section.unstaged .section-title');
     const unstagedList=el.querySelector('.unstaged-list');
     const unstagedChevron=el.querySelector('.unstaged-chevron');
+    const stagedTitle=el.querySelector('.section.staged .section-title');
+    const stagedList=el.querySelector('.staged-list');
+    const stagedChevron=el.querySelector('.staged-chevron');
+    const committedTitle=el.querySelector('.section.committed .section-title');
+    const committedList=el.querySelector('.committed-list');
+    const committedChevron=el.querySelector('.committed-chevron');
     const cardHeader=el.querySelector('.card-header');
     const cardChevron=el.querySelector('.card-chevron');
     const cardBody=el.querySelector('.card-body');
@@ -435,7 +514,10 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
       cardChevron.className='codicon codicon-chevron-'+(state.cardCollapsed?'right':'down')+' card-chevron';
     });
 
-    amendToggle.addEventListener('click',function(){vscode.postMessage({type:'toggleAmend',repositoryPath:repo,message:messageInput.value})});
+    amendCheckbox.addEventListener('change',function(){vscode.postMessage({type:'toggleAmend',repositoryPath:repo,message:messageInput.value})});
+    pushBtn.addEventListener('click',function(){
+      vscode.postMessage({type:'gitSync',action:'push',repositoryPaths:Array.from(selectedSubmodules)});
+    });
     historyBtn.addEventListener('click',function(){vscode.postMessage({type:'history',repositoryPath:repo})});
     el.querySelector('.display-mode-btn').addEventListener('click',function(event){
       event.stopPropagation();
@@ -460,19 +542,25 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
       if(!message){hint.textContent='提交信息不能为空';messageInput.focus();return}
       vscode.postMessage({type:'commit',repositoryPath:repo,message:messageInput.value,amend:el._amend===true});
     });
-    messageInput.addEventListener('input',function(){hint.textContent=''});
+    messageInput.addEventListener('input',function(){hint.textContent='';syncSelectedSubmoduleMessages(repo,messageInput.value)});
     messageInput.addEventListener('keydown',function(event){
       if((event.ctrlKey||event.metaKey)&&event.key==='Enter'){event.preventDefault();commitBtn.click()}
     });
-    unstagedTitle.addEventListener('click',function(){
-      state.unstagedOpen=!state.unstagedOpen;
-      unstagedList.hidden=!state.unstagedOpen;
-      unstagedChevron.className='codicon codicon-chevron-'+(state.unstagedOpen?'down':'right')+' unstaged-chevron';
-    });
+    function bindSection(title,list,chevron,key){
+      title.addEventListener('click',function(event){
+        event.stopPropagation();
+        state[key]=!state[key];
+        list.hidden=!state[key];
+        chevron.className='codicon codicon-chevron-'+(state[key]?'down':'right')+' '+key.replace('Open','')+'-chevron';
+      });
+    }
+    bindSection(unstagedTitle,unstagedList,unstagedChevron,'unstagedOpen');
+    bindSection(stagedTitle,stagedList,stagedChevron,'stagedOpen');
+    bindSection(committedTitle,committedList,committedChevron,'committedOpen');
 
     state.cardCollapsed=false;
     el._state=state;
-    el._refs={messageInput,commitBtn,amendToggle,hint,unstagedList,cardChevron,cardBody,cardHeader};
+    el._refs={messageInput,commitBtn,pushBtn,amendCheckbox,hint,unstagedList,stagedList,committedList,unstagedChevron,stagedChevron,committedChevron,cardChevron,cardBody,cardHeader};
     return el;
   }
 
@@ -544,18 +632,16 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     const refs=el._refs;
     el.classList.toggle('selected-card',el.dataset.repo===selectedRepositoryPath);
     const isEmpty=card.stagedFiles.length===0&&card.unstagedFiles.length===0;
-    refs.amendToggle.classList.toggle('amend',card.amend);
-    refs.commitBtn.textContent=card.amend?'Commit (Amend)':'Commit';
-    // 没有任何暂存内容时禁用提交与其旁的 amend 切换按钮。
-    const disableCommit=card.committing||card.stagedFiles.length===0;
+    refs.amendCheckbox.checked=card.amend;
+    refs.amendCheckbox.disabled=false;
+    refs.commitBtn.textContent=card.amend?'Amend':'Commit';
+    const disableCommit=card.committing;
     refs.commitBtn.disabled=disableCommit;
-    refs.amendToggle.disabled=disableCommit;
-    refs.hint.textContent=card.committing?'正在提交…':(card.stagedFiles.length?'':'没有已暂存的更改');
-    // 空仓库可折叠且每次刷新强制折叠(不持久化用户展开态); 非空仓库强制展开且不可折叠。
+    refs.pushBtn.disabled=false;
+    refs.hint.textContent=card.committing?'正在提交…':(isEmpty?'变更文件为空，无需提交':'');
     el._collapsible=isEmpty;
     el.querySelector('.card-empty-tag').textContent=isEmpty?'无更改':'';
     el.classList.toggle('collapsible-card',isEmpty);
-    el._state.cardCollapsed=isEmpty;
     refs.cardBody.hidden=el._state.cardCollapsed;
     el.classList.toggle('collapsed',el._state.cardCollapsed);
     refs.cardChevron.hidden=!isEmpty;
@@ -571,6 +657,21 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     updateRepositoryStatusBadge('.unstaged-header-count','Unstaged',unstagedHeaderCount);
     updateRepositoryStatusBadge('.staged-header-count','Staged',card.stagedFiles.length);
     const stagedList=el.querySelector('.staged-list');
+    const committedSection=el.querySelector('.section.committed');
+    const committedList=el.querySelector('.committed-list');
+    const committedCount=el.querySelector('.committed-count');
+    committedSection.hidden=!card.amend;
+    if(card.amend){
+      committedCount.textContent=card.committedFiles.length?String(card.committedFiles.length):'';
+      committedCount.hidden=card.committedFiles.length===0;
+      if(card.committedFilesLoading){
+        committedList.innerHTML='<div class="empty">正在加载当前提交的文件…</div>';
+      }else{
+        renderFileList(committedList,card.committedFiles,'committed',el.dataset.repo);
+      }
+      committedList.hidden=!el._state.committedOpen;
+      refs.committedChevron.className='codicon codicon-chevron-'+(el._state.committedOpen?'down':'right')+' committed-chevron';
+    }
     const unstagedList=el.querySelector('.unstaged-list');
     const stagedCount=el.querySelector('.staged-count');
     stagedCount.textContent=card.stagedFiles.length?String(card.stagedFiles.length):'';
@@ -586,11 +687,19 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     displayModeButton.querySelector('.codicon').className='codicon codicon-'+(displayMode==='tree'?'list-flat':'list-tree');
     renderFileList(stagedList,card.stagedFiles,'staged',el.dataset.repo);
     renderFileList(unstagedList,card.unstagedFiles,'unstaged',el.dataset.repo);
+    stagedList.hidden=!el._state.stagedOpen;
+    unstagedList.hidden=!el._state.unstagedOpen;
+    refs.stagedChevron.className='codicon codicon-chevron-'+(el._state.stagedOpen?'down':'right')+' staged-chevron';
+    refs.unstagedChevron.className='codicon codicon-chevron-'+(el._state.unstagedOpen?'down':'right')+' unstaged-chevron';
+    updatePushSelector(el,card);
     bindRowActions(stagedList,el.dataset.repo,card);
     bindRowActions(unstagedList,el.dataset.repo,card);
   }
 
   function render(cards){
+    currentCards=cards;
+    const validSubmodules=new Set(cards.filter(function(card){return card.repositoryIsSubmodule&&card.stagedFiles.length>0}).map(function(card){return card.repositoryPath}));
+    selectedSubmodules.forEach(function(repositoryPath){if(!validSubmodules.has(repositoryPath))selectedSubmodules.delete(repositoryPath)});
     if(!cards.length){
       app.innerHTML='<div class="no-repos">没有可提交的仓库</div>';
       cardEls.clear();

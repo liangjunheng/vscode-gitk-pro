@@ -51,6 +51,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     // 每仓库独立的 amend / committing 状态 (多卡片各自提交)。
     private readonly commitAmendByRepo = new Map<string, boolean>();
     private readonly commitMessageBeforeAmendByRepo = new Map<string, string>();
+    private readonly amendCommittedFilesByHead = new Map<string, readonly CommitFile[]>();
+    private readonly amendCommittedFilesLoading = new Set<string>();
     private readonly commitCommittingByRepo = new Set<string>();
     private readonly diffReader: DiffReader;
     // 方案B 预读: 进入工作区虚拟行时后台把 staged 与 unstaged 两套 Diff 都读出来缓存, 切换时零等待、不进 loading。
@@ -237,6 +239,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.reposLoadingSubscription = this.repoController.onReposLoadingChanged(loading => {
             this.reposLoadingSnapshot = loading;
             this.view?.webview.postMessage({ type: 'repoLoadingChanged', loading });
+            if (!loading) { void this.refreshPendingGitlinkDiff(); }
         });
         this.branchesController = new GitBranchesController(
             this.repoController,
@@ -261,6 +264,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         );
         this.commitPanel = new CommitPanel({
             onCommit: (repositoryPath, message, amend) => void this.runCommit(repositoryPath, message, amend),
+            onPush: repositoryPaths => void this.runCommitPanelPush(repositoryPaths),
             onToggleDisplayMode: () => this.dispatchIntent({ type: 'toggleFilesMode' }),
             onToggleAmend: (repositoryPath, message) => void this.toggleCommitAmend(repositoryPath, message),
             onHistory: repositoryPath => void this.pickCommitHistoryMessage(repositoryPath),
@@ -1256,16 +1260,26 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     /** 从扩展层多仓库 Store 组装卡片; 模板为重开销, 展开时懒加载。 */
     private buildCommitSnapshot(): CommitPanelSnapshot {
-        const cards = store.getState().commitRepositories.map(repo => ({
-            repositoryPath: repo.repositoryPath,
-            repositoryLabel: repo.repositoryLabel,
-            repositoryHasSubmodules: Boolean(repo.repository.hasSubmodules),
-            repositoryAncestry: repo.repository.ancestry,
-            amend: this.commitAmendByRepo.get(repo.repositoryPath) === true,
-            stagedFiles: repo.staged.map(file => ({ path: file.path, status: file.status, isUntracked: file.isUntracked })),
-            unstagedFiles: repo.unstaged.map(file => ({ path: file.path, status: file.status, isUntracked: file.isUntracked })),
-            committing: this.commitCommittingByRepo.has(repo.repositoryPath),
-        } satisfies CommitCard));
+        const currentBranchesByPath = new Map(this.uncommittedFilesWatcher.listCurrentHeadBranches()
+            .map(branch => [branch.repoOption.path, branch]));
+        const cards = store.getState().commitRepositories.map(repo => {
+            const amend = this.commitAmendByRepo.get(repo.repositoryPath) === true;
+            const headKey = `${repo.repositoryPath}\u0000${currentBranchesByPath.get(repo.repositoryPath)?.hash ?? ''}`;
+            const committedFiles = amend ? this.amendCommittedFilesByHead.get(headKey) ?? [] : [];
+            return {
+                repositoryPath: repo.repositoryPath,
+                repositoryLabel: repo.repositoryLabel,
+                repositoryHasSubmodules: Boolean(repo.repository.hasSubmodules),
+                repositoryIsSubmodule: repo.repository.description === 'subrepo',
+                repositoryAncestry: repo.repository.ancestry,
+                amend,
+                committedFiles: committedFiles.map(file => ({ path: file.path, status: file.status, isUntracked: file.isUntracked, isSubmodule: file.isGitlink || file.oldMode === '160000' || file.newMode === '160000' })),
+                committedFilesLoading: amend && this.amendCommittedFilesLoading.has(headKey),
+                stagedFiles: repo.staged.map(file => ({ path: file.path, status: file.status, isUntracked: file.isUntracked, isSubmodule: file.oldMode === '160000' || file.newMode === '160000' })),
+                unstagedFiles: repo.unstaged.map(file => ({ path: file.path, status: file.status, isUntracked: file.isUntracked })),
+                committing: this.commitCommittingByRepo.has(repo.repositoryPath),
+            } satisfies CommitCard;
+        });
         return { cards, displayMode: store.getState().displayMode };
     }
 
@@ -1276,6 +1290,29 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.commitPanel.update(this.buildCommitSnapshot());
     }
 
+    private async loadAmendCommittedFiles(repositoryPath: string): Promise<void> {
+        const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+            .find(currentBranch => currentBranch.repoOption.path === repositoryPath);
+        if (!branch) { return; }
+        const key = `${repositoryPath}\u0000${branch.hash}`;
+        if (this.amendCommittedFilesByHead.has(key) || this.amendCommittedFilesLoading.has(key)) { return; }
+        const rootUri = this.getRepoRootUri(repositoryPath);
+        if (!rootUri) { return; }
+        this.amendCommittedFilesLoading.add(key);
+        await this.refreshCommitPanel();
+        try {
+            const files = await getCommitFiles(rootUri, branch.hash);
+            const currentBranch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+                .find(currentBranch => currentBranch.repoOption.path === repositoryPath);
+            if (this.commitAmendByRepo.get(repositoryPath) === true && currentBranch?.hash === branch.hash) {
+                this.amendCommittedFilesByHead.set(key, files);
+            }
+        } finally {
+            this.amendCommittedFilesLoading.delete(key);
+            await this.refreshCommitPanel();
+        }
+    }
+
     private async toggleCommitAmend(repositoryPath: string, message: string): Promise<void> {
         // 由宿主权威状态翻转该仓库的 amend, 不接收 webview 传来的目标值。
         const amend = !(this.commitAmendByRepo.get(repositoryPath) === true);
@@ -1284,6 +1321,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
         this.commitAmendByRepo.set(repositoryPath, amend);
         await this.refreshCommitPanel();
+        if (amend) { void this.loadAmendCommittedFiles(repositoryPath); }
         const rootUri = this.getRepoRootUri(repositoryPath);
         if (!rootUri) { return; }
         const nextMessage = amend
@@ -1313,7 +1351,18 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (picked) { this.commitPanel.setMessage(repositoryPath, picked.message); }
     }
 
+    private async runCommitPanelPush(repositoryPaths: readonly string[]): Promise<void> {
+        for (const repositoryPath of repositoryPaths) {
+            await this.gitActions.syncRepository('push', repositoryPath);
+        }
+    }
+
     private async runCommit(repositoryPath: string, message: string, amend: boolean): Promise<void> {
+        const repositoryState = store.getState().commitRepositories.find(repository => repository.repositoryPath === repositoryPath);
+        if (!repositoryState || (repositoryState.staged.length === 0 && repositoryState.unstaged.length === 0)) {
+            void vscode.window.showInformationMessage('变更文件为空，无需提交');
+            return;
+        }
         const rootUri = this.getRepoRootUri(repositoryPath);
         if (!rootUri || this.commitCommittingByRepo.has(repositoryPath)) { return; }
         this.commitCommittingByRepo.add(repositoryPath);
@@ -1536,7 +1585,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const gitlinkFiles = files.filter(file => file.isGitlink);
         await Promise.all(gitlinkFiles.map(async file => {
             const submodule = this.repoSubmoduleWatcher.findSubmoduleRepository(rootUri.toString(), file.path);
-            if (!submodule) { return; }
+            if (!submodule) {
+                file.gitlinkScanPending = this.repoSubmoduleWatcher.isLoading;
+                return;
+            }
+            file.gitlinkScanPending = false;
             const submoduleUri = vscode.Uri.parse(submodule.path);
             const hashes = [file.oldObjectId, file.newObjectId].filter((hash): hash is string => Boolean(hash) && !/^0+$/.test(hash));
             if (hashes.length === 0) { return; }
@@ -1569,6 +1622,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 // SHA 仍由父仓库 gitlink 保存；子模块本地缺少对象或两端非线性时仅不显示范围消息。
             }
         }));
+    }
+
+    private async refreshPendingGitlinkDiff(): Promise<void> {
+        if (!this.currentHash || !this.selectedRepositoryPath) { return; }
+        const hasPending = store.getState().files.some(file => file.isGitlink && file.gitlinkScanPending);
+        if (!hasPending) { return; }
+        await this.selectCommit(this.currentHash, this.selectedRepositoryPath);
     }
 
     private async setCommitFiles(hash: string, repositoryPath: string | undefined, generation: number, signal?: AbortSignal): Promise<void> {

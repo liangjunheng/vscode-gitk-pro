@@ -279,6 +279,9 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .gitlink-commit:last-child{border-bottom:0}
 .gitlink-commit-hash{color:var(--vscode-textLink-foreground);white-space:nowrap}
 .gitlink-commit-message{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
+@keyframes gitlink-loading-spin{to{transform:rotate(360deg)}}
+.gitlink-loading{display:inline-flex;align-items:center;justify-content:center;gap:8px}
+.gitlink-loading-spinner{width:13px;height:13px;border:2px solid var(--vscode-descriptionForeground);border-top-color:var(--vscode-focusBorder);border-radius:50%;animation:gitlink-loading-spin .8s linear infinite}
 .diff-body{border-radius:0 0 calc(var(--card-radius) - var(--card-border)) calc(var(--card-radius) - var(--card-border));overflow:hidden}
 .diff.collapsed>.diff-body{display:none}
 .editor{position:relative;width:100%;min-width:0;height:80px}
@@ -468,6 +471,7 @@ function workingTreeKindHtml(kind){
 }
 function gitlinkLabelHtml(){return '<span class="gitlink-label" title="Submodule commit update">Submodule</span>'}
 function gitlinkBodyHtml(diff){
+  if(diff.gitlinkScanPending)return '<div class="empty gitlink-loading"><span class="gitlink-loading-spinner" aria-hidden="true"></span><span>正在扫描子模块提交…</span></div>';
   const commits=diff.gitlinkRangeCommits&&diff.gitlinkRangeCommits.length?diff.gitlinkRangeCommits:(diff.newGitlinkCommit?[diff.newGitlinkCommit]:[]);
   if(!commits.length)return '<div class="empty">没有可显示的子模块提交。</div>';
   return '<div class="gitlink-commits">'+commits.map(function(commit){return '<div class="gitlink-commit"><span class="gitlink-commit-hash" title="'+escapeHtml(commit.hash)+'">'+escapeHtml(commit.shortHash||String(commit.hash||'').slice(0,7))+'</span><span class="gitlink-commit-message">'+escapeHtml(commit.message||commit.subject||'')+'</span></div>'}).join('')+'</div>';

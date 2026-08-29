@@ -174,6 +174,7 @@ export class CommitFile {
     oldGitlinkCommit?: GitlinkCommit;
     newGitlinkCommit?: GitlinkCommit;
     gitlinkRangeCommits?: GitlinkCommit[];
+    gitlinkScanPending?: boolean;
     isBinary?: boolean;
     isUntracked?: boolean;
     workingTreeKind?: 'untracked' | 'unstaged' | 'staged';
@@ -201,6 +202,7 @@ export class CommitFile {
             && this.newGitlinkCommit?.subject === other.newGitlinkCommit?.subject
             && this.newGitlinkCommit?.message === other.newGitlinkCommit?.message
             && this.gitlinkRangeCommits?.length === other.gitlinkRangeCommits?.length
+            && this.gitlinkScanPending === other.gitlinkScanPending
             && this.gitlinkRangeCommits?.every((commit, index) => commit.hash === other.gitlinkRangeCommits?.[index]?.hash
                 && commit.shortHash === other.gitlinkRangeCommits[index]?.shortHash
                 && commit.subject === other.gitlinkRangeCommits[index]?.subject
