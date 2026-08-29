@@ -20,6 +20,7 @@ export interface CommitCard {
     readonly repositoryLabel: string;
     readonly repositoryHasSubmodules: boolean;
     readonly repositoryIsSubmodule: boolean;
+    readonly repositoryParentPath?: string;
     readonly repositoryAncestry: readonly CommitCardRepository[];
     readonly amend: boolean;
     readonly committedFiles: readonly CommitPanelFile[];
@@ -212,7 +213,7 @@ export class CommitPanel implements vscode.Disposable {
 /* 与 MultiDiff 一致: 偏暗背板 + 卡片浮起, 视觉统一。 */
 body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-editor-background) 50%, #000);color:var(--vscode-editor-foreground);font-family:var(--vscode-editor-font-family);font-size:var(--vscode-editor-font-size)}
 #app{width:100%;padding:8px}
-.card{position:relative;width:100%;margin:0 0 14px;display:flex;flex-direction:column;border:var(--card-border) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:var(--card-radius);background:var(--vscode-editor-background);box-shadow:0 1px 4px rgba(0,0,0,.08);overflow:hidden}
+.card{position:relative;width:100%;margin:0 0 14px;display:flex;flex-direction:column;border:var(--card-border) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:var(--card-radius);background:var(--vscode-editor-background);box-shadow:0 1px 4px rgba(0,0,0,.08);overflow:visible}
 /* 卡片标题吸顶, 与 MultiDiff 的 file-header 行为一致。 */
 .card-header{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--header-surface);font-weight:600;border-bottom:var(--card-border) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:var(--card-radius) var(--card-radius) 0 0;box-shadow:0 1px 3px rgba(0,0,0,.18)}
 .repo-label{white-space:nowrap}
@@ -245,15 +246,31 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .action-groups{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .action-group{display:inline-flex;align-items:center;gap:6px;padding:3px 5px;border:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:5px;background:var(--vscode-editorWidget-background)}
 .commit-group{border-color:var(--vscode-button-background)}
-.submodule-group{max-width:100%;overflow:hidden}
+.submodule-group{max-width:100%;overflow:visible;margin-left:2px;padding-left:10px;border-left:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border))}
 .commit-options{display:inline-flex;align-items:center;gap:8px}
-.history-btn{border:0;padding:6px 8px;background:transparent;color:var(--vscode-icon-foreground);cursor:pointer;display:inline-flex;align-items:center;border-radius:4px}
+.history-btn{box-sizing:border-box;height:calc(1em + 12px);border:0;padding:0 8px;background:transparent;color:var(--vscode-icon-foreground);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;border-radius:4px;font:inherit}
 .history-btn:hover{background:var(--vscode-toolbar-hoverBackground)}
 .history-btn .codicon{font-size:14px}
-.submodule-selector{display:inline-flex;align-items:center;gap:8px;max-width:45vw;overflow:auto;white-space:nowrap}
-.submodule-selector .commit-option{font-size:calc(var(--vscode-editor-font-size) * .9)}
-.submodule-selector .submodule-all+span{font-weight:600}
-.submodule-empty-text{color:var(--vscode-descriptionForeground);font-size:calc(var(--vscode-editor-font-size) * .85)}
+.submodule-selector{position:relative;display:inline-flex;align-items:center}
+/* 这里位于外层 HTML 模板字符串内，内嵌脚本的反斜杠必须保留。 */
+.submodule-selector-btn{display:inline-flex;align-items:center;justify-content:space-between;gap:5px;min-width:7em;border:1px solid var(--vscode-dropdown-border,var(--vscode-widget-border));border-radius:2px;padding:5px 8px;background:var(--vscode-dropdown-background,var(--vscode-editorWidget-background));color:var(--vscode-dropdown-foreground,var(--vscode-foreground));cursor:pointer;font:inherit}
+.submodule-selector-btn:hover{background:var(--vscode-list-hoverBackground)}
+.submodule-selector-btn:disabled{opacity:.55;cursor:default}
+.submodule-selector-chevron{font-size:12px;transition:transform .12s ease}
+.submodule-selector-btn[aria-expanded="true"] .submodule-selector-chevron{transform:rotate(180deg)}
+.submodule-dropdown{position:absolute;right:0;top:calc(100% + 4px);z-index:1000;display:flex;flex-direction:column;min-width:280px;max-width:min(480px,calc(100vw - 24px));max-height:min(420px,calc(100vh - 24px));padding:6px;background:var(--vscode-menu-background,var(--vscode-editorWidget-background));border:1px solid var(--vscode-menu-border,var(--vscode-widget-border));border-radius:2px;box-shadow:0 4px 12px rgba(0,0,0,.3)}
+.submodule-dropdown[hidden]{display:none}
+.submodule-dropdown-title{padding:5px 8px;color:var(--vscode-menu-foreground,var(--vscode-foreground));font-weight:600}
+.submodule-dropdown-filter{width:100%;box-sizing:border-box;margin:2px 0 6px;padding:5px 7px;border:1px solid var(--vscode-input-border,var(--vscode-widget-border));outline:0;background:var(--vscode-input-background);color:var(--vscode-input-foreground);font:inherit}
+.submodule-dropdown-filter:focus{border-color:var(--vscode-focusBorder)}
+.submodule-dropdown-options{min-height:24px;overflow:auto}
+.submodule-dropdown-option{display:flex;align-items:center;gap:7px;padding:5px 8px;color:var(--vscode-menu-foreground,var(--vscode-foreground));cursor:pointer}
+.submodule-dropdown-option:hover{background:var(--vscode-menu-selectionBackground,var(--vscode-list-hoverBackground));color:var(--vscode-menu-selectionForeground,var(--vscode-foreground))}
+.submodule-dropdown-option input{margin:0;accent-color:var(--vscode-checkbox-background,var(--vscode-button-background))}
+.submodule-dropdown-empty{padding:7px 8px;color:var(--vscode-descriptionForeground);font-size:calc(var(--vscode-editor-font-size) * .9)}
+.submodule-dropdown-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px;padding:6px 8px 2px;border-top:1px solid var(--vscode-menu-separatorBackground,var(--vscode-widget-border))}
+.submodule-dropdown-action{border:0;border-radius:2px;padding:4px 9px;background:transparent;color:var(--vscode-menu-foreground,var(--vscode-foreground));cursor:pointer;font:inherit}
+.submodule-dropdown-action:hover{background:var(--vscode-menu-selectionBackground,var(--vscode-list-hoverBackground));color:var(--vscode-menu-selectionForeground,var(--vscode-foreground))}
 .commit-option{display:inline-flex;align-items:center;gap:4px;color:var(--vscode-foreground);font-size:var(--vscode-editor-font-size);cursor:pointer;user-select:none}
 .commit-option input{margin:0;accent-color:var(--vscode-button-background)}
 .commit-option input:disabled+span{opacity:.5}
@@ -305,7 +322,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
   let selectedRepositoryPath='';
   let displayMode='flat';
   let currentCards=[];
-  const selectedSubmodules=new Set();
+  const selectedSubmodulesByParent=new Map();
 
   function selectCard(repositoryPath){
     selectedRepositoryPath=repositoryPath;
@@ -314,46 +331,89 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 
   function statusLabel(file){return file.isUntracked?'U':(file.status||'M').slice(0,1).toUpperCase()}
   function syncSelectedSubmoduleMessages(sourceRepo,message){
-    cardEls.forEach(function(card,repositoryPath){
-      if(repositoryPath===sourceRepo)return;
-      const cardData=card._card;
-      if(!cardData||!cardData.stagedFiles.some(function(file){return file.isSubmodule===true}))return;
-      const selected=cardData.stagedFiles.some(function(file){return file.isSubmodule===true&&selectedSubmodules.has(repositoryPath+'\0'+file.path)});
-      if(selected)card._refs.messageInput.value=message;
+    const selected=selectedSubmodulesByParent.get(sourceRepo)||new Set();
+    currentCards.forEach(function(cardData){
+      if(cardData.repositoryParentPath===sourceRepo&&selected.has(cardData.repositoryPath)){
+        const card=cardEls.get(cardData.repositoryPath);
+        if(card)card._refs.messageInput.value=message;
+      }
     });
   }
   function updatePushSelector(el,card){
+    const group=el.querySelector('.submodule-group');
+    group.style.display=card.repositoryHasSubmodules?'inline-flex':'none';
     const selector=el.querySelector('.submodule-selector');
     selector.hidden=!card.repositoryHasSubmodules;
-    const submodules=currentCards.filter(function(item){return item.repositoryIsSubmodule&&item.stagedFiles.length>0});
+    const submodules=currentCards.filter(function(item){return item.repositoryIsSubmodule&&item.repositoryParentPath===card.repositoryPath&&item.stagedFiles.length>0});
+    // 弹窗结构：selector > button + dropdown > options；重建前必须释放文档级监听器。
+    if(selector._disposeDropdown)selector._disposeDropdown();
     selector.replaceChildren();
+    const dropdown=document.createElement('div');
+    dropdown.className='submodule-dropdown';
+    dropdown.hidden=true;
+    dropdown.innerHTML='<div class="submodule-dropdown-title">选择要推送的子模块</div><input class="submodule-dropdown-filter" type="search" placeholder="筛选子模块…"><div class="submodule-dropdown-options"></div><div class="submodule-dropdown-actions"><label class="submodule-dropdown-option"><input class="submodule-all" type="checkbox"><span>全选</span></label><span><button class="submodule-dropdown-action submodule-confirm">确定</button><button class="submodule-dropdown-action submodule-cancel">取消</button></span></div>';
+    const selectorButton=document.createElement('button');
+    selectorButton.className='submodule-selector-btn';
+    selectorButton.type='button';
+    selectorButton.innerHTML='<span class="submodule-selector-label">Submodule</span><span class="codicon codicon-chevron-down submodule-selector-chevron"></span>';
+    selectorButton.setAttribute('aria-haspopup','true');
+    selectorButton.setAttribute('aria-expanded','false');
+    selector.appendChild(selectorButton);
+    selector.appendChild(dropdown);
+    const dropdownList=dropdown.querySelector('.submodule-dropdown-options');
+    const filterInput=dropdown.querySelector('.submodule-dropdown-filter');
+    const allInput=dropdown.querySelector('.submodule-all');
+    const confirmButton=dropdown.querySelector('.submodule-confirm');
+    const cancelButton=dropdown.querySelector('.submodule-cancel');
+    let draft=new Set();
+    function closeDropdown(commit){
+      if(commit){selectedSubmodulesByParent.set(card.repositoryPath,new Set(draft));syncSelectedSubmoduleMessages(card.repositoryPath,el._refs.messageInput.value)}
+      dropdown.hidden=true;selectorButton.setAttribute('aria-expanded','false');selectorButton.classList.remove('open');
+    }
+    function updateSummary(){
+      const selectedNames=submodules.filter(function(submodule){return draft.has(submodule.repositoryPath)}).map(function(submodule){return submodule.repositoryLabel});
+      const label=selectorButton.querySelector('.submodule-selector-label');
+      label.textContent=selectedNames.length?selectedNames.join(', '):'无';
+      selectorButton.title=selectedNames.length?selectedNames.join('\\n'):'选择要推送的子模块';
+    }
+    function updateAllState(){
+      const inputs=Array.from(dropdownList.querySelectorAll('.submodule-item'));allInput.checked=inputs.length>0&&inputs.every(input=>input.checked);allInput.indeterminate=!allInput.checked&&inputs.some(input=>input.checked);
+    }
+    selectorButton.addEventListener('click',function(event){event.stopPropagation();draft=new Set(selectedSubmodulesByParent.get(card.repositoryPath)||new Set());updateSummary();dropdown.hidden=false;selectorButton.setAttribute('aria-expanded','true');filterInput.value='';filterInput.focus()});
+    confirmButton.addEventListener('click',function(){closeDropdown(true)});
+    cancelButton.addEventListener('click',function(){closeDropdown(false)});
+    dropdown.addEventListener('click',function(event){event.stopPropagation()});
+    const onDocumentClick=function(event){if(!dropdown.hidden&&!selector.contains(event.target))closeDropdown(false)};
+    const onDocumentKeydown=function(event){if(event.key==='Escape'&&!dropdown.hidden)closeDropdown(false)};
+    document.addEventListener('click',onDocumentClick);
+    document.addEventListener('keydown',onDocumentKeydown);
+    selector._disposeDropdown=function(){document.removeEventListener('click',onDocumentClick);document.removeEventListener('keydown',onDocumentKeydown)};
     if(!submodules.length){
-      const empty=document.createElement('label');empty.className='commit-option submodule-empty';
-      empty.innerHTML='<input class="submodule-all" type="checkbox" disabled><span>Submodule</span><span class="submodule-empty-text">暂无子模块变更</span>';
-      selector.appendChild(empty);
+      dropdownList.innerHTML='<div class="submodule-dropdown-empty">暂无子模块变更</div>';
+      selectorButton.disabled=true;
       return;
     }
-    const all=document.createElement('label');all.className='commit-option';
-    all.innerHTML='<input class="submodule-all" type="checkbox"><span>Submodule</span>';
-    const allInput=all.querySelector('input');
+    const selected=selectedSubmodulesByParent.get(card.repositoryPath)||new Set();
+    selectedSubmodulesByParent.set(card.repositoryPath,selected);
     const items=submodules.map(function(submodule){
-      const label=document.createElement('label');label.className='commit-option';
+      const label=document.createElement('label');label.className='submodule-dropdown-option';
       label.innerHTML='<input class="submodule-item" type="checkbox"><span></span>';
       label.querySelector('span').textContent=submodule.repositoryLabel;
-      label.querySelector('input').checked=selectedSubmodules.has(submodule.repositoryPath);
+      label.querySelector('input').checked=selected.has(submodule.repositoryPath);
       label.querySelector('input').dataset.path=submodule.repositoryPath;
       label.querySelector('input').addEventListener('change',function(){
-        if(this.checked)selectedSubmodules.add(submodule.repositoryPath);else selectedSubmodules.delete(submodule.repositoryPath);
-        allInput.checked=items.every(function(input){return input.checked});
-        allInput.indeterminate=!allInput.checked&&items.some(function(input){return input.checked});
+        if(this.checked)draft.add(submodule.repositoryPath);else draft.delete(submodule.repositoryPath);
+        updateAllState();updateSummary();
       });
       return label.querySelector('input');
     });
     allInput.checked=items.length>0&&items.every(function(input){return input.checked});
     allInput.indeterminate=!allInput.checked&&items.some(function(input){return input.checked});
-    allInput.addEventListener('change',function(){items.forEach(function(input){input.checked=allInput.checked;input.dispatchEvent(new Event('change'))})});
-    selector.appendChild(all);
-    items.forEach(function(input){selector.appendChild(input.parentElement)});
+    allInput.addEventListener('change',function(){items.forEach(function(input){input.checked=allInput.checked;if(input.checked)draft.add(input.dataset.path);else draft.delete(input.dataset.path)});updateAllState();updateSummary()});
+    // 选项统一挂到 dropdownList；不要使用旧弹窗的 dialogList 名称。
+    items.forEach(function(input){dropdownList.appendChild(input.parentElement)});
+    filterInput.addEventListener('input',function(){const query=filterInput.value.trim().toLowerCase();items.forEach(function(input){input.parentElement.hidden=!input.dataset.path.toLowerCase().includes(query)})});
+    updateSummary();
   }
 
   function actionButton(action,section,path,icon,title){
@@ -478,7 +538,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
               '<button class="commit-btn">Commit</button>'+
             '</span>'+
             '<span class="action-group submodule-group">'+
-              '<span class="submodule-selector"></span>'+
+              '<span class="submodule-prefix">附带子模块：</span><span class="submodule-selector"></span>'+
               '<button class="push-btn">Push</button>'+
             '</span>'+
           '</div>'+
@@ -516,7 +576,8 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 
     amendCheckbox.addEventListener('change',function(){vscode.postMessage({type:'toggleAmend',repositoryPath:repo,message:messageInput.value})});
     pushBtn.addEventListener('click',function(){
-      vscode.postMessage({type:'gitSync',action:'push',repositoryPaths:Array.from(selectedSubmodules)});
+      const selectedPaths=Array.from(selectedSubmodulesByParent.get(repo)||new Set());
+      vscode.postMessage({type:'gitSync',action:'push',repositoryPaths:[...selectedPaths,repo]});
     });
     historyBtn.addEventListener('click',function(){vscode.postMessage({type:'history',repositoryPath:repo})});
     el.querySelector('.display-mode-btn').addEventListener('click',function(event){
@@ -697,9 +758,14 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
   }
 
   function render(cards){
+    // 先更新 currentCards，updatePushSelector 依赖它查找可推送的子模块。
     currentCards=cards;
     const validSubmodules=new Set(cards.filter(function(card){return card.repositoryIsSubmodule&&card.stagedFiles.length>0}).map(function(card){return card.repositoryPath}));
-    selectedSubmodules.forEach(function(repositoryPath){if(!validSubmodules.has(repositoryPath))selectedSubmodules.delete(repositoryPath)});
+    selectedSubmodulesByParent.forEach(function(selectedSubmodules){
+      selectedSubmodules.forEach(function(repositoryPath){
+        if(!validSubmodules.has(repositoryPath))selectedSubmodules.delete(repositoryPath);
+      });
+    });
     if(!cards.length){
       app.innerHTML='<div class="no-repos">没有可提交的仓库</div>';
       cardEls.clear();
@@ -712,6 +778,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
       seen.add(card.repositoryPath);
       let el=cardEls.get(card.repositoryPath);
       if(!el){el=buildCard(card.repositoryPath);cardEls.set(card.repositoryPath,el)}
+      // 先更新 detached 卡片、再插入 app；更新异常会导致卡片未挂载，必须保证 updateCard 不抛错。
       updateCard(el,card);
       // 保持卡片顺序与快照一致, 复用已存在 DOM。
       if(previous){if(previous.nextSibling!==el)app.insertBefore(el,previous.nextSibling)}

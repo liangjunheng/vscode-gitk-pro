@@ -1114,6 +1114,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 void this.runOpenCommitEditor(effect.repositoryPath, effect.amend);
                 break;
             case 'openCommitPanel':
+                // 打开面板前先同步仓库和工作区快照，避免复用过期的空卡片。
+                this.syncCommitRepositories();
                 this.commitPanel.show(this.buildCommitSnapshot(), this.selectedRepositoryPath);
                 break;
             case 'persistFilesDisplayMode':
@@ -1237,16 +1239,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private syncCommitRepositories(): void {
         const currentBranchesByPath = new Map(this.uncommittedFilesWatcher.listCurrentHeadBranches()
             .map(branch => [branch.repoOption.path, branch]));
-        const selectedRepositoryPath = this.commitController.uncommittedRepositoryPath;
         const repositories = this.repoController.totalRepoList.map(repository => {
             const repositoryPath = repository.path;
             const branch = currentBranchesByPath.get(repositoryPath);
-            const changes = repositoryPath === selectedRepositoryPath
-                ? { staged: store.getState().stagedFiles, changes: store.getState().unstagedFiles }
-                : branch
-                    ? this.uncommittedFilesWatcher.getCachedUncommittedFilesByHeadBranch(branch)
-                        ?? { staged: [], changes: [] }
-                    : { staged: [], changes: [] };
+            // CommitPanel 始终消费 watcher 的全仓库 HEAD 快照；Changed Files 的 stagedFiles/unstagedFiles 只是当前选中虚拟行投影。
+            const changes = branch
+                ? this.uncommittedFilesWatcher.getCachedUncommittedFilesByHeadBranch(branch)
+                    ?? { staged: [], changes: [] }
+                : { staged: [], changes: [] };
             return {
                 repository,
                 repositoryPath,
@@ -1262,16 +1262,21 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private buildCommitSnapshot(): CommitPanelSnapshot {
         const currentBranchesByPath = new Map(this.uncommittedFilesWatcher.listCurrentHeadBranches()
             .map(branch => [branch.repoOption.path, branch]));
+        const repositoriesByPath = new Map(this.repoController.totalRepoList
+            .map(repository => [repository.path, repository]));
+        // 先同步完整仓库列表，再生成卡片，保证 changes 与 CommitPanel 使用同一份仓库快照。
         const cards = store.getState().commitRepositories.map(repo => {
+            const repository = repositoriesByPath.get(repo.repositoryPath) ?? repo.repository;
             const amend = this.commitAmendByRepo.get(repo.repositoryPath) === true;
             const headKey = `${repo.repositoryPath}\u0000${currentBranchesByPath.get(repo.repositoryPath)?.hash ?? ''}`;
             const committedFiles = amend ? this.amendCommittedFilesByHead.get(headKey) ?? [] : [];
             return {
                 repositoryPath: repo.repositoryPath,
-                repositoryLabel: repo.repositoryLabel,
-                repositoryHasSubmodules: Boolean(repo.repository.hasSubmodules),
-                repositoryIsSubmodule: repo.repository.description === 'subrepo',
-                repositoryAncestry: repo.repository.ancestry,
+                repositoryLabel: repository.label,
+                repositoryHasSubmodules: Boolean(repository.hasSubmodules),
+                repositoryIsSubmodule: repository.description === 'subrepo',
+                repositoryParentPath: repository.ancestry.at(-1)?.path,
+                repositoryAncestry: repository.ancestry,
                 amend,
                 committedFiles: committedFiles.map(file => ({ path: file.path, status: file.status, isUntracked: file.isUntracked, isSubmodule: file.isGitlink || file.oldMode === '160000' || file.newMode === '160000' })),
                 committedFilesLoading: amend && this.amendCommittedFilesLoading.has(headKey),
@@ -1352,7 +1357,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     private async runCommitPanelPush(repositoryPaths: readonly string[]): Promise<void> {
-        for (const repositoryPath of repositoryPaths) {
+        const orderedRepositoryPaths = [...new Set(repositoryPaths)]
+            .map((repositoryPath, index) => ({
+                repositoryPath,
+                index,
+                depth: this.repoSubmoduleWatcher.getRepositoryAncestry(repositoryPath).length,
+            }))
+            .sort((left, right) => right.depth - left.depth || left.index - right.index)
+            .map(item => item.repositoryPath);
+        for (const repositoryPath of orderedRepositoryPaths) {
             await this.gitActions.syncRepository('push', repositoryPath);
         }
     }
