@@ -1867,9 +1867,18 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 file.newGitlinkCommit = file.newObjectId ? commits.get(file.newObjectId) : undefined;
                 if (file.status !== 'A' && file.status !== 'D'
                     && isRealObjectId(file.oldObjectId) && isRealObjectId(file.newObjectId)) {
+                    const rangeOutput = await runGitReadCommand(submoduleUri, [
+                        'log', '--format=%H%x1f%h%x1f%B%x1e', `${file.oldObjectId}..${file.newObjectId}`,
+                    ]);
+                    const rangeCommits = rangeOutput.split('\x1e').flatMap(record => {
+                        const [hash, shortHash, message] = record.split('\x1f');
+                        const normalizedMessage = message?.trim();
+                        const subject = normalizedMessage?.split(/\r?\n/).find(line => line.trim().length > 0)?.trim();
+                        return hash && shortHash ? [{ hash, shortHash, subject, message: normalizedMessage || undefined }] : [];
+                    });
                     file.gitlinkRangeCommits = [
                         file.oldGitlinkCommit,
-                        file.newGitlinkCommit,
+                        ...rangeCommits,
                     ].filter((commit): commit is GitlinkCommit => Boolean(commit));
                 }
             } catch {
