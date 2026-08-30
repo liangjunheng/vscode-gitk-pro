@@ -759,8 +759,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             files: [],
             stagedFiles: [],
             unstagedFiles: [],
-            filesLoading: Boolean(commit) && !isVirtual,
-            diffLoading: Boolean(commit) && !isVirtual,
+            filesLoading: Boolean(commit),
+            diffLoading: Boolean(commit),
             diffError: undefined,
             diffProgress: { completed: 0, total: 0 },
         });
@@ -1284,10 +1284,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 unpushedCommitCount: this.unpushedCommitCountByRepository.get(repo.repositoryPath) ?? 0,
                 changedSubmoduleRepositoryPaths: [...repo.staged, ...repo.unstaged]
                     .filter(file => file.isGitlink || file.oldMode === '160000' || file.newMode === '160000')
-                    .flatMap(file => {
-                        const submodule = this.repoSubmoduleWatcher.findSubmoduleRepository(repo.repositoryPath, file.path);
-                        return submodule ? [submodule.path] : [];
-                    }),
+                    .map(file => path.resolve(vscode.Uri.parse(repo.repositoryPath).fsPath, file.path))
+                    .map(repositoryPath => this.repoController.totalRepoList.find(repository =>
+                        path.normalize(vscode.Uri.parse(repository.path).fsPath).toLowerCase() === path.normalize(repositoryPath).toLowerCase(),
+                    )?.path)
+                    .filter((repositoryPath): repositoryPath is string => Boolean(repositoryPath)),
                 stagedFiles: repo.staged.map(file => ({ path: file.path, status: file.status, isUntracked: file.isUntracked, isSubmodule: file.isGitlink || file.oldMode === '160000' || file.newMode === '160000' })),
                 unstagedFiles: repo.unstaged.map(file => ({ path: file.path, status: file.status, isUntracked: file.isUntracked, isSubmodule: file.isGitlink || file.oldMode === '160000' || file.newMode === '160000' })),
                 committing: this.commitCommittingByRepo.has(repo.repositoryPath),
@@ -1841,13 +1842,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private async readGitlinkCommitSubjects(rootUri: vscode.Uri, files: CommitFile[]): Promise<void> {
         const gitlinkFiles = files.filter(file => file.isGitlink);
         await Promise.all(gitlinkFiles.map(async file => {
-            const submodule = this.repoSubmoduleWatcher.findSubmoduleRepository(rootUri.toString(), file.path);
-            if (!submodule) {
-                file.gitlinkScanPending = this.repoSubmoduleWatcher.isLoading;
-                return;
-            }
+            const submodulePath = path.resolve(rootUri.fsPath, file.path);
+            const submoduleUri = vscode.Uri.file(submodulePath);
             file.gitlinkScanPending = false;
-            const submoduleUri = vscode.Uri.parse(submodule.path);
             const isRealObjectId = (hash: string | undefined): hash is string => Boolean(hash) && !/^0+$/.test(hash);
             // `git diff` 的工作区端 gitlink OID 是零占位；真实新端只能由子模块工作区 HEAD 提供。
             if (file.workingTreeKind === 'unstaged' && !isRealObjectId(file.newObjectId)) {

@@ -148,16 +148,17 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
                 const candidates = (await Promise.all(currentLayer.map(async parent => {
                     const parentPath = vscode.Uri.parse(parent.path).fsPath;
                     const paths = await this.readSubmodulePaths(parentPath);
-                    return paths.map(rootPath => ({ rootPath, parentPath }));
+                    const initializedPaths = await this.readInitializedSubmodulePaths(parentPath);
+                    return paths
+                        .filter(rootPath => initializedPaths.has(repoKey(rootPath)))
+                        .map(rootPath => ({ rootPath, parentPath }));
                 }))).flat();
                 const nextLayer: GitRepositoryOption[] = [];
                 await Promise.all(candidates.map(async candidate => {
                     const candidateKey = repoKey(candidate.rootPath);
                     localParents.set(candidateKey, repoKey(candidate.parentPath));
                     if (found.has(candidateKey)) { return; }
-                    const rootPath = await this.resolveRepositoryRoot(candidate.rootPath);
-                    if (!rootPath || repoKey(rootPath) !== candidateKey || found.has(candidateKey)) { return; }
-                    const option = await this.createRepositoryOption(rootPath, 'subrepo');
+                    const option = await this.createRepositoryOption(candidate.rootPath, 'subrepo');
                     if (!option) { return; }
                     found.set(candidateKey, option);
                     nextLayer.push(option);
@@ -298,6 +299,21 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
             });
         } catch {
             return [];
+        }
+    }
+
+    private async readInitializedSubmodulePaths(rootPath: string): Promise<Set<string>> {
+        try {
+            const { stdout } = await execFileAsync('git', [
+                '--no-optional-locks', '-C', rootPath,
+                'submodule', 'status', '--',
+            ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+            return new Set(stdout.split(/\r?\n/).flatMap(line => {
+                const match = line.match(/^[ +][0-9a-fA-F]{40}\s+([^ (]+)/);
+                return match ? [repoKey(path.resolve(rootPath, match[1]))] : [];
+            }));
+        } catch {
+            return new Set();
         }
     }
 

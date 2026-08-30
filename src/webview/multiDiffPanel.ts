@@ -67,12 +67,8 @@ export class MultiDiffPanel implements vscode.Disposable {
 
     // 推进 generation 使在途 DiffReader 失效；新 Store 快照由订阅自动发布。
     cancelPending(): void {
-        store.setState({
-            diffGeneration: store.getState().diffGeneration + 1,
-            diffLoading: false,
-            diffError: undefined,
-            diffProgress: { completed: 0, total: 0 },
-        });
+        // 只使在途读取失效，加载状态由新的提交选择流程统一设置。
+        store.setState({ diffGeneration: store.getState().diffGeneration + 1 });
     }
 
     hide(): void { this.panel?.dispose(); }
@@ -887,14 +883,18 @@ function receive(message){
   if(typeof message.revision!=='number'||message.revision<=lastRevision)return;
   lastRevision=message.revision;
   log('receive #'+message.revision+': loading='+message.loading+', progress='+message.completed+'/'+message.total+', diffs='+message.diffs.length);
+  pending=message;
   if(message.error){show(message.error);return}
-  if(message.loading){show('正在读取 Diff 数据 ('+message.completed+'/'+message.total+')...');return}
-  if(monacoReady)render(message);else pending=message;
+  if(message.loading){
+    if(!cards.length||message.identity!==lastIdentity){show('正在读取 Diff 数据 ('+message.completed+'/'+message.total+')...')}
+    return;
+  }
+  if(monacoReady){const snapshot=pending;pending=undefined;render(snapshot)}
 }
 window.addEventListener('message',event=>receive(event.data));window.gitkQueue.forEach(receive);window.gitkQueue.push=()=>{};window.gitkVscode.postMessage({type:'ready'});
 function applyVsCodeTheme(){const css=name=>getComputedStyle(document.documentElement).getPropertyValue(name).trim(),colors={},background=css('--vscode-editor-background'),foreground=css('--vscode-editor-foreground');if(background)colors['editor.background']=background;if(foreground)colors['editor.foreground']=foreground;monaco.editor.defineTheme('gitk-vscode-surface',{base:document.body.classList.contains('vscode-light')?'vs':'vs-dark',inherit:true,rules:[],colors});monaco.editor.setTheme('gitk-vscode-surface')}
 function applyVsCodeFont(editor){const style=getComputedStyle(document.documentElement),fontFamily=style.getPropertyValue('--vscode-editor-font-family').trim(),fontSize=Number.parseFloat(style.getPropertyValue('--vscode-editor-font-size'));editor.updateOptions({fontFamily:fontFamily||undefined,fontSize:Number.isFinite(fontSize)?fontSize:undefined})}
-try{require.config({paths:{vs:'${monacoUri}'}});require(['vs/editor/editor.main'],()=>{try{applyVsCodeTheme();monacoReady=true;if(pending){const snapshot=pending;pending=undefined;render(snapshot)}}catch(error){fail(error)}},fail)}catch(error){fail(error)}
+try{require.config({paths:{vs:'${monacoUri}'}});require(['vs/editor/editor.main'],()=>{try{applyVsCodeTheme();monacoReady=true;if(pending&&!pending.loading&&!pending.error){const snapshot=pending;pending=undefined;render(snapshot)}}catch(error){fail(error)}},fail)}catch(error){fail(error)}
 </script></body></html>`;
     }
 }
