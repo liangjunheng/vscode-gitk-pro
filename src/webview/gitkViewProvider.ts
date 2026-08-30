@@ -763,7 +763,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             stagedFiles: [],
             unstagedFiles: [],
             filesLoading: Boolean(commit) && !isVirtual,
-            diffLoading: Boolean(commit) && !isVirtual,
+            diffLoading: Boolean(commit),
             diffError: undefined,
             diffProgress: { completed: 0, total: 0 },
         });
@@ -1936,23 +1936,25 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const files = await getCommitFiles(rootUri, hash, signal, reportProgress);
             if (signal?.aborted || generation !== this.commitFilesGeneration) { return; }
             store.setState({ diffProgress: { completed: 0, total: files.length } });
-            await this.readGitlinkCommitSubjects(rootUri, files);
-            if (signal?.aborted || generation !== this.commitFilesGeneration) { return; }
-            const diffs = files.length > 0
-                ? await this.diffReader.readDiffs(rootUri, hash, files, 'commit', 0, (completed, total) => {
-                    if (signal?.aborted || generation !== this.commitFilesGeneration) { return; }
-                    store.setState({ diffProgress: { completed, total } });
-                })
-                : [];
+        const gitlinkScan = this.readGitlinkCommitSubjects(rootUri, files);
+        const diffRead = files.length > 0
+            ? this.diffReader.readDiffs(rootUri, hash, files, 'commit', 0, (completed, total) => {
+                if (signal?.aborted || generation !== this.commitFilesGeneration) { return; }
+                store.setState({ diffProgress: { completed, total } });
+            })
+            : Promise.resolve([] as DiffPayload[]);
+        const [readDiffs] = await Promise.all([diffRead, gitlinkScan]);
+        if (signal?.aborted || generation !== this.commitFilesGeneration) { return; }
+        const diffs = readDiffs.map((payload, index) => new DiffPayload({ ...payload, ...files[index], index }));
             if (signal?.aborted
                 || generation !== this.commitFilesGeneration
                 || this.currentHash !== hash
                 || this.currentRepositoryPath !== repositoryPath) { return; }
             const selectedPath = diffs[0]?.diffKey || diffs[0]?.path;
-            this.pendingFilesRevealGeneration = diffs.length > 0 ? generation : undefined;
+            this.pendingFilesRevealGeneration = undefined;
             store.setState({
                 files: diffs,
-                filesLoading: diffs.length > 0,
+                filesLoading: false,
                 diffLoading: false,
                 diffError: undefined,
                 diffProgress: { completed: diffs.length, total: diffs.length },
@@ -1964,7 +1966,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             if (revealDiff && this.canShowMultiDiff() && this.view?.visible) {
                 this.openDiff(selectedPath);
             } else {
-                this.pendingFilesRevealGeneration = undefined;
                 this.filesLoading = false;
             }
         } catch (error: any) {
@@ -2015,6 +2016,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     private openDiff(filePath?: string): void {
         if (!this.view?.visible) {
+            this.restoreDiffPanelOnViewVisible = true;
             this.multiDiffPanel.hide();
             return;
         }
