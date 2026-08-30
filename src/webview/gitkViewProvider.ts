@@ -762,8 +762,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             files: [],
             stagedFiles: [],
             unstagedFiles: [],
-            filesLoading: Boolean(commit),
-            diffLoading: Boolean(commit),
+            filesLoading: Boolean(commit) && !isVirtual,
+            diffLoading: Boolean(commit) && !isVirtual,
             diffError: undefined,
             diffProgress: { completed: 0, total: 0 },
         });

@@ -525,45 +525,49 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
   }
 
   function renderFileList(container,files,section,repositoryPath){
-    container.replaceChildren();
+    const previous=new Map();
+    Array.from(container.children).forEach(function(node){if(node.dataset.key)previous.set(node.dataset.key,node)});
+    const next=[];
+    const useNode=function(key,create,signature){
+      let node=previous.get(key);
+      if(node&&node._signature===signature){previous.delete(key);return node}
+      if(node)node.remove();
+      node=create();node.dataset.key=key;node._signature=signature;return node;
+    };
+    const appendFile=function(file,treeIndent){
+      const key='file:'+file.path;
+      const signature=JSON.stringify([file.status,file.isUntracked,file.isSubmodule,treeIndent]);
+      next.push(useNode(key,function(){return fileRowHtml(file,section,treeIndent)},signature));
+    };
     if(!files.length){
-      const empty=document.createElement('div');
-      empty.className='empty';
-      empty.textContent=section==='staged'?'没有已暂存的更改':(section==='unstaged'?'没有未暂存的更改':'没有已提交的更改');
-      container.appendChild(empty);
-      return;
+      next.push(useNode('empty',function(){const empty=document.createElement('div');empty.className='empty';return empty},section));
+      next[0].textContent=section==='staged'?'没有已暂存的更改':(section==='unstaged'?'没有未暂存的更改':'没有已提交的更改');
+    }else if(displayMode==='flat'){
+      files.forEach(function(file){appendFile(file,false)});
+    }else{
+      const byFolder=new Map();
+      files.forEach(function(file){const folder=fileParts(file).folder;const group=byFolder.get(folder)||[];group.push(file);byFolder.set(folder,group)});
+      byFolder.forEach(function(folderFiles,folder){
+        if(folder){
+          const folderKey=repositoryPath+':'+section+':'+folder;
+          const key='folder:'+folder;
+          const expanded=!collapsedFolders.has(folderKey);
+          const folderRow=useNode(key,function(){
+            const row=document.createElement('div');row.addEventListener('click',function(){
+              if(collapsedFolders.has(folderKey))collapsedFolders.delete(folderKey);else collapsedFolders.add(folderKey);
+              renderFileList(container,container._files,section,repositoryPath);
+            });return row;
+          },String(expanded));
+          folderRow.className='folder-row';folderRow.innerHTML='<span class="codicon codicon-chevron-'+(expanded?'down':'right')+'"></span><span class="codicon codicon-folder'+(expanded?'-opened':'')+'"></span><span class="path"></span>';folderRow.querySelector('.path').textContent=folder;folderRow.title=folder;
+          next.push(folderRow);if(!expanded)return;
+        }
+        folderFiles.forEach(function(file){appendFile(file,Boolean(folder))});
+      });
     }
-    const ordered=files;
-    if(displayMode==='flat'){
-      ordered.forEach(function(file){container.appendChild(fileRowHtml(file,section,false))});
-      return;
-    }
-    const byFolder=new Map();
-    ordered.forEach(function(file){
-      const folder=fileParts(file).folder;
-      const group=byFolder.get(folder)||[];
-      group.push(file);
-      byFolder.set(folder,group);
-    });
-    byFolder.forEach(function(folderFiles,folder){
-      const folderKey=repositoryPath+':'+section+':'+folder;
-      if(folder){
-        const expanded=!collapsedFolders.has(folderKey);
-        const folderRow=document.createElement('div');
-        folderRow.className='folder-row';
-        folderRow.innerHTML='<span class="codicon codicon-chevron-'+(expanded?'down':'right')+'"></span><span class="codicon codicon-folder'+(expanded?'-opened':'')+'"></span><span class="path"></span>';
-        folderRow.querySelector('.path').textContent=folder;
-        folderRow.title=folder;
-        folderRow.addEventListener('click',function(){
-          if(expanded)collapsedFolders.add(folderKey);else collapsedFolders.delete(folderKey);
-          renderFileList(container,files,section,repositoryPath);
-          bindRowActions(container,repositoryPath,container.closest('.card')._card);
-        });
-        container.appendChild(folderRow);
-        if(!expanded)return;
-      }
-      folderFiles.forEach(function(file){container.appendChild(fileRowHtml(file,section,Boolean(folder)))});
-    });
+    container._files=files;
+    next.forEach(function(node,index){const current=container.children[index];if(current!==node)container.insertBefore(node,current||null)});
+    previous.forEach(function(node){node.remove()});
+    bindRowActions(container,repositoryPath,container.closest('.card')._card);
   }
 
   function resizeMessageInput(input){input.style.height='auto';input.style.height=input.scrollHeight+'px'}
