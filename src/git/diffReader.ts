@@ -76,20 +76,7 @@ export class DiffReader {
             if (file.status !== 'D') { refs.push(`${hash}:${file.path}`); }
             return refs;
         });
-        let nextFile = 0;
-        const contents = await this.readGitObjectsStreaming(rootUri, objects, parsed => {
-            if (!isCurrent()) { return; }
-            while (nextFile < files.length) {
-                const file = files[nextFile];
-                const required = file.isBinary || file.isGitlink ? [] : [
-                    ...(file.status !== 'A' ? [`${hash}^:${file.oldPath || file.path}`] : []),
-                    ...(file.status !== 'D' ? [`${hash}:${file.path}`] : []),
-                ];
-                if (!required.every(object => parsed.has(object))) { break; }
-                nextFile++;
-                if (nextFile % 32 === 0 || nextFile === files.length) { onProgress(nextFile); }
-            }
-        });
+        const contents = await this.readGitObjectsStreaming(rootUri, objects);
         if (!isCurrent()) { return []; }
         onProgress(files.length);
         return this.createCommitPayloads(rootUri, hash, files, contents);
@@ -104,7 +91,6 @@ export class DiffReader {
     ): Promise<DiffPayload[]> {
         const data = await this.readWorkingTreeDiffs(rootUri, files, changeSetMode);
         if (!isCurrent()) { return []; }
-        for (let completed = 32; completed < files.length; completed += 32) { onProgress(completed); }
         onProgress(files.length);
         return data;
     }
@@ -264,7 +250,6 @@ export class DiffReader {
     private readGitObjectsStreaming(
         rootUri: vscode.Uri,
         objects: string[],
-        onObject?: (contents: ReadonlyMap<string, string>) => void,
     ): Promise<Map<string, string>> {
         if (objects.length === 0) { return Promise.resolve(new Map()); }
         const uniqueObjects = [...new Set(objects)];
@@ -291,7 +276,6 @@ export class DiffReader {
                     if (!Number.isFinite(size)) {
                         buffer = buffer.subarray(headerEnd + 1);
                         objectIndex++;
-                        onObject?.(result);
                         continue;
                     }
                     const contentStart = headerEnd + 1;
@@ -300,7 +284,6 @@ export class DiffReader {
                     result.set(uniqueObjects[objectIndex], buffer.subarray(contentStart, contentStart + size).toString('utf8'));
                     buffer = buffer.subarray(responseEnd);
                     objectIndex++;
-                    onObject?.(result);
                 }
             };
             child.stdout.on('data', (chunk: Buffer) => {
