@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { promises as fs } from 'fs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { GitRepositoryOption } from '../types';
@@ -148,7 +149,7 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
                 const candidates = (await Promise.all(currentLayer.map(async parent => {
                     const parentPath = vscode.Uri.parse(parent.path).fsPath;
                     const paths = await this.readSubmodulePaths(parentPath);
-                    const initializedPaths = await this.readInitializedSubmodulePaths(parentPath);
+                    const initializedPaths = await this.readInitializedGitlinkPaths(parentPath, paths);
                     return paths
                         .filter(rootPath => initializedPaths.has(repoKey(rootPath)))
                         .map(rootPath => ({ rootPath, parentPath }));
@@ -302,18 +303,47 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
         }
     }
 
-    private async readInitializedSubmodulePaths(rootPath: string): Promise<Set<string>> {
+    private async readInitializedGitlinkPaths(rootPath: string, declaredPaths: readonly string[]): Promise<Set<string>> {
+        if (declaredPaths.length === 0) { return new Set(); }
+        const relativePaths = new Map(declaredPaths.map(modulePath => [
+            path.relative(rootPath, modulePath).split(path.sep).join('/'),
+            modulePath,
+        ]));
         try {
             const { stdout } = await execFileAsync('git', [
                 '--no-optional-locks', '-C', rootPath,
-                'submodule', 'status', '--',
+                'ls-files', '--stage', '-z', '--', ...relativePaths.keys(),
             ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
-            return new Set(stdout.split(/\r?\n/).flatMap(line => {
-                const match = line.match(/^[ +][0-9a-fA-F]{40}\s+([^ (]+)/);
-                return match ? [repoKey(path.resolve(rootPath, match[1]))] : [];
-            }));
+            const gitlinkPaths = stdout.split('\0').flatMap(record => {
+                const match = /^160000 [0-9a-f]{40} \d+\t(.+)$/.exec(record);
+                const modulePath = match ? relativePaths.get(match[1]) : undefined;
+                return modulePath ? [modulePath] : [];
+            });
+            const initializedPaths = await Promise.all(gitlinkPaths.map(async modulePath =>
+                await this.hasGitHead(modulePath) ? repoKey(modulePath) : undefined,
+            ));
+            return new Set(initializedPaths.filter((modulePath): modulePath is string => Boolean(modulePath)));
         } catch {
             return new Set();
+        }
+    }
+
+    private async hasGitHead(modulePath: string): Promise<boolean> {
+        const gitPath = path.join(modulePath, '.git');
+        try {
+            const stat = await fs.stat(gitPath);
+            if (stat.isDirectory()) {
+                await fs.access(path.join(gitPath, 'HEAD'));
+                return true;
+            }
+            const gitDirFile = await fs.readFile(gitPath, 'utf8');
+            const match = /^gitdir:\s*(.+)\s*$/m.exec(gitDirFile);
+            if (!match) { return false; }
+            const gitDir = path.resolve(modulePath, match[1]);
+            await fs.access(path.join(gitDir, 'HEAD'));
+            return true;
+        } catch {
+            return false;
         }
     }
 
