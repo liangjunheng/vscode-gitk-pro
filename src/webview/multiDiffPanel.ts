@@ -529,7 +529,7 @@ function createCardShell(diff,order,parent){
   const meta=document.createElement('div');meta.className='file-meta';meta.innerHTML=metaHtml(diff);
   pinnedGroup.append(headerLayer,meta);
   card.append(pinnedGroup,body);parent.append(card);
-  const entry={diff:diff,index:order,path:key,filePath:diff.path,card:card,header:header,pinnedGroup:pinnedGroup,body:body,slot:null,editor:null,original:null,modified:null,modifiedValue:diff.modified||'',originalSelections:null,modifiedSelections:null,bodyHeight:estimateBodyHeight(diff),horizontalLeft:0,flashOverlay:null,flashTimer:0,collapsed:false,staticContent:false,mounted:false,mounting:false,mountVersion:0,saveTimer:0,disposables:[],fit:function(){}};
+  const entry={diff:diff,index:order,path:key,filePath:diff.path,card:card,header:header,pinnedGroup:pinnedGroup,body:body,slot:null,editor:null,original:null,modified:null,modifiedValue:diff.modified||'',syncingModel:false,originalSelections:null,modifiedSelections:null,bodyHeight:estimateBodyHeight(diff),horizontalLeft:0,flashOverlay:null,flashTimer:0,collapsed:false,staticContent:false,mounted:false,mounting:false,mountVersion:0,saveTimer:0,disposables:[],fit:function(){}};
   header.addEventListener('click',function(){toggle(entry)});
   card.addEventListener('pointerdown',function(){clickedPath=entry.path;setActive(entry.path,true)});
   actions.querySelectorAll('.diff-action').forEach(function(button){
@@ -584,6 +584,7 @@ function mountEntry(entry,fromScroll=false){
     if(entryEditable){
       // 仅工作区一侧允许编辑回写，Staged 卡片保持只读。
       entry.disposables.push(modified.onDidChangeContent(function(){
+        if(entry.syncingModel)return;
         entry.modifiedValue=modified.getValue();
         if(entry.saveTimer)clearTimeout(entry.saveTimer);
         entry.saveTimer=setTimeout(function(){
@@ -822,20 +823,54 @@ function restoreRefreshState(state,revealPath){
   setActive(entry.path,entry.path!==revealPath);
   return true
 }
-// 全部逻辑项外壳先进入文档流，只有 viewport 相交项绑定池中的 Monaco 模板。
-function render(snapshot){
+function updateEntryFromSnapshot(entry,diff){
+  const old=entry.diff;
+  entry.diff=diff;entry.index=entry.index;entry.filePath=diff.path;entry.card.dataset.path=diff.path;
+  entry.header.className='file-header'+(diff.status==='R'&&diff.oldPath&&diff.oldPath!==diff.path?' rename-header':'');
+  entry.header.innerHTML=headerHtml(diff);
+  entry.meta.innerHTML=metaHtml(diff);
+  if(entry.staticContent){
+    const wasStatic=old.isGitlink||old.error||old.isBinary;
+    const isStatic=diff.isGitlink||diff.error||diff.isBinary;
+    if(isStatic){entry.body.innerHTML=diff.isGitlink?gitlinkBodyHtml(diff):(diff.error?'无法读取此文件：'+diff.error:'二进制文件不同，无法显示文本差异。');return}
+    if(wasStatic){entry.staticContent=false;entry.body.replaceChildren();entry.body.style.height=Math.max(80,entry.bodyHeight)+'px'}
+  }
+  if(!diff.isGitlink&&!diff.error&&!diff.isBinary&&entry.editor){
+    const original=entry.editor.getOriginalEditor(),modified=entry.editor.getModifiedEditor();
+    entry.syncingModel=true;
+    try{
+      if(original.getValue()!==String(diff.original||''))original.setValue(String(diff.original||''));
+      if(modified.getValue()!==String(diff.modified||'')){modified.setValue(String(diff.modified||''));entry.modifiedValue=String(diff.modified||'')}
+    }finally{entry.syncingModel=false}
+    entry.fit();
+  }
+}
+function reconcileSnapshot(snapshot){
+  const oldCards=cards,oldByKey=new Map(oldCards.map(entry=>[entry.path,entry]));
+  cards=[];cardByPath=new Map();
+  snapshot.diffs.forEach(function(diff,order){
+    const key=diffKey(diff),entry=oldByKey.get(key);
+    if(entry){oldByKey.delete(key);entry.index=order;updateEntryFromSnapshot(entry,diff);cards.push(entry);cardByPath.set(key,entry)}
+    else createCardShell(diff,order,list);
+  });
+  oldByKey.forEach(function(entry){disposeEntry(entry);entry.card.remove()});
+  cards.forEach(function(entry,index){entry.card.dataset.index=String(index);const current=list.children[index];if(current!==entry.card)list.insertBefore(entry.card,current||null)});
+}
+
   try{
     const sameIdentity=lastIdentity!==''&&snapshot.identity===lastIdentity;
     const state=sameIdentity?refreshState():null;
-    dispose();
     const token=renderToken;
     editable=snapshot.editable===true;
-    if(!snapshot.diffs.length){list.classList.remove('rendering');list.textContent='暂无变更文件';loading.hidden=true;list.hidden=false;lastIdentity=snapshot.identity;log('render #'+snapshot.revision+': empty');notifyRendered(snapshot.revision);return}
+    if(!snapshot.diffs.length){dispose();list.classList.remove('rendering');list.textContent='暂无变更文件';loading.hidden=true;list.hidden=false;lastIdentity=snapshot.identity;log('render #'+snapshot.revision+': empty');notifyRendered(snapshot.revision);return}
     const total=snapshot.diffs.length;
-    // 同一提交刷新保留当前页面，不展示读取或创建 Diff 的中间界面。
-    if(!sameIdentity){list.classList.add('rendering');loading.textContent='正在创建 Diff 列表...';loading.hidden=false}
-    list.hidden=false;
-    snapshot.diffs.forEach(function(diff,order){createCardShell(diff,order,list)});
+    if(!sameIdentity){
+      dispose();
+      list.classList.add('rendering');loading.textContent='正在创建 Diff 列表...';loading.hidden=false;list.hidden=false;
+      snapshot.diffs.forEach(function(diff,order){createCardShell(diff,order,list)});
+    }else{
+      reconcileSnapshot(snapshot);
+    }
     if(token!==renderToken)return;
     const target=snapshot.revealPath&&cardByPath.has(snapshot.revealPath)?snapshot.revealPath:diffKey(snapshot.diffs[0]);
     if(!sameIdentity||!restoreRefreshState(state,snapshot.revealPath))reveal(target,false);
