@@ -50,8 +50,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.commands.registerCommand('vscode-gitk.multiDiff.nextChange', () => provider.navigateMultiDiffChange(1))
     );
 
-    // 状态栏: workspace 有 git 仓库时显示 "Gitk" 字样 + 内置 git-merge 图标
-    const statusBar = new GitkStatusBar(context, 'vscode-gitk.open');
+    // 状态栏: workspace 有 git 仓库时显示 Gitk 及全仓库未提交统计。
+    const statusBar = new GitkStatusBar(
+        context,
+        'vscode-gitk.open',
+        () => provider.getWorkingTreeSummary(),
+        provider.onDidChangeWorkingTreeSummary,
+    );
     context.subscriptions.push(statusBar);
     await statusBar.initialize();
 }

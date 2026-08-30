@@ -41,11 +41,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private viewDisposables: vscode.Disposable[] = [];
     private readonly onDidChangeDiffAvailabilityEmitter = new vscode.EventEmitter<void>();
     readonly onDidChangeDiffAvailability = this.onDidChangeDiffAvailabilityEmitter.event;
+    private readonly onDidChangeWorkingTreeSummaryEmitter = new vscode.EventEmitter<void>();
+    readonly onDidChangeWorkingTreeSummary = this.onDidChangeWorkingTreeSummaryEmitter.event;
     private lastLoadingProgress?: { phase: string; message: string; current: number; total: number };
     private storeUnsubscribe?: () => void;
     private pushStatePending = false;
     private gitWatchDisposables: vscode.Disposable[] = [];
     private readonly multiDiffPanel: MultiDiffPanel;
+    private requestedDiffReveal?: { readonly hash: string; readonly repositoryPath?: string };
+    private restoreDiffPanelOnViewVisible = false;
     private readonly commitPanel: CommitPanel;
     private readonly commitPanelViewTitleController: CommitPanelViewTitleController;
     // 每仓库独立的 amend / committing 状态 (多卡片各自提交)。
@@ -391,7 +395,32 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         return this.isLoading;
     }
 
-    async selectCommit(hash: string, repositoryPath?: string): Promise<void> {
+    getWorkingTreeSummary(): {
+        repositoryCount: number;
+        stagedCount: number;
+        unstagedCount: number;
+        untrackedCount: number;
+        repositories: Array<{ label: string; stagedCount: number; unstagedCount: number; untrackedCount: number }>;
+    } {
+        const repositories = store.getState().commitRepositories;
+        const summaries = repositories.map(repository => ({
+            label: repository.repositoryLabel,
+            stagedCount: repository.staged.length,
+            unstagedCount: repository.unstaged.filter(file => !file.isUntracked).length,
+            untrackedCount: repository.unstaged.filter(file => file.isUntracked).length,
+        }));
+        return {
+            repositoryCount: summaries.filter(repository =>
+                repository.stagedCount > 0 || repository.unstagedCount > 0 || repository.untrackedCount > 0,
+            ).length,
+            stagedCount: summaries.reduce((count, repository) => count + repository.stagedCount, 0),
+            unstagedCount: summaries.reduce((count, repository) => count + repository.unstagedCount, 0),
+            untrackedCount: summaries.reduce((count, repository) => count + repository.untrackedCount, 0),
+            repositories: summaries,
+        };
+    }
+
+    async selectCommit(hash: string, repositoryPath?: string, revealDiff = false): Promise<void> {
         const generation = ++this.commitFilesGeneration;
         this.pendingFilesRevealGeneration = undefined;
         // 先废弃在途请求的数据: 推进各 generation 使回程结果被丢弃; abort 只做通知不阻塞。
@@ -402,7 +431,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const abortController = new AbortController();
         this.commitFilesAbortController = abortController;
         try {
-            await this.setCommitFiles(hash, repositoryPath, generation, abortController.signal);
+            await this.setCommitFiles(hash, repositoryPath, generation, abortController.signal, revealDiff);
         } catch (error: any) {
             if (!this.isAbortError(error)) { throw error; }
         } finally {
@@ -416,6 +445,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private async selectWorkingTreeChanges(
         changes?: { staged: ChangedFile[]; changes: ChangedFile[] },
         showLoading = true,
+        revealDiff = false,
         affectedPaths?: ReadonlySet<string>,
         updateWorkingTreeState = true,
     ): Promise<void> {
@@ -493,13 +523,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.commitPanel.update(this.buildCommitSnapshot());
         }
         if (diffs.length === 0) {
-            // 面板已打开时保留并展示空态("暂无变更文件"), 不 dispose; 面板未开则不弹出。
-            if (this.multiDiffPanel.isOpen()) {
-                this.multiDiffPanel.show(this.currentHash ?? '', this.commitController.selectedCommit?.message ?? '');
-            }
             return;
         }
-        if (showLoading && this.canShowMultiDiff() && this.view?.visible) {
+        if (showLoading && revealDiff && this.canShowMultiDiff() && this.view?.visible) {
             this.openDiff(selectedFilePath);
         } else if (showLoading) {
             this.filesLoading = false;
@@ -586,6 +612,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             ? existing.map((repo, i) => (i === index ? entry : repo))
             : [...existing, entry];
         store.setState({ commitRepositories: next });
+        this.onDidChangeWorkingTreeSummaryEmitter.fire();
         this.commitPanelViewTitleController.update(next);
         if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
     }
@@ -653,7 +680,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (!isWorkingTreeHash(this.currentHash)
             || !selectedBranch
             || selectedBranch.repoOption.path !== this.commitController.uncommittedRepositoryPath) { return; }
-        void this.selectWorkingTreeChanges(changes, false, affectedPaths).then(() => this.refreshCommitPanel());
+        void this.selectWorkingTreeChanges(changes, false, false, affectedPaths).then(() => this.refreshCommitPanel());
     }
 
     /** 选中提交状态与文件读取统一由该回调驱动，覆盖首次默认选择和用户选择。 */
@@ -666,6 +693,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             return;
         }
         const isVirtual = isWorkingTreeHash(hash);
+        const revealDiff = this.requestedDiffReveal?.hash === hash
+            && this.requestedDiffReveal.repositoryPath === repositoryPath;
+        if (revealDiff) { this.requestedDiffReveal = undefined; }
         store.setState({
             currentHash: hash,
             currentRepositoryPath: repositoryPath,
@@ -682,9 +712,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.schedulePushState();
         if (!commit || !hash) { return; }
         if (isVirtual) {
-            void this.selectWorkingTreeChanges();
+            void this.selectWorkingTreeChanges(undefined, true, revealDiff);
         } else {
-            void this.selectCommit(hash, repositoryPath);
+            void this.selectCommit(hash, repositoryPath, revealDiff);
         }
     }
 
@@ -714,6 +744,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     private updateMultiDiffVisibility(): void {
         if (!this.view?.visible) {
+            this.restoreDiffPanelOnViewVisible = this.multiDiffPanel.isOpen();
             this.multiDiffPanel.hide();
             // 面板隐藏后不会再有渲染完成信号, 立即放行 Changed Files 列表。
             if (this.pendingFilesRevealGeneration !== undefined) {
@@ -722,7 +753,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             }
             return;
         }
-        if (!this.isLoading && this.currentHash && this.files.length > 0) {
+        if (this.restoreDiffPanelOnViewVisible && !this.isLoading && this.currentHash && this.files.length > 0) {
+            this.restoreDiffPanelOnViewVisible = false;
             this.openDiff(this.selectedPath);
         }
     }
@@ -955,17 +987,27 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 if (isWorkingTreeHash(effect.hash)) {
                     const branch = this.branchesController.getSelectedCurrentBranch();
                     if (!branch || !this.commitController.uncommittedRepositoryPath) { break; }
+                    this.requestedDiffReveal = { hash: effect.hash, repositoryPath: branch.repoOption.path };
                     const changed = this.commitController.selectCommit(new CommitMetadata({ hash: effect.hash, gitBranchOption: branch }));
                     // 工作区虚拟行的底层数据是动态的: 若 identity 未变化(selectCommit 去重 return false)但当前尚未加载出该行文件,
                     //   必须显式重新加载, 否则"此前加载失败/被门禁 bail 过"的虚拟行会因去重被永久挡死、点击无反应。
                     if (!changed
                         && this.currentHash === effect.hash
                         && this.currentRepositoryPath === branch.repoOption.path) {
-                        void this.selectWorkingTreeChanges().then(() => this.refreshCommitPanel());
+                        void this.selectWorkingTreeChanges(undefined, true, true).then(() => this.refreshCommitPanel());
                     }
                 } else if (typeof effect.hash === 'string' && typeof effect.repositoryPath === 'string') {
                     const commit = this.findCommit(effect.hash, effect.repositoryPath);
-                    if (commit) { this.commitController.selectCommit(commit); }
+                    if (commit) {
+                        this.requestedDiffReveal = { hash: effect.hash, repositoryPath: effect.repositoryPath };
+                        const changed = this.commitController.selectCommit(commit);
+                        if (!changed
+                            && this.currentHash === effect.hash
+                            && this.currentRepositoryPath === effect.repositoryPath) {
+                            this.requestedDiffReveal = undefined;
+                            this.openDiff(this.selectedPath);
+                        }
+                    }
                 }
                 break;
             case 'selectFile':
@@ -1796,7 +1838,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         await this.selectCommit(this.currentHash, this.selectedRepositoryPath);
     }
 
-    private async setCommitFiles(hash: string, repositoryPath: string | undefined, generation: number, signal?: AbortSignal): Promise<void> {
+    private async setCommitFiles(
+        hash: string,
+        repositoryPath: string | undefined,
+        generation: number,
+        signal?: AbortSignal,
+        revealDiff = false,
+    ): Promise<void> {
         const rootUri = this.getRepoRootUri(repositoryPath);
         if (!rootUri) {
             if (generation === this.commitFilesGeneration) {
@@ -1840,10 +1888,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 selectedPath,
             });
             if (diffs.length === 0) {
-                this.multiDiffPanel.hide();
                 return;
             }
-            if (this.canShowMultiDiff() && this.view?.visible) {
+            if (revealDiff && this.canShowMultiDiff() && this.view?.visible) {
                 this.openDiff(selectedPath);
             } else {
                 this.pendingFilesRevealGeneration = undefined;

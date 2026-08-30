@@ -5,20 +5,43 @@ export class GitkStatusBar {
     private item: vscode.StatusBarItem;
     private headWatchers: vscode.Disposable[] = [];
     private workspaceFoldersListener?: vscode.Disposable;
+    private workingTreeSummaryListener?: vscode.Disposable;
     private visibilityGeneration = 0;
 
     constructor(
         private readonly context: vscode.ExtensionContext,
         private readonly openCommand: string,
+        private readonly getWorkingTreeSummary: () => {
+            repositoryCount: number;
+            stagedCount: number;
+            unstagedCount: number;
+            untrackedCount: number;
+            repositories: Array<{
+                label: string;
+                stagedCount: number;
+                unstagedCount: number;
+                untrackedCount: number;
+            }>;
+        },
+        onDidChangeWorkingTreeSummary: vscode.Event<void>,
     ) {
         this.item = vscode.window.createStatusBarItem(
             vscode.StatusBarAlignment.Right,
             100
         );
         this.item.command = openCommand;
-        this.item.tooltip = '打开 Gitk 提交图面板';
         this.item.name = 'Gitk';
-        this.item.text = '$(git-merge) Gitk';
+        this.refreshWorkingTreeSummary();
+        this.workingTreeSummaryListener = onDidChangeWorkingTreeSummary(() => this.refreshWorkingTreeSummary());
+    }
+
+    private refreshWorkingTreeSummary(): void {
+        const { repositoryCount, stagedCount, unstagedCount, untrackedCount, repositories } = this.getWorkingTreeSummary();
+        this.item.text = `$(git-merge) ${repositoryCount} repo(s) · Staged ${stagedCount} · Unstaged ${unstagedCount} · Untracked ${untrackedCount}`;
+        const repositoryDetails = repositories
+            .map(repository => `${repository.label}: Staged ${repository.stagedCount} · Unstaged ${repository.unstagedCount} · Untracked ${repository.untrackedCount}`)
+            .join('\n');
+        this.item.tooltip = `打开 Gitk 提交图面板${repositoryDetails ? `\n${repositoryDetails}` : ''}`;
     }
 
     async initialize(): Promise<void> {
@@ -71,6 +94,7 @@ export class GitkStatusBar {
     dispose(): void {
         this.visibilityGeneration++;
         this.workspaceFoldersListener?.dispose();
+        this.workingTreeSummaryListener?.dispose();
         this.headWatchers.splice(0).forEach(disposable => disposable.dispose());
         this.item.dispose();
     }
