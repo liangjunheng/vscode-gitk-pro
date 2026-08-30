@@ -37,7 +37,7 @@ export class GitkStatusBar {
 
     private refreshWorkingTreeSummary(): void {
         const { repositoryCount, stagedCount, unstagedCount, untrackedCount, repositories } = this.getWorkingTreeSummary();
-        this.item.text = `$(git-merge) ${repositoryCount} repo(s) · Staged ${stagedCount} · Unstaged ${unstagedCount} · Untracked ${untrackedCount}`;
+        this.item.text = `$(git-merge): $(repo) ${repositoryCount} · $(pass) ${stagedCount} · $(warning) ${unstagedCount} · $(question) ${untrackedCount}`;
         const repositoryDetails = repositories
             .map(repository => `${repository.label}: Staged ${repository.stagedCount} · Unstaged ${repository.unstagedCount} · Untracked ${repository.untrackedCount}`)
             .join('\n');
