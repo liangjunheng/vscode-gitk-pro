@@ -1529,6 +1529,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (!orderedRepositoryPaths.includes(repositoryPath)) { orderedRepositoryPaths.push(repositoryPath); }
         if (orderedRepositoryPaths.some(path => this.commitCommittingByRepo.has(path))) { return; }
         orderedRepositoryPaths.forEach(path => this.commitCommittingByRepo.add(path));
+        this.openDiff(this.selectedPath);
         await this.refreshCommitPanel();
         try {
             let committed = false;
@@ -1893,6 +1894,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (!this.currentHash || !this.selectedRepositoryPath) { return; }
         const hasPending = store.getState().files.some(file => file.isGitlink && file.gitlinkScanPending);
         if (!hasPending) { return; }
+        if (isWorkingTreeHash(this.currentHash)) {
+            await this.selectWorkingTreeChanges(undefined, false);
+            return;
+        }
         await this.selectCommit(this.currentHash, this.selectedRepositoryPath);
     }
 

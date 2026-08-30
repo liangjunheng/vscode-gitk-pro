@@ -244,6 +244,14 @@ export class CommitPanel implements vscode.Disposable {
 /* 与 MultiDiff 一致: 偏暗背板 + 卡片浮起, 视觉统一。 */
 body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-editor-background) 50%, #000);color:var(--vscode-editor-foreground);font-family:var(--vscode-editor-font-family);font-size:var(--vscode-editor-font-size)}
 #app{width:100%;padding:8px}
+#app:empty::before{content:'正在加载提交面板…';display:grid;min-height:calc(100vh - 30px);place-items:center;color:var(--vscode-descriptionForeground)}
+#loading{display:grid;min-height:calc(100vh - 30px);place-items:center;gap:10px;color:var(--vscode-descriptionForeground)}
+#loading[hidden]{display:none}
+.loading-content{display:flex;flex-direction:column;align-items:center;gap:10px}
+.loading-track{width:min(360px,80vw);height:3px;overflow:hidden;background:var(--vscode-progressBar-background);opacity:.35}
+.loading-bar{height:100%;width:35%;background:var(--vscode-progressBar-background);animation:loading-slide 1.1s ease-in-out infinite}
+.loading-message{font-size:var(--vscode-editor-font-size)}
+@keyframes loading-slide{0%{transform:translateX(-120%)}100%{transform:translateX(320%)}}
 .card{position:relative;width:100%;margin:0 0 14px;display:flex;flex-direction:column;border:var(--card-border) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:var(--card-radius);background:var(--vscode-editor-background);box-shadow:0 1px 4px rgba(0,0,0,.08);overflow:visible}
 /* 卡片标题吸顶, 与 MultiDiff 的 file-header 行为一致。 */
 .card-header{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--header-surface);font-weight:600;border-bottom:var(--card-border) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:var(--card-radius) var(--card-radius) 0 0;box-shadow:0 1px 3px rgba(0,0,0,.18)}
@@ -372,10 +380,13 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 </style>
 </head>
 <body>
-<div id="app"></div>
+<div id="loading"><div class="loading-content"><div class="loading-message">正在加载提交面板…</div><div class="loading-track"><div class="loading-bar"></div></div></div></div>
+<div id="app" hidden></div>
 <script nonce="${nonce}">
 (function(){
   const vscode=acquireVsCodeApi();
+  const loading=document.getElementById('loading');
+  const loadingMessage=loading.querySelector('.loading-message');
   const app=document.getElementById('app');
   const cardEls=new Map();
   const collapsedFolders=new Set();
@@ -856,6 +867,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     if(!cards.length){
       app.innerHTML='<div class="no-repos">没有可提交的仓库</div>';
       cardEls.clear();
+      app.hidden=false;loading.hidden=true;
       vscode.postMessage({type:'rendered',cardCount:0});
       return;
     }
@@ -875,6 +887,8 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     // 移除快照中已不存在的仓库卡片。
     cardEls.forEach(function(el,repo){if(!seen.has(repo)){el.remove();cardEls.delete(repo)}});
     restoreViewportAnchor(viewportAnchor);
+    app.hidden=false;loading.hidden=true;
+    loadingMessage.textContent='已加载 '+cards.length+' 个仓库';
     vscode.postMessage({type:'rendered',cardCount:cards.length});
   }
 

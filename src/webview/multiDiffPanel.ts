@@ -857,15 +857,17 @@ function reconcileSnapshot(snapshot){
   cards.forEach(function(entry,index){entry.card.dataset.index=String(index);const current=list.children[index];if(current!==entry.card)list.insertBefore(entry.card,current||null)});
 }
 
+function render(snapshot){
   try{
     const sameIdentity=lastIdentity!==''&&snapshot.identity===lastIdentity;
     const state=sameIdentity?refreshState():null;
-    const token=renderToken;
     editable=snapshot.editable===true;
     if(!snapshot.diffs.length){dispose();list.classList.remove('rendering');list.textContent='暂无变更文件';loading.hidden=true;list.hidden=false;lastIdentity=snapshot.identity;log('render #'+snapshot.revision+': empty');notifyRendered(snapshot.revision);return}
     const total=snapshot.diffs.length;
+    let token=renderToken;
     if(!sameIdentity){
       dispose();
+      token=renderToken;
       list.classList.add('rendering');loading.textContent='正在创建 Diff 列表...';loading.hidden=false;list.hidden=false;
       snapshot.diffs.forEach(function(diff,order){createCardShell(diff,order,list)});
     }else{
