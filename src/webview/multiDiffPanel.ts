@@ -529,7 +529,7 @@ function createCardShell(diff,order,parent){
   const meta=document.createElement('div');meta.className='file-meta';meta.innerHTML=metaHtml(diff);
   pinnedGroup.append(headerLayer,meta);
   card.append(pinnedGroup,body);parent.append(card);
-  const entry={diff:diff,index:order,path:key,filePath:diff.path,card:card,header:header,pinnedGroup:pinnedGroup,body:body,meta:meta,slot:null,editor:null,original:null,modified:null,modifiedValue:diff.modified||'',syncingModel:false,originalSelections:null,modifiedSelections:null,bodyHeight:estimateBodyHeight(diff),horizontalLeft:0,flashOverlay:null,flashTimer:0,collapsed:false,staticContent:false,mounted:false,mounting:false,mountVersion:0,saveTimer:0,disposables:[],fit:function(){}};
+  const entry={diff:diff,index:order,path:key,filePath:diff.path,card:card,header:header,pinnedGroup:pinnedGroup,body:body,slot:null,editor:null,original:null,modified:null,modifiedValue:diff.modified||'',syncingModel:false,originalSelections:null,modifiedSelections:null,bodyHeight:estimateBodyHeight(diff),horizontalLeft:0,flashOverlay:null,flashTimer:0,collapsed:false,staticContent:false,mounted:false,mounting:false,mountVersion:0,saveTimer:0,disposables:[],fit:function(){}};
   header.addEventListener('click',function(){toggle(entry)});
   card.addEventListener('pointerdown',function(){clickedPath=entry.path;setActive(entry.path,true)});
   actions.querySelectorAll('.diff-action').forEach(function(button){
