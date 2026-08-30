@@ -32,7 +32,6 @@ export class MultiDiffPanel implements vscode.Disposable {
         private readonly onOpenFileAtLine?: (path: string, line?: number, column?: number, side?: 'original' | 'modified') => void,
         private readonly onSaveFile?: (path: string, content: string) => void,
         private readonly onWorkingTreeAction?: (action: 'stage' | 'unstage' | 'discard', section: 'staged' | 'unstaged', path: string) => void,
-        private readonly onVisibleDiffPathsChanged?: (paths: readonly string[]) => void,
     ) {
         this.unsubscribers = [
             store.subscribeSelector(state => state.diffLoading, () => this.schedulePublish()),
@@ -119,10 +118,6 @@ export class MultiDiffPanel implements vscode.Disposable {
                 && (message.section === 'staged' || message.section === 'unstaged')
                 && typeof message.path === 'string') {
                 this.onWorkingTreeAction?.(message.action, message.section, message.path);
-            } else if (message?.type === 'visibleDiffPaths'
-                && Array.isArray(message.paths)
-                && message.paths.every((item: unknown) => typeof item === 'string')) {
-                this.onVisibleDiffPathsChanged?.(message.paths);
             } else if (message?.type === 'rendered') {
                 // Diff 卡片与行号渲染完成, 通知 Provider 放行 Changed Files 列表。
                 this.onRendered?.();
@@ -136,7 +131,6 @@ export class MultiDiffPanel implements vscode.Disposable {
         this.panel.onDidDispose(() => {
             this.panel = undefined;
             this.webviewReady = false;
-            this.onVisibleDiffPathsChanged?.([]);
             this.onRendered?.();
         });
         this.panel.webview.html = this.getHtml(monacoRoot, codiconsRoot);
@@ -297,19 +291,8 @@ const loading=document.getElementById('loading'),list=document.getElementById('l
 const report=message=>{try{window.gitkVscode.postMessage({type:'error',message})}catch(_){}};
 const log=message=>{try{window.gitkVscode.postMessage({type:'log',message})}catch(_){}};
 const notifyRendered=revision=>{try{window.gitkVscode.postMessage({type:'rendered',revision})}catch(_){}};
-let monacoReady=false,lastRevision=0,lastIdentity='',pending,cards=[],cardByPath=new Map(),activePath='',clickedPath='',suppressSyncUntil=0,scrollAnimationFrame=0,renderToken=0,editable=false,virtualFrame=0,editorPool=[],syncingGlobalHScroll=false,hScrollFrame=0,pinnedAnchor=null,lastVisibleDiffPaths='';
+let monacoReady=false,lastRevision=0,lastIdentity='',pending,cards=[],cardByPath=new Map(),activePath='',clickedPath='',suppressSyncUntil=0,scrollAnimationFrame=0,renderToken=0,editable=false,virtualFrame=0,editorPool=[],syncingGlobalHScroll=false,hScrollFrame=0,pinnedAnchor=null;
 function diffKey(diff){return diff.diffKey||diff.path}
-// 上报当前可视的 Diff 卡片路径给 Host, 作为工作区 **/* 事件即时刷新的白名单。
-// 收集条件只看"卡片是否真正呈现内容"(已挂载 && 未折叠), 不按 staged/unstaged/untracked 过滤;
-//   类型差异由 Host 侧 refreshVisibleWorkingTreeDiffs 按 workingTreeKind 正确读取。
-// lastVisibleDiffPaths 做去重, 避免同一集合反复上报; 它必须随卡片集合销毁而在 dispose() 中一并清空,
-//   否则重建出相同路径时会被误判为"未变化"而永不重发 (回归警示)。
-function publishVisibleDiffPaths(){
-  const paths=cards.filter(function(entry){return entry.mounted&&!entry.collapsed}).map(function(entry){return entry.diff.path}).sort();
-  const serialized=JSON.stringify(paths);
-  if(serialized===lastVisibleDiffPaths)return;lastVisibleDiffPaths=serialized;
-  try{window.gitkVscode.postMessage({type:'visibleDiffPaths',paths:paths})}catch(_){}
-}
 let activeChangeIndex=-1,activeChangePage=0;
 function activeEntry(){return activePath&&cardByPath.get(activePath)}
 function navigableChanges(entry){
@@ -469,7 +452,7 @@ function workingTreeKindHtml(kind){
   if(kind==='unstaged')return '<span class="working-tree-kind working-tree-kind-unstaged" title="Unstaged：未暂存" aria-label="Unstaged：未暂存"><svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="6.25"/><path d="M9 5.25v4.5M9 12.4v.1" stroke-width="2"/></svg></span>';
   return '';
 }
-function gitlinkLabelHtml(){return '<span class="gitlink-label" title="Submodule commit update">Submodule</span>'}
+function gitlinkLabelHtml(){return '<span class="gitlink-label" title="Submodule repository">Repo</span>'}
 function gitlinkBodyHtml(diff){
   if(diff.gitlinkScanPending)return '<div class="empty gitlink-loading"><span class="gitlink-loading-spinner" aria-hidden="true"></span><span>正在扫描子模块提交…</span></div>';
   const commits=diff.gitlinkRangeCommits&&diff.gitlinkRangeCommits.length?diff.gitlinkRangeCommits:(diff.newGitlinkCommit?[diff.newGitlinkCommit]:[]);
@@ -793,7 +776,7 @@ function updateVirtualization(fromScroll=false){
       mounts.push(mountEntry(entry,fromScroll).catch(function(error){markCardFailed(entry,error)}));
     }else if(entry.mounted||entry.mounting){disposeEntry(entry)}
   }
-  Promise.all(mounts).then(publishVisibleDiffPaths);
+  Promise.all(mounts);
 }
 function scheduleVirtualization(){if(virtualFrame)return;virtualFrame=requestAnimationFrame(function(){virtualFrame=0;updateVirtualization()})}
 let scrollFrame=0;

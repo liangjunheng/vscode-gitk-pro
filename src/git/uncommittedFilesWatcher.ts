@@ -20,11 +20,6 @@ type HeadBranchUncommittedFileContentChangedEvent = {
     affectedPaths: readonly string[];
 };
 
-type VisibleDiffFileContentChangedEvent = {
-    branch: GitBranchOption;
-    affectedPaths: readonly string[];
-};
-
 type RepositoryRefreshSlot = {
     branch?: GitBranchOption;
     generation: number;
@@ -34,6 +29,7 @@ type RepositoryRefreshSlot = {
     pendingWorkspaceContentPaths?: Set<string>;
     fullRefreshPending: boolean;
     indexRefreshPending: boolean;
+    mutationDepth: number;
     indexChangedPaths: Set<string>;
     refreshAbortController?: AbortController;
     completion?: Promise<void>;
@@ -53,15 +49,12 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
     private readonly indexWatcherCreations = new Map<string, Promise<void>>();
     private readonly slots = new Map<string, RepositoryRefreshSlot>();
     private readonly changesByRepository = new Map<string, Map<string, WorkingTreeChanges>>();
-    private readonly visibleDiffPathsByRepository = new Map<string, Set<string>>();
     private readonly branchSubscription: vscode.Disposable;
     private readonly changesEmitter = new vscode.EventEmitter<HeadBranchUncommittedFilesChangedEvent>();
     private readonly contentChangesEmitter = new vscode.EventEmitter<HeadBranchUncommittedFileContentChangedEvent>();
-    private readonly visibleDiffContentEmitter = new vscode.EventEmitter<VisibleDiffFileContentChangedEvent>();
 
     readonly onEachHeadBranchUncommittedFileChanged = this.changesEmitter.event;
     readonly onEachHeadBranchUncommittedFileContentChanged = this.contentChangesEmitter.event;
-    readonly onVisibleDiffFileContentChanged = this.visibleDiffContentEmitter.event;
 
     constructor(repoHeadBranchWatcher: RepoHeadBranchWatcher) {
         // 数据源改为全部仓库 HEAD 监听器, 不再跟随仓库选择, 天然覆盖所有仓库。
@@ -77,13 +70,6 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             if (slot.branch) { branches.push(slot.branch); }
         }
         return branches;
-    }
-
-    setVisibleDiffPaths(repositoryPath: string | undefined, paths: readonly string[]): void {
-        this.visibleDiffPathsByRepository.clear();
-        if (repositoryPath && paths.length > 0) {
-            this.visibleDiffPathsByRepository.set(repositoryPath, new Set(paths));
-        }
     }
 
     getCachedUncommittedFilesByHeadBranch(branch: GitBranchOption): WorkingTreeChanges | undefined {
@@ -141,6 +127,35 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         await this.requestRefresh(branch.repoOption.path);
     }
 
+    beginWorkingTreeMutation(branch: GitBranchOption): void {
+        const slot = this.slots.get(branch.repoOption.path);
+        if (!slot || slot.branch?.hash !== branch.hash) {
+            throw new Error('该分支不是仓库当前 HEAD');
+        }
+        slot.mutationDepth++;
+    }
+
+    async endWorkingTreeMutation(
+        branch: GitBranchOption,
+        paths: readonly string[],
+        fullRefresh = false,
+    ): Promise<void> {
+        const slot = this.slots.get(branch.repoOption.path);
+        if (!slot || slot.branch?.hash !== branch.hash) {
+            throw new Error('该分支不是仓库当前 HEAD');
+        }
+        if (slot.mutationDepth === 0) {
+            throw new Error('工作区操作事务未开始');
+        }
+        slot.mutationDepth--;
+        if (slot.mutationDepth > 0) { return; }
+        slot.fullRefreshPending ||= fullRefresh;
+        const pendingPaths = slot.pendingPaths ?? new Set<string>();
+        paths.forEach(filePath => pendingPaths.add(filePath));
+        slot.pendingPaths = pendingPaths;
+        await this.requestRefresh(branch.repoOption.path);
+    }
+
     dispose(): void {
         this.branchSubscription.dispose();
         this.workspaceWatchers.forEach(watcher => watcher.dispose());
@@ -150,10 +165,8 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         this.indexWatcherCreations.clear();
         this.slots.clear();
         this.changesByRepository.clear();
-        this.visibleDiffPathsByRepository.clear();
         this.changesEmitter.dispose();
         this.contentChangesEmitter.dispose();
-        this.visibleDiffContentEmitter.dispose();
     }
 
     private applyCurrentHeadBranch(repositoryPath: string, branch: GitBranchOption | undefined): void {
@@ -163,6 +176,7 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             needsRefresh: false,
             fullRefreshPending: false,
             indexRefreshPending: false,
+            mutationDepth: 0,
             indexChangedPaths: new Set<string>(),
         };
         const previous = slot.branch;
@@ -173,6 +187,7 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         slot.pendingWorkspaceContentPaths = undefined;
         slot.fullRefreshPending = false;
         slot.indexRefreshPending = false;
+        slot.mutationDepth = 0;
         slot.indexChangedPaths = new Set<string>();
         this.slots.set(repositoryPath, slot);
         if (!branch) {
@@ -188,13 +203,13 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         if (!this.workspaceWatchers.has(repositoryPath)) {
             const rootUri = vscode.Uri.parse(repositoryPath);
             const onFileCreated = (uri: vscode.Uri) => {
-                void this.handleWorkspaceFileChanged(repositoryPath, uri, 'create');
+                void this.handleWorkspaceFileChanged(repositoryPath, uri);
             };
             const onFileChanged = (uri: vscode.Uri) => {
-                void this.handleWorkspaceFileChanged(repositoryPath, uri, 'change');
+                void this.handleWorkspaceFileChanged(repositoryPath, uri);
             };
             const onFileDeleted = (uri: vscode.Uri) => {
-                void this.handleWorkspaceFileChanged(repositoryPath, uri, 'delete');
+                void this.handleWorkspaceFileChanged(repositoryPath, uri);
             };
             const watcher = vscode.workspace.createFileSystemWatcher(
                 new vscode.RelativePattern(rootUri, '**/*'),
@@ -229,6 +244,7 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             const requestRefresh = () => {
                 const slot = this.slots.get(repositoryPath);
                 if (!slot?.branch) { return; }
+                if (slot.mutationDepth > 0) { return; }
                 slot.indexRefreshPending = true;
                 void this.requestRefresh(repositoryPath);
             };
@@ -254,7 +270,6 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
     private async handleWorkspaceFileChanged(
         repositoryPath: string,
         uri: vscode.Uri,
-        eventType: 'create' | 'change' | 'delete',
     ): Promise<void> {
         const slot = this.slots.get(repositoryPath);
         if (!slot?.branch || uri.scheme !== 'file') { return; }
@@ -262,31 +277,13 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         const relativePath = path.relative(rootPath, uri.fsPath);
         if (!relativePath || relativePath === '.git' || relativePath.startsWith(`.git${path.sep}`)) { return; }
         const normalizedPath = relativePath.split(path.sep).join('/');
-        // 命中 Webview 上报的可视卡片白名单时, 走即时内容通道 (onVisibleDiffFileContentChanged),
-        //   让 Host 只重读该文件的 Diff, 绕开全量 status 队列, 实现所见卡片的低延迟刷新。
-        // 注意: staged 卡片虽然也会命中白名单并触发本通道, 但其 Diff 内容源自 index, 工作区内容变化不会改变它,
-        //   所以 staged 卡片重读后"内容不变"是符合语义的; 不要据此误判为链路断裂。
-        // 严格契约: 快通道只服务可视文件的"内容变化(change)"。create/delete 是结构变化(卡片出现/消失),
-        //   只能由状态通道经 git status 重建文件清单来正确增删卡片。
-        //   若让 delete 也 fire 快通道, 会与状态通道形成两条独立代次、互不作废的异步写 store.files 链,
-        //   在文件系统未稳定期交替落地, 导致 Diff 卡片"消失→出现→消失"闪烁 (回归警示)。
-        const isVisibleDiff = this.visibleDiffPathsByRepository.get(repositoryPath)?.has(normalizedPath) ?? false;
-        if (isVisibleDiff && eventType === 'change') {
-            this.visibleDiffContentEmitter.fire({
-                branch: slot.branch,
-                affectedPaths: [normalizedPath],
-            });
-            // 内容通道已完成职责, 不再进入状态队列。
-            return;
-        }
         const pendingPaths = slot.pendingPaths ?? new Set<string>();
         pendingPaths.add(normalizedPath);
         slot.pendingPaths = pendingPaths;
-        if (!isVisibleDiff) {
-            const pendingWorkspaceContentPaths = slot.pendingWorkspaceContentPaths ?? new Set<string>();
-            pendingWorkspaceContentPaths.add(normalizedPath);
-            slot.pendingWorkspaceContentPaths = pendingWorkspaceContentPaths;
-        }
+        const pendingWorkspaceContentPaths = slot.pendingWorkspaceContentPaths ?? new Set<string>();
+        pendingWorkspaceContentPaths.add(normalizedPath);
+        slot.pendingWorkspaceContentPaths = pendingWorkspaceContentPaths;
+        if (slot.mutationDepth > 0) { return; }
         await this.requestRefresh(repositoryPath);
     }
 
@@ -355,7 +352,7 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             reconcileIndex = slot.indexRefreshPending;
             slot.indexRefreshPending = false;
             let currentIndexChangedPaths: Set<string> | undefined;
-            if (reconcileIndex || !previous || fullRefresh) {
+            if (previous && (reconcileIndex || fullRefresh)) {
                 currentIndexChangedPaths = await getIndexChangedPaths(rootUri, signal);
             }
             if (previous && reconcileIndex && currentIndexChangedPaths) {

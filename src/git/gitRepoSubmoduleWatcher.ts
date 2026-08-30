@@ -47,6 +47,16 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
         return ancestry;
     }
 
+    /** 返回指定仓库及其全部嵌套子模块，按最深层到当前仓库排序。 */
+    getRepositorySubtree(repositoryPath: string): readonly GitRepositoryOption[] {
+        const repositoryKey = repoKey(vscode.Uri.parse(repositoryPath).fsPath);
+        const subtreeKeys = this.collectDescendants([repositoryKey]);
+        subtreeKeys.add(repositoryKey);
+        return this._totalRepoList
+            .filter(repository => subtreeKeys.has(repoKey(vscode.Uri.parse(repository.path).fsPath)))
+            .sort((left, right) => this.getRepositoryAncestry(right.path).length - this.getRepositoryAncestry(left.path).length);
+    }
+
     /** 按父仓库中的 gitlink 路径查找已初始化的直接子模块仓库。 */
     findSubmoduleRepository(parentRepositoryPath: string, gitlinkPath: string): GitRepositoryOption | undefined {
         const parentPath = vscode.Uri.parse(parentRepositoryPath).fsPath;

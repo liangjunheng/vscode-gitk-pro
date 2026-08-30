@@ -19,12 +19,20 @@ export interface CommitCard {
     readonly repositoryPath: string;
     readonly repositoryLabel: string;
     readonly repositoryHasSubmodules: boolean;
-    readonly repositoryIsSubmodule: boolean;
     readonly repositoryParentPath?: string;
     readonly repositoryAncestry: readonly CommitCardRepository[];
+    readonly message: string;
+    readonly selectedCommitSubmoduleRepositoryPaths: readonly string[];
+    readonly selectedPushSubmoduleRepositoryPaths: readonly string[];
+    readonly pullBeforePush: boolean;
+    readonly pushTargetLabel?: string;
     readonly amend: boolean;
     readonly committedFiles: readonly CommitPanelFile[];
     readonly committedFilesLoading: boolean;
+    readonly latestCommitSubmodulePaths: readonly string[];
+    readonly hasUnpushedCommits: boolean;
+    readonly unpushedCommitCount: number;
+    readonly changedSubmoduleRepositoryPaths: readonly string[];
     readonly stagedFiles: readonly CommitPanelFile[];
     readonly unstagedFiles: readonly CommitPanelFile[];
     readonly committing: boolean;
@@ -35,9 +43,18 @@ export interface CommitPanelSnapshot {
     readonly displayMode: 'tree' | 'flat';
 }
 
+export type CommitCardStatePatch = {
+    readonly message?: string;
+    readonly selectedCommitSubmoduleRepositoryPaths?: readonly string[];
+    readonly selectedPushSubmoduleRepositoryPaths?: readonly string[];
+    readonly pullBeforePush?: boolean;
+};
+
 type CommitPanelCallbacks = {
-    readonly onCommit: (repositoryPath: string, message: string, amend: boolean) => void;
-    readonly onPush: (repositoryPaths: readonly string[]) => void;
+    readonly onCommit: (repositoryPath: string, repositoryPaths: readonly string[], message: string, amend: boolean) => void;
+    readonly onPush: (repositoryPaths: readonly string[], pullBeforePush: boolean) => void;
+    readonly onPickPushBranch: (repositoryPath: string) => void;
+    readonly onUpdateCardState: (repositoryPath: string, patch: CommitCardStatePatch) => void;
     readonly onToggleDisplayMode: () => void;
     readonly onToggleAmend: (repositoryPath: string, message: string) => void;
     readonly onHistory: (repositoryPath: string) => void;
@@ -50,7 +67,6 @@ type CommitPanelCallbacks = {
         paths: readonly string[],
         untrackedPaths: readonly string[],
     ) => void;
-    readonly onClose: () => void;
 };
 
 /**
@@ -97,10 +113,6 @@ export class CommitPanel implements vscode.Disposable {
 
     isVisible(): boolean { return Boolean(this.panel); }
 
-    hasRepository(repositoryPath: string): boolean {
-        return Boolean(this.snapshot?.cards.some(card => card.repositoryPath === repositoryPath));
-    }
-
     hide(): void { this.panel?.dispose(); }
 
     dispose(): void { this.panel?.dispose(); }
@@ -140,14 +152,35 @@ export class CommitPanel implements vscode.Disposable {
                 timestamp: new Date().toISOString(),
                 cardCount: data.cardCount,
             });
-        } else if (data.type === 'commit' && repo && typeof data.message === 'string' && typeof data.amend === 'boolean') {
-            this.callbacks.onCommit(repo, data.message, data.amend);
-        } else if (data.type === 'toggleAmend' && repo && typeof data.message === 'string') {
-            this.callbacks.onToggleAmend(repo, data.message);
-        } else if (data.type === 'gitSync' && data.action === 'push'
+        } else if (data.type === 'commit' && repo && typeof data.message === 'string' && typeof data.amend === 'boolean'
             && Array.isArray(data.repositoryPaths)
             && data.repositoryPaths.every(repositoryPath => typeof repositoryPath === 'string')) {
-            this.callbacks.onPush(data.repositoryPaths as string[]);
+            this.callbacks.onCommit(repo, data.repositoryPaths as string[], data.message, data.amend);
+        } else if (data.type === 'toggleAmend' && repo && typeof data.message === 'string') {
+            this.callbacks.onToggleAmend(repo, data.message);
+        } else if (data.type === 'gitSync' && data.action === 'push' && typeof data.pullBeforePush === 'boolean'
+            && Array.isArray(data.repositoryPaths)
+            && data.repositoryPaths.every(repositoryPath => typeof repositoryPath === 'string')) {
+            this.callbacks.onPush(data.repositoryPaths as string[], data.pullBeforePush);
+        } else if (data.type === 'pickPushBranch' && repo) {
+            this.callbacks.onPickPushBranch(repo);
+        } else if (data.type === 'updateCardState' && repo && data.patch && typeof data.patch === 'object') {
+            const patch = data.patch as Record<string, unknown>;
+            const selectedCommitSubmoduleRepositoryPaths = Array.isArray(patch.selectedCommitSubmoduleRepositoryPaths)
+                && patch.selectedCommitSubmoduleRepositoryPaths.every(repositoryPath => typeof repositoryPath === 'string')
+                ? patch.selectedCommitSubmoduleRepositoryPaths as string[] : undefined;
+            const selectedPushSubmoduleRepositoryPaths = Array.isArray(patch.selectedPushSubmoduleRepositoryPaths)
+                && patch.selectedPushSubmoduleRepositoryPaths.every(repositoryPath => typeof repositoryPath === 'string')
+                ? patch.selectedPushSubmoduleRepositoryPaths as string[] : undefined;
+            if ((patch.message === undefined || typeof patch.message === 'string')
+                && (patch.pullBeforePush === undefined || typeof patch.pullBeforePush === 'boolean')) {
+                this.callbacks.onUpdateCardState(repo, {
+                    message: patch.message as string | undefined,
+                    selectedCommitSubmoduleRepositoryPaths,
+                    selectedPushSubmoduleRepositoryPaths,
+                    pullBeforePush: patch.pullBeforePush as boolean | undefined,
+                });
+            }
         } else if (data.type === 'toggleDisplayMode') {
             this.callbacks.onToggleDisplayMode();
         } else if (data.type === 'history' && repo) {
@@ -172,8 +205,6 @@ export class CommitPanel implements vscode.Disposable {
                 data.paths as string[],
                 data.untrackedPaths as string[],
             );
-        } else if (data.type === 'close') {
-            this.callbacks.onClose();
         } else if (data.type === 'error') {
             console.error('[gitk-commit]', data.message);
         }
@@ -239,21 +270,43 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .card-body{display:flex;flex-direction:column;gap:10px;padding:10px 12px}
 /* 作者样式 display:flex 会覆盖 hidden 的 UA 默认 display:none，必须显式声明。 */
 .card-body[hidden]{display:none}
-.message-box{display:flex;flex-direction:column;border:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:6px;overflow:hidden}
-.message-input{width:100%;min-height:80px;resize:vertical;border:0;outline:0;padding:10px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);font-family:var(--vscode-editor-font-family);font-size:var(--vscode-editor-font-size);line-height:1.5}
-.actions{display:flex;gap:10px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
-.hint{margin-right:auto;min-width:120px;color:var(--vscode-descriptionForeground);font-size:calc(var(--vscode-font-size) * .9)}
-.action-groups{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.action-group{display:inline-flex;align-items:center;gap:6px;padding:3px 5px;border:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:5px;background:var(--vscode-editorWidget-background)}
+.message-box{position:relative;display:flex;flex-direction:column;border:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:6px;overflow:hidden}
+.message-input{box-sizing:border-box;width:100%;min-height:calc(3 * 1.5em + 20px);resize:none;overflow-y:hidden;border:0;outline:0;padding:10px 42px 32px 10px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);font-family:var(--vscode-editor-font-family);font-size:var(--vscode-editor-font-size);line-height:1.5}
+.actions{display:flex;gap:8px;align-items:stretch;flex-direction:column}
+.hint{min-width:120px;color:var(--vscode-descriptionForeground);font-size:calc(var(--vscode-font-size) * .9)}
+.action-groups{display:flex;gap:8px;align-items:stretch;flex-direction:column;width:100%}
+.action-group{display:flex;align-items:center;gap:8px;width:100%;box-sizing:border-box;padding:4px 6px;border:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:7px;background:var(--vscode-editorWidget-background)}
 .commit-group{border-color:var(--vscode-button-background)}
-.submodule-group{max-width:100%;overflow:visible;margin-left:2px;padding-left:10px;border-left:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border))}
+.submodule-group{max-width:100%;overflow:visible}
+.commit-submodule-prefix,.submodule-prefix{display:none}
+.commit-submodule-selector,.submodule-group .submodule-selector{display:block;flex:1 1 240px;min-width:180px;max-width:none;align-self:stretch;order:2}
+.commit-group .commit-btn{order:0}
+.commit-group .commit-option{order:1;flex:0 0 auto}
+.submodule-group .push-btn{order:0}
+.submodule-group .pull-option{order:1;flex:0 0 auto}
+.submodule-inline-box{display:flex;align-items:flex-start;gap:10px;width:100%;min-height:40px;box-sizing:border-box;border:1px dashed var(--vscode-focusBorder,var(--vscode-widget-border));border-radius:8px;padding:7px 10px;background:transparent;color:var(--vscode-foreground)}
+.submodule-inline-title{flex:0 0 auto;min-width:5.5em;padding:2px 10px 2px 0;border-right:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));color:var(--vscode-descriptionForeground);font-size:calc(var(--vscode-editor-font-size) * .9);font-weight:600;line-height:20px;white-space:nowrap}
+.submodule-inline-options{display:flex;flex:1 1 auto;flex-wrap:wrap;align-items:stretch;gap:6px;max-height:100px;min-width:0;overflow:auto}
+.submodule-inline-option{display:inline-flex;align-items:center;gap:5px;min-height:24px;box-sizing:border-box;padding:3px 7px;border:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:5px;background:var(--vscode-list-inactiveSelectionBackground);white-space:nowrap;cursor:pointer;font-size:calc(var(--vscode-editor-font-size) * .9);transition:border-color .12s ease,background .12s ease}
+.submodule-inline-repository{border:0;padding:0;background:transparent;color:var(--vscode-textLink-foreground);font:inherit;cursor:pointer;white-space:nowrap}
+.submodule-inline-repository:hover{text-decoration:underline;color:var(--vscode-textLink-activeForeground)}
+.submodule-inline-option .repository-status-badge{height:18px;line-height:18px}
+.submodule-push-target{margin-left:auto;border:0;border-left:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));padding:0 0 0 7px;background:transparent;color:var(--vscode-textLink-foreground);font:inherit;font-size:calc(var(--vscode-editor-font-size) * .85);cursor:pointer;white-space:nowrap}
+.submodule-push-target:hover{text-decoration:underline;color:var(--vscode-textLink-activeForeground)}
+.submodule-inline-option:hover{border-color:var(--vscode-focusBorder);background:var(--vscode-list-hoverBackground)}
+.submodule-inline-option:has(input:checked){border-color:var(--vscode-focusBorder);background:color-mix(in srgb,var(--vscode-focusBorder) 12%,transparent)}
+.submodule-inline-option input{margin:0;accent-color:var(--vscode-checkbox-background,var(--vscode-button-background))}
+.submodule-inline-empty{line-height:20px;color:var(--vscode-descriptionForeground);font-size:calc(var(--vscode-editor-font-size) * .9)}
 .commit-options{display:inline-flex;align-items:center;gap:8px}
-.history-btn{box-sizing:border-box;height:calc(1em + 12px);border:0;padding:0 8px;background:transparent;color:var(--vscode-icon-foreground);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;border-radius:4px;font:inherit}
+.history-btn{box-sizing:border-box;height:calc(1em + 12px);min-width:calc(1em + 16px);border:0;padding:0 8px;background:transparent;color:var(--vscode-icon-foreground);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;border-radius:5px;font:inherit}
 .history-btn:hover{background:var(--vscode-toolbar-hoverBackground)}
+.message-history-btn{position:absolute;right:4px;bottom:4px;z-index:1}
 .history-btn .codicon{font-size:14px}
 .submodule-selector{position:relative;display:inline-flex;align-items:center}
+.submodule-selector[hidden]{display:none}
 /* 这里位于外层 HTML 模板字符串内，内嵌脚本的反斜杠必须保留。 */
-.submodule-selector-btn{display:inline-flex;align-items:center;justify-content:space-between;gap:5px;min-width:7em;border:1px solid var(--vscode-dropdown-border,var(--vscode-widget-border));border-radius:2px;padding:5px 8px;background:var(--vscode-dropdown-background,var(--vscode-editorWidget-background));color:var(--vscode-dropdown-foreground,var(--vscode-foreground));cursor:pointer;font:inherit}
+.submodule-selector-btn{display:inline-flex;align-items:center;justify-content:space-between;gap:5px;width:auto;max-width:100%;min-width:7em;border:1px solid var(--vscode-dropdown-border,var(--vscode-widget-border));border-radius:2px;padding:5px 8px;background:var(--vscode-dropdown-background,var(--vscode-editorWidget-background));color:var(--vscode-dropdown-foreground,var(--vscode-foreground));cursor:pointer;font:inherit}
+.submodule-selector-label{min-width:0;max-width:36em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
 .submodule-selector-btn:hover{background:var(--vscode-list-hoverBackground)}
 .submodule-selector-btn:disabled{opacity:.55;cursor:default}
 .submodule-selector-chevron{font-size:12px;transition:transform .12s ease}
@@ -271,11 +324,18 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .submodule-dropdown-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px;padding:6px 8px 2px;border-top:1px solid var(--vscode-menu-separatorBackground,var(--vscode-widget-border))}
 .submodule-dropdown-action{border:0;border-radius:2px;padding:4px 9px;background:transparent;color:var(--vscode-menu-foreground,var(--vscode-foreground));cursor:pointer;font:inherit}
 .submodule-dropdown-action:hover{background:var(--vscode-menu-selectionBackground,var(--vscode-list-hoverBackground));color:var(--vscode-menu-selectionForeground,var(--vscode-foreground))}
-.commit-option{display:inline-flex;align-items:center;gap:4px;color:var(--vscode-foreground);font-size:var(--vscode-editor-font-size);cursor:pointer;user-select:none}
+.commit-option,.pull-option{display:inline-flex;align-items:center;gap:4px;color:var(--vscode-foreground);font-size:var(--vscode-editor-font-size);cursor:pointer;user-select:none}
+.pull-option input{margin:0;accent-color:var(--vscode-checkbox-background,var(--vscode-button-background))}
 .commit-option input{margin:0;accent-color:var(--vscode-button-background)}
 .commit-option input:disabled+span{opacity:.5}
-.commit-btn,.push-btn{border:0;border-radius:5px;padding:6px 14px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);cursor:pointer;font:inherit}
-.commit-btn:hover,.push-btn:hover{background:var(--vscode-button-hoverBackground)}
+.commit-btn,.push-btn{flex:0 0 auto;border:0;border-radius:5px;padding:6px 14px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);cursor:pointer;font:inherit}
+.commit-btn{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}
+.commit-btn:hover{background:var(--vscode-button-hoverBackground)}
+.push-btn{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}
+.push-btn:hover{background:var(--vscode-button-hoverBackground)}
+.push-btn{display:inline-flex;align-items:center;gap:8px}
+.push-target-label{max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-left:1px solid color-mix(in srgb,currentColor 45%,transparent);padding-left:8px;font-size:calc(var(--vscode-editor-font-size) * .85);opacity:.85}
+
 .commit-btn:disabled,.push-btn:disabled{opacity:1;cursor:pointer}
 .commit-option input:disabled{cursor:default}
 .commit-option input:disabled+span{cursor:default}
@@ -289,6 +349,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .section-title .codicon{font-size:14px}
 .display-mode-btn{margin-left:4px}
 .file-row,.folder-row{display:flex;align-items:center;gap:6px;padding:3px 10px}
+.gitlink-label{display:inline-flex;align-items:center;flex:0 0 auto;margin:0 1.5px 0 0;padding:0 6px;border:1px solid var(--vscode-gitDecoration-addedResourceForeground,var(--vscode-badge-background));border-radius:8px;background:color-mix(in srgb,var(--vscode-gitDecoration-addedResourceForeground,var(--vscode-badge-background)) 12%,transparent);color:var(--vscode-gitDecoration-addedResourceForeground,var(--vscode-badge-foreground));font-size:10px;font-weight:600;line-height:16px;letter-spacing:.02em}
 .file-row:hover,.folder-row:hover{background:var(--vscode-list-hoverBackground)}
 .file-row .status{width:14px;text-align:center;color:var(--vscode-gitDecoration-modifiedResourceForeground)}
 .file-row .path{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:calc(var(--vscode-editor-font-size) * .9)}
@@ -316,13 +377,11 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 (function(){
   const vscode=acquireVsCodeApi();
   const app=document.getElementById('app');
-  // 每仓库卡片状态在 webview 端保留, 重渲染时复用 DOM 与用户已输入的提交信息。
   const cardEls=new Map();
   const collapsedFolders=new Set();
   let selectedRepositoryPath='';
   let displayMode='flat';
   let currentCards=[];
-  const selectedSubmodulesByParent=new Map();
 
   function selectCard(repositoryPath){
     selectedRepositoryPath=repositoryPath;
@@ -330,90 +389,78 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
   }
 
   function statusLabel(file){return file.isUntracked?'U':(file.status||'M').slice(0,1).toUpperCase()}
-  function syncSelectedSubmoduleMessages(sourceRepo,message){
-    const selected=selectedSubmodulesByParent.get(sourceRepo)||new Set();
-    currentCards.forEach(function(cardData){
-      if(cardData.repositoryParentPath===sourceRepo&&selected.has(cardData.repositoryPath)){
-        const card=cardEls.get(cardData.repositoryPath);
-        if(card)card._refs.messageInput.value=message;
+  function isGitlinkFile(file){return file.isSubmodule===true}
+  function isDescendantRepository(candidate,parentPath){return candidate.repositoryAncestry.some(function(ancestor){return ancestor.path===parentPath})}
+  function changedGitlinkDescendants(card){
+    const changedPaths=new Set(card.changedSubmoduleRepositoryPaths||[]);
+    return currentCards.filter(function(item){return changedPaths.has(item.repositoryPath)&&(item.stagedFiles.length>0||item.unstagedFiles.length>0)});
+  }
+  function pushedDescendants(card){
+    const result=[];
+    function collect(parent){
+      const directPaths=new Set(parent.latestCommitSubmodulePaths||[]);
+      currentCards.filter(function(item){return item.repositoryParentPath===parent.repositoryPath&&item.hasUnpushedCommits}).forEach(function(child){
+        // 只有当前提交包含的 gitlink 才能继续递归匹配嵌套子模块。
+        const relative=child.repositoryPath.startsWith(parent.repositoryPath)?child.repositoryPath.slice(parent.repositoryPath.length).replace(/^[/\\\\]+/,''):'';
+        if(directPaths.has(relative)){result.push(child);collect(child)}
+      });
+    }
+    collect(card);return result;
+  }
+  function descendantLabel(submodule,card){
+    const start=submodule.repositoryAncestry.findIndex(function(ancestor){return ancestor.path===card.repositoryPath});
+    const label=submodule.repositoryAncestry.slice(start+1).map(function(ancestor){return ancestor.label}).concat(submodule.repositoryLabel).join('/');
+    return label;
+  }
+  function updateInlineSubmoduleSelector(selector,card,submodules,selectionField,title){
+    selector.hidden=false;
+    selector.replaceChildren();
+    const selected=new Set(card[selectionField]||[]);
+    const publishSelection=function(){
+      vscode.postMessage({type:'updateCardState',repositoryPath:card.repositoryPath,patch:{[selectionField]:Array.from(selected)}});
+    };
+    const box=document.createElement('div');box.className='submodule-inline-box';
+    selector.appendChild(box);
+    const heading=document.createElement('div');heading.className='submodule-inline-title';heading.textContent=title;box.appendChild(heading);
+    const options=document.createElement('div');options.className='submodule-inline-options';box.appendChild(options);
+    const allLabel=document.createElement('label');allLabel.className='submodule-inline-option submodule-inline-all';
+    allLabel.innerHTML='<input type="checkbox"><span>全选</span>';options.appendChild(allLabel);
+    const allInput=allLabel.querySelector('input');
+    const updateAll=function(){const inputs=Array.from(options.querySelectorAll('.submodule-inline-item'));allInput.checked=inputs.length>0&&inputs.every(function(input){return input.checked});allInput.indeterminate=!allInput.checked&&inputs.some(function(input){return input.checked})};
+    const inputs=submodules.map(function(submodule){
+      const label=document.createElement('label');label.className='submodule-inline-option';
+      const input=document.createElement('input');input.type='checkbox';input.className='submodule-inline-item';input.checked=selected.has(submodule.repositoryPath);input.dataset.path=submodule.repositoryPath;
+      const repository=document.createElement('button');repository.type='button';repository.className='submodule-inline-repository';repository.textContent=descendantLabel(submodule,card);repository.title='跳转到 '+submodule.repositoryLabel+' 的提交卡片';repository.addEventListener('click',function(event){event.preventDefault();event.stopPropagation();vscode.postMessage({type:'focusRepository',repositoryPath:submodule.repositoryPath})});
+      label.appendChild(input);label.appendChild(repository);
+      if(title==='同时提交子模块'){
+        const staged=document.createElement('span');staged.className='repository-status-badge';staged.textContent=submodule.stagedFiles.length?'Staged '+submodule.stagedFiles.length:'';staged.hidden=submodule.stagedFiles.length===0;
+        const unstaged=document.createElement('span');unstaged.className='repository-status-badge';unstaged.textContent=submodule.unstagedFiles.length?'Unstaged '+submodule.unstagedFiles.length:'';unstaged.hidden=submodule.unstagedFiles.length===0;
+        label.appendChild(unstaged);label.appendChild(staged);
+      }else{
+        const commits=document.createElement('span');commits.className='repository-status-badge';commits.textContent='Commits '+submodule.unpushedCommitCount;label.appendChild(commits);
+        const target=document.createElement('button');target.type='button';target.className='submodule-push-target';target.textContent=submodule.pushTargetLabel||'选择分支';target.title='选择 '+submodule.repositoryLabel+' 的推送分支';target.addEventListener('click',function(event){event.preventDefault();event.stopPropagation();vscode.postMessage({type:'pickPushBranch',repositoryPath:submodule.repositoryPath})});label.appendChild(target);
       }
+      options.appendChild(label);
+      input.addEventListener('change',function(){if(input.checked)selected.add(submodule.repositoryPath);else selected.delete(submodule.repositoryPath);updateAll();publishSelection()});
+      return input;
     });
+    allInput.addEventListener('change',function(){inputs.forEach(function(input){input.checked=allInput.checked;if(input.checked)selected.add(input.dataset.path);else selected.delete(input.dataset.path)});updateAll();publishSelection()});
+    updateAll();
+  }
+  function updateCommitSelector(el,card){
+    const selector=el.querySelector('.commit-submodule-selector');
+    const submodules=card.amend?[]:changedGitlinkDescendants(card);
+    selector.hidden=submodules.length===0;
+    if(submodules.length===0)return;
+    updateInlineSubmoduleSelector(selector,card,submodules,'selectedCommitSubmoduleRepositoryPaths','同时提交子模块');
   }
   function updatePushSelector(el,card){
     const group=el.querySelector('.submodule-group');
-    group.style.display=card.repositoryHasSubmodules?'inline-flex':'none';
-    const selector=el.querySelector('.submodule-selector');
-    selector.hidden=!card.repositoryHasSubmodules;
-    const submodules=currentCards.filter(function(item){return item.repositoryIsSubmodule&&item.repositoryParentPath===card.repositoryPath&&item.stagedFiles.length>0});
-    // 弹窗结构：selector > button + dropdown > options；重建前必须释放文档级监听器。
-    if(selector._disposeDropdown)selector._disposeDropdown();
-    selector.replaceChildren();
-    const dropdown=document.createElement('div');
-    dropdown.className='submodule-dropdown';
-    dropdown.hidden=true;
-    dropdown.innerHTML='<div class="submodule-dropdown-title">选择要推送的子模块</div><input class="submodule-dropdown-filter" type="search" placeholder="筛选子模块…"><div class="submodule-dropdown-options"></div><div class="submodule-dropdown-actions"><label class="submodule-dropdown-option"><input class="submodule-all" type="checkbox"><span>全选</span></label><span><button class="submodule-dropdown-action submodule-confirm">确定</button><button class="submodule-dropdown-action submodule-cancel">取消</button></span></div>';
-    const selectorButton=document.createElement('button');
-    selectorButton.className='submodule-selector-btn';
-    selectorButton.type='button';
-    selectorButton.innerHTML='<span class="submodule-selector-label">Submodule</span><span class="codicon codicon-chevron-down submodule-selector-chevron"></span>';
-    selectorButton.setAttribute('aria-haspopup','true');
-    selectorButton.setAttribute('aria-expanded','false');
-    selector.appendChild(selectorButton);
-    selector.appendChild(dropdown);
-    const dropdownList=dropdown.querySelector('.submodule-dropdown-options');
-    const filterInput=dropdown.querySelector('.submodule-dropdown-filter');
-    const allInput=dropdown.querySelector('.submodule-all');
-    const confirmButton=dropdown.querySelector('.submodule-confirm');
-    const cancelButton=dropdown.querySelector('.submodule-cancel');
-    let draft=new Set();
-    function closeDropdown(commit){
-      if(commit){selectedSubmodulesByParent.set(card.repositoryPath,new Set(draft));syncSelectedSubmoduleMessages(card.repositoryPath,el._refs.messageInput.value)}
-      dropdown.hidden=true;selectorButton.setAttribute('aria-expanded','false');selectorButton.classList.remove('open');
-    }
-    function updateSummary(){
-      const selectedNames=submodules.filter(function(submodule){return draft.has(submodule.repositoryPath)}).map(function(submodule){return submodule.repositoryLabel});
-      const label=selectorButton.querySelector('.submodule-selector-label');
-      label.textContent=selectedNames.length?selectedNames.join(', '):'无';
-      selectorButton.title=selectedNames.length?selectedNames.join('\\n'):'选择要推送的子模块';
-    }
-    function updateAllState(){
-      const inputs=Array.from(dropdownList.querySelectorAll('.submodule-item'));allInput.checked=inputs.length>0&&inputs.every(input=>input.checked);allInput.indeterminate=!allInput.checked&&inputs.some(input=>input.checked);
-    }
-    selectorButton.addEventListener('click',function(event){event.stopPropagation();draft=new Set(selectedSubmodulesByParent.get(card.repositoryPath)||new Set());updateSummary();dropdown.hidden=false;selectorButton.setAttribute('aria-expanded','true');filterInput.value='';filterInput.focus()});
-    confirmButton.addEventListener('click',function(){closeDropdown(true)});
-    cancelButton.addEventListener('click',function(){closeDropdown(false)});
-    dropdown.addEventListener('click',function(event){event.stopPropagation()});
-    const onDocumentClick=function(event){if(!dropdown.hidden&&!selector.contains(event.target))closeDropdown(false)};
-    const onDocumentKeydown=function(event){if(event.key==='Escape'&&!dropdown.hidden)closeDropdown(false)};
-    document.addEventListener('click',onDocumentClick);
-    document.addEventListener('keydown',onDocumentKeydown);
-    selector._disposeDropdown=function(){document.removeEventListener('click',onDocumentClick);document.removeEventListener('keydown',onDocumentKeydown)};
-    if(!submodules.length){
-      dropdownList.innerHTML='<div class="submodule-dropdown-empty">暂无子模块变更</div>';
-      selectorButton.disabled=true;
-      return;
-    }
-    const selected=selectedSubmodulesByParent.get(card.repositoryPath)||new Set();
-    selectedSubmodulesByParent.set(card.repositoryPath,selected);
-    const items=submodules.map(function(submodule){
-      const label=document.createElement('label');label.className='submodule-dropdown-option';
-      label.innerHTML='<input class="submodule-item" type="checkbox"><span></span>';
-      label.querySelector('span').textContent=submodule.repositoryLabel;
-      label.querySelector('input').checked=selected.has(submodule.repositoryPath);
-      label.querySelector('input').dataset.path=submodule.repositoryPath;
-      label.querySelector('input').addEventListener('change',function(){
-        if(this.checked)draft.add(submodule.repositoryPath);else draft.delete(submodule.repositoryPath);
-        updateAllState();updateSummary();
-      });
-      return label.querySelector('input');
-    });
-    allInput.checked=items.length>0&&items.every(function(input){return input.checked});
-    allInput.indeterminate=!allInput.checked&&items.some(function(input){return input.checked});
-    allInput.addEventListener('change',function(){items.forEach(function(input){input.checked=allInput.checked;if(input.checked)draft.add(input.dataset.path);else draft.delete(input.dataset.path)});updateAllState();updateSummary()});
-    // 选项统一挂到 dropdownList；不要使用旧弹窗的 dialogList 名称。
-    items.forEach(function(input){dropdownList.appendChild(input.parentElement)});
-    filterInput.addEventListener('input',function(){const query=filterInput.value.trim().toLowerCase();items.forEach(function(input){input.parentElement.hidden=!input.dataset.path.toLowerCase().includes(query)})});
-    updateSummary();
+    const submodules=card.repositoryHasSubmodules?pushedDescendants(card):[];
+    group.hidden=submodules.length===0;
+    if(submodules.length===0)return;
+    const selector=group.querySelector('.push-submodule-selector');
+    updateInlineSubmoduleSelector(selector,card,submodules,'selectedPushSubmoduleRepositoryPaths','同时推送子模块');
   }
 
   function actionButton(action,section,path,icon,title){
@@ -446,6 +493,8 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     const status=document.createElement('span');
     status.className='status';
     status.textContent=statusLabel(file);
+    const gitlinkLabel=isGitlinkFile(file)?document.createElement('span'):null;
+    if(gitlinkLabel){gitlinkLabel.className='gitlink-label';gitlinkLabel.textContent='Repo';gitlinkLabel.title='Submodule repository';}
     const pathElement=document.createElement('span');
     pathElement.className='path';
     pathElement.title=file.path;
@@ -468,6 +517,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
       actions.appendChild(actionButton('discard',section,file.path,'discard','放弃更改'));
       actions.appendChild(actionButton('stage',section,file.path,'add','暂存'));
     }
+    if(gitlinkLabel)row.appendChild(gitlinkLabel);
     row.appendChild(status);
     row.appendChild(pathElement);
     row.appendChild(actions);
@@ -479,7 +529,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     if(!files.length){
       const empty=document.createElement('div');
       empty.className='empty';
-      empty.textContent='没有文件';
+      empty.textContent=section==='staged'?'没有已暂存的更改':(section==='unstaged'?'没有未暂存的更改':'没有已提交的更改');
       container.appendChild(empty);
       return;
     }
@@ -516,6 +566,8 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     });
   }
 
+  function resizeMessageInput(input){input.style.height='auto';input.style.height=input.scrollHeight+'px'}
+
   function buildCard(repo){
     const el=document.createElement('div');
     el.className='card';
@@ -524,32 +576,38 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
       '<div class="card-header"><span class="codicon codicon-chevron-down card-chevron"></span><span class="repository-icon card-repository-icon" aria-hidden="true"></span><span class="repo-label"></span><span class="repository-ancestry" hidden></span><span class="repository-status-badge untracked-count"></span><span class="repository-status-badge unstaged-header-count"></span><span class="repository-status-badge staged-header-count"></span><span class="card-empty-tag"></span></div>'+
       '<div class="card-body">'+
         '<div class="message-box">'+
-          '<textarea class="message-input" placeholder="输入提交信息…" spellcheck="false"></textarea>'+
+          '<textarea class="message-input" rows="3" placeholder="输入提交信息…" spellcheck="false"></textarea>'+
+          '<button class="history-btn message-history-btn" type="button" title="历史提交信息"><span class="codicon codicon-history"></span></button>'+
         '</div>'+
         '<div class="section unstaged"><div class="section-title collapsible"><span class="left"><span class="codicon codicon-chevron-down unstaged-chevron"></span><span>Unstaged Changes</span><span class="section-count-badge unstaged-count" hidden></span></span><span class="section-actions unstaged-actions"><button class="icon-btn discard-all" data-action="discard" data-section="unstaged" title="还原所有文件"><span class="codicon codicon-discard"></span></button><button class="icon-btn stage-all" data-action="stage" data-section="unstaged" title="暂存所有文件"><span class="codicon codicon-add"></span></button></span></div><div class="unstaged-list"></div></div>'+
         '<div class="section staged"><div class="section-title collapsible"><span class="left"><span class="codicon codicon-chevron-down staged-chevron"></span><span>Staged Changes</span><span class="section-count-badge staged-count" hidden></span></span><span class="section-actions staged-actions"><button class="icon-btn display-mode-btn" title="切换树状/平铺显示"><span class="codicon codicon-list-tree"></span></button><button class="icon-btn staged-all" data-action="unstage" data-section="staged" title="取消暂存所有文件"><span class="codicon codicon-remove"></span></button></span></div><div class="staged-list"></div></div>'+
         '<div class="section committed" hidden><div class="section-title collapsible"><span class="left"><span class="codicon codicon-chevron-down committed-chevron"></span><span>Committed Changes</span><span class="section-count-badge committed-count" hidden></span></span></div><div class="committed-list"></div></div>'+
         '<div class="actions">'+
           '<span class="hint"></span>'+
-          '<button class="history-btn" title="历史提交信息"><span class="codicon codicon-history"></span></button>'+
           '<div class="action-groups">'+
             '<span class="action-group commit-group">'+
               '<label class="commit-option"><input class="amend-checkbox" type="checkbox"><span>Amend</span></label>'+
+              '<span class="commit-submodule-selector submodule-selector"></span>'+
               '<button class="commit-btn">Commit</button>'+
             '</span>'+
             '<span class="action-group submodule-group">'+
-              '<span class="submodule-prefix">附带子模块：</span><span class="submodule-selector"></span>'+
-              '<button class="push-btn">Push</button>'+
+              '<button class="push-btn"><span>Push</span><span class="push-target-label"></span></button>'+
+              '<label class="pull-option"><input class="pull-before-push-checkbox" type="checkbox" checked><span>Pull</span></label>'+
+              '<span class="submodule-selector push-submodule-selector"></span>'+
             '</span>'+
           '</div>'+
         '</div>'+
       '</div>';
+    // 空仓库卡片默认折叠；三个变更区域默认展开。
     const state={unstagedOpen:true,stagedOpen:true,committedOpen:true};
     const messageInput=el.querySelector('.message-input');
     const commitBtn=el.querySelector('.commit-btn');
     const pushBtn=el.querySelector('.push-btn');
+    const pullBeforePushCheckbox=el.querySelector('.pull-before-push-checkbox');
     const amendCheckbox=el.querySelector('.amend-checkbox');
     const historyBtn=el.querySelector('.history-btn');
+    historyBtn.type='button';
+    historyBtn.classList.add('message-history-btn');
     const hint=el.querySelector('.hint');
     const unstagedTitle=el.querySelector('.section.unstaged .section-title');
     const unstagedList=el.querySelector('.unstaged-list');
@@ -576,8 +634,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 
     amendCheckbox.addEventListener('change',function(){vscode.postMessage({type:'toggleAmend',repositoryPath:repo,message:messageInput.value})});
     pushBtn.addEventListener('click',function(){
-      const selectedPaths=Array.from(selectedSubmodulesByParent.get(repo)||new Set());
-      vscode.postMessage({type:'gitSync',action:'push',repositoryPaths:[...selectedPaths,repo]});
+      vscode.postMessage({type:'gitSync',action:'push',repositoryPaths:[...(el._card.selectedPushSubmoduleRepositoryPaths||[]),repo],pullBeforePush:pullBeforePushCheckbox.checked});
     });
     historyBtn.addEventListener('click',function(){vscode.postMessage({type:'history',repositoryPath:repo})});
     el.querySelector('.display-mode-btn').addEventListener('click',function(event){
@@ -599,11 +656,13 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
       });
     });
     commitBtn.addEventListener('click',function(){
-      const message=messageInput.value.trim();
+      const message=el._card.message.trim();
       if(!message){hint.textContent='提交信息不能为空';messageInput.focus();return}
-      vscode.postMessage({type:'commit',repositoryPath:repo,message:messageInput.value,amend:el._amend===true});
+      vscode.postMessage({type:'commit',repositoryPath:repo,repositoryPaths:[...(el._card.selectedCommitSubmoduleRepositoryPaths||[]),repo],message:el._card.message,amend:el._amend===true});
     });
-    messageInput.addEventListener('input',function(){hint.textContent='';syncSelectedSubmoduleMessages(repo,messageInput.value)});
+    messageInput.addEventListener('input',function(){hint.textContent='';resizeMessageInput(messageInput);vscode.postMessage({type:'updateCardState',repositoryPath:repo,patch:{message:messageInput.value}})});
+    pullBeforePushCheckbox.addEventListener('change',function(){vscode.postMessage({type:'updateCardState',repositoryPath:repo,patch:{pullBeforePush:pullBeforePushCheckbox.checked}})});
+    resizeMessageInput(messageInput);
     messageInput.addEventListener('keydown',function(event){
       if((event.ctrlKey||event.metaKey)&&event.key==='Enter'){event.preventDefault();commitBtn.click()}
     });
@@ -695,14 +754,26 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     const isEmpty=card.stagedFiles.length===0&&card.unstagedFiles.length===0;
     refs.amendCheckbox.checked=card.amend;
     refs.amendCheckbox.disabled=false;
+    if(refs.messageInput.value!==card.message){refs.messageInput.value=card.message;resizeMessageInput(refs.messageInput)}
+    el.querySelector('.pull-before-push-checkbox').checked=card.pullBeforePush;
     refs.commitBtn.textContent=card.amend?'Amend':'Commit';
     const disableCommit=card.committing;
     refs.commitBtn.disabled=disableCommit;
     refs.pushBtn.disabled=false;
-    refs.hint.textContent=card.committing?'正在提交…':(isEmpty?'变更文件为空，无需提交':'');
+    const pushTargetLabel=el.querySelector('.push-target-label');
+    pushTargetLabel.textContent=card.pushTargetLabel??'';
+    pushTargetLabel.hidden=!card.pushTargetLabel;
+    refs.hint.textContent=card.committing?'正在提交…':'';
     el._collapsible=isEmpty;
     el.querySelector('.card-empty-tag').textContent=isEmpty?'无更改':'';
     el.classList.toggle('collapsible-card',isEmpty);
+    // 首次为空或由有变更转为空时默认折叠；持续为空时保留用户手动展开状态。
+    if(!isEmpty){
+      el._state.cardCollapsed=false;
+    }else if(el._state.wasEmpty!==true){
+      el._state.cardCollapsed=true;
+    }
+    el._state.wasEmpty=isEmpty;
     refs.cardBody.hidden=el._state.cardCollapsed;
     el.classList.toggle('collapsed',el._state.cardCollapsed);
     refs.cardChevron.hidden=!isEmpty;
@@ -752,6 +823,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     unstagedList.hidden=!el._state.unstagedOpen;
     refs.stagedChevron.className='codicon codicon-chevron-'+(el._state.stagedOpen?'down':'right')+' staged-chevron';
     refs.unstagedChevron.className='codicon codicon-chevron-'+(el._state.unstagedOpen?'down':'right')+' unstaged-chevron';
+    updateCommitSelector(el,card);
     updatePushSelector(el,card);
     bindRowActions(stagedList,el.dataset.repo,card);
     bindRowActions(unstagedList,el.dataset.repo,card);
@@ -760,12 +832,6 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
   function render(cards){
     // 先更新 currentCards，updatePushSelector 依赖它查找可推送的子模块。
     currentCards=cards;
-    const validSubmodules=new Set(cards.filter(function(card){return card.repositoryIsSubmodule&&card.stagedFiles.length>0}).map(function(card){return card.repositoryPath}));
-    selectedSubmodulesByParent.forEach(function(selectedSubmodules){
-      selectedSubmodules.forEach(function(repositoryPath){
-        if(!validSubmodules.has(repositoryPath))selectedSubmodules.delete(repositoryPath);
-      });
-    });
     if(!cards.length){
       app.innerHTML='<div class="no-repos">没有可提交的仓库</div>';
       cardEls.clear();
@@ -796,7 +862,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     if(message.type==='snapshot'){displayMode=message.displayMode;render(message.cards||[])}
     else if(message.type==='setMessage'){
       const el=cardEls.get(message.repositoryPath);
-      if(el){el._refs.messageInput.value=message.message||'';el._refs.hint.textContent='';el._refs.messageInput.focus()}
+      if(el){el._refs.messageInput.value=message.message||'';resizeMessageInput(el._refs.messageInput);el._refs.hint.textContent='';el._refs.messageInput.focus()}
     }else if(message.type==='focus'){
       const el=cardEls.get(message.repositoryPath);
       if(el){selectCard(message.repositoryPath);el.scrollIntoView({behavior:'auto',block:'start'});el._refs.messageInput.focus()}
