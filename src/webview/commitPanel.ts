@@ -829,7 +829,24 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     bindRowActions(unstagedList,el.dataset.repo,card);
   }
 
+  function captureViewportAnchor(){
+    for(const el of cardEls.values()){
+      const rect=el.getBoundingClientRect();
+      if(rect.bottom>0)return {repositoryPath:el.dataset.repo||'',offset:rect.top};
+    }
+    return null;
+  }
+
+  function restoreViewportAnchor(anchor){
+    if(!anchor)return;
+    const el=cardEls.get(anchor.repositoryPath);
+    if(!el)return;
+    const delta=el.getBoundingClientRect().top-anchor.offset;
+    if(Math.abs(delta)>=0.5)window.scrollTo({top:Math.max(0,window.scrollY+delta),behavior:'auto'});
+  }
+
   function render(cards){
+    const viewportAnchor=captureViewportAnchor();
     // 先更新 currentCards，updatePushSelector 依赖它查找可推送的子模块。
     currentCards=cards;
     if(!cards.length){
@@ -853,6 +870,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     });
     // 移除快照中已不存在的仓库卡片。
     cardEls.forEach(function(el,repo){if(!seen.has(repo)){el.remove();cardEls.delete(repo)}});
+    restoreViewportAnchor(viewportAnchor);
     vscode.postMessage({type:'rendered',cardCount:cards.length});
   }
 

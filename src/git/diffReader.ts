@@ -109,19 +109,33 @@ export class DiffReader {
         return data;
     }
 
-    /** 纯读取入口，不写 Store 不做代次判断。 */
-    async readDiffs(rootUri: vscode.Uri, hash: string, files: CommitFile[], changeSetMode: ChangeSetMode, indexOffset = 0): Promise<DiffPayload[]> {
+    /** 纯读取入口，不写 Store；以回调返回已完成文件数。 */
+    async readDiffs(
+        rootUri: vscode.Uri,
+        hash: string,
+        files: CommitFile[],
+        changeSetMode: ChangeSetMode,
+        indexOffset = 0,
+        onProgress?: (completed: number, total: number) => void,
+    ): Promise<DiffPayload[]> {
         if (changeSetMode !== 'commit') {
-            return this.readWorkingTreeDiffs(rootUri, files, changeSetMode, indexOffset);
+            const readerGeneration = ++this.requestGeneration;
+            const isCurrent = () => readerGeneration === this.requestGeneration;
+            const data = await this.readWorkingTreeDiffsStreaming(
+                rootUri,
+                files,
+                changeSetMode,
+                isCurrent,
+                completed => onProgress?.(completed, files.length),
+            );
+            if (!isCurrent()) { return []; }
+            return indexOffset === 0 ? data : data.map(payload => new DiffPayload({ ...payload, index: payload.index + indexOffset }));
         }
-        const objects: string[] = [];
-        for (const file of files) {
-            if (file.isBinary || file.isGitlink) { continue; }
-            if (file.status !== 'A') { objects.push(`${hash}^:${file.oldPath || file.path}`); }
-            if (file.status !== 'D') { objects.push(`${hash}:${file.path}`); }
-        }
-        const contents = await this.readGitObjects(rootUri, objects);
-        return this.createCommitPayloads(rootUri, hash, files, contents, indexOffset);
+        const readerGeneration = ++this.requestGeneration;
+        const isCurrent = () => readerGeneration === this.requestGeneration;
+        const data = await this.readCommitDiffsStreaming(rootUri, hash, files, isCurrent, completed => onProgress?.(completed, files.length));
+        if (!isCurrent()) { return []; }
+        return indexOffset === 0 ? data : data.map(payload => new DiffPayload({ ...payload, index: payload.index + indexOffset }));
     }
 
     private createGitlinkText(commit: CommitFile['oldGitlinkCommit'] | undefined, objectId: string | undefined): string {
