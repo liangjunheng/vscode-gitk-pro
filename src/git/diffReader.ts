@@ -124,6 +124,30 @@ export class DiffReader {
         return indexOffset === 0 ? data : data.map(payload => new DiffPayload({ ...payload, index: payload.index + indexOffset }));
     }
 
+    /** 仅刷新已有 Diff 里的 gitlink 展示内容，不重新读取普通文件对象。 */
+    updateGitlinkPayloads(diffs: readonly DiffPayload[], files: readonly CommitFile[]): DiffPayload[] {
+        const filesByKey = new Map(files.map(file => [file.diffKey || file.path, file]));
+        return diffs.map((diff, index) => {
+            if (!diff.isGitlink) { return diff; }
+            const file = filesByKey.get(diff.diffKey || diff.path);
+            if (!file) { return diff; }
+            const original = file.status === 'A' ? '' : this.createGitlinkText(file.oldGitlinkCommit, file.oldObjectId);
+            const modified = file.status === 'D' ? '' : this.createGitlinkRangeText(file.gitlinkRangeCommits ?? [], file.newGitlinkCommit, file.newObjectId);
+            return new DiffPayload({
+                ...diff,
+                index,
+                oldObjectId: file.oldObjectId,
+                newObjectId: file.newObjectId,
+                oldGitlinkCommit: file.oldGitlinkCommit,
+                newGitlinkCommit: file.newGitlinkCommit,
+                gitlinkRangeCommits: file.gitlinkRangeCommits,
+                gitlinkScanPending: file.gitlinkScanPending,
+                original,
+                modified,
+            });
+        });
+    }
+
     private createGitlinkText(commit: CommitFile['oldGitlinkCommit'] | undefined, objectId: string | undefined): string {
         const hash = commit?.shortHash || objectId?.slice(0, 7);
         return hash ? `Submodule commit ${hash}${commit?.message ? `\n\n${commit.message}` : ''}` : '';

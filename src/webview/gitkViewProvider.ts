@@ -513,10 +513,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             });
             return;
         }
-        await this.readGitlinkCommitSubjects(
-            vscode.Uri.parse(selectedBranch.repoOption.path),
-            files,
-        );
         if (updateWorkingTreeState) {
             const commitRepositories = store.getState().commitRepositories;
             const commitRepository = {
@@ -570,6 +566,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             diffProgress: { completed: diffs.length, total: diffs.length },
             selectedPath: selectedFilePath,
         });
+        void this.refreshGitlinkDiffs(rootUri, files, generation, workingTreeDiffCacheKey);
         if (this.commitPanel.isVisible()) {
             this.commitPanel.update(this.buildCommitSnapshot());
         }
@@ -1856,8 +1853,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             if (file.workingTreeKind === 'unstaged' && !isRealObjectId(file.newObjectId)) {
                 file.newObjectId = (await runGitReadCommand(submoduleUri, ['rev-parse', '--verify', 'HEAD'])).trim();
             }
-            const hashes = [file.oldObjectId, file.newObjectId].filter(isRealObjectId);
-            if (hashes.length === 0) { return; }
+            const hashes = [file.oldObjectId, file.newObjectId].filter(isRealObjectId);            if (hashes.length === 0) { return; }
             try {
                 const output = await runGitReadCommand(submoduleUri, ['show', '-s', '--format=%H%x1f%h%x1f%B%x1e', ...hashes]);
                 const commits = new Map<string, GitlinkCommit>();
@@ -1871,23 +1867,38 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 file.newGitlinkCommit = file.newObjectId ? commits.get(file.newObjectId) : undefined;
                 if (file.status !== 'A' && file.status !== 'D'
                     && isRealObjectId(file.oldObjectId) && isRealObjectId(file.newObjectId)) {
-                    await runGitReadCommand(submoduleUri, ['merge-base', '--is-ancestor', file.oldObjectId, file.newObjectId]);
-                    const rangeOutput = await runGitReadCommand(submoduleUri, [
-                        'log', '--format=%H%x1f%h%x1f%B%x1e', `${file.oldObjectId}..${file.newObjectId}`,
-                    ]);
-                    const rangeCommits = rangeOutput.split('\x1e').flatMap(record => {
-                        const [hash, shortHash, message] = record.split('\x1f');
-                        const normalizedMessage = message?.trim();
-                        const subject = normalizedMessage?.split(/\r?\n/).find(line => line.trim().length > 0)?.trim();
-                        return hash && shortHash ? [{ hash, shortHash, subject, message: normalizedMessage || undefined }] : [];
-                    });
-                    file.gitlinkRangeCommits = rangeCommits;
-                    file.newGitlinkCommit = rangeCommits.find(commit => commit.hash === file.newObjectId) ?? file.newGitlinkCommit;
+                    file.gitlinkRangeCommits = [
+                        file.oldGitlinkCommit,
+                        file.newGitlinkCommit,
+                    ].filter((commit): commit is GitlinkCommit => Boolean(commit));
                 }
             } catch {
                 // SHA 仍由父仓库 gitlink 保存；子模块本地缺少对象或两端非线性时仅不显示范围消息。
             }
         }));
+    }
+
+    private async refreshGitlinkDiffs(
+        rootUri: vscode.Uri,
+        files: readonly CommitFile[],
+        generation: number,
+        workingTreeDiffCacheKey?: string,
+    ): Promise<void> {
+        const gitlinkFiles = files.filter(file => file.isGitlink);
+        if (gitlinkFiles.length === 0) { return; }
+        await this.readGitlinkCommitSubjects(rootUri, gitlinkFiles as CommitFile[]);
+        if (generation !== this.commitFilesGeneration
+            || this.currentRepositoryPath !== rootUri.toString()
+            || !this.files.some(file => file.isGitlink)) { return; }
+        const currentDiffs = store.getState().files.filter((file): file is DiffPayload => 'original' in file && 'modified' in file);
+        const updated = this.diffReader.updateGitlinkPayloads(currentDiffs, gitlinkFiles);
+        if (workingTreeDiffCacheKey) { this.workingTreeDiffCache.set(workingTreeDiffCacheKey, updated); }
+        store.setState({
+            files: updated,
+            diffLoading: false,
+            diffError: undefined,
+            diffProgress: { completed: updated.length, total: updated.length },
+        });
     }
 
     private async refreshPendingGitlinkDiff(): Promise<void> {
@@ -1936,8 +1947,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const files = await getCommitFiles(rootUri, hash, signal, reportProgress);
             if (signal?.aborted || generation !== this.commitFilesGeneration) { return; }
             store.setState({ diffProgress: { completed: 0, total: files.length } });
-            await this.readGitlinkCommitSubjects(rootUri, files);
-            if (signal?.aborted || generation !== this.commitFilesGeneration) { return; }
             const diffs = files.length > 0
                 ? await this.diffReader.readDiffs(rootUri, hash, files, 'commit', 0, (completed, total) => {
                     if (signal?.aborted || generation !== this.commitFilesGeneration) { return; }
@@ -1958,6 +1967,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 diffProgress: { completed: diffs.length, total: diffs.length },
                 selectedPath,
             });
+            void this.refreshGitlinkDiffs(rootUri, files, generation);
             if (diffs.length === 0) {
                 return;
             }

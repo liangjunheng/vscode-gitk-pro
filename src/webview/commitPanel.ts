@@ -212,10 +212,11 @@ export class CommitPanel implements vscode.Disposable {
 
     private publish(): void {
         if (!this.panel || !this.webviewReady || !this.snapshot) { return; }
-        this.post({ type: 'snapshot', cards: this.snapshot.cards, displayMode: this.snapshot.displayMode })
+        const snapshot = this.snapshot;
+        void this.panel.webview.postMessage({ type: 'snapshot', cards: snapshot.cards, displayMode: snapshot.displayMode })
             .then(() => console.log('[Gitk][CommitPanel] snapshot posted', {
                 timestamp: new Date().toISOString(),
-                cardCount: this.snapshot?.cards.length,
+                cardCount: snapshot.cards.length,
             }));
     }
 

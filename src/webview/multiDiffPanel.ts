@@ -22,7 +22,6 @@ export class MultiDiffPanel implements vscode.Disposable {
     private panel?: vscode.WebviewPanel;
     private webviewReady = false;
     private revision = 0;
-    private postQueue: Promise<unknown> = Promise.resolve();
     private publishScheduled = false;
     private readonly unsubscribers: (() => void)[];
 
@@ -89,7 +88,6 @@ export class MultiDiffPanel implements vscode.Disposable {
     private ensurePanel(): void {
         if (this.panel) { return; }
         this.webviewReady = false;
-        this.postQueue = Promise.resolve();
         const mediaRoot = vscode.Uri.joinPath(vscode.Uri.file(__dirname), '..', '..', 'media');
         const monacoRoot = vscode.Uri.joinPath(mediaRoot, 'monaco');
         const codiconsRoot = vscode.Uri.joinPath(mediaRoot, 'codicons');
@@ -169,13 +167,12 @@ export class MultiDiffPanel implements vscode.Disposable {
             editable: state.currentChangeSet === 'changes' || state.currentChangeSet === 'uncommitted',
             diffs,
         };
-        this.post(snapshot);
+        void this.panel.webview.postMessage(snapshot);
     }
 
     private post(message: unknown): void {
-        this.postQueue = this.postQueue
-            .catch(() => undefined)
-            .then(() => this.panel?.webview.postMessage(message));
+        if (!this.panel || !this.webviewReady) { return; }
+        void this.panel.webview.postMessage(message);
     }
 
     private getHtml(monacoRoot: vscode.Uri, codiconsRoot: vscode.Uri): string {
@@ -529,7 +526,7 @@ function createCardShell(diff,order,parent){
   const meta=document.createElement('div');meta.className='file-meta';meta.innerHTML=metaHtml(diff);
   pinnedGroup.append(headerLayer,meta);
   card.append(pinnedGroup,body);parent.append(card);
-  const entry={diff:diff,index:order,path:key,filePath:diff.path,card:card,header:header,pinnedGroup:pinnedGroup,body:body,slot:null,editor:null,original:null,modified:null,modifiedValue:diff.modified||'',syncingModel:false,originalSelections:null,modifiedSelections:null,bodyHeight:estimateBodyHeight(diff),horizontalLeft:0,flashOverlay:null,flashTimer:0,collapsed:false,staticContent:false,mounted:false,mounting:false,mountVersion:0,saveTimer:0,disposables:[],fit:function(){}};
+  const entry={diff:diff,index:order,path:key,filePath:diff.path,card:card,header:header,meta:meta,pinnedGroup:pinnedGroup,body:body,slot:null,editor:null,original:null,modified:null,modifiedValue:diff.modified||'',syncingModel:false,originalSelections:null,modifiedSelections:null,bodyHeight:estimateBodyHeight(diff),horizontalLeft:0,flashOverlay:null,flashTimer:0,collapsed:false,staticContent:false,mounted:false,mounting:false,mountVersion:0,saveTimer:0,disposables:[],fit:function(){}};
   header.addEventListener('click',function(){toggle(entry)});
   card.addEventListener('pointerdown',function(){clickedPath=entry.path;setActive(entry.path,true)});
   actions.querySelectorAll('.diff-action').forEach(function(button){
