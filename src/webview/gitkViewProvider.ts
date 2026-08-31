@@ -1477,9 +1477,16 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 for (const repositoryPath of orderedRepositoryPaths) {
                     const repositoryUri = this.getRepoRootUri(repositoryPath);
                     if (!repositoryUri) { continue; }
+                    const branch = repositoryPath === rootRepositoryPath
+                        ? picked.branch
+                        : this.pushBranchByRepository.get(repositoryPath);
+                    if (!branch) {
+                        throw new Error(`仓库未选择可推送分支：${repositoryPath}`);
+                    }
                     if (pullBeforePush) {
-                        progress.report({ message: `正在拉取：${repositoryPath}` });
-                        await runGitCommand(repositoryUri, ['pull']);
+                        progress.report({ message: `正在切换并拉取：${repositoryPath}` });
+                        await runGitCommand(repositoryUri, ['switch', branch.name]);
+                        await runGitCommand(repositoryUri, ['pull', branch.upstreamRemote, branch.upstreamBranch]);
                     }
                     progress.report({ message: `正在推送：${repositoryPath}` });
                     if (repositoryPath === rootRepositoryPath) {
@@ -1489,11 +1496,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                             `${picked.branch.name}:${picked.branch.upstreamBranch}`,
                         ]);
                     } else {
-                        const branch = this.pushBranchByRepository.get(repositoryPath);
-                        await runGitCommand(repositoryUri, branch
-                            ? ['push', branch.upstreamRemote, `${branch.name}:${branch.upstreamBranch}`]
-                            : ['push']);
-                        if (branch) { pushedBranchByRepository.set(repositoryPath, branch); }
+                        await runGitCommand(repositoryUri, [
+                            'push', branch.upstreamRemote, `${branch.name}:${branch.upstreamBranch}`,
+                        ]);
+                        pushedBranchByRepository.set(repositoryPath, branch);
                     }
                 }
             });
