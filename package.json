@@ -2,7 +2,7 @@
   "name": "vscode-gitk-pro",
   "displayName": "Gitk Pro",
   "description": "Explore Git history, multi-file diffs, branches, and working-tree changes in a Gitk-style panel",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "publisher": "liangjunheng",
   "license": "MIT",
   "engines": {
