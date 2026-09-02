@@ -101,7 +101,15 @@ export class SelectedRepoTotalBranchWatcher implements vscode.Disposable {
             const previousRepository = this.repositories.get(key);
             this.repositories.set(key, repository);
             const cachedBranches = this.totalBranches.get(key);
-            if (cachedBranches && (!previousRepository || !repository.equals(previousRepository))) {
+            const needsFullRefresh = !cachedBranches;
+            if (!cachedBranches) {
+                const cachedHead = this.repoHeadBranchWatcher.getCachedHeadBranch(repository);
+                if (cachedHead) {
+                    const initialBranches = [cachedHead];
+                    this.totalBranches.set(key, initialBranches);
+                    this.snapshotEmitter.fire({ repository, branches: initialBranches, headChanged: true });
+                }
+            } else if (!previousRepository || !repository.equals(previousRepository)) {
                 const reboundBranches = cachedBranches.map(branch => new GitBranchOption({ ...branch, repoOption: repository }));
                 this.totalBranches.set(key, reboundBranches);
                 this.snapshotEmitter.fire({ repository, branches: reboundBranches, headChanged: false });
@@ -114,7 +122,7 @@ export class SelectedRepoTotalBranchWatcher implements vscode.Disposable {
                     watcher?.dispose();
                 }
             }
-            void this.enqueueRefresh(repository, false);
+            void this.enqueueRefresh(repository, needsFullRefresh);
         }
     }
 
@@ -194,8 +202,13 @@ export class SelectedRepoTotalBranchWatcher implements vscode.Disposable {
                 const generation = slot.generation;
                 const repository = this.repositories.get(key);
                 if (!repository) { return; }
-                const branches = await getGitBranches(vscode.Uri.parse(repository.path));
                 const head = await this.repoHeadBranchWatcher.getHeadBranchByRepo(repository);
+                if (this.repositories.get(key)?.path !== repository.path || generation !== slot.generation) {
+                    slot.needsRefresh = true;
+                    continue;
+                }
+                this.applyHeadBranch(repository.path, head);
+                const branches = await getGitBranches(vscode.Uri.parse(repository.path));
                 if (this.repositories.get(key)?.path !== repository.path || generation !== slot.generation) {
                     slot.needsRefresh = true;
                     continue;

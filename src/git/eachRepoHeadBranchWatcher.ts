@@ -50,6 +50,11 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
         this.requestRepositorySync();
     }
 
+    getCachedHeadBranch(repository: GitRepositoryOption): GitBranchOption | undefined {
+        const cached = this.headBranches.get(repositoryKey(repository.path));
+        return cached ? new GitBranchOption({ ...cached, repoOption: repository }) : undefined;
+    }
+
     async getHeadBranchByRepo(repository: GitRepositoryOption): Promise<GitBranchOption | undefined> {
         const key = repositoryKey(repository.path);
         const cached = this.headBranches.get(key);

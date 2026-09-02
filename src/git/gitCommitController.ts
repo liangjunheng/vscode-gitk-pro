@@ -89,7 +89,7 @@ export class GitCommitController implements vscode.Disposable {
 
     constructor(
         repoController: GitRepoController,
-        branchesController: GitBranchesController,
+        private readonly branchesController: GitBranchesController,
         private readonly uncommittedFilesWatcher: UncommittedFilesWatcher,
     ) {
         this.repositorySelectionSubscription = repoController.onSelectedRepoListChanged(repositories => {
@@ -187,8 +187,17 @@ export class GitCommitController implements vscode.Disposable {
         this.commitPageOffsetByRepository.clear();
         this.hasMoreCommits = false;
         this.commitPageError = '';
+        this.searched = [];
+        this.total = [];
+        this.selectedCommitIdentity = undefined;
+        this._isLoading = true;
+        this.loadingEmitter.fire(true);
+        this.searchedEmitter.fire([]);
+        this.totalEmitter.fire([]);
         this.repositorySelectionGeneration++;
-        // 分支事件将携带新仓库对应的分支；强制该次事件按新数据源重新读取。
+        // 仓库事件监听器的注册顺序不应决定提交读取；已有 HEAD 快照时主动消费，否则等待权威分支事件。
+        const selectedBranches = [...this.branchesController.getSelectedBranchesByRepository().values()].flat();
+        if (selectedBranches.length > 0) { this.selectBranches(selectedBranches); }
     }
 
     /** 分支选择唯一内部入口：仅由 GitBranchesController.onSelectedBranchesChanged 调用。 */

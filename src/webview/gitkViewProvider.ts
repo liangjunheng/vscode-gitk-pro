@@ -605,6 +605,26 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     /** 仓库选择变化后的唯一下游入口：更新显示快照，分支和提交由各自控制器负责加载。 */
     private onSelectedRepoListChanged(selected: readonly GitRepositoryOption[]): void {
         const repository = selected.length === 1 ? selected[0] : undefined;
+        this.commitFilesGeneration++;
+        this.commitFilesAbortController?.abort();
+        this.commitPanelDiffAbortController?.abort();
+        this.diffReader.stop();
+        this.multiDiffPanel.cancelPending();
+        this.pendingFilesRevealGeneration = undefined;
+        store.setState({
+            files: [],
+            stagedFiles: [],
+            unstagedFiles: [],
+            selectedPath: undefined,
+            currentHash: undefined,
+            currentRepositoryPath: undefined,
+            currentChangeSet: 'commit',
+            filesLoading: true,
+            diffLoading: true,
+            diffError: undefined,
+            diffProgress: { completed: 0, total: 0 },
+            diffGeneration: store.getState().diffGeneration + 1,
+        });
         this.selectedRepoDisplaySnapshot = repository
             ? { label: repository.label, path: repository.path, hasSubmodules: Boolean(repository.hasSubmodules) }
             : undefined;
