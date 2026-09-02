@@ -792,6 +792,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             diffProgress: { completed: 0, total: 0 },
         });
         this.schedulePushState();
+        if (this.restoreDiffPanelOnViewVisible && this.view?.visible && this.currentHash) {
+            this.restoreDiffPanelOnViewVisible = false;
+            this.openDiff();
+        }
         if (!commit || !hash) { return; }
         if (isVirtual) {
             void this.selectWorkingTreeChanges(undefined, true, revealDiff);
@@ -835,7 +839,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             }
             return;
         }
-        if (this.restoreDiffPanelOnViewVisible && !this.isLoading && this.currentHash && this.files.length > 0) {
+        if (this.restoreDiffPanelOnViewVisible && !this.isLoading && this.currentHash) {
             this.restoreDiffPanelOnViewVisible = false;
             this.openDiff(this.selectedPath);
         }
@@ -845,6 +849,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const viewGeneration = ++this.viewGeneration;
         this.view = view;
         this.updateViewVisible();
+        if (view.visible) {
+            this.restoreDiffPanelOnViewVisible = true;
+        }
         this.commitPanelViewTitleController.bindView(view, store.getState().commitRepositories);
         view.webview.options = {
             enableScripts: true,
