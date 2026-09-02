@@ -94,6 +94,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private totalRepoListSnapshot: readonly GitRepositoryOption[] = [];
     private totalBranchesListSnapshot: readonly GitBranchOption[] = [];
     private selectedRepoDisplaySnapshot?: { label: string; path: string; hasSubmodules: boolean };
+    /** 仓库是否有未提交文件的轻量存在性结果，由存在性事件维护，用于徽标先于完整清单显示。 */
+    private readonly uncommittedPresence = new Map<string, boolean>();
     private selectedBranchDisplaySnapshot: { label: string; title: string; names: string[] } = {
         label: '未选择分支',
         title: '未选择分支',
@@ -207,8 +209,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             state: {
                 commits,
                 workingTreeRows,
-                uncommittedRepositoryCount: s.commitRepositories.filter(repository =>
-                    repository.staged.length > 0 || repository.unstaged.length > 0).length,
+                uncommittedRepositoryCount: this.countUncommittedRepositories(s.commitRepositories),
                 stagedCount: workingTree.staged.length,
                 changesCount: workingTree.changes.length,
                 hasMoreCommits: this.commitController.canLoadMoreCommits,
@@ -368,6 +369,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.uncommittedFilesWatcher.onEachHeadBranchUncommittedFileContentChanged(event => {
                 this.onWorkingTreeFileContentChanged(event.branch, event.affectedPaths);
             }),
+            // 轻量存在性事件只驱动徽标与状态栏的仓库计数，不等完整清单读取完成。
+            this.uncommittedFilesWatcher.onRepositoryUncommittedPresenceChanged(event => {
+                this.uncommittedPresence.set(event.repositoryPath, event.hasChanges);
+                this.onDidChangeWorkingTreeSummaryEmitter.fire();
+                this.schedulePushState();
+            }),
             this.commitController.onCommitsLoadingChanged(loading => {
                 this.setLoading(loading, loading ? '正在加载历史提交列表...' : undefined);
                 if (loading) { this.postLoadingProgress('commit', '正在加载历史提交列表...', 0, 0); }
@@ -425,9 +432,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             untrackedCount: repository.unstaged.filter(file => file.isUntracked).length,
         }));
         return {
-            repositoryCount: summaries.filter(repository =>
-                repository.stagedCount > 0 || repository.unstagedCount > 0 || repository.untrackedCount > 0,
-            ).length,
+            // 仓库数只关心“有无变更”，与徽标共用轻量存在性结果，不等完整清单。
+            repositoryCount: this.countUncommittedRepositories(repositories),
             stagedCount: summaries.reduce((count, repository) => count + repository.stagedCount, 0),
             unstagedCount: summaries.reduce((count, repository) => count + repository.unstagedCount, 0),
             untrackedCount: summaries.reduce((count, repository) => count + repository.untrackedCount, 0),
@@ -667,6 +673,22 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             type: 'selectedRepoDisplayChanged',
             repository: next,
         });
+    }
+
+    /**
+     * 徽标计数优先取轻量存在性结果。存在性探测不等 --untracked-files=all 递归展开，
+     * 因此能在完整清单就绪前给出计数；存在性缺失的仓库回退到完整清单判定。
+     */
+    private countUncommittedRepositories(
+        repositories: ReadonlyArray<{ repositoryPath: string; staged: readonly unknown[]; unstaged: readonly unknown[] }>,
+    ): number {
+        let count = 0;
+        for (const repository of repositories) {
+            const presence = this.uncommittedPresence.get(repository.repositoryPath);
+            const hasChanges = presence ?? (repository.staged.length > 0 || repository.unstaged.length > 0);
+            if (hasChanges) { count++; }
+        }
+        return count;
     }
 
     /** 分支选择变化后的唯一下游入口：更新显示快照，提交加载只由 CommitController 事件驱动。 */

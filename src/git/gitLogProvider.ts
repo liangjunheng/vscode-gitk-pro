@@ -615,6 +615,24 @@ export async function getWorkingTreeStatus(rootUri: vscode.Uri, signal?: AbortSi
     return readWorkingTreeStatus(rootUri, [], signal);
 }
 
+/**
+ * 徽标专用：只判断仓库是否存在未提交变更。
+ * 用 --untracked-files=normal 避免递归展开未跟踪目录(node_modules 等), 且不读取
+ * --raw 元数据; 完整清单由 getWorkingTreeStatus 异步补齐, 二者互不阻塞。
+ */
+export async function hasWorkingTreeChanges(rootUri: vscode.Uri, signal?: AbortSignal): Promise<boolean> {
+    try {
+        const result = await execFileAsync('git', [
+            '--no-optional-locks', '-C', rootUri.fsPath,
+            'status', '--porcelain=v1', '-z', '--untracked-files=normal',
+        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
+        return result.stdout.split('\0').some(entry => entry.length >= 4);
+    } catch (error: any) {
+        if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
+        throw new Error(`无法读取工作区状态: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+
 export async function getWorkingTreeStatusForPaths(
     rootUri: vscode.Uri,
     paths: readonly string[],

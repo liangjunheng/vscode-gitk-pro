@@ -288,17 +288,32 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
         publish: () => void,
     ): Promise<void> {
         const declaredPaths = await this.readDeclaredSubmodulePaths(parentPath);
-        for (const modulePath of declaredPaths) {
-            if (!await this.hasGitHead(modulePath)) { continue; }
+        // 同层子模块必须并发：串行会让每个仓库的 HEAD 校验与仓库信息读取依次排队，
+        // 下游的未提交状态刷新也随之被逐个错开，仓库越多徽标出现越晚。
+        const initializedPaths = await this.filterInitializedSubmodules(declaredPaths);
+        const created = await Promise.all(initializedPaths.map(async modulePath => ({
+            modulePath,
+            option: await this.createRepositoryOption(modulePath, 'subrepo'),
+        })));
+        for (const { modulePath, option } of created) {
+            if (!option) { continue; }
             const moduleKey = repoKey(modulePath);
             if (found.has(moduleKey)) { continue; }
-            const option = await this.createRepositoryOption(modulePath, 'subrepo');
-            if (!option) { continue; }
             parents.set(moduleKey, repoKey(parentPath));
             found.set(moduleKey, option);
             publish();
-            await this.scanSubmodules(modulePath, found, parents, publish);
         }
+        await Promise.all(initializedPaths.map(modulePath =>
+            this.scanSubmodules(modulePath, found, parents, publish),
+        ));
+    }
+
+    /** 并发校验 HEAD，一次性筛出已初始化的子模块。 */
+    private async filterInitializedSubmodules(declaredPaths: readonly string[]): Promise<string[]> {
+        const checked = await Promise.all(declaredPaths.map(async modulePath =>
+            await this.hasGitHead(modulePath) ? modulePath : undefined,
+        ));
+        return checked.filter((modulePath): modulePath is string => Boolean(modulePath));
     }
 
     private async readDeclaredSubmodulePaths(parentPath: string): Promise<string[]> {
