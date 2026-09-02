@@ -1,20 +1,10 @@
 import * as vscode from 'vscode';
 import { GitkViewProvider } from './webview/gitkViewProvider';
 import { GitkStatusBar } from './statusBar';
-import { store } from './state/store';
 import { GitCommitEditMsgEditor } from './webview/gitCommitEditMsgEditor';
 
 // 插件激活入口
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-    // 单一数据源 Store 在激活时即存在, 存放所有业务数据
-    console.log('[vscode-gitk] activate called, Store initialized:', store.getState().isLoading);
-    vscode.window.showInformationMessage('vscode-gitk 已激活');
-
-    // 诊断: 列出所有 multi/diff 相关命令, 确认可用命令名
-    const allCmds = await vscode.commands.getCommands();
-    const diffCmds = allCmds.filter(c => c.toLowerCase().includes('multidiff') || c.toLowerCase().includes('multi-diff'));
-    console.log('[vscode-gitk] multi-diff related commands:', diffCmds);
-
     // 空文档提供器: 用于 Added/Deleted 文件的 diff 空白侧
     context.subscriptions.push(
         vscode.workspace.registerTextDocumentContentProvider('gitk-empty', {

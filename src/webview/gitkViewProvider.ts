@@ -323,7 +323,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.repoController.ontotalRepoListChanged(repositories => {
                 this.totalRepoListSnapshot = [...repositories];
                 this.onDidChangeRepositoryStateEmitter.fire();
-                this.view?.webview.postMessage({ type: 'totalRepoListChanged', repositories });
+                this.view?.webview.postMessage({
+                    type: 'totalRepoListChanged',
+                    repositories,
+                    selectedRepositoryPaths: this.selectedRepositoryPaths,
+                });
+                // 头按钮显示快照必须随列表刷新：列表项图标每次都按当前 hasSubmodules 重绘，
+                // 但快照是选中时一次性写入的；增量扫描期间 hasSubmodules 会由 false 变 true，
+                // 这里同步重新发布，保证下拉按钮图标与列表项一致。
+                this.refreshSelectedRepoDisplaySnapshot();
                 if (this.commitPanel.isVisible()) {
                     this.syncCommitRepositories();
                     this.commitPanel.update(this.buildCommitSnapshot());
@@ -640,6 +648,25 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         });
         // 选择事件产生后立即同步完整状态，不能等待提交或分支事件。
         this.pushStateToWebview();
+    }
+
+    /** 列表项图标按当前 hasSubmodules 重绘，但显示快照在选中时一次性写入；增量扫描期间
+     *  hasSubmodules 会由 false 变 true，必须由总列表变化重新发布选中项快照。 */
+    private refreshSelectedRepoDisplaySnapshot(): void {
+        const current = this.repoController.selectedRepoList;
+        const repository = current.length === 1 ? current[0] : undefined;
+        const next = repository
+            ? { label: repository.label, path: repository.path, hasSubmodules: Boolean(repository.hasSubmodules) }
+            : undefined;
+        if (this.selectedRepoDisplaySnapshot?.path === next?.path
+            && this.selectedRepoDisplaySnapshot?.hasSubmodules === next?.hasSubmodules) {
+            return;
+        }
+        this.selectedRepoDisplaySnapshot = next;
+        this.view?.webview.postMessage({
+            type: 'selectedRepoDisplayChanged',
+            repository: next,
+        });
     }
 
     /** 分支选择变化后的唯一下游入口：更新显示快照，提交加载只由 CommitController 事件驱动。 */
@@ -1017,7 +1044,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private runEffect(effect: StoreEffect): void {
         switch (effect.type) {
             case 'webviewReady':
-                this.view?.webview.postMessage({ type: 'totalRepoListChanged', repositories: this.totalRepoListSnapshot });
+                this.view?.webview.postMessage({
+                    type: 'totalRepoListChanged',
+                    repositories: this.totalRepoListSnapshot,
+                    selectedRepositoryPaths: this.selectedRepositoryPaths,
+                });
                 this.view?.webview.postMessage({ type: 'totalBranchesListChanged', branches: this.totalBranchesListSnapshot });
                 this.view?.webview.postMessage({
                     type: 'selectedRepoDisplayChanged',
@@ -2790,7 +2821,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         renderCommitFooter();
       }
     } else if (msg.type === 'totalRepoListChanged') {
-      updateTotalRepositoryList(msg.repositories || []);
+      updateTotalRepositoryList(msg.repositories || [], msg.selectedRepositoryPaths || []);
     } else if (msg.type === 'totalBranchesListChanged') {
       updateTotalBranchesList(msg.branches || []);
     } else if (msg.type === 'repoLoadingChanged') {
@@ -2992,7 +3023,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     bindBranchActions();
   }
 
-  function updateTotalRepositoryList(repositories) {
+  function updateTotalRepositoryList(repositories, nextSelectedRepositoryPaths) {
+    selectedRepositoryPaths = nextSelectedRepositoryPaths;
     repositoryEntries = repositories.map(function(repo) {
       return { value: repo.path, label: repo.label, title: repo.path, path: repo.path, hasSubmodules: Boolean(repo.hasSubmodules) };
     });

@@ -24,13 +24,10 @@ export class GitRepoController implements vscode.Disposable {
     constructor(private readonly submoduleWatcher: RepoSubmoduleWatcher) {
         this.totalSubscription = submoduleWatcher.onTotalRepoListChanged(repositories => {
             this._totalRepoList = [...repositories];
+            // 先按本次列表解析出选择，再发布列表：列表与选择必须是同一快照，
+            // 否则消费者处理列表事件时读到的仍是上一份未解析的选择。
+            this.reconcileSelection(repositories);
             this.totalEmitter.fire([...this._totalRepoList]);
-            // 根仓库列表已发布时立即默认选择；后续扫描更新不得覆盖已有选择。
-            if (!this.hasUserSelection && this._selectedRepoPaths.length === 0 && repositories.length > 0) {
-                this.applySelected([repositories[0]]);
-            } else {
-                this.applySelected(this.selectedRepoList);
-            }
         });
         this.loadingSubscription = submoduleWatcher.onLoadingChanged(loading => {
             this.reposLoadingEmitter.fire(loading);
@@ -50,9 +47,7 @@ export class GitRepoController implements vscode.Disposable {
     async initialize(): Promise<GitRepositoryOption[]> {
         const repositories = await this.submoduleWatcher.initialize();
         this._totalRepoList = [...repositories];
-        if (!this.hasUserSelection && this._selectedRepoPaths.length === 0 && repositories.length > 0) {
-            this.applySelected([repositories[0]]);
-        }
+        this.reconcileSelection(repositories);
         return this._totalRepoList;
     }
 
@@ -74,6 +69,16 @@ export class GitRepoController implements vscode.Disposable {
         this.totalEmitter.dispose();
         this.selectedEmitter.dispose();
         this.reposLoadingEmitter.dispose();
+    }
+
+    /** 按当前总列表解析选择；仅在结果变化时才对外发布。 */
+    private reconcileSelection(repositories: readonly GitRepositoryOption[]): void {
+        // 根仓库列表已解析时立即默认选择第一项；后续扫描更新不得覆盖已有选择。
+        if (!this.hasUserSelection && this._selectedRepoPaths.length === 0 && repositories.length > 0) {
+            this.applySelected([repositories[0]]);
+            return;
+        }
+        this.applySelected(this.selectedRepoList);
     }
 
     private applySelected(options: readonly GitRepositoryOption[]): void {

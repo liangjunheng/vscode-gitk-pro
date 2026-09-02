@@ -71,9 +71,11 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
     }
 
     async initialize(): Promise<GitRepositoryOption[]> {
+        const resolvedRoots = await Promise.all((vscode.workspace.workspaceFolders ?? []).map(async folder =>
+            this.resolveRepositoryRoot(folder.uri.fsPath),
+        ));
         const nextRootPaths = new Map<string, string>();
-        for (const folder of vscode.workspace.workspaceFolders ?? []) {
-            const rootPath = await this.resolveRepositoryRoot(folder.uri.fsPath);
+        for (const rootPath of resolvedRoots) {
             if (rootPath) { nextRootPaths.set(repoKey(rootPath), rootPath); }
         }
         this.rootPaths.clear();
@@ -138,40 +140,33 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
             }));
             const found = new Map<string, GitRepositoryOption>();
             const localParents = new Map<string, string>();
-            const layer = roots.filter((root): root is GitRepositoryOption => Boolean(root));
-            for (const root of layer) { found.set(repoKey(vscode.Uri.parse(root.path).fsPath), root); }
+            for (const root of roots) {
+                if (root) { found.set(repoKey(vscode.Uri.parse(root.path).fsPath), root); }
+            }
+            // 增量中间态：只叠加本次已发现的父子关系，并用上一轮列表补齐尚未重新扫描到的仓库。
+            // 清空 parentByRepository 会让 hasSubmodules 退回 false，导致图标反复跳变；
+            // 只用 found 发布会让尚未扫到的仓库从列表里消失，同样造成闪烁。
+            const publishIntermediate = () => {
+                // 局部重扫期间不发布中间态：结束时会与既有列表合并，中途发布只会干扰 removed 计算。
+                if (!isFull) { return; }
+                for (const [child, parent] of localParents) { this.parentByRepository.set(child, parent); }
+                const baseline = this._totalRepoList.filter(repository =>
+                    !found.has(repoKey(vscode.Uri.parse(repository.path).fsPath)));
+                this.applyTotal(this.withSubmoduleFlags([...found.values(), ...baseline]));
+            };
             // 根仓库已识别即可发布；子模块扫描继续进行，不能阻塞初始化默认选择。
+            publishIntermediate();
+            await Promise.all(roots.filter((root): root is GitRepositoryOption => Boolean(root)).map(async root => {
+                const rootPath = vscode.Uri.parse(root.path).fsPath;
+                await this.scanSubmodules(rootPath, found, localParents, publishIntermediate);
+            }));
             if (isFull) {
-                this.applyTotal(this.withSubmoduleFlags([...found.values()]));
-            }
-            let currentLayer = layer;
-            while (currentLayer.length > 0) {
-                const candidates = (await Promise.all(currentLayer.map(async parent => {
-                    const parentPath = vscode.Uri.parse(parent.path).fsPath;
-                    const paths = await this.readSubmodulePaths(parentPath);
-                    const initializedPaths = await this.readInitializedGitlinkPaths(parentPath, paths);
-                    return paths
-                        .filter(rootPath => initializedPaths.has(repoKey(rootPath)))
-                        .map(rootPath => ({ rootPath, parentPath }));
-                }))).flat();
-                const nextLayer: GitRepositoryOption[] = [];
-                await Promise.all(candidates.map(async candidate => {
-                    const candidateKey = repoKey(candidate.rootPath);
-                    localParents.set(candidateKey, repoKey(candidate.parentPath));
-                    if (found.has(candidateKey)) { return; }
-                    const option = await this.createRepositoryOption(candidate.rootPath, 'subrepo');
-                    if (!option) { return; }
-                    found.set(candidateKey, option);
-                    nextLayer.push(option);
-                }));
-                currentLayer = nextLayer;
-            }
-            if (isFull) {
+                // 本轮完整扫描结束，父子关系与列表都以最终结果为准，清理已不存在的仓库。
                 this.parentByRepository.clear();
                 for (const [child, parent] of localParents) { this.parentByRepository.set(child, parent); }
                 this.applyTotal(this.withSubmoduleFlags([...found.values()]));
             } else {
-                const removed = this.collectDescendants(starts);
+                const removed = this.collectDescendants(starts.map(repoKey));
                 for (const repositoryPath of removed) {
                     this.parentByRepository.delete(repositoryPath);
                 }
@@ -286,45 +281,37 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
         }
     }
 
-    private async readSubmodulePaths(rootPath: string): Promise<string[]> {
-        try {
-            const { stdout } = await execFileAsync('git', [
-                '--no-optional-locks', '-C', rootPath,
-                'config', '--null', '--file', '.gitmodules', '--get-regexp', '^submodule\\..*\\.path$',
-            ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
-            return stdout.split('\0').flatMap(record => {
-                const separator = record.indexOf('\n');
-                if (separator === -1) { return []; }
-                const submodulePath = record.slice(separator + 1);
-                return submodulePath ? [path.resolve(rootPath, submodulePath)] : [];
-            });
-        } catch {
-            return [];
+    private async scanSubmodules(
+        parentPath: string,
+        found: Map<string, GitRepositoryOption>,
+        parents: Map<string, string>,
+        publish: () => void,
+    ): Promise<void> {
+        const declaredPaths = await this.readDeclaredSubmodulePaths(parentPath);
+        for (const modulePath of declaredPaths) {
+            if (!await this.hasGitHead(modulePath)) { continue; }
+            const moduleKey = repoKey(modulePath);
+            if (found.has(moduleKey)) { continue; }
+            const option = await this.createRepositoryOption(modulePath, 'subrepo');
+            if (!option) { continue; }
+            parents.set(moduleKey, repoKey(parentPath));
+            found.set(moduleKey, option);
+            publish();
+            await this.scanSubmodules(modulePath, found, parents, publish);
         }
     }
 
-    private async readInitializedGitlinkPaths(rootPath: string, declaredPaths: readonly string[]): Promise<Set<string>> {
-        if (declaredPaths.length === 0) { return new Set(); }
-        const relativePaths = new Map(declaredPaths.map(modulePath => [
-            path.relative(rootPath, modulePath).split(path.sep).join('/'),
-            modulePath,
-        ]));
+    private async readDeclaredSubmodulePaths(parentPath: string): Promise<string[]> {
         try {
-            const { stdout } = await execFileAsync('git', [
-                '--no-optional-locks', '-C', rootPath,
-                'ls-files', '--stage', '-z', '--', ...relativePaths.keys(),
-            ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
-            const gitlinkPaths = stdout.split('\0').flatMap(record => {
-                const match = /^160000 [0-9a-f]{40} \d+\t(.+)$/.exec(record);
-                const modulePath = match ? relativePaths.get(match[1]) : undefined;
-                return modulePath ? [modulePath] : [];
-            });
-            const initializedPaths = await Promise.all(gitlinkPaths.map(async modulePath =>
-                await this.hasGitHead(modulePath) ? repoKey(modulePath) : undefined,
-            ));
-            return new Set(initializedPaths.filter((modulePath): modulePath is string => Boolean(modulePath)));
+            const gitmodules = await fs.readFile(path.join(parentPath, '.gitmodules'), 'utf8');
+            const paths: string[] = [];
+            for (const line of gitmodules.split(/\r?\n/)) {
+                const match = /^\s*path\s*=\s*(.+?)\s*$/.exec(line);
+                if (match) { paths.push(path.resolve(parentPath, match[1])); }
+            }
+            return paths;
         } catch {
-            return new Set();
+            return [];
         }
     }
 
