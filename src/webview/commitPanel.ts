@@ -77,6 +77,8 @@ export class CommitPanel implements vscode.Disposable {
     private panel?: vscode.WebviewPanel;
     private webviewReady = false;
     private snapshot?: CommitPanelSnapshot;
+    /** 已下发到 webview 的快照对象引用; 每次 update/show 都传入新对象, 用引用比较去重避免重复渲染。 */
+    private publishedSnapshot?: CommitPanelSnapshot;
     private postQueue: Promise<unknown> = Promise.resolve();
     private pendingFocusRepositoryPath?: string;
 
@@ -85,7 +87,8 @@ export class CommitPanel implements vscode.Disposable {
     show(snapshot: CommitPanelSnapshot, focusRepositoryPath?: string): void {
         this.snapshot = snapshot;
         const isNew = !this.panel;
-        this.ensurePanel();
+        // 快照在创建面板前就已就绪, 直接随 HTML 内联下发, 首次渲染与首次绘制同步完成。
+        this.ensurePanel(snapshot);
         this.panel!.reveal(this.panel!.viewColumn ?? vscode.ViewColumn.Active, false);
         if (focusRepositoryPath) { this.pendingFocusRepositoryPath = focusRepositoryPath; }
         if (isNew || !this.webviewReady) { return; }
@@ -117,19 +120,21 @@ export class CommitPanel implements vscode.Disposable {
 
     dispose(): void { this.panel?.dispose(); }
 
-    private ensurePanel(): void {
+    private ensurePanel(initialSnapshot: CommitPanelSnapshot): void {
         if (this.panel) { return; }
         this.webviewReady = false;
         this.postQueue = Promise.resolve();
         const codiconsRoot = vscode.Uri.joinPath(vscode.Uri.file(__dirname), '..', '..', 'media', 'codicons');
-        this.panel = vscode.window.createWebviewPanel('vscode-gitk.commit', 'Commit', vscode.ViewColumn.Active, {
+        this.panel = vscode.window.createWebviewPanel('vscode-gitk.commit', 'commit', vscode.ViewColumn.Active, {
             enableScripts: true,
             retainContextWhenHidden: true,
             localResourceRoots: [codiconsRoot],
         });
         this.panel.webview.onDidReceiveMessage(message => this.handleMessage(message));
-        this.panel.onDidDispose(() => { this.panel = undefined; this.webviewReady = false; this.pendingFocusRepositoryPath = undefined; });
-        this.panel.webview.html = this.getHtml(codiconsRoot);
+        this.panel.onDidDispose(() => { this.panel = undefined; this.webviewReady = false; this.publishedSnapshot = undefined; this.pendingFocusRepositoryPath = undefined; });
+        this.panel.webview.html = this.getHtml(codiconsRoot, initialSnapshot);
+        // 首屏快照已内联, ready 后无需再发一次相同内容。
+        this.publishedSnapshot = initialSnapshot;
     }
 
     private sendPendingFocus(): void {
@@ -212,7 +217,9 @@ export class CommitPanel implements vscode.Disposable {
 
     private publish(): void {
         if (!this.panel || !this.webviewReady || !this.snapshot) { return; }
+        if (this.publishedSnapshot === this.snapshot) { return; }
         const snapshot = this.snapshot;
+        this.publishedSnapshot = snapshot;
         void this.panel.webview.postMessage({ type: 'snapshot', cards: snapshot.cards, displayMode: snapshot.displayMode })
             .then(() => console.log('[Gitk][CommitPanel] snapshot posted', {
                 timestamp: new Date().toISOString(),
@@ -227,10 +234,12 @@ export class CommitPanel implements vscode.Disposable {
         return this.postQueue.then(() => undefined);
     }
 
-    private getHtml(codiconsRoot: vscode.Uri): string {
+    private getHtml(codiconsRoot: vscode.Uri, initialSnapshot: CommitPanelSnapshot): string {
         const webview = this.panel!.webview;
         const codiconCssUri = webview.asWebviewUri(vscode.Uri.joinPath(codiconsRoot, 'codicon.css'));
         const nonce = randomBytes(16).toString('base64');
+        // 首屏数据作为 JSON 数据块内联: 转义 '<' 可阻断内容里出现的 "</script>" 提前闭合标签。
+        const initialSnapshotJson = JSON.stringify(initialSnapshot).replace(/</g, '\\u003c');
         const csp = `default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src ${webview.cspSource};`;
         return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -238,9 +247,8 @@ export class CommitPanel implements vscode.Disposable {
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<link rel="stylesheet" href="${codiconCssUri}">
 <style>
-:root{color-scheme:light dark;--card-radius:9px;--card-border:1px;--card-ring:1px;--header-surface:var(--vscode-editorWidget-background,var(--vscode-tab-activeBackground))}
+:root{color-scheme:light dark;--card-radius:9px;--card-border:1px;--card-ring:1px;--header-surface:var(--vscode-editorWidget-background,var(--vscode-tab-activeBackground));--file-path-font-size:calc(var(--vscode-editor-font-size) * .9);--file-row-padding-y:3px;--file-row-padding-x:10px;--row-icon-size:14px;--row-icon-padding:2px;--file-row-height:calc(var(--row-icon-size) + 2 * var(--row-icon-padding) + 2 * var(--file-row-padding-y))}
 *{box-sizing:border-box}
 /* 与 MultiDiff 一致: 偏暗背板 + 卡片浮起, 视觉统一。 */
 body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-editor-background) 50%, #000);color:var(--vscode-editor-foreground);font-family:var(--vscode-editor-font-family);font-size:var(--vscode-editor-font-size)}
@@ -286,9 +294,20 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .action-groups{display:flex;gap:8px;align-items:stretch;flex-direction:column;width:100%}
 .action-group{display:flex;align-items:center;gap:8px;width:100%;box-sizing:border-box;padding:4px 6px;border:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:7px;background:var(--vscode-editorWidget-background)}
 .commit-group{border-color:var(--vscode-button-background)}
-.submodule-group{max-width:100%;overflow:visible}
+.commit-group,.submodule-group{max-width:100%;overflow:visible;padding:3px 4.5px;gap:6px;font-size:calc(var(--vscode-editor-font-size) * .75)}
+.commit-group .commit-btn,.submodule-group .push-btn{padding:4.5px 10.5px;border-radius:3.75px;font-size:inherit}
+.commit-group .commit-option,.submodule-group .pull-option{gap:3px;font-size:inherit}
+.commit-group .commit-option input,.submodule-group .pull-option input{width:10px;height:10px;margin:0}
+.commit-group .commit-btn{border-color:transparent}
 .commit-submodule-prefix,.submodule-prefix{display:none}
-.commit-submodule-selector,.submodule-group .submodule-selector{display:block;flex:1 1 240px;min-width:180px;max-width:none;align-self:stretch;order:2}
+.commit-submodule-selector,.submodule-group .submodule-selector{display:block;flex:1 1 180px;min-width:135px;max-width:none;align-self:stretch;order:2}
+.commit-group .submodule-inline-box,.submodule-group .submodule-inline-box{gap:7.5px;min-height:30px;padding:5.25px 7.5px}
+.commit-group .submodule-inline-title,.submodule-group .submodule-inline-title{min-width:4.125em;padding:1.5px 7.5px 1.5px 0;font-size:calc(var(--vscode-editor-font-size) * .675);line-height:15px}
+.commit-group .submodule-inline-options,.submodule-group .submodule-inline-options{gap:4.5px;max-height:75px}
+.commit-group .submodule-inline-option,.submodule-group .submodule-inline-option{gap:3.75px;min-height:18px;padding:2.25px 5.25px;border-radius:3.75px;font-size:calc(var(--vscode-editor-font-size) * .675)}
+.commit-group .submodule-inline-option .repository-status-badge,.submodule-group .submodule-inline-option .repository-status-badge{height:13.5px;line-height:13.5px;font-size:8.25px}
+.commit-group .submodule-push-target,.submodule-group .submodule-push-target{padding-left:5.25px;font-size:calc(var(--vscode-editor-font-size) * .6375)}
+.commit-group .submodule-inline-empty,.submodule-group .submodule-inline-empty{line-height:15px;font-size:calc(var(--vscode-editor-font-size) * .675)}
 .commit-group .commit-btn{order:0}
 .commit-group .commit-option{order:1;flex:0 0 auto}
 .submodule-group .push-btn{order:0}
@@ -357,11 +376,11 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .section-title .section-actions{display:flex;align-items:center;gap:4px;margin-left:auto}
 .section-title .codicon{font-size:14px}
 .display-mode-btn{margin-left:4px}
-.file-row,.folder-row{display:flex;align-items:center;gap:6px;padding:3px 10px}
+.file-row,.folder-row{display:flex;align-items:center;gap:6px;padding:var(--file-row-padding-y) var(--file-row-padding-x)}
 .gitlink-label{display:inline-flex;align-items:center;flex:0 0 auto;margin:0;padding:0 6px;border:1px solid var(--vscode-gitDecoration-addedResourceForeground,var(--vscode-badge-background));border-radius:8px;background:color-mix(in srgb,var(--vscode-gitDecoration-addedResourceForeground,var(--vscode-badge-background)) 12%,transparent);color:var(--vscode-gitDecoration-addedResourceForeground,var(--vscode-badge-foreground));font-size:10px;font-weight:600;line-height:16px;letter-spacing:.02em}
 .file-row:hover,.folder-row:hover{background:var(--vscode-list-hoverBackground)}
 .file-row .status{width:14px;text-align:center;color:var(--vscode-gitDecoration-modifiedResourceForeground)}
-.file-row .path{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:calc(var(--vscode-editor-font-size) * .9)}
+.file-row .path{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--file-path-font-size)}
 .file-row .file-folder{opacity:.55}
 .file-row.staged .file-name{color:var(--vscode-gitDecoration-addedResourceForeground,#73c991)}
 .file-row.unstaged .file-name{color:var(--vscode-textLink-foreground,#3794ff)}
@@ -371,21 +390,29 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .folder-row .path{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .file-row .row-actions,.file-row .row-actions .icon-btn,.file-row .row-actions .codicon{opacity:1}
 .file-row .row-actions{display:flex;gap:4px}
-.icon-btn{border:0;background:transparent;color:var(--vscode-icon-foreground);cursor:pointer;padding:2px;border-radius:3px;display:inline-flex;align-items:center}
+.icon-btn{border:0;background:transparent;color:var(--vscode-icon-foreground);cursor:pointer;padding:var(--row-icon-padding);border-radius:3px;display:inline-flex;align-items:center}
 .icon-btn:hover{background:var(--vscode-toolbar-hoverBackground)}
 .icon-btn:disabled{opacity:.35;cursor:default}
 .icon-btn:disabled:hover{background:transparent}
-.icon-btn .codicon{font-size:14px}
-.empty{padding:6px 10px;color:var(--vscode-descriptionForeground)}
+.icon-btn .codicon{font-size:var(--row-icon-size)}
+/* 空态与文件行同高同字号: 行高由行内操作按钮(14px codicon + 2px padding)加上下内边距推出, 与文件路径共用变量避免再次漂移。 */
+.empty{display:flex;align-items:center;padding:var(--file-row-padding-y) var(--file-row-padding-x);min-height:var(--file-row-height);color:var(--vscode-descriptionForeground);font-size:var(--file-path-font-size)}
 .no-repos{padding:20px;color:var(--vscode-descriptionForeground);text-align:center}
 </style>
 </head>
 <body>
+<script nonce="${nonce}" id="gitk-initial-snapshot" type="application/json">${initialSnapshotJson}</script>
 <div id="loading"><div class="loading-content"><div class="loading-message">正在加载提交面板…</div><div class="loading-track"><div class="loading-bar"></div></div></div></div>
 <div id="app" hidden></div>
 <script nonce="${nonce}">
 (function(){
   const vscode=acquireVsCodeApi();
+  // codicon.css 只提供图标字形; 放在 head 的阻塞 <link> 会把 ready 消息的发出一起挡住,
+  // 改为脚本动态挂载后, 首屏数据不再等待该样式表(尺寸由内联样式固定, 不会引起布局跳动)。
+  const codiconLink=document.createElement('link');
+  codiconLink.rel='stylesheet';
+  codiconLink.href='${codiconCssUri}';
+  document.head.appendChild(codiconLink);
   const loading=document.getElementById('loading');
   const loadingMessage=loading.querySelector('.loading-message');
   const app=document.getElementById('app');
@@ -579,7 +606,6 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     container._files=files;
     next.forEach(function(node,index){const current=container.children[index];if(current!==node)container.insertBefore(node,current||null)});
     previous.forEach(function(node){node.remove()});
-    bindRowActions(container,repositoryPath,container.closest('.card')._card);
   }
 
   function resizeMessageInput(input){input.style.height='auto';input.style.height=input.scrollHeight+'px'}
@@ -604,10 +630,10 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
             '<span class="action-group commit-group">'+
               '<label class="commit-option"><input class="amend-checkbox" type="checkbox"><span>Amend</span></label>'+
               '<span class="commit-submodule-selector submodule-selector"></span>'+
-              '<button class="commit-btn">Commit</button>'+
+              '<button class="commit-btn">commit</button>'+
             '</span>'+
             '<span class="action-group submodule-group">'+
-              '<button class="push-btn"><span>Push</span><span class="push-target-label"></span></button>'+
+              '<button class="push-btn"><span>push</span><span class="push-target-label"></span></button>'+
               '<label class="pull-option"><input class="pull-before-push-checkbox" type="checkbox" checked><span>Pull</span></label>'+
               '<span class="submodule-selector push-submodule-selector"></span>'+
             '</span>'+
@@ -639,6 +665,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     const cardBody=el.querySelector('.card-body');
 
     el.addEventListener('click',function(){selectCard(repo)});
+    bindRowActions(el,repo);
     // 仅无任何未提交文件的仓库可折叠; 有变更的仓库强制展开、不可折叠。
     cardHeader.addEventListener('click',function(){
       if(!el._collapsible)return;
@@ -700,26 +727,32 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     return el;
   }
 
-  function bindRowActions(container,repo,card){
-    container.querySelectorAll('.file-row').forEach(function(row){
-      row.addEventListener('click',function(){
-        vscode.postMessage({type:'selectFile',repositoryPath:repo,section:row.dataset.section,path:row.dataset.path});
-      });
-    });
-    container.querySelectorAll('.icon-btn').forEach(function(btn){
-      btn.addEventListener('click',function(event){
-        event.stopPropagation();
-        const filePath=btn.dataset.path;
-        const file=card[btn.dataset.section==='staged'?'stagedFiles':'unstagedFiles'].find(function(item){return item.path===filePath});
+  // 行节点跨渲染复用, 逐次渲染直接绑定会叠加监听器: 一次点击发出 N 条消息 -> N 个确认弹窗。
+  // 改为卡片根节点单次事件委托, 点击时再按当前 _card 解析数据。
+  function bindRowActions(cardElement,repo){
+    cardElement.addEventListener('click',function(event){
+      const card=cardElement._card;
+      if(!card)return;
+      const button=event.target.closest('.icon-btn');
+      if(button&&button.dataset.action){
+        const section=button.dataset.section;
+        const filePath=button.dataset.path;
+        const files=section==='staged'?card.stagedFiles:card.unstagedFiles;
+        const file=files.find(function(item){return item.path===filePath});
         vscode.postMessage({
           type:'workingTreeAction',
           repositoryPath:repo,
-          action:btn.dataset.action,
-          section:btn.dataset.section,
+          action:button.dataset.action,
+          section:section,
           paths:[filePath],
           untrackedPaths:file&&file.isUntracked?[filePath]:[],
         });
-      });
+        return;
+      }
+      const row=event.target.closest('.file-row');
+      if(row){
+        vscode.postMessage({type:'selectFile',repositoryPath:repo,section:row.dataset.section,path:row.dataset.path});
+      }
     });
   }
 
@@ -772,7 +805,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     refs.amendCheckbox.disabled=false;
     if(refs.messageInput.value!==card.message){refs.messageInput.value=card.message;resizeMessageInput(refs.messageInput)}
     el.querySelector('.pull-before-push-checkbox').checked=card.pullBeforePush;
-    refs.commitBtn.textContent=card.amend?'Amend':'Commit';
+    refs.commitBtn.textContent=card.amend?'amend':'commit';
     const disableCommit=card.committing;
     refs.commitBtn.disabled=disableCommit;
     refs.pushBtn.disabled=false;
@@ -841,8 +874,6 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     refs.unstagedChevron.className='codicon codicon-chevron-'+(el._state.unstagedOpen?'down':'right')+' unstaged-chevron';
     updateCommitSelector(el,card);
     updatePushSelector(el,card);
-    bindRowActions(stagedList,el.dataset.repo,card);
-    bindRowActions(unstagedList,el.dataset.repo,card);
   }
 
   function captureViewportAnchor(){
@@ -906,6 +937,13 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     }
   });
 
+  // 首屏快照随 HTML 内联下发, 首次渲染在首次绘制前完成, 不再等 ready→postMessage 往返。
+  const initialSnapshotNode=document.getElementById('gitk-initial-snapshot');
+  if(initialSnapshotNode){
+    const initial=JSON.parse(initialSnapshotNode.textContent);
+    displayMode=initial.displayMode;
+    render(initial.cards||[]);
+  }
   vscode.postMessage({type:'ready'});
 })();
 </script>

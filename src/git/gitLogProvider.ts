@@ -214,17 +214,16 @@ export interface PushBranchOption {
     upstreamRemote: string;
     upstreamBranch: string;
     isCurrent: boolean;
-    hasWorkingTreeChanges: boolean;
     recentUnpushedCommits: readonly { subject: string; timestamp: number }[];
 }
 
 /**
- * 读取 Push 分支选择器所需的最小数据集：工作区状态、分支 upstream 与最近未推送提交。
- * 不按分支循环执行 Git 命令，始终只进行三次只读查询。
+ * 读取 Push 分支选择器所需的最小数据集：分支 upstream 与最近未推送提交。
+ * 工作区状态由 UncommittedFilesWatcher 独占维护, 这里不再重复执行 git status。
+ * 不按分支循环执行 Git 命令，始终只进行两次只读查询。
  */
 export async function getPushBranches(rootUri: vscode.Uri, commitLimit = 8): Promise<PushBranchOption[]> {
-    const [statusOutput, refsOutput, commitsOutput] = await Promise.all([
-        runGitReadCommand(rootUri, ['status', '--porcelain=v1', '-z', '--untracked-files=normal']),
+    const [refsOutput, commitsOutput] = await Promise.all([
         runGitReadCommand(rootUri, ['for-each-ref', '--format=%(refname)%00%(refname:short)%00%(upstream:short)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(HEAD)', 'refs/heads', 'refs/remotes']),
         runGitReadCommand(rootUri, [
             'log', '--branches', '--not', '--remotes', `--max-count=${commitLimit}`,
@@ -244,7 +243,6 @@ export async function getPushBranches(rootUri: vscode.Uri, commitLimit = 8): Pro
             commitsByBranch.set(branch, commits);
         }
     }
-    const hasWorkingTreeChanges = statusOutput.length > 0;
     const localBranches: { name: string; upstreamName: string; upstreamRemote: string; upstreamBranch: string; isCurrent: boolean }[] = [];
     const remoteBranches: { remote: string; branch: string; label: string }[] = [];
     for (const line of refsOutput.split(/\r?\n/)) {
@@ -276,7 +274,6 @@ export async function getPushBranches(rootUri: vscode.Uri, commitLimit = 8): Pro
             upstreamRemote: target.remote,
             upstreamBranch: target.branch,
             isCurrent: local.isCurrent,
-            hasWorkingTreeChanges: local.isCurrent && hasWorkingTreeChanges,
             recentUnpushedCommits: commitsByBranch.get(local.name) ?? [],
         }));
     });
