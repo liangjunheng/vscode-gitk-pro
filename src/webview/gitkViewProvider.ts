@@ -268,7 +268,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         // Diff 面板顶部卡片变化时回写 selectedPath，驱动 Changed Files 高亮。
         this.multiDiffPanel = new MultiDiffPanel(
             (path, generation) => this.syncFileHighlightFromDiffPanel(path, generation),
-            () => this.handleDiffRendered(),
+            identity => this.handleDiffRendered(identity),
             (path, line, column, side) => void this.openWorkspaceFileAtLine(path, line, column, side),
             (path, content) => void this.saveWorkspaceFile(path, content),
             (action, section, path) => void this.runWorkingTreeAction(action, section, path),
@@ -2031,9 +2031,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    // 收到 Diff 面板渲染完成信号后放行 Changed Files 列表。
-    private handleDiffRendered(): void {
+    // 仅当前提交的 Diff 面板完成首屏渲染后，才放行 Changed Files 列表。
+    private handleDiffRendered(identity?: string): void {
         if (this.pendingFilesRevealGeneration === undefined) { return; }
+        const currentIdentity = `${this.currentRepositoryPath ?? ''}\u0000${this.currentHash ?? ''}`;
+        if (identity !== undefined && identity !== currentIdentity) { return; }
         if (this.pendingFilesRevealGeneration !== this.commitFilesGeneration) {
             this.pendingFilesRevealGeneration = undefined;
             return;

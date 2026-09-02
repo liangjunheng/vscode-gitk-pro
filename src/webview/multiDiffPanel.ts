@@ -27,7 +27,7 @@ export class MultiDiffPanel implements vscode.Disposable {
 
     constructor(
         private readonly onSelectFile?: (path: string, generation: number) => void,
-        private readonly onRendered?: () => void,
+        private readonly onRendered?: (identity?: string) => void,
         private readonly onOpenFileAtLine?: (path: string, line?: number, column?: number, side?: 'original' | 'modified') => void,
         private readonly onSaveFile?: (path: string, content: string) => void,
         private readonly onWorkingTreeAction?: (action: 'stage' | 'unstage' | 'discard', section: 'staged' | 'unstaged', path: string) => void,
@@ -114,7 +114,7 @@ export class MultiDiffPanel implements vscode.Disposable {
                 this.onWorkingTreeAction?.(message.action, message.section, message.path);
             } else if (message?.type === 'rendered') {
                 // Diff 卡片与行号渲染完成, 通知 Provider 放行 Changed Files 列表。
-                this.onRendered?.();
+                this.onRendered?.(typeof message.identity === 'string' ? message.identity : undefined);
             } else if (message?.type === 'error') {
                 console.error('[gitk-multi-diff]', message.message);
             } else if (message?.type === 'log') {
@@ -283,7 +283,7 @@ self.MonacoEnvironment={getWorker:()=>new Worker('${monacoUri}/base/worker/worke
 const loading=document.getElementById('loading'),list=document.getElementById('list'),globalHScroll=document.getElementById('global-hscroll'),globalHScrollContent=document.getElementById('global-hscroll-content'),languages=${JSON.stringify(MONACO_DIFF_LANGUAGES)},diffOptions=${JSON.stringify(MONACO_DIFF_OPTIONS)};
 const report=message=>{try{window.gitkVscode.postMessage({type:'error',message})}catch(_){}};
 const log=message=>{try{window.gitkVscode.postMessage({type:'log',message})}catch(_){}};
-const notifyRendered=revision=>{try{window.gitkVscode.postMessage({type:'rendered',revision})}catch(_){}};
+const notifyRendered=(revision,identity)=>{try{window.gitkVscode.postMessage({type:'rendered',revision,identity})}catch(_){}};
 let monacoReady=false,lastRevision=0,lastIdentity='',pending,cards=[],cardByPath=new Map(),activePath='',clickedPath='',suppressSyncUntil=0,scrollAnimationFrame=0,renderToken=0,editable=false,virtualFrame=0,editorPool=[],syncingGlobalHScroll=false,hScrollFrame=0,pinnedAnchor=null;
 function diffKey(diff){return diff.diffKey||diff.path}
 let activeChangeIndex=-1,activeChangePage=0;
@@ -855,7 +855,7 @@ function render(snapshot){
     const sameIdentity=lastIdentity!==''&&snapshot.identity===lastIdentity;
     const state=sameIdentity?refreshState():null;
     editable=snapshot.editable===true;
-    if(!snapshot.diffs.length){dispose();list.classList.remove('rendering');list.textContent='暂无变更文件';loading.hidden=true;list.hidden=false;lastIdentity=snapshot.identity;log('render #'+snapshot.revision+': empty');notifyRendered(snapshot.revision);return}
+    if(!snapshot.diffs.length){dispose();list.classList.remove('rendering');list.textContent='暂无变更文件';loading.hidden=true;list.hidden=false;lastIdentity=snapshot.identity;log('render #'+snapshot.revision+': empty');notifyRendered(snapshot.revision,snapshot.identity);return}
     const total=snapshot.diffs.length;
     let token=renderToken;
     if(!sameIdentity){
@@ -873,7 +873,7 @@ function render(snapshot){
     list.classList.remove('rendering');loading.hidden=true;lastIdentity=snapshot.identity;
     log('render #'+snapshot.revision+': cards='+total+', mounted='+cards.filter(function(entry){return entry.mounted}).length+', reveal='+(sameIdentity?'anchor':target));
     // 外壳和首屏 Monaco 已开始挂载即可放行 Changed Files；后续由滚动虚拟化管理。
-    notifyRendered(snapshot.revision);
+    notifyRendered(snapshot.revision,snapshot.identity);
   }catch(error){fail(error)}
 }
 function receive(message){
