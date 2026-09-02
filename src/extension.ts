@@ -55,6 +55,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         context,
         'vscode-gitk.open',
         () => provider.getWorkingTreeSummary(),
+        () => provider.hasRepositories,
+        provider.onDidChangeRepositoryState,
         provider.onDidChangeWorkingTreeSummary,
     );
     context.subscriptions.push(statusBar);

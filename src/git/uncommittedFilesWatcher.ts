@@ -52,9 +52,11 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
     private readonly branchSubscription: vscode.Disposable;
     private readonly changesEmitter = new vscode.EventEmitter<HeadBranchUncommittedFilesChangedEvent>();
     private readonly contentChangesEmitter = new vscode.EventEmitter<HeadBranchUncommittedFileContentChangedEvent>();
+    private readonly indexChangedEmitter = new vscode.EventEmitter<{ repositoryPath: string }>();
 
     readonly onEachHeadBranchUncommittedFileChanged = this.changesEmitter.event;
     readonly onEachHeadBranchUncommittedFileContentChanged = this.contentChangesEmitter.event;
+    readonly onRepositoryIndexChanged = this.indexChangedEmitter.event;
 
     constructor(repoHeadBranchWatcher: RepoHeadBranchWatcher) {
         // 数据源改为全部仓库 HEAD 监听器, 不再跟随仓库选择, 天然覆盖所有仓库。
@@ -167,6 +169,7 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         this.changesByRepository.clear();
         this.changesEmitter.dispose();
         this.contentChangesEmitter.dispose();
+        this.indexChangedEmitter.dispose();
     }
 
     private applyCurrentHeadBranch(repositoryPath: string, branch: GitBranchOption | undefined): void {
@@ -246,6 +249,7 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
                 if (!slot?.branch) { return; }
                 if (slot.mutationDepth > 0) { return; }
                 slot.indexRefreshPending = true;
+                this.indexChangedEmitter.fire({ repositoryPath });
                 void this.requestRefresh(repositoryPath);
             };
             this.indexWatchers.set(repositoryPath, vscode.Disposable.from(

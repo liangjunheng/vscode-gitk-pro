@@ -43,6 +43,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     readonly onDidChangeDiffAvailability = this.onDidChangeDiffAvailabilityEmitter.event;
     private readonly onDidChangeWorkingTreeSummaryEmitter = new vscode.EventEmitter<void>();
     readonly onDidChangeWorkingTreeSummary = this.onDidChangeWorkingTreeSummaryEmitter.event;
+    private readonly onDidChangeRepositoryStateEmitter = new vscode.EventEmitter<void>();
+    readonly onDidChangeRepositoryState = this.onDidChangeRepositoryStateEmitter.event;
+    get hasRepositories(): boolean { return this.repositories.length > 0; }
     private lastLoadingProgress?: { phase: string; message: string; current: number; total: number };
     private storeUnsubscribe?: () => void;
     private pushStatePending = false;
@@ -311,11 +314,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.repoHeadBranchWatcher,
             this.selectedRepoTotalBranchWatcher,
             this.uncommittedFilesWatcher,
+            this.uncommittedFilesWatcher.onRepositoryIndexChanged(event => {
+                void this.repoSubmoduleWatcher.rescanRepository(event.repositoryPath);
+            }),
             // 保持 selectedRepoSubscription 在构造阶段的订阅顺序；不要移到 Controller 创建之后。
             this.selectedRepoSubscription,
             this.reposLoadingSubscription,
             this.repoController.ontotalRepoListChanged(repositories => {
                 this.totalRepoListSnapshot = [...repositories];
+                this.onDidChangeRepositoryStateEmitter.fire();
                 this.view?.webview.postMessage({ type: 'totalRepoListChanged', repositories });
                 this.onSelectedRepoListChanged(this.repoController.selectedRepoList);
                 if (this.commitPanel.isVisible()) {

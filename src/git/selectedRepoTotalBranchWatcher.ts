@@ -135,18 +135,18 @@ export class SelectedRepoTotalBranchWatcher implements vscode.Disposable {
             const gitDir = stdout.trim();
             if (!gitDir || this.repositories.get(key)?.path !== repository.path) { return undefined; }
             const gitUri = vscode.Uri.file(gitDir);
-            const watchers = [
-                vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(gitUri, 'refs/heads/**')),
-                vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(gitUri, 'refs/remotes/**')),
-                vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(gitUri, 'packed-refs')),
-            ];
+            const watcher = vscode.workspace.createFileSystemWatcher(
+                new vscode.RelativePattern(gitUri, '{refs/heads/**,refs/remotes/**,packed-refs}'),
+            );
             const refresh = () => {
                 const current = this.repositories.get(key);
                 if (current) { void this.enqueueRefresh(current, true); }
             };
             return vscode.Disposable.from(
-                ...watchers,
-                ...watchers.flatMap(watcher => [watcher.onDidCreate(refresh), watcher.onDidChange(refresh), watcher.onDidDelete(refresh)]),
+                watcher,
+                watcher.onDidCreate(refresh),
+                watcher.onDidChange(refresh),
+                watcher.onDidDelete(refresh),
             );
         } catch (error) {
             console.warn(`无法创建仓库分支监听: ${repository.path}`, error);

@@ -87,7 +87,7 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
         return this.startQueuedScan();
     }
 
-    private rescanRepository(repositoryPath: string): Promise<GitRepositoryOption[]> {
+    rescanRepository(repositoryPath: string): Promise<GitRepositoryOption[]> {
         this.partialRescanPaths.add(repoKey(repositoryPath));
         return this.startQueuedScan();
     }
