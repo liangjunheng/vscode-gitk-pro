@@ -324,7 +324,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.totalRepoListSnapshot = [...repositories];
                 this.onDidChangeRepositoryStateEmitter.fire();
                 this.view?.webview.postMessage({ type: 'totalRepoListChanged', repositories });
-                this.onSelectedRepoListChanged(this.repoController.selectedRepoList);
                 if (this.commitPanel.isVisible()) {
                     this.syncCommitRepositories();
                     this.commitPanel.update(this.buildCommitSnapshot());
