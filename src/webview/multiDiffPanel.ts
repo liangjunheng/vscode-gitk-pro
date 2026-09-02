@@ -886,7 +886,10 @@ function receive(message){
   pending=message;
   if(message.error){show(message.error);return}
   if(message.loading){
-    if(!cards.length||message.identity!==lastIdentity){show('正在读取 Diff 数据 ('+message.completed+'/'+message.total+')...')}
+    if(!cards.length||message.identity!==lastIdentity){
+      const progress=message.total>0?' ('+message.completed+'/'+message.total+')':'';
+      show('正在读取 Diff 数据'+progress+'...');
+    }
     return;
   }
   if(monacoReady){const snapshot=pending;pending=undefined;render(snapshot)}
