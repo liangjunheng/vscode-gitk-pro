@@ -270,12 +270,11 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .repository-ancestry-link{border:0;padding:0;background:transparent;color:inherit;font:inherit;cursor:pointer;white-space:nowrap}
 .repository-ancestry-link:hover{text-decoration:underline;color:var(--vscode-textLink-foreground)}
 .repository-ancestry-separator{opacity:.8}
-.repository-icon{display:inline-flex;width:16px;height:16px;flex:0 0 16px;color:var(--vscode-icon-foreground)}
-.repository-icon.has-submodules{color:var(--vscode-gitDecoration-addedResourceForeground,var(--vscode-icon-foreground))}
-.repository-icon svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.repository-icon{display:flex;align-items:center;justify-content:center;width:16px;height:16px;flex:0 0 16px;font-size:16px;line-height:16px;color:var(--vscode-icon-foreground)}
+.card-header .repository-icon.codicon{display:flex;align-items:center;justify-content:center;width:16px;height:16px;font-size:16px;line-height:16px}
 .card.selected-card{border-color:var(--vscode-focusBorder);box-shadow:0 0 0 1px var(--vscode-focusBorder),0 1px 4px rgba(0,0,0,.12)}
 .card.selected-card .card-header{border-bottom-color:var(--vscode-focusBorder)}
-.card-header .codicon{font-size:15px;color:var(--vscode-icon-foreground)}
+.card-header .codicon:not(.repository-icon){font-size:15px;color:var(--vscode-icon-foreground)}
 .card.collapsible-card .card-header{cursor:pointer}
 /* 折叠后只剩标题栏: 去掉多余底边框, 让标题栏自身呈完整卡片外观。 */
 .card.collapsed .card-header{border-bottom:0;border-radius:var(--card-radius);box-shadow:none}
@@ -760,10 +759,9 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     el._card=card;
     el._amend=card.amend;
     const repositoryIcon=el.querySelector('.card-repository-icon');
-    repositoryIcon.classList.toggle('has-submodules',card.repositoryHasSubmodules);
-    repositoryIcon.innerHTML=card.repositoryHasSubmodules
-      ? '<svg viewBox="0 0 16 16"><path d="M2 4.5h4.5L8 6h6v5.5H2z"/><rect x="5" y="7.5" width="6" height="3.5" rx="0.5"/></svg>'
-      : '<svg viewBox="0 0 16 16"><path d="M2 4.5h4.5L8 6h6v5.5H2z"/></svg>';
+    // 父仓库和独立仓库=repo；子仓库=archive。
+    const icon=card.repositoryAncestry.length>0?'archive':'repo';
+    repositoryIcon.className='repository-icon card-repository-icon codicon codicon-'+icon;
     el.querySelector('.repo-label').textContent=card.repositoryLabel;
     const ancestry=el.querySelector('.repository-ancestry');
     ancestry.replaceChildren();

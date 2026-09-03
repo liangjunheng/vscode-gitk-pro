@@ -93,7 +93,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     // 弹窗总列表快照只由对应 controller 的 total-list 回调写入，视图重建时仅重放。
     private totalRepoListSnapshot: readonly GitRepositoryOption[] = [];
     private totalBranchesListSnapshot: readonly GitBranchOption[] = [];
-    private selectedRepoDisplaySnapshot?: { label: string; path: string; hasSubmodules: boolean };
+    private selectedRepoDisplaySnapshot?: { label: string; path: string; hasSubmodules: boolean; isSubmodule: boolean };
     /** 仓库是否有未提交文件的轻量存在性结果，由存在性事件维护，用于徽标先于完整清单显示。 */
     private readonly uncommittedPresence = new Map<string, boolean>();
     private selectedBranchDisplaySnapshot: { label: string; title: string; names: string[] } = {
@@ -118,6 +118,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }> = [];
     private processingWorkingTreeActions = false;
     private pendingWorkingTreeDiffPaths?: ReadonlySet<string>;
+    // 主动 Git 操作期间，由操作事务统一等待当前虚拟提交的界面投影，避免 watcher 重复发起异步刷新。
+    private readonly workingTreeUiMutations = new Set<string>();
+    private readonly deferredWorkingTreeChanges = new Map<string, {
+        changes: { staged: ChangedFile[]; changes: ChangedFile[] };
+        affectedPaths?: readonly string[];
+    }>();
 
     // 提交维度只读自控制器，Provider 不得回写、不做任何提交判定。
     private get commits(): readonly CommitMetadata[] { return this.commitController.searchedCommitList; }
@@ -646,7 +652,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             diffGeneration: store.getState().diffGeneration + 1,
         });
         this.selectedRepoDisplaySnapshot = repository
-            ? { label: repository.label, path: repository.path, hasSubmodules: Boolean(repository.hasSubmodules) }
+            ? {
+                label: repository.label, path: repository.path,
+                hasSubmodules: Boolean(repository.hasSubmodules),
+                isSubmodule: repository.ancestry.length > 0,
+            }
             : undefined;
         this.view?.webview.postMessage({
             type: 'selectedRepoDisplayChanged',
@@ -656,16 +666,20 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.pushStateToWebview();
     }
 
-    /** 列表项图标按当前 hasSubmodules 重绘，但显示快照在选中时一次性写入；增量扫描期间
-     *  hasSubmodules 会由 false 变 true，必须由总列表变化重新发布选中项快照。 */
+    /** 父仓库和子仓库图标都依赖仓库拓扑；子模块扫描完成后须重新发布已选项。 */
     private refreshSelectedRepoDisplaySnapshot(): void {
         const current = this.repoController.selectedRepoList;
         const repository = current.length === 1 ? current[0] : undefined;
         const next = repository
-            ? { label: repository.label, path: repository.path, hasSubmodules: Boolean(repository.hasSubmodules) }
+            ? {
+                label: repository.label, path: repository.path,
+                hasSubmodules: Boolean(repository.hasSubmodules),
+                isSubmodule: repository.ancestry.length > 0,
+            }
             : undefined;
         if (this.selectedRepoDisplaySnapshot?.path === next?.path
-            && this.selectedRepoDisplaySnapshot?.hasSubmodules === next?.hasSubmodules) {
+            && this.selectedRepoDisplaySnapshot?.hasSubmodules === next?.hasSubmodules
+            && this.selectedRepoDisplaySnapshot?.isSubmodule === next?.isSubmodule) {
             return;
         }
         this.selectedRepoDisplaySnapshot = next;
@@ -798,6 +812,18 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         changes: { staged: ChangedFile[]; changes: ChangedFile[] },
         eventAffectedPaths?: readonly string[],
     ): void {
+        const repositoryPath = this.commitController.uncommittedRepositoryPath;
+        if (repositoryPath && this.workingTreeUiMutations.has(repositoryPath)) {
+            this.deferredWorkingTreeChanges.set(repositoryPath, { changes, affectedPaths: eventAffectedPaths });
+            return;
+        }
+        this.applyWorkingTreeChanges(changes, eventAffectedPaths);
+    }
+
+    private applyWorkingTreeChanges(
+        changes: { staged: ChangedFile[]; changes: ChangedFile[] },
+        eventAffectedPaths?: readonly string[],
+    ): Promise<void> {
         this.schedulePushState();
         // 显式 Git 操作的 pending 路径与 watcher 事件携带的受影响路径取并集,
         // 后者覆盖"状态与内容同时变化"时被编辑文件需连内容重读的场景。
@@ -809,8 +835,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const selectedBranch = this.commitController.selectedCommit?.gitBranchOption;
         if (!isWorkingTreeHash(this.currentHash)
             || !selectedBranch
-            || selectedBranch.repoOption.path !== this.commitController.uncommittedRepositoryPath) { return; }
-        void this.selectWorkingTreeChanges(changes, false, false, affectedPaths).then(() => this.refreshCommitPanel());
+            || selectedBranch.repoOption.path !== this.commitController.uncommittedRepositoryPath) { return Promise.resolve(); }
+        return this.selectWorkingTreeChanges(changes, false, false, affectedPaths)
+            .then(() => this.refreshCommitPanel());
     }
 
     /** 选中提交状态与文件读取统一由该回调驱动，覆盖首次默认选择和用户选择。 */
@@ -1848,77 +1875,103 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     const mutationBranches = [operation.rootUri.toString(), ...operation.affectedSubmoduleRepositoryPaths]
                         .flatMap(repositoryPath => currentBranches.filter(branch => branch.repoOption.path === repositoryPath));
                     mutationBranches.forEach(branch => this.uncommittedFilesWatcher.beginWorkingTreeMutation(branch));
-                    try {
-                        await vscode.window.withProgress({
-                        location: vscode.ProgressLocation.Notification,
-                        title: operation.action === 'stage'
-                            ? '添加文件'
-                            : operation.action === 'unstage' ? '取消暂存' : '还原更改',
-                        cancellable: false,
-                    }, async progress => {
-                        const total = operation.paths.length;
-                        for (let index = 0; index < total; index++) {
-                            const filePath = operation.paths[index];
-                            const actionMessage = operation.action === 'discard'
-                                ? '还原文件'
-                                : operation.action === 'stage'
-                                    ? (operation.untrackedPaths.has(filePath) ? '添加文件' : '更新文件')
-                                    : '取消暂存文件';
-                            progress.report({
-                                message: `${index + 1}/${total} ${actionMessage}：${filePath}`,
-                            });
-                        }
-                        if (operation.action === 'discard') {
-                            const targetCommitByRepository = new Map<string, string>();
-                            const affectedRepositories = operation.affectedSubmoduleRepositoryPaths
-                                .map(repositoryPath => ({
-                                    repositoryPath,
-                                    ancestry: this.repoSubmoduleWatcher.getRepositoryAncestry(repositoryPath),
-                                }))
-                                .sort((left, right) => left.ancestry.length - right.ancestry.length);
-                            for (const { repositoryPath, ancestry } of affectedRepositories) {
-                                const parent = ancestry.at(-2);
-                                if (!parent) { continue; }
-                                const childUri = vscode.Uri.parse(repositoryPath);
-                                const parentUri = vscode.Uri.parse(parent.path);
-                                const gitlinkPath = path.relative(parentUri.fsPath, childUri.fsPath).split(path.sep).join('/');
-                                const targetCommit = (await runGitReadCommand(parentUri, ['rev-parse', `:${gitlinkPath}`])).trim();
-                                if (targetCommit) { targetCommitByRepository.set(repositoryPath, targetCommit); }
-                            }
-                            const trackedPaths = operation.paths.filter(filePath => !operation.untrackedPaths.has(filePath));
-                            for (const filePath of operation.paths) {
-                                if (operation.untrackedPaths.has(filePath)) {
-                                    await vscode.workspace.fs.delete(
-                                        vscode.Uri.joinPath(operation.rootUri, filePath),
-                                        { recursive: true, useTrash: operation.discardUntrackedToTrash },
-                                    );
-                                }
-                            }
-                            if (trackedPaths.length > 0) {
-                                await runGitCommand(operation.rootUri, ['restore', '--worktree', '--', ...trackedPaths]);
-                            }
-                            // 子模块撤销范围已由弹窗确定；逐仓库恢复并回到父仓库 gitlink 指定的提交。
-                            for (const repositoryPath of operation.affectedSubmoduleRepositoryPaths) {
-                                const repositoryUri = vscode.Uri.parse(repositoryPath);
-                                await runGitCommand(repositoryUri, ['restore', '--staged', '--worktree', '--', '.']);
-                                const targetCommit = targetCommitByRepository.get(repositoryPath);
-                                if (targetCommit) { await runGitCommand(repositoryUri, ['checkout', '--detach', targetCommit]); }
-                            }
-                        } else if (operation.action === 'stage') {
-                            await runGitCommand(operation.rootUri, ['add', '--', ...operation.paths]);
-                        } else {
-                            await runGitCommand(operation.rootUri, ['restore', '--staged', '--', ...operation.paths]);
-                        }
-                        });
-                    } finally {
+                    let mutationEnded = false;
+                    const endMutation = async (progress?: vscode.Progress<{ message?: string }>): Promise<void> => {
+                        const rootRepositoryPath = operation.rootUri.toString();
+                        this.workingTreeUiMutations.add(rootRepositoryPath);
+                        this.deferredWorkingTreeChanges.delete(rootRepositoryPath);
                         await Promise.all(mutationBranches.map(branch => {
-                            const isRootRepository = branch.repoOption.path === operation.rootUri.toString();
+                            const isRootRepository = branch.repoOption.path === rootRepositoryPath;
                             return this.uncommittedFilesWatcher.endWorkingTreeMutation(
                                 branch,
                                 isRootRepository ? operation.paths : [],
                                 !isRootRepository,
                             );
                         }));
+                        mutationEnded = true;
+                        const deferred = this.deferredWorkingTreeChanges.get(rootRepositoryPath);
+                        this.deferredWorkingTreeChanges.delete(rootRepositoryPath);
+                        this.workingTreeUiMutations.delete(rootRepositoryPath);
+                        if (deferred) {
+                            progress?.report({ message: '正在刷新变更文件和差异视图...' });
+                            await this.applyWorkingTreeChanges(deferred.changes, deferred.affectedPaths);
+                        }
+                    };
+                    try {
+                        await vscode.window.withProgress({
+                            location: vscode.ProgressLocation.Notification,
+                            title: operation.action === 'stage'
+                                ? '添加文件'
+                                : operation.action === 'unstage' ? '取消暂存' : '还原更改',
+                            cancellable: false,
+                        }, async progress => {
+                            const total = operation.paths.length;
+                            for (let index = 0; index < total; index++) {
+                                const filePath = operation.paths[index];
+                                const actionMessage = operation.action === 'discard'
+                                    ? '还原文件'
+                                    : operation.action === 'stage'
+                                        ? (operation.untrackedPaths.has(filePath) ? '添加文件' : '更新文件')
+                                        : '取消暂存文件';
+                                progress.report({
+                                    message: `${index + 1}/${total} ${actionMessage}：${filePath}`,
+                                });
+                            }
+                            if (operation.action === 'discard') {
+                                const targetCommitByRepository = new Map<string, string>();
+                                const affectedRepositories = operation.affectedSubmoduleRepositoryPaths
+                                    .map(repositoryPath => ({
+                                        repositoryPath,
+                                        ancestry: this.repoSubmoduleWatcher.getRepositoryAncestry(repositoryPath),
+                                    }))
+                                    .sort((left, right) => left.ancestry.length - right.ancestry.length);
+                                for (const { repositoryPath, ancestry } of affectedRepositories) {
+                                    const parent = ancestry.at(-2);
+                                    if (!parent) { continue; }
+                                    const childUri = vscode.Uri.parse(repositoryPath);
+                                    const parentUri = vscode.Uri.parse(parent.path);
+                                    const gitlinkPath = path.relative(parentUri.fsPath, childUri.fsPath).split(path.sep).join('/');
+                                    const targetCommit = (await runGitReadCommand(parentUri, ['rev-parse', `:${gitlinkPath}`])).trim();
+                                    if (targetCommit) { targetCommitByRepository.set(repositoryPath, targetCommit); }
+                                }
+                                const trackedPaths = operation.paths.filter(filePath => !operation.untrackedPaths.has(filePath));
+                                for (const filePath of operation.paths) {
+                                    if (operation.untrackedPaths.has(filePath)) {
+                                        await vscode.workspace.fs.delete(
+                                            vscode.Uri.joinPath(operation.rootUri, filePath),
+                                            { recursive: true, useTrash: operation.discardUntrackedToTrash },
+                                        );
+                                    }
+                                }
+                                if (trackedPaths.length > 0) {
+                                    await runGitCommand(operation.rootUri, ['restore', '--worktree', '--', ...trackedPaths]);
+                                }
+                                // 子模块撤销范围已由弹窗确定；逐仓库恢复并回到父仓库 gitlink 指定的提交。
+                                for (const repositoryPath of operation.affectedSubmoduleRepositoryPaths) {
+                                    const repositoryUri = vscode.Uri.parse(repositoryPath);
+                                    await runGitCommand(repositoryUri, ['restore', '--staged', '--worktree', '--', '.']);
+                                    const targetCommit = targetCommitByRepository.get(repositoryPath);
+                                    if (targetCommit) { await runGitCommand(repositoryUri, ['checkout', '--detach', targetCommit]); }
+                                }
+                            } else if (operation.action === 'stage') {
+                                await runGitCommand(operation.rootUri, ['add', '--', ...operation.paths]);
+                            } else {
+                                await runGitCommand(operation.rootUri, ['restore', '--staged', '--', ...operation.paths]);
+                            }
+                            progress.report({ message: '正在同步 Git 工作区状态...' });
+                            await endMutation(progress);
+                        });
+                    } finally {
+                        if (!mutationEnded) {
+                            await Promise.all(mutationBranches.map(branch => {
+                                const isRootRepository = branch.repoOption.path === operation.rootUri.toString();
+                                return this.uncommittedFilesWatcher.endWorkingTreeMutation(
+                                    branch,
+                                    isRootRepository ? operation.paths : [],
+                                    !isRootRepository,
+                                );
+                            }));
+                        }
                     }
                 }
             } while (this.workingTreeActionQueue.length > 0);
@@ -2247,8 +2300,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   .dropdown-spinner { display: inline-block; width: 10px; height: 10px; flex: 0 0 auto; margin-right: 4px; border: 1.5px solid var(--vscode-progressBar-background); border-top-color: transparent; border-radius: 50%; animation: dropdown-spin .8s linear infinite; vertical-align: -1px; }
   @keyframes dropdown-spin { to { transform: rotate(360deg); } }
   .dropdown-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .repository-icon { display: inline-flex; flex: 0 0 auto; width: 16px; height: 16px; margin-right: 4px; vertical-align: -3px; color: var(--vscode-icon-foreground, currentColor); }
-  .repository-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .repository-icon { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 16px; height: 16px; margin-right: 4px; vertical-align: -3px; color: var(--vscode-icon-foreground, currentColor); }
+  .repository-icon.codicon { font-size: 16px; line-height: 16px; }
   .repository-icon.has-submodules { color: var(--vscode-gitDecoration-addedResourceForeground, var(--vscode-icon-foreground, currentColor)); }
   .dropdown-chevron { margin-left: auto; display: inline-flex; align-items: center; color: var(--vscode-descriptionForeground); }
   .dropdown-chevron svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
@@ -2894,16 +2947,16 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     return selectedEntries.map(function(entry) { return entry.label; }).join(', ') || emptyLabel;
   }
 
-  function repositoryIcon(hasSubmodules) {
-    return hasSubmodules
-      ? '<span class="repository-icon has-submodules" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2 4.5h4.5L8 6h6v5.5H2z"/><rect x="5" y="7.5" width="6" height="3.5" rx="0.5"/></svg></span>'
-      : '<span class="repository-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2 4.5h4.5L8 6h6v5.5H2z"/></svg></span>';
+  // 父仓库和独立仓库均用状态栏同款 codicon-repo；子仓库用 codicon-archive。
+  function repositoryIcon(isParentRepository, isSubmodule) {
+    const icon = isSubmodule ? 'archive' : 'repo';
+    return '<span class="repository-icon codicon codicon-' + icon + '" aria-hidden="true"></span>';
   }
   function updateSelectedRepoDisplay(repository) {
     const loading = repositoryDropdown.current.dataset.loading === 'true';
     repositoryDropdown.current.disabled = !repository;
     repositoryDropdown.label.innerHTML = (repository
-      ? repositoryIcon(repository.hasSubmodules) + escapeHtml(repository.label)
+      ? repositoryIcon(repository.hasSubmodules, repository.isSubmodule) + escapeHtml(repository.label)
       : '未选择仓库') + '<span class="dropdown-spinner"' + (loading ? '' : ' hidden') + ' aria-hidden="true"></span>';
     repositoryDropdown.current.title = repository ? repository.path : '未选择仓库';
   }
@@ -2943,7 +2996,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         });
       });
       option.appendChild(radio);
-      option.insertAdjacentHTML('beforeend', repositoryIcon(entry.hasSubmodules));
+      option.insertAdjacentHTML('beforeend', repositoryIcon(entry.hasSubmodules, entry.isSubmodule));
       option.appendChild(document.createTextNode(entry.label));
       repositoryDropdown.options.appendChild(option);
     });
@@ -3048,7 +3101,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   function updateTotalRepositoryList(repositories, nextSelectedRepositoryPaths) {
     selectedRepositoryPaths = nextSelectedRepositoryPaths;
     repositoryEntries = repositories.map(function(repo) {
-      return { value: repo.path, label: repo.label, title: repo.path, path: repo.path, hasSubmodules: Boolean(repo.hasSubmodules) };
+      return {
+        value: repo.path, label: repo.label, title: repo.path, path: repo.path,
+        hasSubmodules: Boolean(repo.hasSubmodules),
+        isSubmodule: Array.isArray(repo.ancestry) && repo.ancestry.length > 0,
+      };
     });
     renderRepositoryOptions(repositoryEntries, selectedRepositoryPaths);
   }
