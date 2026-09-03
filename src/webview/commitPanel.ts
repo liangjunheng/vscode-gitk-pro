@@ -289,29 +289,14 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .card-body[hidden]{display:none}
 .message-box{position:relative;display:flex;flex-direction:column;border:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:6px;overflow:hidden}
 .message-input{box-sizing:border-box;width:100%;min-height:calc(3 * 1.5em + 20px);resize:none;overflow-y:hidden;border:0;outline:0;padding:10px 42px 32px 10px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);font-family:var(--vscode-editor-font-family);font-size:var(--vscode-editor-font-size);line-height:1.5}
-.actions{display:flex;gap:8px;align-items:stretch;flex-direction:column}
+.actions{display:flex;flex-direction:column;gap:8px}
 .hint{min-width:120px;color:var(--vscode-descriptionForeground);font-size:calc(var(--vscode-font-size) * .9)}
-.action-groups{display:flex;gap:8px;align-items:stretch;flex-direction:column;width:100%}
-.action-group{display:flex;align-items:center;gap:8px;width:100%;box-sizing:border-box;padding:4px 6px;border:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:7px;background:var(--vscode-editorWidget-background)}
+.action-groups{display:flex;flex-direction:column;gap:8px;width:100%}
+.action-group{display:grid;grid-template-columns:auto auto minmax(0,1fr);align-items:center;gap:8px;width:100%;padding:8px 10px;border:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:7px;background:var(--vscode-editorWidget-background)}
 .commit-group{border-color:var(--vscode-button-background)}
-.commit-group,.submodule-group{max-width:100%;overflow:visible;padding:3px 4.5px;gap:6px;font-size:calc(var(--vscode-editor-font-size) * .75)}
-.commit-group .commit-btn,.submodule-group .push-btn{padding:4.5px 10.5px;border-radius:3.75px;font-size:inherit}
-.commit-group .commit-option,.submodule-group .pull-option{gap:3px;font-size:inherit}
-.commit-group .commit-option input,.submodule-group .pull-option input{width:10px;height:10px;margin:0}
-.commit-group .commit-btn{border-color:transparent}
-.commit-submodule-prefix,.submodule-prefix{display:none}
-.commit-submodule-selector,.submodule-group .submodule-selector{display:block;flex:1 1 180px;min-width:135px;max-width:none;align-self:stretch;order:2}
-.commit-group .submodule-inline-box,.submodule-group .submodule-inline-box{gap:7.5px;min-height:30px;padding:5.25px 7.5px}
-.commit-group .submodule-inline-title,.submodule-group .submodule-inline-title{min-width:4.125em;padding:1.5px 7.5px 1.5px 0;font-size:calc(var(--vscode-editor-font-size) * .675);line-height:15px}
-.commit-group .submodule-inline-options,.submodule-group .submodule-inline-options{gap:4.5px;max-height:75px}
-.commit-group .submodule-inline-option,.submodule-group .submodule-inline-option{gap:3.75px;min-height:18px;padding:2.25px 5.25px;border-radius:3.75px;font-size:calc(var(--vscode-editor-font-size) * .675)}
-.commit-group .submodule-inline-option .repository-status-badge,.submodule-group .submodule-inline-option .repository-status-badge{height:13.5px;line-height:13.5px;font-size:8.25px}
-.commit-group .submodule-push-target,.submodule-group .submodule-push-target{padding-left:5.25px;font-size:calc(var(--vscode-editor-font-size) * .6375)}
-.commit-group .submodule-inline-empty,.submodule-group .submodule-inline-empty{line-height:15px;font-size:calc(var(--vscode-editor-font-size) * .675)}
-.commit-group .commit-btn{order:0}
-.commit-group .commit-option{order:1;flex:0 0 auto}
-.submodule-group .push-btn{order:0}
-.submodule-group .pull-option{order:1;flex:0 0 auto}
+.commit-group .commit-btn,.submodule-group .push-btn{grid-column:1;grid-row:1}
+.commit-group .commit-option,.submodule-group .pull-option{grid-column:2;grid-row:1}
+.commit-submodule-selector,.submodule-group .submodule-selector{grid-column:1 / -1;grid-row:2;min-width:0;max-width:none}
 .submodule-inline-box{display:flex;align-items:flex-start;gap:10px;width:100%;min-height:40px;box-sizing:border-box;border:1px dashed var(--vscode-focusBorder,var(--vscode-widget-border));border-radius:8px;padding:7px 10px;background:transparent;color:var(--vscode-foreground)}
 .submodule-inline-title{flex:0 0 auto;min-width:5.5em;padding:2px 10px 2px 0;border-right:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));color:var(--vscode-descriptionForeground);font-size:calc(var(--vscode-editor-font-size) * .9);font-weight:600;line-height:20px;white-space:nowrap}
 .submodule-inline-options{display:flex;flex:1 1 auto;flex-wrap:wrap;align-items:stretch;gap:6px;max-height:100px;min-width:0;overflow:auto}
@@ -352,11 +337,11 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .submodule-dropdown-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px;padding:6px 8px 2px;border-top:1px solid var(--vscode-menu-separatorBackground,var(--vscode-widget-border))}
 .submodule-dropdown-action{border:0;border-radius:2px;padding:4px 9px;background:transparent;color:var(--vscode-menu-foreground,var(--vscode-foreground));cursor:pointer;font:inherit}
 .submodule-dropdown-action:hover{background:var(--vscode-menu-selectionBackground,var(--vscode-list-hoverBackground));color:var(--vscode-menu-selectionForeground,var(--vscode-foreground))}
-.commit-option,.pull-option{display:inline-flex;align-items:center;gap:4px;color:var(--vscode-foreground);font-size:var(--vscode-editor-font-size);cursor:pointer;user-select:none}
+.commit-option,.pull-option{display:inline-flex;align-items:center;gap:4px;color:var(--vscode-foreground);font-family:var(--vscode-editor-font-family);font-size:12px;cursor:pointer;user-select:none}
 .pull-option input{margin:0;accent-color:var(--vscode-checkbox-background,var(--vscode-button-background))}
 .commit-option input{margin:0;accent-color:var(--vscode-button-background)}
 .commit-option input:disabled+span{opacity:.5}
-.commit-btn,.push-btn{flex:0 0 auto;border:0;border-radius:5px;padding:6px 14px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);cursor:pointer;font:inherit}
+.commit-btn,.push-btn{flex:0 0 auto;border:0;border-radius:5px;padding:3px 6px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);cursor:pointer;font-family:var(--vscode-editor-font-family);font-size:12px;line-height:normal}
 .commit-btn{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}
 .commit-btn:hover{background:var(--vscode-button-hoverBackground)}
 .push-btn{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}
@@ -627,13 +612,13 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
           '<span class="hint"></span>'+
           '<div class="action-groups">'+
             '<span class="action-group commit-group">'+
-              '<label class="commit-option"><input class="amend-checkbox" type="checkbox"><span>Amend</span></label>'+
+              '<label class="commit-option"><input class="amend-checkbox" type="checkbox"><span>amend</span></label>'+
               '<span class="commit-submodule-selector submodule-selector"></span>'+
               '<button class="commit-btn">commit</button>'+
             '</span>'+
             '<span class="action-group submodule-group">'+
               '<button class="push-btn"><span>push</span><span class="push-target-label"></span></button>'+
-              '<label class="pull-option"><input class="pull-before-push-checkbox" type="checkbox" checked><span>Pull</span></label>'+
+              '<label class="pull-option"><input class="pull-before-push-checkbox" type="checkbox" checked><span>pull</span></label>'+
               '<span class="submodule-selector push-submodule-selector"></span>'+
             '</span>'+
           '</div>'+
