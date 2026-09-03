@@ -185,7 +185,7 @@
       },
       {
         "command": "vscode-gitk.multiDiff.previousChange",
-        "key": "f8",
+        "key": "shift+f7",
         "when": "activeWebviewPanelId == vscode-gitk.multiDiff"
       }
     ]

@@ -35,7 +35,7 @@ Gitk Pro 在 VS Code 底部面板中提供 Gitk 风格的提交图，并将历�
 - 在一个 Multi-Diff 编辑器中查看某次提交涉及的全部文件。
 - 在平铺列表与目录树之间切换 Changed Files 的显示方式。
 - 从差异视图打开单个文件，并同步文件选中状态。
-- 使用编辑器标题栏按钮或 `F7`、`F8` 在差异之间导航。
+- 使用编辑器标题栏按钮或 `F7`、`Shift+F7` 在差异之间导航。
 - 从 Changed Files 标题栏直接复制提交哈希。
 
 ### 工作区变更
@@ -80,7 +80,7 @@ Gitk Pro 在 VS Code 底部面板中提供 Gitk 风格的提交图，并将历�
 | 快捷键 | 使用场景 | 功能 |
 | --- | --- | --- |
 | `F7` | Gitk Multi-Diff | 下一个差异 |
-| `F8` | Gitk Multi-Diff | 上一个差异 |
+| `Shift+F7` | Gitk Multi-Diff | 上一个差异 |
 | `Ctrl+Enter` / `Cmd+Enter` | `COMMIT_EDITMSG` | 完成提交 |
 | `Escape` | `COMMIT_EDITMSG` | 取消提交 |
 
