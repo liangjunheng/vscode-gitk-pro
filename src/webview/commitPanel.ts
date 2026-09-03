@@ -759,8 +759,8 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     el._card=card;
     el._amend=card.amend;
     const repositoryIcon=el.querySelector('.card-repository-icon');
-    // 父仓库和独立仓库=repo；子仓库=archive。
-    const icon=card.repositoryAncestry.length>0?'archive':'repo';
+    // 包含子仓库的仓库和独立仓库=repo；仅叶子子仓库=archive。
+    const icon=!card.repositoryHasSubmodules&&card.repositoryAncestry.length>0?'archive':'repo';
     repositoryIcon.className='repository-icon card-repository-icon codicon codicon-'+icon;
     el.querySelector('.repo-label').textContent=card.repositoryLabel;
     const ancestry=el.querySelector('.repository-ancestry');
