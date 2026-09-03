@@ -53,6 +53,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private readonly multiDiffPanel: MultiDiffPanel;
     private requestedDiffReveal?: { readonly hash: string; readonly repositoryPath?: string };
     private restoreDiffPanelOnViewVisible = false;
+    private openDiffOnInitialVisible = false;
     private readonly commitPanel: CommitPanel;
     private readonly commitPanelViewTitleController: CommitPanelViewTitleController;
     // 每仓库独立的 amend / committing 状态 (多卡片各自提交)。
@@ -870,8 +871,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             diffProgress: { completed: 0, total: 0 },
         });
         this.schedulePushState();
-        if (this.restoreDiffPanelOnViewVisible && this.view?.visible && this.currentHash) {
+        const shouldOpenDiff = this.restoreDiffPanelOnViewVisible || this.openDiffOnInitialVisible;
+        if (shouldOpenDiff && this.view?.visible && this.currentHash) {
             this.restoreDiffPanelOnViewVisible = false;
+            this.openDiffOnInitialVisible = false;
             this.openDiff();
         }
         if (!commit || !hash) { return; }
@@ -928,7 +931,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.view = view;
         this.updateViewVisible();
         if (view.visible) {
-            this.restoreDiffPanelOnViewVisible = true;
+            this.openDiffOnInitialVisible = true;
         }
         this.commitPanelViewTitleController.bindView(view, store.getState().commitRepositories);
         view.webview.options = {
@@ -975,8 +978,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             // Store 已包含上次后台准备的选择器与提交数据时，直接复用快照，不重复读取分支和提交历史。
             if (this.hasPreparedInitialData()) {
                 this.pushStateToWebview();
-                // 首次进入时后台数据已就绪，不会触发可见性事件，需主动显示 Diff。
+                // 首次进入时后台数据已就绪，立即消费一次初始化打开意图，不能留给后续 Git 操作触发。
                 this.updateMultiDiffVisibility();
+                if (this.openDiffOnInitialVisible && this.view?.visible && this.currentHash) {
+                    this.openDiffOnInitialVisible = false;
+                    this.openDiff();
+                }
             } else if (this.refreshAbortController) {
                 // 后台首次加载仍在进行时只复用其进度，禁止 abort 后从头重启。
                 this.pushStateToWebview();
