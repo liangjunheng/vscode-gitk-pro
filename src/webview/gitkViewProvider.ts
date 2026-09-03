@@ -2375,7 +2375,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   #filesHeader { height: 30px; padding: 0 10px; display: flex; align-items: center; flex: 0 0 auto; color: var(--vscode-tab-activeForeground); background: var(--vscode-editorWidget-background, var(--vscode-tab-activeBackground)); border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); box-sizing: border-box; font-weight: 600; }
   #filesTitle { display: flex; align-items: center; min-width: 0; gap: 6px; white-space: nowrap; }
   #filesCommitHash { color: var(--vscode-descriptionForeground); font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; font-weight: 400; }
-  #filesActions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
+  #filesActions .commit-history-action-group, #filesTitle .action-group[aria-label="复制操作"] { display: none; }
   #commitSplitGroup { display: flex; align-items: stretch; margin-right: 4px; border-radius: 5px; overflow: hidden; background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
   #commitSplitGroup[hidden] { display: none; }
   #commitPrimaryBtn { height: 24px; border: 0; border-radius: 0; padding: 0 8px; color: inherit; background: transparent; font: inherit; white-space: nowrap; cursor: pointer; }
@@ -2393,10 +2393,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   #filesHeader .toolbar-icon svg { width: 16px; height: 16px; stroke-width: 1.5; }
   #filesList { min-width: 0; min-height: 0; flex: 1 1 auto; overflow-x: auto; overflow-y: auto; }
   #filesList > * { min-width: max-content; }
-  #fileContextMenu { position: fixed; z-index: 20; min-width: 168px; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border)); border-radius: 5px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 4px 14px rgba(0, 0, 0, .28); }
-  #fileContextMenu[hidden] { display: none; }
-  #fileContextMenu button { display: block; width: 100%; border: 0; border-radius: 3px; padding: 5px 8px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: transparent; text-align: left; font: inherit; }
-  #fileContextMenu button:hover { background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-menu-selectionForeground, var(--vscode-list-hoverForeground)); }
+  #commitContextMenu { position: fixed; z-index: 20; min-width: 180px; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border)); border-radius: 5px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 4px 14px rgba(0, 0, 0, .28); }
+  #commitContextMenu[hidden] { display: none; }
+  #commitContextMenu button { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; border-radius: 3px; padding: 5px 8px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: transparent; text-align: left; font: inherit; }
+  #commitContextMenu button:hover { background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-menu-selectionForeground, var(--vscode-list-hoverForeground)); }
+  #commitContextMenu .context-menu-icon { width: 14px; height: 14px; flex: 0 0 14px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
   .file-item, .folder-item { display: flex; align-items: center; gap: 8px; height: 24px; padding: 0 10px; }
   .file-item { cursor: pointer; }
   .folder-item { cursor: pointer; font-weight: 600; gap: 0; }
@@ -2550,7 +2551,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     <section id="filesSection">
       <div id="filesHeader"><div id="filesTitle"><span>Changed Files</span><span id="filesCommitHash"></span><span class="action-group" aria-label="复制操作"><button class="toolbar-icon commit-action" data-action="copyHash" title="Copy Commit Hash to Clipboard" aria-label="Copy Commit Hash to Clipboard"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="7.5" height="8" rx="1"/><path d="M3 10.5v-7A1.5 1.5 0 0 1 4.5 2H10"/></svg></button></span></div><div id="filesActions"><div class="action-group commit-history-action-group" aria-label="提交操作"><button class="toolbar-icon commit-action" data-action="addTag" title="Add Tag..." aria-label="Add Tag"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 7.75 7.25 3h5.75v5.75L8.25 13.5 2.5 7.75Z"/><circle cx="10.25" cy="5.75" r=".75" fill="currentColor" stroke="none"/></svg></button><button class="toolbar-icon commit-action" data-action="createBranch" title="Create Branch..." aria-label="Create Branch"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3v10M4 5.5c0 2.1 1.4 3.5 3.5 3.5H11"/><circle cx="4" cy="3" r="1.25"/><circle cx="4" cy="13" r="1.25"/><circle cx="12" cy="9" r="1.25"/></svg></button><button class="toolbar-icon commit-action" data-action="checkout" title="Checkout..." aria-label="Checkout"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3v8m0 0-2-2m2 2 2-2M4 11h4.5A3.5 3.5 0 0 0 12 7.5V5"/><path d="m10 6 2-2 2 2"/></svg></button><button class="toolbar-icon commit-action" data-action="cherryPick" title="Cherry Pick..." aria-label="Cherry Pick"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="4" r="1.25"/><circle cx="12" cy="12" r="1.25"/><path d="M4 5.25v2.5A3.25 3.25 0 0 0 7.25 11H12M6 3h3"/></svg></button><button class="toolbar-icon commit-action" data-action="revert" title="Revert..." aria-label="Revert"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 4 3 6.5 5.5 9M3.5 6.5h6A3.5 3.5 0 1 1 6 10"/></svg></button><button class="toolbar-icon commit-action" data-action="drop" title="Drop..." aria-label="Drop"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6 4.5V3h4v1.5M5 6.5v6h6v-6M7 8.5v2.5M9 8.5v2.5"/></svg></button></div><div class="action-group commit-history-action-group" aria-label="分支操作"><button class="toolbar-icon commit-action" data-action="merge" title="Merge into current branch..." aria-label="Merge into current branch"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3v10M4 10c0-2.5 1.75-4 4.25-4H11"/><circle cx="4" cy="3" r="1.25"/><circle cx="4" cy="13" r="1.25"/><circle cx="12" cy="6" r="1.25"/></svg></button><button class="toolbar-icon commit-action" data-action="rebase" title="Rebase current branch on this Commit..." aria-label="Rebase current branch on this Commit"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h7M8.5 2 11 4 8.5 6M13 12H6M7.5 10 5 12l2.5 2"/></svg></button><button class="toolbar-icon commit-action" data-action="reset" title="Reset current branch to this Commit..." aria-label="Reset current branch to this Commit"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.5" y="5.5" width="8" height="8" rx="1"/><path d="M2.5 6A4.5 4.5 0 0 1 7 2.5h2M7 2.5l2 2-2 2"/></svg></button></div><div id="commitSplitGroup" class="action-group" hidden><button id="commitPrimaryBtn" type="button" title="创建新的提交">Go Commit</button></div><div class="action-group"><button class="toolbar-icon" id="filesModeBtn" title="显示方式（当前：树状）" aria-label="显示方式"><svg viewBox="0 0 16 16" aria-hidden="true"><path id="filesModeIcon" d="M2.5 3h5M5 3v4M5 7h5M7.5 7v4M7.5 11h6"/></svg></button></div></div></div>
       <div id="filesList"><div id="filesEmpty">选择一个提交以查看变更文件</div></div>
-      <div id="fileContextMenu" hidden><button type="button" data-copy-path="relative">复制相对路径</button><button type="button" data-copy-path="absolute">复制完整路径</button></div>
+      <div id="commitContextMenu" hidden><button type="button" data-commit-action="toggleDescription"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M3 5.5 8 10l5-4.5"/></svg><span>展开描述</span></button><button type="button" data-commit-action="createBranch"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M4 3v10M4 5.5c0 2.1 1.4 3.5 3.5 3.5H11"/><circle cx="4" cy="3" r="1.25"/><circle cx="4" cy="13" r="1.25"/><circle cx="12" cy="9" r="1.25"/></svg><span>创建 branch</span></button><button type="button" data-commit-action="addTag"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M2.5 7.75 7.25 3h5.75v5.75L8.25 13.5 2.5 7.75Z"/><circle cx="10.25" cy="5.75" r=".75" fill="currentColor" stroke="none"/></svg><span>创建 tag</span></button><button type="button" data-commit-action="checkout"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M4 3v8m0 0-2-2m2 2 2-2M4 11h4.5A3.5 3.5 0 0 0 12 7.5V5"/><path d="m10 6 2-2 2 2"/></svg><span>checkout</span></button><button type="button" data-commit-action="revert"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M5.5 4 3 6.5 5.5 9M3.5 6.5h6A3.5 3.5 0 1 1 6 10"/></svg><span>revert</span></button><button type="button" data-commit-action="drop"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M3 4.5h10M6 4.5V3h4v1.5M5 6.5v6h6v-6M7 8.5v2.5M9 8.5v2.5"/></svg><span>drop</span></button><button type="button" data-commit-action="copyHash"><svg class="context-menu-icon" viewBox="0 0 16 16"><rect x="5.5" y="5.5" width="7.5" height="8" rx="1"/><path d="M3 10.5v-7A1.5 1.5 0 0 1 4.5 2H10"/></svg><span>copy hash</span></button></div>
     </section>
   </main>
 <script>
@@ -2570,7 +2571,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   let unstagedFiles = [];
   let filesLoading = false;
   let filesMode = 'flat';
-  let contextFilePath = '';
   let selectedPath = '';
   let selectedCommitHash = '';
   let selectedCommitRepositoryPath = '';
@@ -2821,19 +2821,43 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
   document.addEventListener('click', function(event) {
     if (!event.target.closest('.dropdown')) closeDropdowns();
-    if (!event.target.closest('#fileContextMenu')) document.getElementById('fileContextMenu').hidden = true;
+    if (!event.target.closest('#commitContextMenu')) document.getElementById('commitContextMenu').hidden = true;
   });
   document.addEventListener('keydown', function(event) {
     if (event.key === 'Escape') {
       closeDropdowns();
-      document.getElementById('fileContextMenu').hidden = true;
+      document.getElementById('commitContextMenu').hidden = true;
     }
   });
-  document.getElementById('fileContextMenu').addEventListener('click', function(event) {
-    const button = event.target.closest('[data-copy-path]');
-    if (!button || !contextFilePath) return;
-    vscode.postMessage({ type: 'copyFilePath', path: contextFilePath, absolute: button.getAttribute('data-copy-path') === 'absolute' });
-    document.getElementById('fileContextMenu').hidden = true;
+  document.getElementById('commitContextMenu').addEventListener('click', function(event) {
+    var button = event.target.closest('[data-commit-action]');
+    if (!button || !selectedCommitHash || isWorkingTreeHash(selectedCommitHash) || !selectedCommitRepositoryPath) return;
+    var action = button.getAttribute('data-commit-action');
+    if (action === 'toggleDescription') {
+      var row = document.querySelector('.commit-row.selected');
+      if (row) row.click();
+    } else {
+      vscode.postMessage({ type: 'commitAction', action: action, hash: selectedCommitHash, repositoryPath: selectedCommitRepositoryPath });
+    }
+    document.getElementById('commitContextMenu').hidden = true;
+  });
+  document.getElementById('commitList').addEventListener('contextmenu', function(event) {
+    var row = event.target.closest('.commit-row');
+    if (!row || row.classList.contains('working-tree')) return;
+    event.preventDefault();
+    var hash = row.getAttribute('data-hash');
+    var repositoryPath = row.getAttribute('data-repository-path');
+    if (!hash || !repositoryPath) return;
+    selectedCommitHash = hash;
+    selectedCommitRepositoryPath = repositoryPath;
+    applyCommitSelection(hash, repositoryPath);
+    var menu = document.getElementById('commitContextMenu');
+    var toggle = menu.querySelector('[data-commit-action="toggleDescription"]');
+    toggle.textContent = row.classList.contains('expanded') ? '关闭描述' : '展开描述';
+    menu.hidden = true;
+    menu.hidden = false;
+    menu.style.left = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 4) + 'px';
+    menu.style.top = Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 4) + 'px';
   });
   document.getElementById('panelResizeHandle').addEventListener('mousedown', function(event) {
     const workspace = document.getElementById('workspace');
@@ -3393,7 +3417,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
       item.addEventListener('pointerup', function(event) {
         if (event.button !== 0 || event.target.closest('.working-tree-action')) return;
         event.preventDefault();
-        document.getElementById('fileContextMenu').hidden = true;
         const path = item.getAttribute('data-path');
         const diffKey = item.getAttribute('data-diff-key') || path;
         if (!path || !diffKey) return;
@@ -3401,17 +3424,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         list.querySelectorAll('.file-item.selected').forEach(function(s) { s.classList.remove('selected'); });
         item.classList.add('selected');
         vscode.postMessage({ type: 'selectFile', path: diffKey });
-      });
-      item.addEventListener('contextmenu', function(event) {
-        event.preventDefault();
-        const path = item.getAttribute('data-path');
-        if (!path) return;
-        const menu = document.getElementById('fileContextMenu');
-        menu.hidden = true;
-        contextFilePath = path;
-        menu.hidden = false;
-        menu.style.left = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 4) + 'px';
-        menu.style.top = Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 4) + 'px';
       });
     });
   }
