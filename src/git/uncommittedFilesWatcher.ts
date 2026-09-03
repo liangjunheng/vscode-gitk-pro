@@ -67,11 +67,22 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
     /** 轻量存在性事件：不等完整清单，只为每个仓库尽快给出“是否有未提交文件”。 */
     readonly onRepositoryUncommittedPresenceChanged = this.presenceEmitter.event;
 
-    constructor(repoHeadBranchWatcher: RepoHeadBranchWatcher) {
+    constructor(private readonly repoHeadBranchWatcher: RepoHeadBranchWatcher) {
         // 数据源改为全部仓库 HEAD 监听器, 不再跟随仓库选择, 天然覆盖所有仓库。
         this.branchSubscription = repoHeadBranchWatcher.onEachRepoHeadBranchChanged(event => {
             this.applyCurrentHeadBranch(event.repositoryPath, event.headBranch);
         });
+    }
+
+    /**
+     * 强制重读 HEAD 后等待该 HEAD 的完整工作区状态就绪。
+     * 普通 commit 不改 .git/HEAD, 必须由调用方显式触发；不能只等待 HEAD 事件投递,
+     * 否则提交列表刷新完成时 CommitPanel 仍可能从旧 hash 缓存读取 staged/unstaged。
+     */
+    async refreshHeadBranch(repositoryPath: string): Promise<void> {
+        await this.repoHeadBranchWatcher.refreshHeadBranch(repositoryPath);
+        const branch = this.slots.get(repositoryPath)?.branch;
+        if (branch) { await this.getUncommittedFilesByHeadBranch(branch); }
     }
 
     /** 列出所有已知仓库的当前 HEAD 分支 (覆盖全部仓库, 不受仓库选择限制)。 */

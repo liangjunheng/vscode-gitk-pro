@@ -63,6 +63,19 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
         return this.enqueueHeadRead(key, repository);
     }
 
+    /**
+     * 强制重新读取指定仓库的 HEAD。
+     * commit 只改写 refs/heads/<branch> 与 logs/HEAD, 不触碰 .git/HEAD(符号引用),
+     * 故 HEAD 文件监听器不会触发; 提交后必须显式重读, 让新 hash 经事件下发,
+     * 使 UncommittedFilesWatcher 的槽位换代并整表刷新, 清除过期的 staged 缓存。
+     */
+    async refreshHeadBranch(repositoryPath: string): Promise<void> {
+        const key = repositoryKey(repositoryPath);
+        const repository = this.repositories.get(key);
+        if (!repository) { return; }
+        await this.enqueueHeadRead(key, repository);
+    }
+
     dispose(): void {
         this.repositorySubscription.dispose();
         this.repoWatchers.forEach(watcher => watcher.dispose());

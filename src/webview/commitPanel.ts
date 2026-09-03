@@ -375,7 +375,6 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .section-title .left{display:flex;align-items:center;gap:4px}
 .section-title .section-actions{display:flex;align-items:center;gap:4px;margin-left:auto}
 .section-title .codicon{font-size:14px}
-.display-mode-btn{margin-left:4px}
 .file-row,.folder-row{display:flex;align-items:center;gap:6px;padding:var(--file-row-padding-y) var(--file-row-padding-x)}
 .gitlink-label{display:inline-flex;align-items:center;flex:0 0 auto;margin:0;padding:0 6px;border:1px solid var(--vscode-gitDecoration-addedResourceForeground,var(--vscode-badge-background));border-radius:8px;background:color-mix(in srgb,var(--vscode-gitDecoration-addedResourceForeground,var(--vscode-badge-background)) 12%,transparent);color:var(--vscode-gitDecoration-addedResourceForeground,var(--vscode-badge-foreground));font-size:10px;font-weight:600;line-height:16px;letter-spacing:.02em}
 .file-row:hover,.folder-row:hover{background:var(--vscode-list-hoverBackground)}
@@ -541,7 +540,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     nameElement.className='file-name';
     nameElement.textContent=parts.name;
     pathElement.appendChild(nameElement);
-    if(displayMode==='flat'&&parts.folder){
+    if(parts.folder){
       pathElement.appendChild(document.createTextNode(' '));
       const folderElement=document.createElement('span');
       folderElement.className='file-folder';
@@ -622,7 +621,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
           '<button class="history-btn message-history-btn" type="button" title="历史提交信息"><span class="codicon codicon-history"></span></button>'+
         '</div>'+
         '<div class="section unstaged"><div class="section-title collapsible"><span class="left"><span class="codicon codicon-chevron-down unstaged-chevron"></span><span>Unstaged Changes</span><span class="section-count-badge unstaged-count" hidden></span></span><span class="section-actions unstaged-actions"><button class="icon-btn discard-all" data-action="discard" data-section="unstaged" title="还原所有文件"><span class="codicon codicon-discard"></span></button><button class="icon-btn stage-all" data-action="stage" data-section="unstaged" title="暂存所有文件"><span class="codicon codicon-add"></span></button></span></div><div class="unstaged-list"></div></div>'+
-        '<div class="section staged"><div class="section-title collapsible"><span class="left"><span class="codicon codicon-chevron-down staged-chevron"></span><span>Staged Changes</span><span class="section-count-badge staged-count" hidden></span></span><span class="section-actions staged-actions"><button class="icon-btn display-mode-btn" title="切换树状/平铺显示"><span class="codicon codicon-list-tree"></span></button><button class="icon-btn staged-all" data-action="unstage" data-section="staged" title="取消暂存所有文件"><span class="codicon codicon-remove"></span></button></span></div><div class="staged-list"></div></div>'+
+        '<div class="section staged"><div class="section-title collapsible"><span class="left"><span class="codicon codicon-chevron-down staged-chevron"></span><span>Staged Changes</span><span class="section-count-badge staged-count" hidden></span></span><span class="section-actions staged-actions"><button class="icon-btn staged-all" data-action="unstage" data-section="staged" title="取消暂存所有文件"><span class="codicon codicon-remove"></span></button></span></div><div class="staged-list"></div></div>'+
         '<div class="section committed" hidden><div class="section-title collapsible"><span class="left"><span class="codicon codicon-chevron-down committed-chevron"></span><span>Committed Changes</span><span class="section-count-badge committed-count" hidden></span></span></div><div class="committed-list"></div></div>'+
         '<div class="actions">'+
           '<span class="hint"></span>'+
@@ -680,10 +679,6 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
       vscode.postMessage({type:'gitSync',action:'push',repositoryPaths:[...(el._card.selectedPushSubmoduleRepositoryPaths||[]),repo],pullBeforePush:pullBeforePushCheckbox.checked});
     });
     historyBtn.addEventListener('click',function(){vscode.postMessage({type:'history',repositoryPath:repo})});
-    el.querySelector('.display-mode-btn').addEventListener('click',function(event){
-      event.stopPropagation();
-      vscode.postMessage({type:'toggleDisplayMode'});
-    });
     el.querySelectorAll('.section-actions .icon-btn[data-action]').forEach(function(button){
       button.addEventListener('click',function(event){
         event.stopPropagation();
@@ -863,9 +858,6 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     unstagedCount.hidden=card.unstagedFiles.length===0;
     el.querySelector('.discard-all').disabled=card.unstagedFiles.length===0;
     el.querySelector('.stage-all').disabled=card.unstagedFiles.length===0;
-    const displayModeButton=el.querySelector('.display-mode-btn');
-    displayModeButton.title='显示方式（当前：'+(displayMode==='tree'?'树状':'平铺')+'）';
-    displayModeButton.querySelector('.codicon').className='codicon codicon-'+(displayMode==='tree'?'list-flat':'list-tree');
     renderFileList(stagedList,card.stagedFiles,'staged',el.dataset.repo);
     renderFileList(unstagedList,card.unstagedFiles,'unstaged',el.dataset.repo);
     stagedList.hidden=!el._state.stagedOpen;

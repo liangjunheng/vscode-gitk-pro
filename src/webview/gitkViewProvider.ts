@@ -1651,6 +1651,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         orderedRepositoryPaths.forEach(path => this.commitCommittingByRepo.add(path));
         this.openDiff(this.selectedPath);
         await this.refreshCommitPanel();
+        const committedRepositoryPaths: string[] = [];
         try {
             let committed = false;
             for (const currentPath of orderedRepositoryPaths) {
@@ -1664,6 +1665,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 if (!rootUri) { continue; }
                 await commitWithMessage(rootUri, message, currentPath === repositoryPath ? amend : false);
                 committed = true;
+                committedRepositoryPaths.push(currentPath);
                 if (currentPath !== repositoryPath) {
                     const ancestry = this.repoSubmoduleWatcher.getRepositoryAncestry(currentPath);
                     const parent = ancestry.at(-1);
@@ -1677,6 +1679,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             }
             if (!committed) { void vscode.window.showInformationMessage('变更文件为空，无需提交'); }
             this.commitAmendByRepo.delete(repositoryPath);
+            // commit 不改写 .git/HEAD, HEAD 文件监听器不会触发; 必须显式重读并等待新 HEAD 的
+            // 工作区状态就绪, 再刷新提交列表, 保证遮罩结束时 staged/unstaged 与新 commit 同步。
+            await Promise.all(committedRepositoryPaths
+                .map(committedPath => this.uncommittedFilesWatcher.refreshHeadBranch(committedPath)));
             await this.commitController.forceRefreshCurrentSelection();
         } catch (error) {
             void vscode.window.showErrorMessage(`Git Commit 失败：${error instanceof Error ? error.message : String(error)}`);
@@ -3241,7 +3247,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const diffKey = section + ':' + file.path;
         const untracked = section === 'unstaged' && file.isUntracked ? ' untracked' : '';
         html += '<div class="file-item' + (diffKey === selectedPath ? ' selected' : '') + untracked + '" data-path="' + escapeAttr(file.path) + '" data-diff-key="' + escapeAttr(diffKey) + '" data-section="' + section + '" style="padding-left:' + (folder ? 30 : 10) + 'px" title="' + escapeAttr(file.path) + '">';
-        html += workingTreeKindIconHTML(file, section) + '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span><span class="file-path"><span class="file-name">' + escapeHtml(name) + '</span></span><span class="file-actions">' + workingTreeActionsHTML(actions) + '</span></div>';
+        html += workingTreeKindIconHTML(file, section) + '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span><span class="file-path"><span class="file-name">' + escapeHtml(name) + '</span>' + (folder ? ' <span class="file-folder">' + escapeHtml(folder + '/') + '</span>' : '') + '</span><span class="file-actions">' + workingTreeActionsHTML(actions) + '</span></div>';
       });
     });
     return html;
@@ -3328,7 +3334,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
           const lastSlash = file.path.lastIndexOf('/');
           const name = lastSlash >= 0 ? file.path.slice(lastSlash + 1) : file.path;
           html += '<div class="file-item' + (file.path === selectedPath ? ' selected' : '') + '" data-path="' + escapeAttr(file.path) + '" style="padding-left:' + (folder ? 30 : 10) + 'px" title="' + escapeAttr(file.path) + '">';
-          html += (file.isGitlink ? '<span class="gitlink-label">Repo</span>' : '') + '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span><span class="file-path">' + escapeHtml(name) + '</span></div>';
+          html += (file.isGitlink ? '<span class="gitlink-label">Repo</span>' : '') + '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span><span class="file-path"><span class="file-name">' + escapeHtml(name) + '</span>' + (folder ? ' <span class="file-folder">' + escapeHtml(folder + '/') + '</span>' : '') + '</span></div>';
         });
       });
     } else {
