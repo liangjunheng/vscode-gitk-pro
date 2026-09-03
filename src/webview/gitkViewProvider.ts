@@ -501,10 +501,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         affectedPaths?: ReadonlySet<string>,
         updateWorkingTreeState = true,
     ): Promise<void> {
-        const generation = ++this.commitFilesGeneration;
         const selectedBranch = this.commitController.selectedCommit?.gitBranchOption;
         const selectedHash = this.commitController.selectedCommit?.hash;
+        // 未处于工作区上下文时不做任何 Diff 工作, 因此不能推进 generation。
+        // 否则会把一个正在进行且健康的工作区读取请求无谓作废, 而本次又不产生终态,
+        // 导致 diffLoading 永远停在 true, 面板既无卡片也无空态。
         if (!selectedBranch || !isWorkingTreeHash(selectedHash)) { return; }
+        const generation = ++this.commitFilesGeneration;
         const workingTreeChanges = changes ?? await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(selectedBranch);
         if (generation !== this.commitFilesGeneration
             || !isWorkingTreeHash(this.currentHash)
