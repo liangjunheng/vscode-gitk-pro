@@ -176,7 +176,7 @@ export class GitActionRunner {
                     progress.report({ message: '正在执行 Git 命令...' });
                     const result = await runGitSync(rootUri, action, message => progress.report({ message }));
                     if (action === 'pull' && result.submodulesNeedUpdate) {
-                        await updateGitSubmodules(rootUri, message => progress.report({ message }));
+                        await updateGitSubmodules(rootUri, result.submodulePaths, message => progress.report({ message }));
                     }
                     if (result.submoduleTopologyChanged) {
                         // 仓库集合变化由调用方转交 GitRepoController 重扫。
