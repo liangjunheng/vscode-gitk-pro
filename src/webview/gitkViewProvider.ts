@@ -2950,7 +2950,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
   // 包含子仓库的仓库和独立仓库均用状态栏同款 codicon-repo；仅叶子子仓库用 codicon-archive。
   function repositoryIcon(hasSubmodules, isSubmodule) {
     const icon = !hasSubmodules && isSubmodule ? 'archive' : 'repo';
-    return '<span class="repository-icon codicon codicon-' + icon + '" aria-hidden="true"></span>';
+    const parentClass = hasSubmodules ? ' has-submodules' : '';
+    return '<span class="repository-icon codicon codicon-' + icon + parentClass + '" aria-hidden="true"></span>';
   }
   function updateSelectedRepoDisplay(repository) {
     const loading = repositoryDropdown.current.dataset.loading === 'true';

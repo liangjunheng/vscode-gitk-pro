@@ -271,6 +271,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .repository-ancestry-link:hover{text-decoration:underline;color:var(--vscode-textLink-foreground)}
 .repository-ancestry-separator{opacity:.8}
 .repository-icon{display:flex;align-items:center;justify-content:center;width:16px;height:16px;flex:0 0 16px;font-size:16px;line-height:16px;color:var(--vscode-icon-foreground)}
+.repository-icon.has-submodules{color:var(--vscode-gitDecoration-addedResourceForeground,var(--vscode-icon-foreground))}
 .card-header .repository-icon.codicon{display:flex;align-items:center;justify-content:center;width:16px;height:16px;font-size:16px;line-height:16px}
 .card.selected-card{border-color:var(--vscode-focusBorder);box-shadow:0 0 0 1px var(--vscode-focusBorder),0 1px 4px rgba(0,0,0,.12)}
 .card.selected-card .card-header{border-bottom-color:var(--vscode-focusBorder)}
@@ -761,7 +762,8 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
     const repositoryIcon=el.querySelector('.card-repository-icon');
     // 包含子仓库的仓库和独立仓库=repo；仅叶子子仓库=archive。
     const icon=!card.repositoryHasSubmodules&&card.repositoryAncestry.length>0?'archive':'repo';
-    repositoryIcon.className='repository-icon card-repository-icon codicon codicon-'+icon;
+    repositoryIcon.className='repository-icon card-repository-icon codicon codicon-'+icon
+      +(card.repositoryHasSubmodules?' has-submodules':'');
     el.querySelector('.repo-label').textContent=card.repositoryLabel;
     const ancestry=el.querySelector('.repository-ancestry');
     ancestry.replaceChildren();
