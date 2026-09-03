@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { type ChangeSetMode, type ChangedFile, type GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
-import { getCommitFiles, getGitAheadCount, getGitlinkPathsInCommit, getPushBranches, type PushBranchOption, runGitCommand, runGitReadCommand, readCommitHistoryMessages, readCurrentCommitMessage } from '../git/gitLogProvider';
+import { getCommitFiles, getGitAheadCount, getGitlinkPathsInCommit, getPushBranches, type PushBranchOption, runGitCommand, runGitReadCommand, readCurrentCommitMessage } from '../git/gitLogProvider';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { CommitPanel, type CommitPanelSnapshot, type CommitCard, type CommitCardStatePatch } from './commitPanel';
 import { CommitPanelViewTitleController } from './commitPanelViewTitleController';
@@ -67,6 +67,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private readonly commitGitlinkPathsByHead = new Map<string, readonly string[]>();
     private readonly commitCommittingByRepo = new Set<string>();
     private readonly commitMessageByRepo = new Map<string, string>();
+    private readonly initializedCommitMessagesByRepo = new Set<string>();
     private readonly selectedCommitSubmodulesByRepo = new Map<string, readonly string[]>();
     private readonly selectedPushSubmodulesByRepo = new Map<string, readonly string[]>();
     private readonly pullBeforePushByRepo = new Map<string, boolean>();
@@ -731,9 +732,21 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.pushStateToWebview();
     }
 
-    /** 提交列表变化后的唯一下游入口：仅推送提交列表状态。 */
+    /** 提交列表变化后的唯一下游入口：初始化卡片默认信息并推送提交列表状态。 */
     private onSearchedCommitsChanged(): void {
+        this.initializeCommitMessagesFromProjectHistory();
         this.schedulePushState();
+    }
+
+    /** 每个仓库仅首次以当前项目中最新已加载的提交信息填充，之后完全由卡片输入状态接管。 */
+    private initializeCommitMessagesFromProjectHistory(): void {
+        for (const commit of this.commits) {
+            const repositoryPath = commit.gitBranchOption?.repoOption.path;
+            const message = commit.body?.trim() || commit.message.trim();
+            if (!repositoryPath || !message || this.initializedCommitMessagesByRepo.has(repositoryPath)) { continue; }
+            this.commitMessageByRepo.set(repositoryPath, message);
+            this.initializedCommitMessagesByRepo.add(repositoryPath);
+        }
     }
 
     /** 任一仓库未提交变化 (来自 watcher) 时增量更新多仓库 Store, 并刷新 Commit 面板对应卡片。 */
@@ -1505,21 +1518,20 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    /** 历史提交信息选择器: 选中后填入指定仓库卡片的信息框。 */
+    /** 当前项目已加载提交列表的选择器：按仓库过滤，不额外读取 git log。 */
     private async pickCommitHistoryMessage(repositoryPath: string): Promise<void> {
-        const rootUri = this.getRepoRootUri(repositoryPath);
-        if (!rootUri) { return; }
-        const history = await readCommitHistoryMessages(rootUri);
-        const items: (vscode.QuickPickItem & { message: string })[] = history.map(item => ({
-            label: item.subject,
-            description: item.shortHash,
-            message: item.message,
-        }));
-        if (items.length === 0) {
-            void vscode.window.showInformationMessage('没有可用的历史提交信息。');
+        const history = this.commits
+            .filter(commit => commit.gitBranchOption?.repoOption.path === repositoryPath && Boolean(commit.message.trim()))
+            .map(commit => ({
+                label: commit.message.split('\n')[0],
+                description: commit.shortHash,
+                message: commit.body?.trim() || commit.message,
+            }));
+        if (history.length === 0) {
+            void vscode.window.showInformationMessage('当前项目没有已加载的历史提交信息。');
             return;
         }
-        const picked = await vscode.window.showQuickPick(items, { placeHolder: '选择历史提交信息填入' });
+        const picked = await vscode.window.showQuickPick(history, { placeHolder: '选择当前项目的历史提交信息填入' });
         if (picked) { this.updateCommitCardState(repositoryPath, { message: picked.message }); }
     }
 

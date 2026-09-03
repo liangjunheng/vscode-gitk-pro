@@ -292,7 +292,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .actions{display:flex;flex-direction:column;gap:8px}
 .hint{min-width:120px;color:var(--vscode-descriptionForeground);font-size:calc(var(--vscode-font-size) * .9)}
 .action-groups{display:flex;flex-direction:column;gap:8px;width:100%}
-.action-group{display:grid;grid-template-columns:auto auto minmax(0,1fr);align-items:center;gap:8px;width:100%;padding:8px 10px;border:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:7px;background:var(--vscode-editorWidget-background)}
+.action-group{display:grid;grid-template-columns:auto auto minmax(0,1fr);grid-auto-rows:max-content;align-items:center;gap:8px;width:100%;height:auto;padding:8px 10px;border:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:7px;background:var(--vscode-editorWidget-background)}
 .commit-group{border-color:var(--vscode-button-background)}
 .commit-group .commit-btn,.submodule-group .push-btn{grid-column:1;grid-row:1}
 .commit-group .commit-option,.submodule-group .pull-option{grid-column:2;grid-row:1}
@@ -341,13 +341,13 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .pull-option input{margin:0;accent-color:var(--vscode-checkbox-background,var(--vscode-button-background))}
 .commit-option input{margin:0;accent-color:var(--vscode-button-background)}
 .commit-option input:disabled+span{opacity:.5}
-.commit-btn,.push-btn{flex:0 0 auto;border:0;border-radius:5px;padding:3px 6px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);cursor:pointer;font-family:var(--vscode-editor-font-family);font-size:12px;line-height:normal}
+.commit-btn,.push-btn{flex:0 0 auto;border:0;border-radius:5px;padding:5px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);cursor:pointer;font-family:var(--vscode-editor-font-family);font-size:13px;line-height:normal}
 .commit-btn{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}
 .commit-btn:hover{background:var(--vscode-button-hoverBackground)}
 .push-btn{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}
 .push-btn:hover{background:var(--vscode-button-hoverBackground)}
 .push-btn{display:inline-flex;align-items:center;gap:8px}
-.push-target-label{max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-left:1px solid color-mix(in srgb,currentColor 45%,transparent);padding-left:8px;font-size:calc(var(--vscode-editor-font-size) * .85);opacity:.85}
+.push-target-label{max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-left:1px solid color-mix(in srgb,currentColor 45%,transparent);padding-left:8px;font-size:13px;opacity:.85}
 
 .commit-btn:disabled,.push-btn:disabled{opacity:1;cursor:pointer}
 .commit-option input:disabled{cursor:default}
