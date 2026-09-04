@@ -2558,6 +2558,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 <script>
 (function() {
   const vscode = acquireVsCodeApi();
+  document.body.appendChild(document.getElementById('commitContextMenu'));
   let commits = [];
   let branches = [];
   let totalBranches = [];
@@ -2861,7 +2862,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     menu.hidden = true;
     menu.hidden = false;
     menu.style.left = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 4) + 'px';
-    menu.style.top = Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 4) + 'px';
+    menu.style.top = event.clientY + 'px';
   });
   document.getElementById('panelResizeHandle').addEventListener('mousedown', function(event) {
     const workspace = document.getElementById('workspace');
