@@ -17,7 +17,16 @@ VS Code 扩展, 在活动栏提供 gitk 风格的提交图面板。
 - .vscode/extensions.json + settings.json: 官方脚手架标配 (推荐 eslint)
 - run.bat: 一键启动脚本 (双击即可), 调 Code.exe --extensionDevelopmentPath 启动 Extension Development Host, 不依赖 F5/launch.json
 - src/extension.ts: 激活入口, activate 开头 console.log + showInformationMessage 诊断; 注册 2 个 provider + GitkStatusBar
-- src/gitkViewProvider.ts: 上方 WebviewViewProvider, 渲染提交图, 行点击发送 selectCommit
+- src/webview/gitkViewProvider.ts: 上方 WebviewViewProvider, 渲染提交图, 行点击发送 selectCommit; 纯 TS 逻辑, 不含任何 HTML/CSS/JS 字面量
+- src/webview/gitkWebviewDocument.ts: gitk 页面骨架, 导出 renderGitkWebviewHtml(codiconCssUri), 由 GitkViewProvider.getHtml() 委派调用
+- src/webview/selectorBarSubPanel.ts: 顶部仓库/分支下拉+搜索+工具栏子面板, 导出 SELECTOR_BAR_SUB_PANEL_STYLES / _MARKUP / _SCRIPT
+- src/webview/changedFilesSubPanel.ts: 变更文件列表子面板, 导出 CHANGED_FILES_SUB_PANEL_STYLES / _MARKUP / _SCRIPT
+- src/webview/commitListSubPanel.ts: Commit 列表子面板, 导出 COMMIT_LIST_SUB_PANEL_STYLES / _MARKUP / _SCRIPT
+- src/webview/commitPanelDocument.ts: Commit 面板页面, 导出 renderCommitPanelHtml(codiconCssUri, nonce, csp, initialSnapshotJson)
+- src/webview/commitCardScript.ts / commitFileListScript.ts / commitSubmoduleSelectorScript.ts: Commit 面板 webview 脚本片段(COMMIT_CARD_SCRIPT / COMMIT_FILE_LIST_SCRIPT / COMMIT_SUBMODULE_SELECTOR_SCRIPT)
+- src/webview/multiDiffPanelDocument.ts: Gitk Diff 面板页面, 导出 renderMultiDiffHtml(cspSource, codiconCssUri, monacoUri, nonce); MONACO_DIFF_LANGUAGES/OPTIONS 的 import 已迁到此处
+- webview 分层约定(全仓库统一): 面板类只写 TS 逻辑 → xxxDocument.ts 的 render 函数产出整页 HTML → 子面板/脚本片段常量。类内 getHtml() 只负责准备 nonce/CSP/资源 Uri 再委派
+- webview 子面板(gitk 视图): 每个导出 STYLES/MARKUP/SCRIPT 三个字符串常量; 所有脚本片段拼进同一个 IIFE 共享作用域; 归属规则="谁拥有 DOM 谁持有它的监听", 子面板之间互不 import
 - src/commitFilesViewProvider.ts: 下方 WebviewViewProvider, 显示变更文件 tree/flat 切换, 点击文件打开 Multi-Diff Editor (vscode.open + IResourceMultiDiffEditorInput), onDidChangeActiveTextEditor + onDidChangeVisibleTextEditors 同步高亮, diff 关闭时清除高亮
 - src/gitLogProvider.ts: 通过 vscode.git API 获取 log/diffBetween, buildGraph 图形布局, buildGitFileUri 构造 git scheme URI (格式: git://<path>?{"path":"<fsPath>","ref":"<ref>"})
 - src/diffContentProvider.ts: GitkDiffContentProvider 实现 TextDocumentContentProvider, scheme=vscode-gitk-diff (旧方案, 已不用于 openDiff)
@@ -75,6 +84,11 @@ VS Code 扩展, 在活动栏提供 gitk 风格的提交图面板。
 - `[System.IO.File]::ReadAllLines($p)` / `ReadAllText($p)` **不指定编码时按本地代码页解码**, 在中文 Windows 上会把 UTF-8 源码的中文全部损坏成 U+FFFD, 不可逆。
 - 一次按行号删除方法块的操作损坏了 gitkViewProvider.ts 的 1726 处中文, 只能 `git checkout` 恢复, 导致该文件本轮全部改动 (仓库/分支控制器接线) 丢失并需重做。
 - **规则: 源码增删改一律用 replace_in_file / write_to_file 编辑工具**, 即使为了避开长字符串匹配也不得走 PowerShell 捷径。确需脚本时必须显式传 `[System.Text.Encoding]::UTF8` 并先在副本上验证。
+
+### 文件写入偶发静默回退 (2026-09-05, OneDrive 工作区)
+- 现象: 编辑工具/脚本报告写入成功, 随后编译或读回时内容却回到旧版本。当天发生两次: `multiDiffPanelDocument.ts` 的 4 处 `${webview.cspSource}`→`${cspSource}` 被还原(导致 TS2304 复现); `.codebuddy/memory/` 下追加的第 2/3/4 轮记录与 MEMORY.md 条目整体消失。
+- 排查结论: 与构建无关(`scripts/copy-monaco.cjs` 只写 `media/`); 与 git 无关(涉及文件为 untracked, 未跑 checkout/stash); 重新写入后连续多次读取 MD5 稳定。
+- **规则: 关键文件改完必须重新读取校验再信任**; 大批量重构结束后跑一次与 `git HEAD` 的端到端等价校验, 一次性抓出静默回退。参考脚本思路见当日日志。
 
 ### 用户规则
 - 必须用英语回答; 中文提问最后一句给英文写法提示, 英文提问先纠正语法
