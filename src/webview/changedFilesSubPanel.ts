@@ -11,15 +11,7 @@ export const CHANGED_FILES_SUB_PANEL_STYLES = `
   #filesTitle { display: flex; align-items: center; min-width: 0; gap: 6px; white-space: nowrap; }
   #filesCommitHash { color: var(--vscode-descriptionForeground); font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; font-weight: 400; }
   #filesActions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
-  #commitSplitGroup { display: flex; align-items: stretch; margin-right: 4px; border-radius: 5px; overflow: hidden; background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
-  #commitSplitGroup[hidden] { display: none; }
-  #commitPrimaryBtn { height: 24px; border: 0; border-radius: 0; padding: 0 8px; color: inherit; background: transparent; font: inherit; white-space: nowrap; cursor: pointer; }
-  #commitPrimaryBtn:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
-  #commitPrimaryBtn:disabled { cursor: wait; opacity: .7; }
-  #commitSplitGroup.loading #commitPrimaryBtn::before { content: ''; display: inline-block; width: 10px; height: 10px; margin-right: 6px; border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: dropdown-spin .8s linear infinite; vertical-align: -1px; }
-  #commitPrimaryBtn:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   #filesActions .action-group { display: flex; align-items: center; gap: 2px; }
-  #filesActions .action-group + .action-group:not([hidden])::before { content: ''; display: inline-block; width: 1px; height: 14px; margin: 0 4px; background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.3)); }
   #filesHeader [hidden] { display: none !important; }
   #filesHeader .toolbar-icon { width: 24px; height: 24px; border: 1px solid transparent; border-radius: 4px; transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease; }
   #filesHeader .toolbar-icon:hover { background: var(--vscode-toolbar-hoverBackground); border-color: var(--vscode-toolbar-hoverOutline, transparent); }
@@ -98,9 +90,9 @@ export const CHANGED_FILES_SUB_PANEL_STYLES = `
 /** 变更文件列表子面板的结构片段。 */
 export const CHANGED_FILES_SUB_PANEL_MARKUP = `
     <section id="filesSection">
-      <div id="filesHeader"><div id="filesTitle"><span>变更文件列表</span><span id="filesCommitHash"></span><span class="action-group" aria-label="复制操作"><button class="toolbar-icon commit-action" data-action="copyHash" title="Copy Commit Hash to Clipboard" aria-label="Copy Commit Hash to Clipboard"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="7.5" height="8" rx="1"/><path d="M3 10.5v-7A1.5 1.5 0 0 1 4.5 2H10"/></svg></button></span></div><div id="filesActions"><div class="action-group commit-history-action-group" aria-label="提交操作"><button class="toolbar-icon commit-action" data-action="addTag" title="Add Tag..." aria-label="Add Tag"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 7.75 7.25 3h5.75v5.75L8.25 13.5 2.5 7.75Z"/><circle cx="10.25" cy="5.75" r=".75" fill="currentColor" stroke="none"/></svg></button><button class="toolbar-icon commit-action" data-action="createBranch" title="Create Branch..." aria-label="Create Branch"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3v10M4 5.5c0 2.1 1.4 3.5 3.5 3.5H11"/><circle cx="4" cy="3" r="1.25"/><circle cx="4" cy="13" r="1.25"/><circle cx="12" cy="9" r="1.25"/></svg></button><button class="toolbar-icon commit-action" data-action="checkout" title="Checkout..." aria-label="Checkout"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3v8m0 0-2-2m2 2 2-2M4 11h4.5A3.5 3.5 0 0 0 12 7.5V5"/><path d="m10 6 2-2 2 2"/></svg></button><button class="toolbar-icon commit-action" data-action="cherryPick" title="Cherry Pick..." aria-label="Cherry Pick"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="4" r="1.25"/><circle cx="12" cy="12" r="1.25"/><path d="M4 5.25v2.5A3.25 3.25 0 0 0 7.25 11H12M6 3h3"/></svg></button><button class="toolbar-icon commit-action" data-action="revert" title="Revert..." aria-label="Revert"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 4 3 6.5 5.5 9M3.5 6.5h6A3.5 3.5 0 1 1 6 10"/></svg></button><button class="toolbar-icon commit-action" data-action="drop" title="Drop..." aria-label="Drop"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6 4.5V3h4v1.5M5 6.5v6h6v-6M7 8.5v2.5M9 8.5v2.5"/></svg></button></div><div class="action-group commit-history-action-group" aria-label="分支操作"><button class="toolbar-icon commit-action" data-action="merge" title="Merge into current branch..." aria-label="Merge into current branch"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3v10M4 10c0-2.5 1.75-4 4.25-4H11"/><circle cx="4" cy="3" r="1.25"/><circle cx="4" cy="13" r="1.25"/><circle cx="12" cy="6" r="1.25"/></svg></button><button class="toolbar-icon commit-action" data-action="rebase" title="Rebase current branch on this Commit..." aria-label="Rebase current branch on this Commit"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h7M8.5 2 11 4 8.5 6M13 12H6M7.5 10 5 12l2.5 2"/></svg></button><button class="toolbar-icon commit-action" data-action="reset" title="Reset current branch to this Commit..." aria-label="Reset current branch to this Commit"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4.5" y="5.5" width="8" height="8" rx="1"/><path d="M2.5 6A4.5 4.5 0 0 1 7 2.5h2M7 2.5l2 2-2 2"/></svg></button></div><div id="commitSplitGroup" class="action-group" hidden><button id="commitPrimaryBtn" type="button" title="创建新的提交">Go Commit</button></div><div class="action-group"><button class="toolbar-icon" id="filesModeBtn" title="显示方式（当前：树状）" aria-label="显示方式"><svg viewBox="0 0 16 16" aria-hidden="true"><path id="filesModeIcon" d="M2.5 3h5M5 3v4M5 7h5M7.5 7v4M7.5 11h6"/></svg></button></div></div></div>
+      <div id="filesHeader"><div id="filesTitle"><span>变更文件列表</span><span id="filesCommitHash"></span></div><div id="filesActions"><div class="action-group"><button class="toolbar-icon" id="filesModeBtn" title="显示方式（当前：树状）" aria-label="显示方式"><svg viewBox="0 0 16 16" aria-hidden="true"><path id="filesModeIcon" d="M2.5 3h5M5 3v4M5 7h5M7.5 7v4M7.5 11h6"/></svg></button></div></div></div>
       <div id="filesList"><div id="filesEmpty">选择一个提交以查看变更文件</div></div>
-      <div id="commitContextMenu" popover="manual"><button type="button" data-commit-action="toggleDescription"><svg class="context-menu-icon" viewBox="0 0 16 16"><path id="toggleDescriptionIcon" d="M3 5.5 8 10l5-4.5"/></svg><span>展开描述</span></button><button type="button" data-commit-action="copyHash"><svg class="context-menu-icon" viewBox="0 0 16 16"><rect x="5.5" y="5.5" width="7.5" height="8" rx="1"/><path d="M3 10.5v-7A1.5 1.5 0 0 1 4.5 2H10"/></svg><span>copy hash</span></button><div class="context-menu-separator"></div><button type="button" data-commit-action="reset"><svg class="context-menu-icon" viewBox="0 0 16 16"><rect x="4.5" y="5.5" width="8" height="8" rx="1"/><path d="M2.5 6A4.5 4.5 0 0 1 7 2.5h2M7 2.5l2 2-2 2"/></svg><span>reset</span></button><button type="button" data-commit-action="checkout"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M4 3v8m0 0-2-2m2 2 2-2M4 11h4.5A3.5 3.5 0 0 0 12 7.5V5"/><path d="m10 6 2-2 2 2"/></svg><span>checkout</span></button><button type="button" data-commit-action="revert"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M5.5 4 3 6.5 5.5 9M3.5 6.5h6A3.5 3.5 0 1 1 6 10"/></svg><span>revert</span></button><button type="button" data-commit-action="drop"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M3 4.5h10M6 4.5V3h4v1.5M5 6.5v6h6v-6M7 8.5v2.5M9 8.5v2.5"/></svg><span>drop</span></button><div class="context-menu-separator"></div><button type="button" data-commit-action="createBranch"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M4 3v10M4 5.5c0 2.1 1.4 3.5 3.5 3.5H11"/><circle cx="4" cy="3" r="1.25"/><circle cx="4" cy="13" r="1.25"/><circle cx="12" cy="9" r="1.25"/></svg><span>create branch</span></button><button type="button" data-commit-action="addTag"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M2.5 7.75 7.25 3h5.75v5.75L8.25 13.5 2.5 7.75Z"/><circle cx="10.25" cy="5.75" r=".75" fill="currentColor" stroke="none"/></svg><span>create tag</span></button></div>
+      <div id="commitContextMenu" popover="manual"><button type="button" data-commit-action="toggleDescription"><svg class="context-menu-icon" viewBox="0 0 16 16"><path id="toggleDescriptionIcon" d="M3 5.5 8 10l5-4.5"/></svg><span>展开描述</span></button><button type="button" data-commit-action="copyHash"><svg class="context-menu-icon" viewBox="0 0 16 16"><rect x="5.5" y="5.5" width="7.5" height="8" rx="1"/><path d="M3 10.5v-7A1.5 1.5 0 0 1 4.5 2H10"/></svg><span>copy hash</span></button><div class="context-menu-separator"></div><button type="button" data-commit-action="checkout"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M4 3v8m0 0-2-2m2 2 2-2M4 11h4.5A3.5 3.5 0 0 0 12 7.5V5"/><path d="m10 6 2-2 2 2"/></svg><span>checkout</span></button><button type="button" data-commit-action="revert"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M5.5 4 3 6.5 5.5 9M3.5 6.5h6A3.5 3.5 0 1 1 6 10"/></svg><span>revert</span></button><button type="button" data-commit-action="drop"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M3 4.5h10M6 4.5V3h4v1.5M5 6.5v6h6v-6M7 8.5v2.5M9 8.5v2.5"/></svg><span>drop</span></button><button type="button" data-commit-action="cherryPick"><svg class="context-menu-icon" viewBox="0 0 16 16"><circle cx="4" cy="4" r="1.25"/><circle cx="12" cy="12" r="1.25"/><path d="M4 5.25v2.5A3.25 3.25 0 0 0 7.25 11H12M6 3h3"/></svg><span>cherry pick</span></button><div class="context-menu-separator"></div><button type="button" data-commit-action="merge"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M4 3v10M4 10c0-2.5 1.75-4 4.25-4H11"/><circle cx="4" cy="3" r="1.25"/><circle cx="4" cy="13" r="1.25"/><circle cx="12" cy="6" r="1.25"/></svg><span>merge</span></button><button type="button" data-commit-action="rebase"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M3 4h7M8.5 2 11 4 8.5 6M13 12H6M7.5 10 5 12l2.5 2"/></svg><span>rebase</span></button><button type="button" data-commit-action="reset"><svg class="context-menu-icon" viewBox="0 0 16 16"><rect x="4.5" y="5.5" width="8" height="8" rx="1"/><path d="M2.5 6A4.5 4.5 0 0 1 7 2.5h2M7 2.5l2 2-2 2"/></svg><span>reset</span></button><div class="context-menu-separator"></div><button type="button" data-commit-action="createBranch"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M4 3v10M4 5.5c0 2.1 1.4 3.5 3.5 3.5H11"/><circle cx="4" cy="3" r="1.25"/><circle cx="4" cy="13" r="1.25"/><circle cx="12" cy="9" r="1.25"/></svg><span>create branch</span></button><button type="button" data-commit-action="addTag"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M2.5 7.75 7.25 3h5.75v5.75L8.25 13.5 2.5 7.75Z"/><circle cx="10.25" cy="5.75" r=".75" fill="currentColor" stroke="none"/></svg><span>add tag</span></button></div>
     </section>
 `;
 
@@ -123,19 +115,6 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
   let filesMode = 'flat';
   let selectedPath = '';
   const collapsedFolders = new Set();
-  document.querySelectorAll('.commit-action').forEach(function(button) {
-    button.addEventListener('click', function() {
-      if (!selectedCommitHash || isWorkingTreeHash(selectedCommitHash) || !selectedCommitRepositoryPath) return;
-      vscode.postMessage({ type: 'commitAction', action: button.dataset.action, hash: selectedCommitHash, repositoryPath: selectedCommitRepositoryPath });
-    });
-  });
-  document.getElementById('commitPrimaryBtn').addEventListener('click', function() {
-    if (this.disabled) return;
-    this.disabled = true;
-    document.getElementById('commitSplitGroup').classList.add('loading');
-    document.getElementById('commitSplitGroup').setAttribute('aria-busy', 'true');
-    vscode.postMessage({ type: 'openCommitEditor', amend: false, repositoryPath: selectedCommitRepositoryPath });
-  });
   document.getElementById('filesModeBtn').addEventListener('click', function() {
     vscode.postMessage({ type: 'toggleFilesMode' });
   });
@@ -168,19 +147,8 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
 
   function updateFilesCommitHash() {
     const isCommit = selectedCommitHash && !isWorkingTreeHash(selectedCommitHash);
-    const isUncommitted = isWorkingTreeHash(selectedCommitHash) && Boolean(selectedCommitRepositoryPath);
     const hashLabel = document.getElementById('filesCommitHash');
     if (hashLabel) hashLabel.textContent = isCommit ? selectedCommitHash.slice(0, 8) : '';
-    document.getElementById('commitSplitGroup').hidden = !isUncommitted;
-    document.querySelectorAll('#filesActions .commit-history-action-group').forEach(function(group) {
-      group.hidden = !isCommit;
-    });
-    document.querySelectorAll('.commit-action').forEach(function(button) {
-      button.hidden = !isCommit;
-    });
-    document.querySelectorAll('#filesTitle .action-group').forEach(function(group) {
-      group.hidden = !isCommit;
-    });
   }
 
   function workingTreeActionButton(action, section, path, icon, title) {

@@ -12,11 +12,14 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   .selector-group { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 8px; }
   .repo-group { padding-left: 0; border-right: 1px solid var(--vscode-panel-border); }
   #branchSelector { border-right: 1px solid var(--vscode-panel-border); }
-  .search-group { padding-left: 0; border: 0; }
   .selector-prefix { flex: 0 0 auto; color: var(--vscode-descriptionForeground); font-size: 11px; }
-  #header .uncommitted-repo-badge { flex: 0 0 16px; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 50%; background: var(--vscode-button-background, #007acc); color: #fff; font: inherit; font-size: 9px; font-weight: 600; line-height: 16px; text-align: center; }
-  .uncommitted-repo-badge:hover { background: var(--vscode-button-hoverBackground, #0062a3); }
-  .uncommitted-repo-badge[hidden] { display: none; }
+  /* 打开 Commit 面板 与 未提交仓库计数 合成一个可点击组: 整块都可点, 不再只有数字徽标。 */
+  #header .uncommitted-repo-group { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; height: 22px; padding: 0 9px; border: 1px solid var(--vscode-button-border, transparent); border-radius: 11px; background: var(--vscode-button-background, #007acc); color: var(--vscode-button-foreground, #fff); font: inherit; font-size: 11px; font-weight: 600; line-height: 1; cursor: pointer; white-space: nowrap; }
+  #header .uncommitted-repo-group:hover { background: var(--vscode-button-hoverBackground, #0062a3); }
+  #header .uncommitted-repo-group:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+  /* 选择器需带 #header, 否则上面的 display:flex 会盖掉 hidden。 */
+  #header .uncommitted-repo-group[hidden] { display: none; }
+  .uncommitted-repo-group .codicon { display: flex; align-items: center; font-size: 13px; line-height: 1; }
   .dropdown { position: relative; flex: 0 1 auto; min-width: 0; }
   #repositoryDropdown, #branchDropdown { width: 20ch; }
   .dropdown-current { display: flex; align-items: center; gap: 6px; width: 100%; height: 26px; padding: 0 7px; color: var(--vscode-dropdown-foreground, var(--vscode-foreground)); background: var(--vscode-dropdown-background, var(--vscode-editorWidget-background)); border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border)); border-radius: 4px; font: inherit; font-size: 11px; text-align: left; cursor: pointer; }
@@ -66,22 +69,6 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   .dropdown-actions .confirm-selection:hover { background: var(--vscode-button-hoverBackground); }
   .dropdown-group { padding-bottom: 1px; color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 600; cursor: default; }
   .dropdown-empty { padding: 8px 7px; color: var(--vscode-descriptionForeground); font-size: 11px; }
-  #toolbarActions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
-  .toolbar-icon { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; color: var(--vscode-icon-foreground); background: transparent; }
-  .toolbar-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-  .toolbar-icon .codicon { font-size: 16px; line-height: 16px; }
-  .toolbar-icon:hover { background: var(--vscode-toolbar-hoverBackground); }
-  .toolbar-icon.refresh-unchanged { animation: refresh-unchanged 550ms ease-out; }
-  @keyframes refresh-unchanged { 0%, 100% { color: var(--vscode-icon-foreground); } 45% { color: var(--vscode-descriptionForeground); } }
-  #header .count { opacity: 0.7; font-size: 11px; white-space: nowrap; }
-  #searchBox { display: flex; align-items: center; position: relative; }
-  #searchInput { width: 150px; padding: 3px 22px 3px 24px; font-size: 12px; border: 1px solid var(--vscode-input-border, transparent); background: var(--vscode-input-background, #1e1e1e); color: var(--vscode-input-foreground, inherit); border-radius: 4px; transition: border-color 0.15s, box-shadow 0.15s; }
-  #searchInput:focus { outline: none; border-color: var(--vscode-focusBorder, #007acc); box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007acc); }
-  #searchInput::placeholder { color: var(--vscode-inputPlaceholderForeground, #888); }
-  #searchIcon { position: absolute; left: 6px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; opacity: 0.5; pointer-events: none; color: var(--vscode-input-foreground, inherit); }
-  #searchClear { position: absolute; right: 4px; top: 0; bottom: 0; margin: auto 0; width: 16px; height: 16px; border: none; background: transparent; color: var(--vscode-descriptionForeground, #888); cursor: pointer; display: none; font-size: 14px; line-height: 16px; padding: 0; border-radius: 3px; align-items: center; justify-content: center; }
-  #searchClear:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.15)); color: var(--vscode-input-foreground, inherit); }
-  #searchClear.visible { display: flex; }
 `;
 
 /** 选择器栏子面板的结构片段。 */
@@ -90,17 +77,11 @@ export const SELECTOR_BAR_SUB_PANEL_MARKUP = `
     <div class="selector-group repo-group"><span class="selector-prefix">repo:</span><div class="dropdown" id="repositoryDropdown">
       <button class="dropdown-current" type="button" title="切换仓库或子仓库" aria-expanded="false" disabled><span class="dropdown-label"><span class="dropdown-spinner" hidden aria-hidden="true"></span>未选择仓库</span><span class="dropdown-chevron" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></span></button>
       <div class="dropdown-menu" role="menu"><input class="dropdown-filter" type="text" placeholder="筛选仓库" aria-label="筛选仓库"><div class="dropdown-options"></div></div>
-    </div><button class="uncommitted-repo-badge" id="uncommittedRepoBadge" title="Git - 0 个仓库有未提交文件" aria-label="打开存在未提交文件的仓库" hidden>0</button></div>
+    </div><button class="uncommitted-repo-group" id="uncommittedRepoBadge" title="打开 Commit 面板" aria-label="打开存在未提交文件的仓库" hidden><span class="codicon codicon-source-control" aria-hidden="true"></span><span class="uncommitted-repo-count">0</span></button></div>
     <div class="selector-group" id="branchSelector"><span class="selector-prefix">branchs:</span><div class="dropdown" id="branchDropdown">
       <button class="dropdown-current" type="button" title="切换分支" aria-expanded="false" disabled><span class="dropdown-label"><span class="dropdown-spinner" hidden aria-hidden="true"></span>加载分支...</span><span class="dropdown-chevron" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></span></button>
       <div class="dropdown-menu" role="menu"><input class="dropdown-filter" type="text" placeholder="筛选分支" aria-label="筛选分支"><div class="dropdown-options"></div><div class="dropdown-actions"><button type="button" class="toggle-all" aria-pressed="false"><input type="checkbox" tabindex="-1" aria-hidden="true"><span>全选</span></button><div class="dropdown-actions-right"><button type="button" class="confirm-selection">确定</button><button type="button" class="cancel-selection">取消</button></div></div></div>
     </div></div>
-    <div class="selector-group search-group"><div class="selector" id="searchBox"><svg id="searchIcon" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 .96-.96l3.04 3.03-1.06 1.06-2.94-3.13z"/></svg><input type="text" id="searchInput" placeholder="搜索提交..." title="输入关键词搜索, 支持作者/邮箱/消息/Hash/日期, 多个关键词用空格隔开, 回车开始搜索"><button id="searchClear" title="清除搜索">&times;</button></div><span class="count" id="countLabel"></span><button class="toolbar-icon" id="refreshBtn" title="刷新提交" aria-label="刷新提交"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 6A5 5 0 1 0 13 10M13 2v4H9"/></svg></button></div>
-    <div id="toolbarActions">
-      <button class="toolbar-icon" id="fetchBtn" title="Fetch" aria-label="Fetch"><span class="codicon codicon-repo-fetch" aria-hidden="true"></span></button>
-      <button class="toolbar-icon" id="pullBtn" title="Pull" aria-label="Pull"><span class="codicon codicon-repo-pull" aria-hidden="true"></span></button>
-      <button class="toolbar-icon" id="pushBtn" title="Push" aria-label="Push"><span class="codicon codicon-repo-push" aria-hidden="true"></span></button>
-    </div>
   </div>
 `;
 
@@ -142,66 +123,8 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
   function updateBranchLoading(loading) {
     updateDropdownLoading(branchDropdown, loading, '正在加载分支');
   }
-  document.getElementById('refreshBtn').addEventListener('click', function() {
-    vscode.postMessage({ type: 'refresh' });
-  });
   document.getElementById('uncommittedRepoBadge').addEventListener('click', function() {
     vscode.postMessage({ type: 'openCommitPanel' });
-  });
-  document.addEventListener('animationend', function(event) {
-    var target = event.target;
-    if (target && target.id === 'refreshBtn') target.classList.remove('refresh-unchanged');
-  });
-  document.addEventListener('animationcancel', function(event) {
-    var target = event.target;
-    if (target && target.id === 'refreshBtn') target.classList.remove('refresh-unchanged');
-  });
-  ['fetch', 'pull', 'push'].forEach(function(action) {
-    document.getElementById(action + 'Btn').addEventListener('click', function() {
-      vscode.postMessage({ type: 'gitSync', action: action });
-    });
-  });
-  var searchDebounceTimer = null;
-  function triggerSearch() {
-    var input = document.getElementById('searchInput');
-    vscode.postMessage({ type: 'search', keywords: input.value });
-  }
-  function debounceSearch() {
-    if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
-    searchDebounceTimer = setTimeout(function() {
-      searchDebounceTimer = null;
-      triggerSearch();
-    }, 500);
-  }
-  function triggerSearchImmediately() {
-    if (searchDebounceTimer) {
-      clearTimeout(searchDebounceTimer);
-      searchDebounceTimer = null;
-    }
-    triggerSearch();
-  }
-  document.getElementById('searchInput').addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      triggerSearchImmediately();
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      this.value = '';
-      document.getElementById('searchClear').classList.remove('visible');
-      triggerSearchImmediately();
-    }
-  });
-  document.getElementById('searchInput').addEventListener('input', function() {
-    var clearBtn = document.getElementById('searchClear');
-    if (this.value.length > 0) { clearBtn.classList.add('visible'); } else { clearBtn.classList.remove('visible'); }
-    debounceSearch();
-  });
-  document.getElementById('searchClear').addEventListener('click', function() {
-    var input = document.getElementById('searchInput');
-    input.value = '';
-    input.focus();
-    this.classList.remove('visible');
-    triggerSearchImmediately();
   });
   function createDropdown(id, onSelect) {
     const root = document.getElementById(id);

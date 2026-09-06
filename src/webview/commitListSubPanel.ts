@@ -9,8 +9,25 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   #graph { --graph-lane-width: 22px; --main-width: calc(var(--graph-lane-width) + 60ch); --hash-width: max-content; --author-width: max-content; --date-width: max-content; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
   /* 竖向铺满: 列表吃掉表头以外的剩余高度。flex-shrink 必须为 0, 否则内容超高时会被压扁而无法滚动。 */
   #commitList { flex: 1 0 auto; min-width: 0; }
-  .commit-header, .commit-row { display: grid; grid-template-columns: var(--main-width) var(--author-width) var(--hash-width) var(--date-width); align-items: center; min-width: max-content; }
-  .commit-header { flex: 0 0 auto; position: sticky; top: 0; z-index: 1; height: 30px; margin: 0; padding: 0 10px; color: var(--vscode-tab-activeForeground); background: var(--vscode-editorWidget-background, var(--vscode-tab-activeBackground)); border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); box-sizing: border-box; font-weight: 600; }
+  /* 搜索/计数/刷新都是提交列表的能力, 随面板一起放在列头之上并吸顶。 */
+  .count { opacity: 0.7; font-size: 11px; white-space: nowrap; }
+  #searchBox { display: flex; align-items: center; position: relative; }
+  #searchInput { width: 100px; padding: 3px 22px 3px 24px; font-size: 12px; border: 1px solid var(--vscode-input-border, transparent); background: var(--vscode-input-background, #1e1e1e); color: var(--vscode-input-foreground, inherit); border-radius: 4px; transition: border-color 0.15s, box-shadow 0.15s; }
+  #searchInput:focus { outline: none; border-color: var(--vscode-focusBorder, #007acc); box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007acc); }
+  #searchInput::placeholder { color: var(--vscode-inputPlaceholderForeground, #888); }
+  #searchIcon { position: absolute; left: 6px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; opacity: 0.5; pointer-events: none; color: var(--vscode-input-foreground, inherit); }
+  #searchClear { position: absolute; right: 4px; top: 0; bottom: 0; margin: auto 0; width: 16px; height: 16px; border: none; background: transparent; color: var(--vscode-descriptionForeground, #888); cursor: pointer; display: none; font-size: 14px; line-height: 16px; padding: 0; border-radius: 3px; align-items: center; justify-content: center; }
+  #searchClear:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.15)); color: var(--vscode-input-foreground, inherit); }
+  #searchClear.visible { display: flex; }
+  .commit-row { display: grid; grid-template-columns: var(--main-width) var(--author-width) var(--hash-width) var(--date-width); align-items: center; min-width: max-content; }
+  /* 列头与提交行拆开: 列头是 flex, 左侧四列仍走同一套列宽变量, 右侧放搜索。 */
+  #commitHeaderColumns { display: grid; grid-template-columns: var(--main-width) var(--author-width) var(--hash-width) var(--date-width); align-items: center; min-width: max-content; }
+  /* top 让出工具条 30px, 与工具条一起吸顶; z-index 高于提交行、低于工具条。 */
+  /* min-width: max-content 不能丢: 列头背景与下边框要覆盖整条横向滚动宽度, 而不是只到可视宽度。 */
+  /* 独立工具条行已并入列头, 列头直接吸在 top: 0; z-index 高于提交行。 */
+  .commit-header { flex: 0 0 auto; position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; min-width: max-content; height: 30px; margin: 0; padding: 0 10px; color: var(--vscode-tab-activeForeground); background: var(--vscode-editorWidget-background, var(--vscode-tab-activeBackground)); border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); box-sizing: border-box; font-weight: 600; }
+  /* 横向吸边: 提交图变宽需要横向滚动时, 搜索仍留在可视区右侧, 不会被一起滚走。 */
+  #commitHeaderSearch { display: flex; align-items: center; gap: 6px; margin-left: auto; padding-left: 8px; position: sticky; right: 10px; z-index: 1; background: var(--vscode-editorWidget-background, var(--vscode-tab-activeBackground)); }
   .commit-row { min-height: 26px; height: auto; box-sizing: border-box; cursor: pointer; align-items: start; }
   .commit-row:hover { background: var(--vscode-list-hoverBackground); }
   /* 分支图与描述合并为 col-main 单列: SVG 画泳道(左), 摘要行与描述(右)在同一字段内竖排。 */
@@ -34,7 +51,14 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   .working-tree-label--staged { color: #ffffff; }
   .working-tree-label--changes { color: #ffffff; }
   .working-tree-count { color: var(--vscode-descriptionForeground); }
-  .commit-header > div { position: relative; min-width: 0; padding: 5px 14px 5px 0; overflow: hidden; white-space: nowrap; text-align: left; }
+  #commitHeaderColumns > div { position: relative; min-width: 0; padding: 5px 14px 5px 0; overflow: hidden; white-space: nowrap; text-align: left; }
+  /* 扁平化图标按钮(fetch/pull/push/刷新): 只有图标, 无描边无圆角无底色, 悬停才给浅底。 */
+  #commitHeader .toolbar-icon { display: inline-grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--vscode-icon-foreground); font: inherit; cursor: pointer; vertical-align: middle; }
+  #commitHeader .toolbar-icon:hover { background: var(--vscode-toolbar-hoverBackground); }
+  #commitHeader .toolbar-icon .codicon { font-size: 14px; line-height: 1; }
+  #commitHeader .toolbar-icon svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  /* 刷新按钮在列头首列内, 与 "Commit列表" 文本拉开一点距离。 */
+  #commitHeaderColumns .toolbar-icon { margin-left: 6px; }
   .commit-header .resize-handle { position: absolute; top: 0; right: 0; width: 7px; height: 100%; cursor: col-resize; }
   .commit-header .resize-handle:hover { background: var(--vscode-focusBorder); }
   .col-main, .col-hash, .col-author, .col-date { min-width: 0; overflow: hidden; white-space: nowrap; text-align: left; }
@@ -66,7 +90,7 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
 /** Commit 列表子面板的结构片段。 */
 export const COMMIT_LIST_SUB_PANEL_MARKUP = `
     <div id="graph">
-      <div id="commitHeader" class="commit-header"><div>Commit列表</div><div>作者</div><div>Commit ID</div><div>时间</div></div>
+      <div id="commitHeader" class="commit-header"><div id="commitHeaderColumns"><div>Commit列表<button class="toolbar-icon" id="refreshBtn" title="刷新提交" aria-label="刷新提交"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 6A5 5 0 1 0 13 10M13 2v4H9"/></svg></button></div><div>作者</div><div>Commit ID</div><div>时间</div></div><div id="commitHeaderSearch"><button class="toolbar-icon" id="fetchBtn" title="Fetch" aria-label="Fetch"><span class="codicon codicon-repo-fetch" aria-hidden="true"></span></button><button class="toolbar-icon" id="pullBtn" title="Pull" aria-label="Pull"><span class="codicon codicon-repo-pull" aria-hidden="true"></span></button><button class="toolbar-icon" id="pushBtn" title="Push" aria-label="Push"><span class="codicon codicon-repo-push" aria-hidden="true"></span></button><div class="selector" id="searchBox"><svg id="searchIcon" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 .96-.96l3.04 3.03-1.06 1.06-2.94-3.13z"/></svg><input type="text" id="searchInput" placeholder="搜索提交..." title="输入关键词搜索, 支持作者/邮箱/消息/Hash/日期, 多个关键词用空格隔开, 回车开始搜索"><button id="searchClear" title="清除搜索">&times;</button></div><span class="count" id="countLabel"></span></div></div>
       <div id="loading" style="display:none;">
         <div id="loadingText">加载中...</div>
         <div id="progressBar"><div id="progressBarFill"></div></div>
@@ -79,6 +103,66 @@ export const COMMIT_LIST_SUB_PANEL_MARKUP = `
 
 /** Commit 列表子面板的交互脚本片段。 */
 export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
+  ['fetch', 'pull', 'push'].forEach(function(action) {
+    document.getElementById(action + 'Btn').addEventListener('click', function() {
+      vscode.postMessage({ type: 'gitSync', action: action });
+    });
+  });
+  // 刷新按钮由 headerCell 随每次 render 重建, 只能委托到容器上, 直接绑定会在首次渲染后失效。
+  document.getElementById('commitHeaderColumns').addEventListener('click', function(event) {
+    if (!event.target.closest('#refreshBtn')) return;
+    vscode.postMessage({ type: 'refresh' });
+  });
+  document.addEventListener('animationend', function(event) {
+    var target = event.target;
+    if (target && target.id === 'refreshBtn') target.classList.remove('refresh-unchanged');
+  });
+  document.addEventListener('animationcancel', function(event) {
+    var target = event.target;
+    if (target && target.id === 'refreshBtn') target.classList.remove('refresh-unchanged');
+  });
+  var searchDebounceTimer = null;
+  function triggerSearch() {
+    var input = document.getElementById('searchInput');
+    vscode.postMessage({ type: 'search', keywords: input.value });
+  }
+  function debounceSearch() {
+    if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = setTimeout(function() {
+      searchDebounceTimer = null;
+      triggerSearch();
+    }, 500);
+  }
+  function triggerSearchImmediately() {
+    if (searchDebounceTimer) {
+      clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = null;
+    }
+    triggerSearch();
+  }
+  document.getElementById('searchInput').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      triggerSearchImmediately();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      this.value = '';
+      document.getElementById('searchClear').classList.remove('visible');
+      triggerSearchImmediately();
+    }
+  });
+  document.getElementById('searchInput').addEventListener('input', function() {
+    var clearBtn = document.getElementById('searchClear');
+    if (this.value.length > 0) { clearBtn.classList.add('visible'); } else { clearBtn.classList.remove('visible'); }
+    debounceSearch();
+  });
+  document.getElementById('searchClear').addEventListener('click', function() {
+    var input = document.getElementById('searchInput');
+    input.value = '';
+    input.focus();
+    this.classList.remove('visible');
+    triggerSearchImmediately();
+  });
   let commits = [];
   // 工作区虚拟提交行(changes/staged)由后端下发, webview 循环渲染, 不再写死单行。
   let workingTreeRowsState = [];
@@ -451,11 +535,11 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     if (selectedCommitHash && !isWorkingTreeHash(selectedCommitHash)) {
       var idx = commits.findIndex(function(c) { return c.hash === selectedCommitHash; });
       if (idx >= 0) {
-        label.textContent = (idx + 1) + '/' + total + ' 条提交';
+        label.textContent = (idx + 1) + '/' + total;
         return;
       }
     }
-    label.textContent = '—/' + total + ' 条提交';
+    label.textContent = '—/' + total;
   }
 
   // 虚拟行泳道: 与首个 commit 对齐(cx = LANE_W/2 + 5 = 11), 画空心圆节点。
@@ -577,7 +661,8 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     graphViewportWidth = graph ? graph.clientWidth : 0;
     var graphW = naturalGraphW;
     currentGraphW = graphW;
-    document.getElementById('commitHeader').innerHTML =
+    // 只重建四列表头; 搜索住在 #commitHeaderSearch 里, 用 commitHeader.innerHTML 会把它一起冲掉。
+    document.getElementById('commitHeaderColumns').innerHTML =
       headerCell('Commit列表', 'main') +
       headerCell('作者', 'author') + headerCell('Commit ID', 'hash') + headerCell('时间', 'date');
     var html = '';
@@ -717,7 +802,11 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
   }
 
   function headerCell(label, key) {
-    return '<div data-column="' + key + '">' + label + '<span class="resize-handle" data-column="' + key + '"></span></div>';
+    // 刷新按钮随表头一起重建, 每次都是新节点, 因此点击只能靠 #commitHeaderColumns 上的事件委托。
+    var refresh = key === 'main'
+      ? '<button class="toolbar-icon" id="refreshBtn" title="刷新提交" aria-label="刷新提交"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 6A5 5 0 1 0 13 10M13 2v4H9"/></svg></button>'
+      : '';
+    return '<div data-column="' + key + '">' + label + refresh + '<span class="resize-handle" data-column="' + key + '"></span></div>';
   }
 
   function updateColumnWidths(items, startIndex) {

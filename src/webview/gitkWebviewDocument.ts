@@ -22,6 +22,13 @@ export function renderGitkWebviewHtml(codiconCssUri: string): string {
   #workspace { display: grid; grid-template-rows: minmax(0, 1fr) 5px minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); flex: 1; min-height: 0; width: 100%; }
   #panelResizeHandle { cursor: row-resize; background: var(--vscode-panel-border); }
   #panelResizeHandle:hover, #panelResizeHandle.resizing { background: var(--vscode-focusBorder); }
+  /* 通用图标按钮: 顶部工具栏与 Commit 列表工具条共用, 具体尺寸覆盖写在各自面板里。 */
+  .toolbar-icon { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; color: var(--vscode-icon-foreground); background: transparent; }
+  .toolbar-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .toolbar-icon .codicon { font-size: 16px; line-height: 16px; }
+  .toolbar-icon:hover { background: var(--vscode-toolbar-hoverBackground); }
+  .toolbar-icon.refresh-unchanged { animation: refresh-unchanged 550ms ease-out; }
+  @keyframes refresh-unchanged { 0%, 100% { color: var(--vscode-icon-foreground); } 45% { color: var(--vscode-descriptionForeground); } }
 ${SELECTOR_BAR_SUB_PANEL_STYLES}
 ${CHANGED_FILES_SUB_PANEL_STYLES}
 ${COMMIT_LIST_SUB_PANEL_STYLES}
@@ -80,8 +87,9 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP}
       uncommittedEnabled = workingTreeRows.some(function(row) { return row.enabled; });
       var uncommittedRepositoryCount = Number(state.uncommittedRepositoryCount) || 0;
       var uncommittedRepoBadge = document.getElementById('uncommittedRepoBadge');
-      uncommittedRepoBadge.textContent = String(uncommittedRepositoryCount);
-      uncommittedRepoBadge.title = 'Git - ' + uncommittedRepositoryCount + ' 个仓库有未提交文件';
+      // 按钮内还有图标与文案, 只能改计数节点; 对按钮整体赋值 textContent 会抹掉子节点。
+      uncommittedRepoBadge.querySelector('.uncommitted-repo-count').textContent = String(uncommittedRepositoryCount);
+      uncommittedRepoBadge.title = '打开 Commit 面板（' + uncommittedRepositoryCount + ' 个仓库有未提交文件）';
       uncommittedRepoBadge.hidden = uncommittedRepositoryCount === 0;
       stagedCount = Number(state.stagedCount) || 0;
       changesCount = Number(state.changesCount) || 0;
