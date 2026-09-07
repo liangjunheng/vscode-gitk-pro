@@ -34,10 +34,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         })
     );
 
+    const multiDiffLayoutConfiguration = vscode.workspace.getConfiguration('vscode-gitk');
+    const initialRenderSideBySide = multiDiffLayoutConfiguration.get<boolean>('multiDiffRenderSideBySide', true);
+    provider.setMultiDiffRenderSideBySide(initialRenderSideBySide);
+    await vscode.commands.executeCommand('setContext', 'gitk:multiDiffRenderSideBySide', initialRenderSideBySide);
+    const setMultiDiffRenderSideBySide = (renderSideBySide: boolean): Thenable<void> =>
+        vscode.workspace.getConfiguration('vscode-gitk')
+            .update('multiDiffRenderSideBySide', renderSideBySide, vscode.ConfigurationTarget.Global);
     context.subscriptions.push(
         vscode.commands.registerCommand('vscode-gitk.selectCommit', (hash: string) => provider.selectCommit(hash)),
         vscode.commands.registerCommand('vscode-gitk.multiDiff.previousChange', () => provider.navigateMultiDiffChange(-1)),
-        vscode.commands.registerCommand('vscode-gitk.multiDiff.nextChange', () => provider.navigateMultiDiffChange(1))
+        vscode.commands.registerCommand('vscode-gitk.multiDiff.nextChange', () => provider.navigateMultiDiffChange(1)),
+        vscode.commands.registerCommand('vscode-gitk.multiDiff.useInlineView', () => setMultiDiffRenderSideBySide(false)),
+        vscode.commands.registerCommand('vscode-gitk.multiDiff.useSideBySideView', () => setMultiDiffRenderSideBySide(true)),
+        vscode.workspace.onDidChangeConfiguration(async event => {
+            if (!event.affectsConfiguration('vscode-gitk.multiDiffRenderSideBySide')) { return; }
+            const renderSideBySide = vscode.workspace.getConfiguration('vscode-gitk')
+                .get<boolean>('multiDiffRenderSideBySide', true);
+            provider.setMultiDiffRenderSideBySide(renderSideBySide);
+            await vscode.commands.executeCommand('setContext', 'gitk:multiDiffRenderSideBySide', renderSideBySide);
+        })
     );
 
     // 状态栏: workspace 有 git 仓库时显示 Gitk 及全仓库未提交统计。

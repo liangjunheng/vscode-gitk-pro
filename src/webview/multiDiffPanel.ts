@@ -23,6 +23,7 @@ export class MultiDiffPanel implements vscode.Disposable {
     private webviewReady = false;
     private revision = 0;
     private publishScheduled = false;
+    private renderSideBySide = true;
     private readonly unsubscribers: (() => void)[];
 
     constructor(
@@ -65,6 +66,11 @@ export class MultiDiffPanel implements vscode.Disposable {
         this.post({ type: 'navigateChange', direction });
     }
 
+    setRenderSideBySide(renderSideBySide: boolean): void {
+        this.renderSideBySide = renderSideBySide;
+        this.post({ type: 'setRenderSideBySide', renderSideBySide });
+    }
+
     // 推进 generation 使在途 DiffReader 失效；新 Store 快照由订阅自动发布。
     cancelPending(): void {
         // 只使在途读取失效，加载状态由新的提交选择流程统一设置。
@@ -95,6 +101,7 @@ export class MultiDiffPanel implements vscode.Disposable {
         this.panel.webview.onDidReceiveMessage(message => {
             if (message?.type === 'ready') {
                 this.webviewReady = true;
+                this.post({ type: 'setRenderSideBySide', renderSideBySide: this.renderSideBySide });
                 this.publish();
             } else if (message?.type === 'selectFile' && typeof message.path === 'string') {
                 // 顶部卡片变化时同步 Changed Files 高亮。

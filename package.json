@@ -53,6 +53,12 @@
           "scope": "application",
           "description": "Changed Files 与 Commit Editor 的同步显示方式"
         },
+        "vscode-gitk.multiDiffRenderSideBySide": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "description": "Gitk Diff 面板是否使用双栏模式显示差异"
+        },
         "vscode-gitk.discardUntrackedChangesToTrash": {
           "type": "boolean",
           "default": true,
@@ -90,6 +96,18 @@
         "title": "下一个差异",
         "category": "Gitk",
         "icon": "$(arrow-down)"
+      },
+      {
+        "command": "vscode-gitk.multiDiff.useInlineView",
+        "title": "当前：双栏模式（切换到单栏）",
+        "category": "Gitk",
+        "icon": "$(diff-single)"
+      },
+      {
+        "command": "vscode-gitk.multiDiff.useSideBySideView",
+        "title": "当前：单栏模式（切换到双栏）",
+        "category": "Gitk",
+        "icon": "$(diff-multiple)"
       },
       {
         "command": "vscode-gitk.commitEditMsg.history",
@@ -148,6 +166,16 @@
           "command": "vscode-gitk.multiDiff.nextChange",
           "when": "activeWebviewPanelId == vscode-gitk.multiDiff",
           "group": "navigation@11"
+        },
+        {
+          "command": "vscode-gitk.multiDiff.useInlineView",
+          "when": "activeWebviewPanelId == vscode-gitk.multiDiff && gitk:multiDiffRenderSideBySide",
+          "group": "navigation@12"
+        },
+        {
+          "command": "vscode-gitk.multiDiff.useSideBySideView",
+          "when": "activeWebviewPanelId == vscode-gitk.multiDiff && !gitk:multiDiffRenderSideBySide",
+          "group": "navigation@12"
         },
         {
           "command": "vscode-gitk.commitEditMsg.history",

@@ -117,7 +117,13 @@ const loading=document.getElementById('loading'),list=document.getElementById('l
 const report=message=>{try{window.gitkVscode.postMessage({type:'error',message})}catch(_){}};
 const log=message=>{try{window.gitkVscode.postMessage({type:'log',message})}catch(_){}};
 const notifyRendered=(revision,identity)=>{try{window.gitkVscode.postMessage({type:'rendered',revision,identity})}catch(_){}};
-let monacoReady=false,lastRevision=0,lastIdentity='',pending,cards=[],cardByPath=new Map(),activePath='',clickedPath='',suppressSyncUntil=0,scrollAnimationFrame=0,renderToken=0,editable=false,virtualFrame=0,editorPool=[],syncingGlobalHScroll=false,hScrollFrame=0,pinnedAnchor=null;
+let monacoReady=false,lastRevision=0,lastIdentity='',pending,cards=[],cardByPath=new Map(),activePath='',clickedPath='',suppressSyncUntil=0,scrollAnimationFrame=0,renderToken=0,editable=false,renderSideBySide=diffOptions.renderSideBySide!==false,virtualFrame=0,editorPool=[],syncingGlobalHScroll=false,hScrollFrame=0,pinnedAnchor=null;
+function setRenderSideBySide(nextValue){
+  renderSideBySide=nextValue;
+  for(const entry of cards){if(entry.editor){entry.editor.updateOptions({renderSideBySide:renderSideBySide});entry.fit()}}
+  for(const slot of editorPool)slot.editor.updateOptions({renderSideBySide:renderSideBySide});
+  updateGlobalHScroll();
+}
 function diffKey(diff){return diff.diffKey||diff.path}
 let activeChangeIndex=-1,activeChangePage=0;
 function activeEntry(){return activePath&&cardByPath.get(activePath)}
@@ -235,7 +241,7 @@ function releaseSlot(slot){
 function acquireSlot(entry){
   const slot=editorPool.pop()||function(){
     const host=document.createElement('div');host.className='editor';
-    const editor=monaco.editor.createDiffEditor(host,Object.assign({},diffOptions,{readOnly:!editable}));
+    const editor=monaco.editor.createDiffEditor(host,Object.assign({},diffOptions,{readOnly:!editable,renderSideBySide:renderSideBySide}));
     applyVsCodeFont(editor);return {host:host,editor:editor,owner:null,generation:0};
   }();
   slot.owner=entry;slot.generation++;entry.body.replaceChildren(slot.host);return slot;
@@ -392,7 +398,7 @@ function mountEntry(entry,fromScroll=false){
     modified=monaco.editor.createModel(entry.modifiedValue,language(diff.path));
     // changes 模式右侧即工作区文件, 允许编辑; 其余模式(commit/staged)保持只读。
     const entryEditable=diff.editable===true;
-    editor.updateOptions(Object.assign({},diffOptions,{readOnly:!entryEditable}));
+    editor.updateOptions(Object.assign({},diffOptions,{readOnly:!entryEditable,renderSideBySide:renderSideBySide}));
     editor.setModel({original:original,modified:modified});
     const originalEditor=editor.getOriginalEditor(),modifiedEditor=editor.getModifiedEditor();
     originalEditor.setScrollLeft(entry.horizontalLeft||0);modifiedEditor.setScrollLeft(entry.horizontalLeft||0);
@@ -713,6 +719,7 @@ function receive(message){
   if(!message)return;
   if(message.type==='reveal'){reveal(message.path,true);return}
   if(message.type==='navigateChange'){navigateChange(message.direction===-1?-1:1).catch(fail);return}
+  if(message.type==='setRenderSideBySide'){setRenderSideBySide(message.renderSideBySide===true);return}
   if(typeof message.revision!=='number'||message.revision<=lastRevision)return;
   lastRevision=message.revision;
   log('receive #'+message.revision+': loading='+message.loading+', progress='+message.completed+'/'+message.total+', diffs='+message.diffs.length);

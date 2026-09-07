@@ -103,7 +103,7 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP}
       files = state.files || [];
       stagedFiles = state.stagedFiles || [];
       unstagedFiles = state.unstagedFiles || [];
-      filesMode = state.filesMode || 'tree';
+      filesMode = state.filesMode || 'flat';
       filesLoading = Boolean(state.filesLoading);
       var diffProgress = state.diffProgress || { completed: 0, total: 0 };
       var diffLoading = Boolean(state.diffLoading);

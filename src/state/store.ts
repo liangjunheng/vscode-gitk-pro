@@ -15,7 +15,7 @@ export type StoreEffect =
     | { type: 'rendered'; fileCount: unknown }
     | { type: 'openCommitEditor'; amend: boolean; repositoryPath: string }
     | { type: 'openCommitPanel' }
-    | { type: 'persistFilesDisplayMode'; displayMode: AppState['displayMode'] }
+    | { type: 'toggleFilesDisplayModeSetting' }
     | { type: 'search'; keywords: unknown };
 
 type Listener = (state: AppState) => void;
@@ -127,12 +127,9 @@ export class Store {
             case 'openCommitPanel':
                 effects = [{ type: 'openCommitPanel' }];
                 break;
-            case 'toggleFilesMode': {
-                const displayMode = this.state.displayMode === 'tree' ? 'flat' : 'tree';
-                partial = { displayMode };
-                effects = [{ type: 'persistFilesDisplayMode', displayMode }];
+            case 'toggleFilesMode':
+                effects = [{ type: 'toggleFilesDisplayModeSetting' }];
                 break;
-            }
             case 'search':
                 effects = [{ type: 'search', keywords: intent.keywords }];
                 break;

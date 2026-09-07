@@ -1233,10 +1233,16 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     }
                 });
                 break;
-            case 'persistFilesDisplayMode':
-                void vscode.workspace.getConfiguration('vscode-gitk')
-                    .update('changedFilesDisplayMode', effect.displayMode, vscode.ConfigurationTarget.Global);
+            case 'toggleFilesDisplayModeSetting': {
+                const configuration = vscode.workspace.getConfiguration('vscode-gitk');
+                const currentDisplayMode = configuration.get<'tree' | 'flat'>('changedFilesDisplayMode', 'flat');
+                void configuration.update(
+                    'changedFilesDisplayMode',
+                    currentDisplayMode === 'tree' ? 'flat' : 'tree',
+                    vscode.ConfigurationTarget.Global,
+                );
                 break;
+            }
             case 'search': {
                 // 搜索与去重一律由提交控制器裁决，Provider 不再自行读提交。
                 if (typeof effect.keywords !== 'string') { break; }
@@ -2199,6 +2205,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     navigateMultiDiffChange(direction: -1 | 1): void {
         this.multiDiffPanel.navigateChange(direction);
+    }
+
+    setMultiDiffRenderSideBySide(renderSideBySide: boolean): void {
+        this.multiDiffPanel.setRenderSideBySide(renderSideBySide);
     }
 
     private openDiff(filePath?: string): void {
