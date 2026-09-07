@@ -101,10 +101,6 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP}
       unstagedFiles = state.unstagedFiles || [];
       filesMode = state.filesMode || 'tree';
       filesLoading = Boolean(state.filesLoading);
-      var commitEditorLoading = Boolean(state.commitEditorLoading);
-      document.getElementById('commitPrimaryBtn').disabled = commitEditorLoading;
-      document.getElementById('commitSplitGroup').classList.toggle('loading', commitEditorLoading);
-      document.getElementById('commitSplitGroup').setAttribute('aria-busy', String(commitEditorLoading));
       var diffProgress = state.diffProgress || { completed: 0, total: 0 };
       var diffLoading = Boolean(state.diffLoading);
       selectedPath = state.selectedPath || '';
