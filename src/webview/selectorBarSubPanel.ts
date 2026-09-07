@@ -25,7 +25,7 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   .uncommitted-repo-group .codicon { display: flex; align-items: center; font-size: 11px; line-height: 1; }
   .dropdown { position: relative; flex: 0 1 auto; min-width: 0; }
   #repositoryDropdown, #branchDropdown { width: 20ch; }
-  .dropdown-current { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 26px; padding: 0 7px; color: var(--vscode-dropdown-foreground, var(--vscode-foreground)); background: var(--commit-title-background); border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border)); border-radius: 4px; box-shadow: 0 2px 5px rgba(0, 0, 0, .22); font: inherit; font-size: 11px; text-align: left; cursor: pointer; }
+  .dropdown-current { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 26px; padding: 0 7px; color: var(--vscode-dropdown-foreground, var(--vscode-foreground)); background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent); border: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent); border-radius: 4px; box-shadow: none; font: inherit; font-size: 11px; text-align: left; cursor: pointer; }
   .dropdown-current:has(.dropdown-spinner) { gap: 2px; }
   .dropdown-label:has(.dropdown-spinner) { display: inline-flex; align-items: center; flex: 1 1 auto; gap: 4px; }
   .branch-icon { display: inline-flex; align-self: center; align-items: center; justify-content: center; flex: 0 0 14px; width: 14px; height: 14px; margin: 0; font-size: 13px; line-height: 1; color: var(--vscode-icon-foreground); }
@@ -284,8 +284,9 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
       radio.name = 'repository';
       radio.value = entry.value;
       radio.checked = checked;
-      radio.addEventListener('change', function() {
-        if (!radio.checked) return;
+      option.addEventListener('click', function(event) {
+        event.preventDefault();
+        radio.checked = true;
         repositoryDropdown.options.querySelectorAll('.dropdown-option').forEach(function(item) {
           item.classList.toggle('selected', item === option);
         });
@@ -387,8 +388,9 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
       checkbox.type = 'checkbox';
       checkbox.value = entry.value;
       checkbox.checked = selected.has(entry.value);
-      checkbox.addEventListener('change', function() {
-        if (checkbox.checked) selected.add(entry.value); else selected.delete(entry.value);
+      option.addEventListener('click', function(event) {
+        event.preventDefault();
+        if (selected.has(entry.value)) selected.delete(entry.value); else selected.add(entry.value);
         updateSelectionUi();
       });
       option.appendChild(checkbox);

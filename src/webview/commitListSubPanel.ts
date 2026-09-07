@@ -41,7 +41,7 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   .commit-description:empty { display: none; }
   .commit-description-refs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; white-space: normal; }
   .commit-description-ref { display: inline-flex; align-items: center; min-height: 18px; padding: 0 6px; border-radius: 5px; color: var(--vscode-editor-background); font-size: 12px; line-height: 18px; }
-  .commit-row.selected { background: var(--vscode-list-activeSelectionBackground, #094771); }
+  .commit-row.selected { background: var(--vscode-list-activeSelectionBackground, #094771); outline: 1px solid var(--vscode-focusBorder, #007acc); outline-offset: -1px; }
   .commit-row.working-tree:hover { background: var(--vscode-list-hoverBackground); }
   /* 空分组虚拟行置灰: 降透明度 + 默认光标; 不用 pointer-events:none(曾导致点击完全不触发无法排查), 点击拦截由 JS 的 classList.contains('disabled') 负责。 */
   .commit-row.working-tree.disabled { opacity: .5; cursor: default; }

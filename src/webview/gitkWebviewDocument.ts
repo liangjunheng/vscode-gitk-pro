@@ -52,8 +52,8 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP}
   let panelResizing = null;
 
   window.addEventListener('focus', function() { vscode.postMessage({ type: 'focus' }); });
-  window.addEventListener('blur', function() { closeDropdowns(); vscode.postMessage({ type: 'blur' }); });
-  document.addEventListener('visibilitychange', function() { if (document.visibilityState !== 'visible') closeDropdowns(); vscode.postMessage({ type: document.visibilityState === 'visible' ? 'focus' : 'blur' }); });
+  window.addEventListener('blur', function() { closeDropdowns(); closeCommitContextMenu(); vscode.postMessage({ type: 'blur' }); });
+  document.addEventListener('visibilitychange', function() { if (document.visibilityState !== 'visible') { closeDropdowns(); closeCommitContextMenu(); } vscode.postMessage({ type: document.visibilityState === 'visible' ? 'focus' : 'blur' }); });
 
   let resizeFrame = 0;
   window.addEventListener('resize', function() {

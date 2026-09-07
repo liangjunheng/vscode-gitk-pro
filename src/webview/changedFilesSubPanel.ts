@@ -98,15 +98,15 @@ export const CHANGED_FILES_SUB_PANEL_MARKUP = `
 
 /** 变更文件列表子面板的交互脚本片段。 */
 export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
-  document.addEventListener('click', function(event) {
+  function closeCommitContextMenu() {
     var contextMenu = document.getElementById('commitContextMenu');
-    if (!event.target.closest('#commitContextMenu') && contextMenu.matches(':popover-open')) contextMenu.hidePopover();
+    if (contextMenu.matches(':popover-open')) contextMenu.hidePopover();
+  }
+  document.addEventListener('click', function(event) {
+    if (!event.target.closest('#commitContextMenu')) closeCommitContextMenu();
   });
   document.addEventListener('keydown', function(event) {
-    if (event.key === 'Escape') {
-      var contextMenu = document.getElementById('commitContextMenu');
-      if (contextMenu.matches(':popover-open')) contextMenu.hidePopover();
-    }
+    if (event.key === 'Escape') closeCommitContextMenu();
   });
   let files = [];
   let stagedFiles = [];
