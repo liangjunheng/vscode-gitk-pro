@@ -101,13 +101,13 @@
         "command": "vscode-gitk.multiDiff.useInlineView",
         "title": "当前：双栏模式（切换到单栏）",
         "category": "Gitk",
-        "icon": "$(diff-single)"
+        "icon": "$(layout-centered)"
       },
       {
         "command": "vscode-gitk.multiDiff.useSideBySideView",
         "title": "当前：单栏模式（切换到双栏）",
         "category": "Gitk",
-        "icon": "$(diff-multiple)"
+        "icon": "$(layout-centered)"
       },
       {
         "command": "vscode-gitk.commitEditMsg.history",
@@ -133,7 +133,7 @@
         {
           "id": "vscode-gitk",
           "title": "Gitk",
-          "icon": "media/gitk-icon.svg"
+          "icon": "media/gitk-sidebar.png"
         }
       ]
     },
@@ -143,7 +143,7 @@
           "type": "webview",
           "id": "vscode-gitk.panelView",
           "name": "Gitk",
-          "icon": "media/gitk-icon.svg",
+          "icon": "media/gitk-sidebar.png",
           "contextualTitle": "Gitk"
         }
       ]
