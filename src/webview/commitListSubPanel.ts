@@ -20,14 +20,14 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   #searchClear:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.15)); color: var(--vscode-input-foreground, inherit); }
   #searchClear.visible { display: flex; }
   .commit-row { display: grid; grid-template-columns: var(--main-width) var(--author-width) var(--hash-width) var(--date-width); align-items: center; min-width: max-content; }
-  /* 列头与提交行拆开: 列头是 flex, 左侧四列仍走同一套列宽变量, 右侧放搜索。 */
+  /* 列头与提交行拆开: 列头是 flex, 左侧四列仍走同一套列宽变量, 右侧放同步操作。 */
   #commitHeaderColumns { display: grid; grid-template-columns: var(--main-width) var(--author-width) var(--hash-width) var(--date-width); align-items: center; min-width: max-content; }
   /* top 让出工具条 30px, 与工具条一起吸顶; z-index 高于提交行、低于工具条。 */
   /* min-width: max-content 不能丢: 列头背景与下边框要覆盖整条横向滚动宽度, 而不是只到可视宽度。 */
   /* 独立工具条行已并入列头, 列头直接吸在 top: 0; z-index 高于提交行。 */
-  .commit-header { flex: 0 0 auto; position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; min-width: max-content; height: 30px; margin: 0; padding: 0 10px; color: var(--vscode-tab-activeForeground); background: var(--vscode-editorWidget-background, var(--vscode-tab-activeBackground)); border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); box-sizing: border-box; font-weight: 600; }
-  /* 横向吸边: 提交图变宽需要横向滚动时, 搜索仍留在可视区右侧, 不会被一起滚走。 */
-  #commitHeaderSearch { display: flex; align-items: center; gap: 6px; margin-left: auto; padding-left: 8px; position: sticky; right: 10px; z-index: 1; background: var(--vscode-editorWidget-background, var(--vscode-tab-activeBackground)); }
+  .commit-header { flex: 0 0 auto; position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; min-width: max-content; height: 30px; margin: 0; padding: 0 10px; color: var(--vscode-tab-activeForeground); background: var(--commit-title-background); border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); box-sizing: border-box; font-weight: 600; }
+  /* 横向吸边: 提交图变宽需要横向滚动时, 同步操作仍留在可视区右侧。 */
+  #commitHeaderSearch { display: flex; align-items: center; gap: 6px; margin-left: auto; padding-left: 8px; position: sticky; right: 10px; z-index: 1; background: var(--commit-title-background); }
   .commit-row { min-height: 26px; height: auto; box-sizing: border-box; cursor: pointer; align-items: start; }
   .commit-row:hover { background: var(--vscode-list-hoverBackground); }
   /* 分支图与描述合并为 col-main 单列: SVG 画泳道(左), 摘要行与描述(右)在同一字段内竖排。 */
@@ -85,12 +85,18 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   #commitEmpty { padding: 8px 10px; color: var(--vscode-descriptionForeground); }
   #commitFooter { flex: 0 0 auto; min-width: max-content; padding: 8px 10px; text-align: center; color: var(--vscode-descriptionForeground); }
   #commitFooter button { border: 0; color: var(--vscode-textLink-foreground); background: transparent; cursor: pointer; text-decoration: underline; }
+  /* 搜索独占一行: 紧跟列头下方, 滚动时粘在列头下面(列头高 30px、z-index 2, 故这里 top: 30px、z-index 1)。 */
+  #commitSearchRow { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; padding: 5px 10px; position: sticky; top: 30px; z-index: 1; background: var(--commit-title-background); border-bottom: 1px solid var(--vscode-panel-border); }
+  #commitSearchRow #searchBox { flex: 1 1 auto; min-width: 0; }
+  #commitSearchRow .count { flex: 0 0 auto; }
+  #commitSearchRow #searchInput { width: 100%; }
 `;
 
 /** Commit 列表子面板的结构片段。 */
 export const COMMIT_LIST_SUB_PANEL_MARKUP = `
     <div id="graph">
-      <div id="commitHeader" class="commit-header"><div id="commitHeaderColumns"><div>Commit列表<button class="toolbar-icon" id="refreshBtn" title="刷新提交" aria-label="刷新提交"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 6A5 5 0 1 0 13 10M13 2v4H9"/></svg></button></div><div>作者</div><div>Commit ID</div><div>时间</div></div><div id="commitHeaderSearch"><button class="toolbar-icon" id="fetchBtn" title="Fetch" aria-label="Fetch"><span class="codicon codicon-repo-fetch" aria-hidden="true"></span></button><button class="toolbar-icon" id="pullBtn" title="Pull" aria-label="Pull"><span class="codicon codicon-repo-pull" aria-hidden="true"></span></button><button class="toolbar-icon" id="pushBtn" title="Push" aria-label="Push"><span class="codicon codicon-repo-push" aria-hidden="true"></span></button><div class="selector" id="searchBox"><svg id="searchIcon" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 .96-.96l3.04 3.03-1.06 1.06-2.94-3.13z"/></svg><input type="text" id="searchInput" placeholder="搜索提交..." title="输入关键词搜索, 支持作者/邮箱/消息/Hash/日期, 多个关键词用空格隔开, 回车开始搜索"><button id="searchClear" title="清除搜索">&times;</button></div><span class="count" id="countLabel"></span></div></div>
+      <div id="commitHeader" class="commit-header"><div id="commitHeaderColumns"><div>Commit列表<button class="toolbar-icon" id="refreshBtn" title="刷新提交" aria-label="刷新提交"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 6A5 5 0 1 0 13 10M13 2v4H9"/></svg></button></div><div>作者</div><div>Commit ID</div><div>时间</div></div><div id="commitHeaderSearch"><button class="toolbar-icon" id="fetchBtn" title="Fetch" aria-label="Fetch"><span class="codicon codicon-repo-fetch" aria-hidden="true"></span></button><button class="toolbar-icon" id="pullBtn" title="Pull" aria-label="Pull"><span class="codicon codicon-repo-pull" aria-hidden="true"></span></button><button class="toolbar-icon" id="pushBtn" title="Push" aria-label="Push"><span class="codicon codicon-repo-push" aria-hidden="true"></span></button></div></div>
+      <div id="commitSearchRow"><div class="selector" id="searchBox"><svg id="searchIcon" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 .96-.96l3.04 3.03-1.06 1.06-2.94-3.13z"/></svg><input type="text" id="searchInput" placeholder="搜索提交..." title="输入关键词搜索, 支持作者/邮箱/消息/Hash/日期, 多个关键词用空格隔开, 回车开始搜索"><button id="searchClear" title="清除搜索">&times;</button></div><span class="count" id="countLabel"></span></div>
       <div id="loading" style="display:none;">
         <div id="loadingText">加载中...</div>
         <div id="progressBar"><div id="progressBarFill"></div></div>

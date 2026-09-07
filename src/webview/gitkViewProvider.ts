@@ -99,10 +99,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private selectedRepoDisplaySnapshot?: { label: string; path: string; hasSubmodules: boolean; isSubmodule: boolean };
     /** 仓库是否有未提交文件的轻量存在性结果，由存在性事件维护，用于徽标先于完整清单显示。 */
     private readonly uncommittedPresence = new Map<string, boolean>();
-    private selectedBranchDisplaySnapshot: { label: string; title: string; names: string[] } = {
+    private selectedBranchDisplaySnapshot: { label: string; title: string; names: string[]; kind?: GitBranchOption['kind'] } = {
         label: '未选择分支',
         title: '未选择分支',
         names: [],
+        kind: undefined,
     };
     private hasStartedRepositoryScan = false;
     // 仓库相关 UI loading 快照只由 onReposLoadingChanged 写入。
@@ -718,12 +719,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const branches = [...this.selectedBranchesMap.values()].flat();
         const currentBranch = branches.find(branch => branch.kind === 'current');
         const names = [...new Set(branches.map(branch => branch.name))];
-        this.selectedBranchDisplaySnapshot = currentBranch && names.length === 1
-            ? { label: currentBranch.label, title: currentBranch.name, names }
+        const displayBranch = currentBranch ?? branches[0];
+        this.selectedBranchDisplaySnapshot = displayBranch && names.length === 1
+            ? { label: displayBranch.label, title: displayBranch.name, names, kind: displayBranch.kind }
             : {
                 label: names.length === 0 ? '未选择分支' : names.length === 1 ? branches[0].label : `已选择 ${names.length} 个分支`,
                 title: names.length === 0 ? '未选择分支' : names.join(', '),
                 names,
+                kind: displayBranch?.kind,
             };
         this.view?.webview.postMessage({
             type: 'selectedBranchDisplayChanged',
