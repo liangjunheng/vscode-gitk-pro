@@ -58,12 +58,10 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
     private readonly branchSubscription: vscode.Disposable;
     private readonly changesEmitter = new vscode.EventEmitter<HeadBranchUncommittedFilesChangedEvent>();
     private readonly contentChangesEmitter = new vscode.EventEmitter<HeadBranchUncommittedFileContentChangedEvent>();
-    private readonly indexChangedEmitter = new vscode.EventEmitter<{ repositoryPath: string }>();
     private readonly presenceEmitter = new vscode.EventEmitter<HeadBranchUncommittedPresenceChangedEvent>();
 
     readonly onEachHeadBranchUncommittedFileChanged = this.changesEmitter.event;
     readonly onEachHeadBranchUncommittedFileContentChanged = this.contentChangesEmitter.event;
-    readonly onRepositoryIndexChanged = this.indexChangedEmitter.event;
     /** 轻量存在性事件：不等完整清单，只为每个仓库尽快给出“是否有未提交文件”。 */
     readonly onRepositoryUncommittedPresenceChanged = this.presenceEmitter.event;
 
@@ -185,11 +183,11 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         this.indexWatchers.forEach(watcher => watcher.dispose());
         this.indexWatchers.clear();
         this.indexWatcherCreations.clear();
+        this.slots.forEach(slot => slot.refreshAbortController?.abort());
         this.slots.clear();
         this.changesByRepository.clear();
         this.changesEmitter.dispose();
         this.contentChangesEmitter.dispose();
-        this.indexChangedEmitter.dispose();
         this.presenceEmitter.dispose();
     }
 
@@ -205,6 +203,7 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         };
         const previous = slot.branch;
         if (previous?.name === branch?.name && previous?.hash === branch?.hash) { return; }
+        slot.refreshAbortController?.abort();
         slot.branch = branch;
         slot.generation++;
         slot.pendingPaths = undefined;
@@ -284,7 +283,6 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
                 if (!slot?.branch) { return; }
                 if (slot.mutationDepth > 0) { return; }
                 slot.indexRefreshPending = true;
-                this.indexChangedEmitter.fire({ repositoryPath });
                 void this.requestRefresh(repositoryPath);
             };
             this.indexWatchers.set(repositoryPath, vscode.Disposable.from(
@@ -306,12 +304,29 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         this.indexWatcherCreations.delete(repositoryPath);
     }
 
+    private getOwningRepositoryPath(filePath: string): string | undefined {
+        let owner: string | undefined;
+        let ownerLength = -1;
+        for (const [repositoryPath, slot] of this.slots) {
+            if (!slot.branch) { continue; }
+            const repositoryPathFs = path.normalize(vscode.Uri.parse(repositoryPath).fsPath);
+            const relativePath = path.relative(repositoryPathFs, filePath);
+            if (relativePath.startsWith('..' + path.sep) || path.isAbsolute(relativePath)) { continue; }
+            if (repositoryPathFs.length > ownerLength) {
+                owner = repositoryPath;
+                ownerLength = repositoryPathFs.length;
+            }
+        }
+        return owner;
+    }
+
     private async handleWorkspaceFileChanged(
         repositoryPath: string,
         uri: vscode.Uri,
     ): Promise<void> {
         const slot = this.slots.get(repositoryPath);
         if (!slot?.branch || uri.scheme !== 'file') { return; }
+        if (this.getOwningRepositoryPath(uri.fsPath) !== repositoryPath) { return; }
         const rootPath = vscode.Uri.parse(repositoryPath).fsPath;
         const relativePath = path.relative(rootPath, uri.fsPath);
         if (!relativePath || relativePath === '.git' || relativePath.startsWith(`.git${path.sep}`)) { return; }
@@ -331,7 +346,6 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         if (!slot?.branch) { return Promise.resolve(); }
         if (slot.running) {
             slot.needsRefresh = true;
-            slot.refreshAbortController?.abort();
             return slot.completion ?? Promise.resolve();
         }
         slot.running = true;

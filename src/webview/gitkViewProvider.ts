@@ -325,9 +325,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.repoHeadBranchWatcher,
             this.selectedRepoTotalBranchWatcher,
             this.uncommittedFilesWatcher,
-            this.uncommittedFilesWatcher.onRepositoryIndexChanged(event => {
-                void this.repoSubmoduleWatcher.rescanRepository(event.repositoryPath);
-            }),
             // 保持 selectedRepoSubscription 在构造阶段的订阅顺序；不要移到 Controller 创建之后。
             this.selectedRepoSubscription,
             this.reposLoadingSubscription,
