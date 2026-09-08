@@ -31,7 +31,9 @@ VS Code 扩展, 在活动栏提供 gitk 风格的提交图面板。
 - src/gitLogProvider.ts: 通过 vscode.git API 获取 log/diffBetween, buildGraph 图形布局, buildGitFileUri 构造 git scheme URI (格式: git://<path>?{"path":"<fsPath>","ref":"<ref>"})
 - src/diffContentProvider.ts: GitkDiffContentProvider 实现 TextDocumentContentProvider, scheme=vscode-gitk-diff (旧方案, 已不用于 openDiff)
 - src/statusBar.ts: GitkStatusBar 常驻版, 构造函数里直接 show(), 不判断 git 仓库
-- media/gitk-logo.png: 自生成 git 分支图 logo (256x256), 用于 panel 容器图标
+- media/gitk-logo.png: 自生成 git 分支图 logo (256x256), 用于 package.json `icon`; 配套 media/gitk-logo.svg 为矢量源
+  - 设计 (2026-09-08 一比一还原用户提供图): 方底 `#121314` + 纯黑圆 r61 (128 viewBox); 四个 rotate(45) 圆角方块 (side 32 / rx 7): 粉 `#FF8080`(62,37) 蓝 `#80B3FF`(35,64) 绿 `#8DD35F`(89,62) 黄 `#FFE680`(62,92); 黑色分支图: 竖线 + 斜线 (线宽 7.5) + 三个 r9 圆点 (62.5,42.5)/(62,91)/(89,62)
+- media/gitk-sidebar.png / .svg: 24x24 单色 (`#C5C5C5`) 版 logo 图形 (四菱形线框 + 分支图 + 三个实心节点), 用于 viewsContainers.panel 与 views 的 `icon`
 
 ### VS Code Multi-Diff Editor 正确打开方式 (2026-08-05 确认)
 - VS Code 源码 src/vs/workbench/contrib/multiDiffEditor 无 `vscode.openMultiDiffEditor` 命令
@@ -84,6 +86,7 @@ VS Code 扩展, 在活动栏提供 gitk 风格的提交图面板。
 - `[System.IO.File]::ReadAllLines($p)` / `ReadAllText($p)` **不指定编码时按本地代码页解码**, 在中文 Windows 上会把 UTF-8 源码的中文全部损坏成 U+FFFD, 不可逆。
 - 一次按行号删除方法块的操作损坏了 gitkViewProvider.ts 的 1726 处中文, 只能 `git checkout` 恢复, 导致该文件本轮全部改动 (仓库/分支控制器接线) 丢失并需重做。
 - **规则: 源码增删改一律用 replace_in_file / write_to_file 编辑工具**, 即使为了避开长字符串匹配也不得走 PowerShell 捷径。确需脚本时必须显式传 `[System.Text.Encoding]::UTF8` 并先在副本上验证。
+- 延伸 (2026-09-08): `powershell -File` 执行**无 BOM 的 UTF-8 .ps1** 同样按 ANSI 代码页解码, 中文注释里的字节会解出破坏 token 的字符, 导致其后的普通 ASCII 语句失效 (实测 `$color = [Color]::FromArgb(...)` 得到 null, 报错指向下游 `New-Object`, 极难定位)。`Out-File -Encoding utf8` 写出带 BOM 反而正常。**给 powershell.exe 的临时脚本一律纯 ASCII**。
 
 ### 文件写入偶发静默回退 (2026-09-05, OneDrive 工作区)
 - 现象: 编辑工具/脚本报告写入成功, 随后编译或读回时内容却回到旧版本。当天发生两次: `multiDiffPanelDocument.ts` 的 4 处 `${webview.cspSource}`→`${cspSource}` 被还原(导致 TS2304 复现); `.codebuddy/memory/` 下追加的第 2/3/4 轮记录与 MEMORY.md 条目整体消失。
