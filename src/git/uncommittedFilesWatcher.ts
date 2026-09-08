@@ -439,6 +439,12 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
                 slot.indexChangedPaths.forEach(filePath => contentChangedPaths.push(filePath));
                 currentIndexChangedPaths?.forEach(filePath => contentChangedPaths.push(filePath));
             }
+            // 强制全量刷新必须连带重读全部内容: 工作区文件没有 objectId(unstaged 的 newObjectId 恒为全 0),
+            //   内容变化不会体现为清单变化, 于是 previousChanges.equals 命中、状态通道无事件可发。
+            //   不把整份清单的路径并入内容通道, 手动刷新就只会重跑 git log, staged/unstaged 的正文不会被重读。
+            if (fullRefresh) {
+                [...changes.staged, ...changes.changes].forEach(file => contentChangedPaths.push(file.path));
+            }
             if (previousChanges?.equals(changes)) {
                 if (contentChangedPaths.length > 0) {
                     this.contentChangesEmitter.fire({ branch, changes: copyChanges(changes), affectedPaths: contentChangedPaths });

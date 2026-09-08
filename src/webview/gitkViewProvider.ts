@@ -176,7 +176,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.commitPanelViewTitleController.update(s.commitRepositories);
         // 提交列表 loading 只由 GitCommitController 的加载事件驱动。
         const commitListLoading = this.commitController.isLoading;
-        const commitListLoadingMessage = commitListLoading ? '正在加载提交历史' : undefined;
+        // 与 loadingProgress 共用同一文案来源, 避免搜索时快照里仍是"加载提交历史"。
+        const commitListLoadingMessage = commitListLoading ? this.commitLoadingMessage : undefined;
         // 两个工作区虚拟行始终产出(未暂存在上, 已暂存在下), 空分组置灰(enabled=false)而非隐藏。
         // 与 Commit editor 共用当前 HEAD 的 watcher 缓存，不能读取 Controller 的副本，否则两处会出现状态不同步。
         // 搜索非空时, 虚拟行不是真实 commit 不经 searchCommits 过滤, 按 label 是否命中关键词决定是否产出; 未命中则不出现。
@@ -218,6 +219,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             type: 'stateUpdate',
             state: {
                 commits,
+                showCommitLanes: searchKeywords.length === 0,
                 workingTreeRows,
                 uncommittedRepositoryCount: this.countUncommittedRepositories(s.commitRepositories),
                 stagedCount: workingTree.staged.length,
@@ -240,6 +242,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 selectedPath: s.selectedPath,
                 selectedCommit,
                 isLoading: commitListLoading,
+                loadingMode: this.commitLoadingMode,
                 loadingMessage: commitListLoadingMessage,
             },
         });
@@ -383,8 +386,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.schedulePushState();
             }),
             this.commitController.onCommitsLoadingChanged(loading => {
-                this.setLoading(loading, loading ? '正在加载历史提交列表...' : undefined);
-                if (loading) { this.postLoadingProgress('commit', '正在加载历史提交列表...', 0, 0); }
+                this.setLoading(loading, loading ? this.commitLoadingMessage : undefined);
+                if (loading) { this.postLoadingProgress('commit', this.commitLoadingMessage, 0, 0); }
                 this.schedulePushState();
             }),
             vscode.workspace.onDidChangeConfiguration(event => {
@@ -803,12 +806,24 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             diffGeneration: store.getState().diffGeneration + 1,
         });
         const rootUri = vscode.Uri.parse(branch.repoOption.path);
+        const workingTreeHash = this.currentHash;
+        // 缓存键由清单元数据组成, 无法表达工作区内容(unstaged 的 newObjectId 恒为全 0);
+        //   因此每次内容重读都必须回写缓存, 否则切走再切回会拿到本次之前的旧正文。
+        const cacheKey = isWorkingTreeHash(workingTreeHash)
+            ? this.getWorkingTreeDiffCacheKey(branch.repoOption.path, workingTreeHash, this.files)
+            : undefined;
         const refreshed = await this.diffReader.readDiffs(rootUri, 'uncommitted', files, 'uncommitted');
         if (generation !== this.commitFilesGeneration
             || !isWorkingTreeHash(this.currentHash)
             || this.currentRepositoryPath !== branch.repoOption.path
             || this.commitController.selectedCommit?.gitBranchOption?.hash !== branch.hash) { return; }
         this.applyRefreshedDiffs(refreshed);
+        if (cacheKey) {
+            this.workingTreeDiffCache.set(
+                cacheKey,
+                this.files.filter((file): file is DiffPayload => file instanceof DiffPayload),
+            );
+        }
     }
 
     // 将重读到的 Diff 负载按 diffKey/path 就地替换回 store.files, 保持原有下标与未受影响项不变。
@@ -910,11 +925,32 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (!value) { this.lastLoadingProgress = undefined; }
     }
 
+    /**
+     * 加载态呈现方式: 已选仓库/分支不变的就地重读用顶部进度条, 选择变化要重建列表时用全屏蒙版。
+     * 进度消息必须先于状态快照到达(加载事件先发 loadingProgress 再 schedulePushState),
+     *   因此它必须自带模式, 否则 Webview 会先按上一轮的模式闪一下再被纠正。
+     */
+    private get commitLoadingMode(): 'bar' | 'overlay' {
+        return this.commitController.isInPlaceReload ? 'bar' : 'overlay';
+    }
+
+    /** 提交列表阶段文案: 搜索与重读必须区分, 否则搜索时仍挂着"加载历史提交列表"。 */
+    private get commitLoadingMessage(): string {
+        return this.commitController.isSearching ? '正在搜索提交...' : '正在加载历史提交列表...';
+    }
+
     // 统一投递加载进度并记录，供 Webview 后接管时重播。
     private postLoadingProgress(phase: string, message: string, current: number, total: number): void {
         this.lastLoadingProgress = { phase, message, current, total };
         this.loadingMessage = message;
-        this.view?.webview.postMessage({ type: 'loadingProgress', phase, message, current, total });
+        this.view?.webview.postMessage({
+            type: 'loadingProgress',
+            phase,
+            message,
+            current,
+            total,
+            loadingMode: this.commitLoadingMode,
+        });
     }
 
     private republishLoadingProgress(): void {
@@ -1083,11 +1119,16 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     /**
-     * 手动刷新: 重读当前提交列表和全部仓库当前 HEAD 的未提交变更, 不干扰选择器生命周期。
+     * 手动刷新: 重读当前提交列表和全部仓库当前 HEAD 的未提交变更, 并异步重扫仓库拓扑与分支列表,
+     * 不干扰选择器生命周期。
+     * 仓库与分支是提交列表的筛选维度, 与提交读取是三条独立数据源, 因此并行推进、互不等待:
+     *   重扫后若仓库集合变化, 由 SelectedRepoTotalBranchWatcher.syncRepositories 按 needsFullRefresh 补齐新仓库。
      * 选中仓库的提交列表与工作区状态由 GitCommitController 负责并吸收异常;
      * 其余 current-head 仓库经 watcher 强制刷新, 结果通过 onEachHeadBranchUncommittedFileChanged 回流多仓库 Store。
      */
     private refreshCurrentViewData(): void {
+        void this.requestRepositoryScan();
+        this.selectedRepoTotalBranchWatcher.refreshSelectedRepositories();
         void this.commitController.forceRefreshCurrentSelection();
         const selectedRepositoryPath = this.commitController.uncommittedRepositoryPath;
         for (const branch of this.uncommittedFilesWatcher.listCurrentHeadBranches()) {

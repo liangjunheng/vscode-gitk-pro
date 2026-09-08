@@ -84,7 +84,10 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP}
       if (!state) return;
       var previousCommitLoading = isCommitLoading;
       isCommitLoading = Boolean(state.isLoading);
+      // 加载态呈现方式由后端按"已选是否变化"判定后下发, 前端不再自行猜测。
+      commitLoadingMode = state.loadingMode === 'overlay' ? 'overlay' : 'bar';
       commits = state.commits || [];
+      document.getElementById('graph').classList.toggle('without-lanes', state.showCommitLanes === false);
       branches = state.branches || [];
       selectedBranches = state.selectedBranches || [];
       var workingTreeRows = state.workingTreeRows || [];
@@ -143,9 +146,9 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP}
       if (isCommitLoading) {
         showLoadingProgress('start', state.loadingMessage || '加载中...', 0, 0);
       } else {
-        document.getElementById('loading').style.display = 'none';
-        document.getElementById('commitList').style.display = 'block';
-        document.getElementById('countLabel').hidden = false;
+        hideLoadingProgress();
+        // 每轮快照都要重算页脚: hasMoreCommits/commitPageError 不进提交列表的渲染判据,
+        //   否则加载更多失败后"点击重试"永远不会出现。
         renderCommitFooter();
       }
     } else if (msg.type === 'totalRepoListChanged') {
@@ -161,6 +164,8 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP}
     } else if (msg.type === 'branchLoadingChanged') {
       updateBranchLoading(Boolean(msg.loading));
     } else if (msg.type === 'loadingProgress') {
+      // 进度消息先于状态快照到达, 必须自带呈现模式, 不能沿用上一轮的。
+      if (msg.loadingMode === 'overlay' || msg.loadingMode === 'bar') { commitLoadingMode = msg.loadingMode; }
       showLoadingProgress(msg.phase || 'start', msg.message || '加载中...', msg.current, msg.total);
     } else if (msg.type === 'refreshing') {
       showLoadingProgress('start', msg.message || '正在刷新...', 0, 0);

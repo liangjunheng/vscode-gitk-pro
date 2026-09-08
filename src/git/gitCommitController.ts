@@ -59,6 +59,14 @@ export class GitCommitController implements vscode.Disposable {
     private repositorySelectionGeneration = 0;
     private branchRepositorySelectionGeneration = -1;
     private _isLoading = false;
+    /**
+     * 本次提交读取的类型, 单一来源, 避免多个布尔互相打架:
+     * - 'rebuild': 换数据源(选择变化或首次加载), 列表要整体重建, 界面用全屏蒙版;
+     * - 'refresh': 已选不变的就地重读(forceRefreshCurrentSelection);
+     * - 'search' : 已选不变、只按关键字重新过滤(search)。
+     * 后两者不换数据源, 界面用顶部进度条; 阶段文案也据此区分。
+     */
+    private reloadKind: 'rebuild' | 'refresh' | 'search' = 'rebuild';
     private workingTree = new WorkingTreeChanges();
     private workingTreeRepositoryPath?: string;
     private _hasUncommittedChanges = false;
@@ -128,6 +136,10 @@ export class GitCommitController implements vscode.Disposable {
         );
     }
     get isLoading(): boolean { return this._isLoading; }
+    /** 当前读取不换数据源(就地重读或关键字过滤): 界面可用轻量进度条, 不必用全屏蒙版。 */
+    get isInPlaceReload(): boolean { return this.reloadKind !== 'rebuild'; }
+    /** 当前读取是关键字过滤: 阶段文案要显示搜索而不是加载历史。 */
+    get isSearching(): boolean { return this.reloadKind === 'search'; }
     get canLoadMoreCommits(): boolean { return this.hasMoreCommits; }
     get isLoadingMoreCommits(): boolean { return this.isLoadingMore; }
     get commitPageErrorMessage(): string { return this.commitPageError; }
@@ -191,6 +203,7 @@ export class GitCommitController implements vscode.Disposable {
         this.total = [];
         this.selectedCommitIdentity = undefined;
         this._isLoading = true;
+        this.reloadKind = 'rebuild';
         this.loadingEmitter.fire(true);
         this.searchedEmitter.fire([]);
         this.totalEmitter.fire([]);
@@ -219,6 +232,7 @@ export class GitCommitController implements vscode.Disposable {
         this.hasMoreCommits = false;
         this.commitPageError = '';
         this._isLoading = true;
+        this.reloadKind = 'rebuild';
         this.branches = [...branches];
         this.branchRepositorySelectionGeneration = this.repositorySelectionGeneration;
         void this.syncWorkingTreeForCurrentBranch();
@@ -237,11 +251,17 @@ export class GitCommitController implements vscode.Disposable {
         this.pageAbortController?.abort();
         this.isLoadingMore = false;
         this._isLoading = true;
-        // 提交列表与工作区状态都由本控制器负责; 后者内部已吸收 rejection。
-        await Promise.all([
-            this.refresh(true),
-            this.syncWorkingTreeForCurrentBranch(true),
-        ]);
+        // 本次读取不改已选仓库/分支, 只是就地重读, 界面用顶部进度条即可。
+        this.reloadKind = 'refresh';
+        try {
+            // 提交列表与工作区状态都由本控制器负责; 后者内部已吸收 rejection。
+            await Promise.all([
+                this.refresh(true),
+                this.syncWorkingTreeForCurrentBranch(true),
+            ]);
+        } finally {
+            this.reloadKind = 'rebuild';
+        }
     }
 
     /** 刷新入口二: 关键字变化; 空数组表示不过滤。 */
@@ -250,8 +270,14 @@ export class GitCommitController implements vscode.Disposable {
         if (this.sameKeywords(this.keywords, keywords)) { return [...this.searched]; }
         this._isLoading = true;
         this.keywords = [...keywords];
-        // 关键字变化不影响未过滤的全量列表与工作区状态。
-        await this.refresh(false);
+        // 搜索只是在同一份已选上重新过滤, 不换数据源, 同样用顶部进度条。
+        this.reloadKind = 'search';
+        try {
+            // 关键字变化不影响未过滤的全量列表与工作区状态。
+            await this.refresh(false);
+        } finally {
+            this.reloadKind = 'rebuild';
+        }
         return [...this.searched];
     }
 

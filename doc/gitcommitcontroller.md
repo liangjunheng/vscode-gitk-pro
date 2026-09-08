@@ -18,6 +18,8 @@
 | `searchKeywords`     | 当前搜索关键字；空数组表示不过滤             | 仅`search()`                           |
 | `selectedCommit`     | 当前选中提交对象；无选中时为`undefined`    | 仅用户操作与首次默认（第 6 节）          |
 | `isLoading`          | 提交读取是否在途                             | 仅刷新流程，见第 4 节                    |
+| `isInPlaceReload`    | 本次读取是否不换数据源（就地重读或搜索过滤） | 内部单一状态 `reloadKind`：`'rebuild'` / `'refresh'` / `'search'`，选择变化入口置 `'rebuild'` |
+| `isSearching`        | 本次读取是否是关键字过滤               | `reloadKind === 'search'`，仅供阶段文案区分，不参与加载态呈现判定 |
 
 提交列表 UI 的 loading 生命周期比本字段更宽：仓库或分支选择会改变提交数据源，Provider 在选择 Intent 到达时先显示“正在获取当前仓库...”，随后以 `GitBranchesController.isLoading` 显示“正在获取当前分支...”。分支控制器可能在当前分支快路径中提前发布一次选择并触发可取消的提交预读，因此只要分支控制器仍在 loading，分支阶段就优先于 `GitCommitController.isLoading`；分支读取收尾后，再由提交控制器接管为“正在加载历史提交列表...”。新选择取消旧任务时，旧流程的 generation 门禁不会发布 false，阶段状态因此连续。
 
@@ -309,6 +311,10 @@ interface GitCommitController {
     readonly selectedCommit: GitCommitOption | undefined;
     /** 提交读取是否在途 */
     readonly isLoading: boolean;
+    /** 本次读取不换数据源（就地重读或搜索过滤）；界面据此用顶部进度条而非全屏蒙版 */
+    readonly isInPlaceReload: boolean;
+    /** 本次读取是关键字过滤；界面据此把阶段文案换成“正在搜索提交...” */
+    readonly isSearching: boolean;
 
     /** HEAD hash 变化后的强制刷新；不改分支选择，在途时合并为一次补跑 */
     forceRefresh(): void;

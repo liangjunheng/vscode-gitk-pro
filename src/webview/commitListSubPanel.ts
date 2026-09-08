@@ -34,6 +34,11 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   .col-main { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 26px; align-items: center; min-width: 0; overflow: hidden; }
   .commit-row.expanded .col-main { grid-template-rows: 26px auto; }
   .col-main .graph-svg { grid-column: 1; grid-row: 1 / -1; align-self: stretch; flex: 0 0 auto; }
+  /* 搜索结果不展示拓扑，泳道和占位一起移除。 */
+  #graph.without-lanes .graph-svg { display: none; }
+  #graph.without-lanes .col-main { grid-template-columns: minmax(0, 1fr); }
+  #graph.without-lanes .col-main-summary, #graph.without-lanes .commit-description { grid-column: 1; }
+  #graph.without-lanes { --main-width: 60ch; }
   .col-main-summary { grid-column: 2; grid-row: 1; display: flex; align-items: center; min-width: 0; overflow: hidden; padding: 0 5px; }
   .col-main-summary .commit-message-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-foreground, inherit); }
   .commit-description { display: none; grid-column: 2; grid-row: 2; padding: 7px 5px; border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 12%, transparent); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vscode-descriptionForeground); line-height: 17px; cursor: text; }
@@ -75,18 +80,35 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   svg { display: block; }
   .ref-head { font-weight: 600; }
   .dot { stroke: var(--vscode-editor-background); stroke-width: 1; }
-  #loading { flex: 0 0 auto; padding: 20px; text-align: center; }
+  /* 提交列表加载态有两种呈现, 由后端下发的 loadingMode 决定:
+       bar     —— 已选列表不变、只是就地重读, 只亮列头底边的细进度条, 列表保持可见;
+       overlay —— 选择变化要重建列表, 期间旧列表没有参考价值, 用整块蒙版盖住。 */
+  #loading { flex: 0 0 auto; padding: 20px; text-align: center; display: none; }
   #loadingText { opacity: 0.8; margin-bottom: 10px; }
   #progressBar { width: 80%; height: 4px; background: var(--vscode-panel-border, #444); border-radius: 2px; margin: 0 auto 4px; overflow: hidden; }
   #progressBarFill { height: 100%; background: var(--vscode-textLink-foreground, #007acc); width: 0%; transition: width 0.3s ease; border-radius: 2px; }
   #progressBarFill.indeterminate { width: 30%; animation: indeterminate 1s ease-in-out infinite alternate; }
   @keyframes indeterminate { from { transform: translateX(-150%); } to { transform: translateX(350%); } }
   #progressStep { font-size: 11px; color: var(--vscode-descriptionForeground); opacity: 0.7; }
+  /* 顶部进度条贴在搜索行底边: 搜索行是 sticky 定位(top: 30px), 是绝对定位子元素的包含块,
+     所以进度条随搜索行一起吸在列头下方, 滚动时始终在列表顶部, 且不占布局不会顶动列表。 */
+  #commitProgress { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; z-index: 2; overflow: hidden; }
+  /* [hidden] 必须显式写出: 本文件里带 display 的规则会盖掉浏览器默认的 [hidden]{display:none}。 */
+  #commitProgress[hidden] { display: none; }
+  #commitProgressFill { height: 100%; width: 0%; background: var(--vscode-progressBar-background, #007acc); transition: width 0.3s ease; }
+  #commitProgressFill.indeterminate { width: 30%; animation: commit-progress 1s ease-in-out infinite alternate; }
+  @keyframes commit-progress { from { transform: translateX(-150%); } to { transform: translateX(350%); } }
   #commitEmpty { padding: 8px 10px; color: var(--vscode-descriptionForeground); }
   #commitFooter { flex: 0 0 auto; min-width: max-content; padding: 8px 10px; text-align: center; color: var(--vscode-descriptionForeground); }
   #commitFooter button { border: 0; color: var(--vscode-textLink-foreground); background: transparent; cursor: pointer; text-decoration: underline; }
-  /* 搜索独占一行: 紧跟列头下方, 滚动时粘在列头下面(列头高 30px、z-index 2, 故这里 top: 30px、z-index 1)。 */
-  #commitSearchRow { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; padding: 5px 10px; position: sticky; top: 30px; z-index: 1; background: var(--commit-title-background); border-bottom: 1px solid var(--vscode-panel-border); }
+  /* 搜索独占一行: 紧跟列头下方, 滚动时粘在列头下面(列头高 30px、z-index 2, 故这里 top: 30px、z-index 1)。
+     left: 0 让它横向也吸在可视区左边缘: 提交图变宽需要横向滚动时, 搜索行不能随内容滚出视野,
+     否则挂在它底边的加载进度条会一起看不见。
+     不能照列头那样用 min-width: max-content 撑满滚动宽 —— 列头撑得开是因为 #commitHeaderColumns 是与提交行
+     同模板的 grid, 而四列宽变量由 setColumnWidth 同时写到 #graph 上(max-content 因此等于整行宽);
+     搜索行没有这些列, 搜索框又是 flex: 1 1 auto + min-width: 0, 整行 max-content 远小于列表, 撑不出滚动宽。
+     所以这里用横向 sticky 吸附, 任何滚动位置都可见, 且搜索框不会被拉宽到滚动宽。 */
+  #commitSearchRow { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; padding: 5px 10px; position: sticky; top: 30px; left: 0; z-index: 1; background: var(--commit-title-background); border-bottom: 1px solid var(--vscode-panel-border); }
   #commitSearchRow #searchBox { flex: 1 1 auto; min-width: 0; }
   #commitSearchRow .count { flex: 0 0 auto; }
   #commitSearchRow #searchInput { width: 100%; }
@@ -96,8 +118,8 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
 export const COMMIT_LIST_SUB_PANEL_MARKUP = `
     <div id="graph">
       <div id="commitHeader" class="commit-header"><div id="commitHeaderColumns"><div>Commit列表<button class="toolbar-icon" id="refreshBtn" title="刷新提交" aria-label="刷新提交"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 6A5 5 0 1 0 13 10M13 2v4H9"/></svg></button></div><div>作者</div><div>Commit ID</div><div>时间</div></div><div id="commitHeaderSearch"><button class="toolbar-icon" id="fetchBtn" title="Fetch" aria-label="Fetch"><span class="codicon codicon-repo-fetch" aria-hidden="true"></span></button><button class="toolbar-icon" id="pullBtn" title="Pull" aria-label="Pull"><span class="codicon codicon-repo-pull" aria-hidden="true"></span></button><button class="toolbar-icon" id="pushBtn" title="Push" aria-label="Push"><span class="codicon codicon-repo-push" aria-hidden="true"></span></button></div></div>
-      <div id="commitSearchRow"><div class="selector" id="searchBox"><svg id="searchIcon" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 .96-.96l3.04 3.03-1.06 1.06-2.94-3.13z"/></svg><input type="text" id="searchInput" placeholder="搜索提交..." title="输入关键词搜索, 支持作者/邮箱/消息/Hash/日期, 多个关键词用空格隔开, 回车开始搜索"><button id="searchClear" title="清除搜索">&times;</button></div><span class="count" id="countLabel"></span></div>
-      <div id="loading" style="display:none;">
+      <div id="commitSearchRow"><div class="selector" id="searchBox"><svg id="searchIcon" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 .96-.96l3.04 3.03-1.06 1.06-2.94-3.13z"/></svg><input type="text" id="searchInput" placeholder="搜索提交..." title="输入关键词搜索, 支持作者/邮箱/消息/Hash/日期, 多个关键词用空格隔开, 回车开始搜索"><button id="searchClear" title="清除搜索">&times;</button></div><span class="count" id="countLabel"></span><div id="commitProgress" hidden><div id="commitProgressFill"></div></div></div>
+      <div id="loading">
         <div id="loadingText">加载中...</div>
         <div id="progressBar"><div id="progressBarFill"></div></div>
         <div id="progressStep"></div>
@@ -179,6 +201,10 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
   let isLoadingMoreCommits = false;
   let commitPageError = '';
   let isCommitLoading = false;
+  // 加载态呈现方式, 由后端每轮快照下发:
+  //   'bar'     —— 已选列表不变、就地重读, 只亮顶部进度条;
+  //   'overlay' —— 选择变化要重建列表, 用全屏蒙版。
+  let commitLoadingMode = 'bar';
   let commitLoadObserver = null;
   let commitListModelKey = '';
   let workingTreeModelKey = '';
@@ -196,29 +222,66 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
   let currentGraphW = LANE_W + 10;
   function showLoadingProgress(phase, message, current, total) {
     isCommitLoading = true;
-    document.getElementById('commitList').style.display = 'none';
-    document.getElementById('commitFooter').hidden = true;
-    document.getElementById('countLabel').hidden = true;
-    if (message) document.getElementById('loadingText').textContent = message;
-    var fill = document.getElementById('progressBarFill');
-    var step = document.getElementById('progressStep');
     var c = current || 0;
     var t = total || 0;
+    // 两种呈现互斥: 每次切换都要把另一种收起来, 否则会同时出现蒙版和顶部条。
+    if (commitLoadingMode === 'overlay') {
+      showLoadingOverlay(message, c, t);
+      return;
+    }
+    showLoadingBar(message, c, t);
+  }
+
+  /** 全屏蒙版: 盖住提交列表, 阶段文案 / 进度 / 计数都可见。 */
+  function showLoadingOverlay(message, c, t) {
+    var overlay = document.getElementById('loading');
+    var overlayFill = document.getElementById('progressBarFill');
+    var step = document.getElementById('progressStep');
+    if (message) { document.getElementById('loadingText').textContent = message; }
     if (t > 0) {
-      fill.classList.remove('indeterminate');
-      fill.style.width = Math.round(c / t * 100) + '%';
+      overlayFill.classList.remove('indeterminate');
+      overlayFill.style.width = Math.round(c / t * 100) + '%';
       step.textContent = c + ' / ' + t;
       step.style.display = 'block';
     } else {
-      fill.classList.add('indeterminate');
-      fill.style.width = '';
+      overlayFill.classList.add('indeterminate');
+      overlayFill.style.width = '';
       step.textContent = '';
       step.style.display = 'none';
     }
-    // 加载阶段立即覆盖提交列表；数据仍保留在内存中，失败或完成后可继续渲染。
-    document.getElementById('progressBar').style.display = 'block';
-    document.getElementById('loading').style.display = 'block';
     document.getElementById('commitList').style.display = 'none';
+    document.getElementById('commitFooter').hidden = true;
+    document.getElementById('countLabel').hidden = true;
+    document.getElementById('commitProgress').hidden = true;
+    overlay.style.display = 'block';
+  }
+
+  /** 顶部进度条: 列表照常可见, total>0 走确定比例, 否则走不定长滑动; 文案挂到 title 上。 */
+  function showLoadingBar(message, c, t) {
+    var overlay = document.getElementById('loading');
+    var progress = document.getElementById('commitProgress');
+    var fill = document.getElementById('commitProgressFill');
+    overlay.style.display = 'none';
+    if (message) { progress.title = message; }
+    if (t > 0) {
+      fill.classList.remove('indeterminate');
+      fill.style.width = Math.round(c / t * 100) + '%';
+    } else {
+      fill.classList.add('indeterminate');
+      fill.style.width = '';
+    }
+    progress.hidden = false;
+  }
+
+  function hideLoadingProgress() {
+    isCommitLoading = false;
+    document.getElementById('loading').style.display = 'none';
+    var progress = document.getElementById('commitProgress');
+    var fill = document.getElementById('commitProgressFill');
+    progress.hidden = true;
+    progress.removeAttribute('title');
+    fill.classList.remove('indeterminate');
+    fill.style.width = '';
   }
   document.getElementById('commitList').addEventListener('contextmenu', function(event) {
     var row = event.target.closest('.commit-row');
@@ -258,7 +321,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
 
   function renderCommitFooter() {
     const footer = document.getElementById('commitFooter');
-    if (isCommitLoading) {
+    if (isCommitLoading && commitLoadingMode === 'overlay') {
       footer.hidden = true;
       footer.textContent = '';
       if (commitLoadObserver) commitLoadObserver.disconnect();
@@ -532,7 +595,9 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
 
   function updateCountLabel() {
     var label = document.getElementById('countLabel');
-    if (isCommitLoading) {
+    // 蒙版模式计数随列表一起让位; 进度条模式下列表可见, 计数也要留住,
+    //   只有"首轮尚未读出任何提交"才隐藏, 避免显示 —/0。
+    if (isCommitLoading && (commitLoadingMode === 'overlay' || commits.length === 0)) {
       label.hidden = true;
       label.textContent = '';
       return;
@@ -639,7 +704,8 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
   }
 
   function render() {
-    if (isCommitLoading) {
+    // 蒙版模式下旧列表已经没有参考价值, 直接让位给蒙版; 进度条模式下列表必须继续渲染。
+    if (isCommitLoading && commitLoadingMode === 'overlay') {
       document.getElementById('commitList').style.display = 'none';
       document.getElementById('commitFooter').hidden = true;
       document.getElementById('countLabel').hidden = true;
@@ -649,15 +715,12 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     const scrollTop = graph ? graph.scrollTop : 0;
     const list = document.getElementById('commitList');
     const visibleCommitAnchor = captureVisibleCommitAnchor(graph, list);
-    const loading = document.getElementById('loading');
     if (commits.length === 0) {
-      loading.style.display = 'none';
       list.style.display = 'block';
       list.innerHTML = '<div id="commitEmpty">暂无提交记录</div>';
       renderCommitFooter();
       return;
     }
-    loading.style.display = 'none';
     list.style.display = 'block';
 
     // 分支图 SVG 宽度 = 全列表最大泳道数所需宽度; 分支标签已迁出 SVG 不参与。
