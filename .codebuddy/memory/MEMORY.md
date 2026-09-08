@@ -1,102 +1,37 @@
 # 工作记忆
 
-## 项目: vscode-gitk (c:\Users\JUNHENG.LIANG\OneDrive\vscode\vscode-gitk)
+## 项目概况
+- 项目：`vscode-gitk`，VS Code 扩展，在底部 Panel 提供 gitk 风格提交图、Changed Files 和 Multi-Diff。
+- 技术栈：TypeScript、VS Code Extension API、Webview View；通过 VS Code Git 扩展 API 获取仓库、日志和差异，兼容桌面与 Web。
+- 当前工作区：`c:\Users\JUNHENG.LIANG\OneDrive\vscode\vscode-gitk`。
 
-VS Code 扩展, 在活动栏提供 gitk 风格的提交图面板。
+## 核心结构与约定
+- `src/extension.ts`：激活入口，注册视图 provider 和状态栏。
+- `src/gitLogProvider.ts`：仓库、refs、提交、差异和提交图布局。
+- `src/webview/gitkViewProvider.ts`：提交图面板 TS 逻辑。
+- `src/commitFilesViewProvider.ts`：Changed Files 与 Multi-Diff 打开、选中同步。
+- Webview 分层：面板类只保留 TS 控制逻辑；`xxxDocument.ts` 生成整页 HTML；子面板分别导出 `STYLES`、`MARKUP`、`SCRIPT`；拥有 DOM 的子面板负责监听，子面板之间不互相 import。
+- Multi-Diff 使用 `vscode.commands.executeCommand('vscode.open', multiDiffSourceUri, { label, resources, multiDiffSource }, ViewColumn.Active)`；内部 scheme 为 `multi-diff-editor`；空侧由 `gitk-empty` provider 提供。
 
-### 技术栈
-- TypeScript + VS Code Extension API (桌面 + Web 双端)
-- Webview View (viewsContainers/activitybar + views/webview)
-- 不直接调用 git CLI, 通过 VS Code Git 扩展 API (vscode.git exports getAPI(1)) 获取提交历史和变更文件, 兼容 web
-- repository.log() / repository.diffBetween(ref1, ref2) / git scheme URI
+## 提交加载设计
+- 初始化顺序：环境 → 仓库/子模块 → 分支 → 提交 → 内容。
+- `getGitRefs` 使用 5 秒缓存；仓库与子模块扫描并行。
+- 加载更多保持增量：`buildGraph(commits, state?, startIndex?)` 保存 lane 状态；预取 hash 后用 `git log --no-walk` 按批取提交，耗尽时才回退 `--skip`。
+- Webview 进度条：`total=0` 为不定进度，`total>0` 显示比例和计数。
 
-### 文件结构
-- package.json: 扩展清单, main 指向 ./out/extension.js (移除 browser 字段避免桌面调试干扰); viewsContainers 改为 "panel" (底部面板区, 和 Terminal/Output 一起, 不是 activitybar); activationEvents: ["*"] (强制立即激活, 测试用)
-- .vscode/launch.json: 官方模板 "Run Extension" (extensionHost, args=${workspaceFolder}, preLaunchTask=npm: watch)
-- .vscode/tasks.json: 官方模板 (type=npm, script=watch, isBackground, $tsc-watch)
-- .vscode/extensions.json + settings.json: 官方脚手架标配 (推荐 eslint)
-- run.bat: 一键启动脚本 (双击即可), 调 Code.exe --extensionDevelopmentPath 启动 Extension Development Host, 不依赖 F5/launch.json
-- src/extension.ts: 激活入口, activate 开头 console.log + showInformationMessage 诊断; 注册 2 个 provider + GitkStatusBar
-- src/webview/gitkViewProvider.ts: 上方 WebviewViewProvider, 渲染提交图, 行点击发送 selectCommit; 纯 TS 逻辑, 不含任何 HTML/CSS/JS 字面量
-- src/webview/gitkWebviewDocument.ts: gitk 页面骨架, 导出 renderGitkWebviewHtml(codiconCssUri), 由 GitkViewProvider.getHtml() 委派调用
-- src/webview/selectorBarSubPanel.ts: 顶部仓库/分支下拉+搜索+工具栏子面板, 导出 SELECTOR_BAR_SUB_PANEL_STYLES / _MARKUP / _SCRIPT
-- src/webview/changedFilesSubPanel.ts: 变更文件列表子面板, 导出 CHANGED_FILES_SUB_PANEL_STYLES / _MARKUP / _SCRIPT
-- src/webview/commitListSubPanel.ts: Commit 列表子面板, 导出 COMMIT_LIST_SUB_PANEL_STYLES / _MARKUP / _SCRIPT
-- src/webview/commitPanelDocument.ts: Commit 面板页面, 导出 renderCommitPanelHtml(codiconCssUri, nonce, csp, initialSnapshotJson)
-- src/webview/commitCardScript.ts / commitFileListScript.ts / commitSubmoduleSelectorScript.ts: Commit 面板 webview 脚本片段(COMMIT_CARD_SCRIPT / COMMIT_FILE_LIST_SCRIPT / COMMIT_SUBMODULE_SELECTOR_SCRIPT)
-- src/webview/multiDiffPanelDocument.ts: Gitk Diff 面板页面, 导出 renderMultiDiffHtml(cspSource, codiconCssUri, monacoUri, nonce); MONACO_DIFF_LANGUAGES/OPTIONS 的 import 已迁到此处
-- webview 分层约定(全仓库统一): 面板类只写 TS 逻辑 → xxxDocument.ts 的 render 函数产出整页 HTML → 子面板/脚本片段常量。类内 getHtml() 只负责准备 nonce/CSP/资源 Uri 再委派
-- webview 子面板(gitk 视图): 每个导出 STYLES/MARKUP/SCRIPT 三个字符串常量; 所有脚本片段拼进同一个 IIFE 共享作用域; 归属规则="谁拥有 DOM 谁持有它的监听", 子面板之间互不 import
-- src/commitFilesViewProvider.ts: 下方 WebviewViewProvider, 显示变更文件 tree/flat 切换, 点击文件打开 Multi-Diff Editor (vscode.open + IResourceMultiDiffEditorInput), onDidChangeActiveTextEditor + onDidChangeVisibleTextEditors 同步高亮, diff 关闭时清除高亮
-- src/gitLogProvider.ts: 通过 vscode.git API 获取 log/diffBetween, buildGraph 图形布局, buildGitFileUri 构造 git scheme URI (格式: git://<path>?{"path":"<fsPath>","ref":"<ref>"})
-- src/diffContentProvider.ts: GitkDiffContentProvider 实现 TextDocumentContentProvider, scheme=vscode-gitk-diff (旧方案, 已不用于 openDiff)
-- src/statusBar.ts: GitkStatusBar 常驻版, 构造函数里直接 show(), 不判断 git 仓库
-- media/gitk-logo.png: 自生成 git 分支图 logo (256x256), 用于 package.json `icon`; 配套 media/gitk-logo.svg 为矢量源
-  - 设计 (2026-09-08 一比一还原用户提供图): 方底 `#121314` + 纯黑圆 r61 (128 viewBox); 四个 rotate(45) 圆角方块 (side 32 / rx 7): 粉 `#FF8080`(62,37) 蓝 `#80B3FF`(35,64) 绿 `#8DD35F`(89,62) 黄 `#FFE680`(62,92); 黑色分支图: 竖线 + 斜线 (线宽 7.5) + 三个 r9 圆点 (62.5,42.5)/(62,91)/(89,62)
-- media/gitk-sidebar.png / .svg: 24x24 单色 (`#C5C5C5`) 版 logo 图形 (四菱形线框 + 分支图 + 三个实心节点), 用于 viewsContainers.panel 与 views 的 `icon`
+## 图标资产
+- `media/gitk-logo.svg/.png`：256×256 彩色扩展图标。
+- `media/gitk-sidebar.svg/.png`：24×24 单色 Panel 图标，由 `package.json` 的 `viewsContainers.panel` / `views` 使用。
 
-### VS Code Multi-Diff Editor 正确打开方式 (2026-08-05 确认)
-- VS Code 源码 src/vs/workbench/contrib/multiDiffEditor 无 `vscode.openMultiDiffEditor` 命令
-- MultiDiffEditorInput.ID = `workbench.input.multiDiffEditor`, 内部 URI scheme = `multi-diff-editor`
-- 打开方式: `vscode.commands.executeCommand('vscode.open', multiDiffSourceUri, {label, resources, multiDiffSource}, ViewColumn.Active)`
-  - multiDiffSource: `vscode.Uri.parse('multi-diff-editor:gitk-<hash>')`
-  - resources: Array<{original: Uri|undefined, modified: Uri|undefined}>
-  - VS Code editorService 识别 untyped input 的 resources 字段, 经 MultiDiffEditorResolverContribution 解析
-- Added/Deleted 文件空侧: 注册 `gitk-empty` scheme TextDocumentContentProvider 返回空字符串
+## 环境与文件安全
+- VS Code：`C:\Users\JUNHENG.LIANG\AppData\Local\Programs\Microsoft VS Code\Code.exe`；`code` 不在 PATH。
+- 禁止用未显式指定 UTF-8 的 PowerShell 读写源码；无 BOM UTF-8 `.ps1` 也可能被 Windows PowerShell 按 ANSI 解码。源码编辑优先使用文件编辑工具。
+- OneDrive 工作区发生过写入后静默回退；关键编辑后必须重新读取校验。
+- `.codebuddy` 是项目数据，禁止删除。
 
-### 加载进度条 (2026-08-07)
-- gitkViewProvider.ts webview `loadingProgress` 消息携带 {phase, message, current, total}
-- phase: 'repository' | 'branch' | 'commit' | 'start'
-- gitLogProvider.ts:
-  - getGitRepositories(onProgress) 报告工作区文件夹解析 (git rev-parse) + 子模块扫描 (git config) 进度, total 随子模块发现增长
-  - resolveCommitRefs(rootUri, refs) 批量单次 git rev-parse, 正则过滤有效哈希, 部分失败从 error.stdout 提取
-  - getGitCommits(rootUri, limit, refs, skip, onProgress) 报告 resolveCommitRefs + git log 进度, total = 2 (1 resolve + 1 log)
-  - getGitRefs 5s TTL 缓存, 避免 refreshSelectors + getGitCommits 重复调用
-  - getGitRepositories 工作区文件夹解析 + 子模块扫描均改 Promise.all 并行
-  - GitRepositoryOption 新增 hasSubmodules 字段; getGitRepositoriesInternal 遍历 allRepositories 的 parentPath 构建 parentPaths 集合判定
-  - 初始化流程严格顺序: 初始化环境→初始化仓库→加载子模块→加载分支→加载提交→刷新内容
-  - 仓库图标按 hasSubmodules 区分: 有子模块=文件夹+内嵌矩形(绿色), 无子模块=纯文件夹图标
-  - Changed Files 标题栏的全部动作图标已重绘为统一 16px / 1.5px 圆角线框 SVG；标题栏按钮使用 24px VS Code 风格 hover、active、focus 状态，树状/平铺切换路径同步更新
-  - 已选 commit 的折叠/展开属于 Webview 本地状态：setupRow 仅在 !wasSelected 时发送 selectCommit，避免重复执行 setCommitFiles 和刷新 Changed Files
-  - Changed Files 标题左侧布局固定为：文案 → 8 位 commit id（changes/staged 时隐藏）→ Copy Hash；其余提交/分支操作保持右对齐，短哈希由 updateFilesCommitHash() 在选择、点击和加载清空时同步
-  - 加载更多提交须保持增量渲染：appendRows 只扫描新增批次更新 columnWidthChars/列宽；仅当新增 lane 或 refs 扩宽图区域时回退全量 render
-  - buildGraph(commits, state?, startIndex?) 增量构建, GraphState 保存 activeLanes + nextColor
-  - loadMoreCommits 用增量构建, 只处理新提交 (prevCount 起始), O(N²)→O(N)
-  - 跳过 resolveCommitRefs, refs 直接传 git log
-  - getCommitHashes(rootUri, refs) 预取全量 hash (git rev-list), 与首次 git log 并行
-  - getGitCommitsByHashes(rootUri, hashes) 用 git log --no-walk, O(101) 无遍历
-  - loadMoreCommits 优先用预取 hash + getGitCommitsByHashes, 耗尽回退 git log --skip
-- gitkViewProvider.ts:
-  - refreshInternal 严格顺序: 初始化环境→refreshSelectors(初始化仓库+加载子模块+加载分支)→加载提交→刷新内容
-  - refreshSelectors 传 onProgress 给 getGitRepositories; 分支 0/1→1/1
-  - refreshInternal 单仓库时透传 getGitCommits 的 onProgress; 多仓库时按 rootUris.length 逐个完成计数
-  - refreshBranchCommits 传 onProgress 给 getGitCommits
-  - 双重加载修复: refresh()/refreshInternal() 加 skipSelectors 参数, refreshWithRetry 用 retryCount===0 判断首次
-- webview 单条进度条始终可见:
-  - total=0: indeterminate 动画 (translateX -150%→350%, 30% 宽蓝色条)
-  - total>0: 比例填充 (current/total*100%) + "current / total" 文字
-  - showLoadingProgress(phase, message, current, total) 切换 indeterminate/比例两种态
-
-### 环境
-- VS Code 安装路径: C:\Users\JUNHENG.LIANG\AppData\Local\Programs\Microsoft VS Code\Code.exe
-- code 命令不在 PATH 中
-- OneDrive 占位文件可能阻塞读取 (vscode-filter-line 项目因 offline 属性无法读)
-
-### 严禁用 PowerShell 处理源码文本 (2026-08-20 事故)
-- `[System.IO.File]::ReadAllLines($p)` / `ReadAllText($p)` **不指定编码时按本地代码页解码**, 在中文 Windows 上会把 UTF-8 源码的中文全部损坏成 U+FFFD, 不可逆。
-- 一次按行号删除方法块的操作损坏了 gitkViewProvider.ts 的 1726 处中文, 只能 `git checkout` 恢复, 导致该文件本轮全部改动 (仓库/分支控制器接线) 丢失并需重做。
-- **规则: 源码增删改一律用 replace_in_file / write_to_file 编辑工具**, 即使为了避开长字符串匹配也不得走 PowerShell 捷径。确需脚本时必须显式传 `[System.Text.Encoding]::UTF8` 并先在副本上验证。
-- 延伸 (2026-09-08): `powershell -File` 执行**无 BOM 的 UTF-8 .ps1** 同样按 ANSI 代码页解码, 中文注释里的字节会解出破坏 token 的字符, 导致其后的普通 ASCII 语句失效 (实测 `$color = [Color]::FromArgb(...)` 得到 null, 报错指向下游 `New-Object`, 极难定位)。`Out-File -Encoding utf8` 写出带 BOM 反而正常。**给 powershell.exe 的临时脚本一律纯 ASCII**。
-
-### 文件写入偶发静默回退 (2026-09-05, OneDrive 工作区)
-- 现象: 编辑工具/脚本报告写入成功, 随后编译或读回时内容却回到旧版本。当天发生两次: `multiDiffPanelDocument.ts` 的 4 处 `${webview.cspSource}`→`${cspSource}` 被还原(导致 TS2304 复现); `.codebuddy/memory/` 下追加的第 2/3/4 轮记录与 MEMORY.md 条目整体消失。
-- 排查结论: 与构建无关(`scripts/copy-monaco.cjs` 只写 `media/`); 与 git 无关(涉及文件为 untracked, 未跑 checkout/stash); 重新写入后连续多次读取 MD5 稳定。
-- **规则: 关键文件改完必须重新读取校验再信任**; 大批量重构结束后跑一次与 `git HEAD` 的端到端等价校验, 一次性抓出静默回退。参考脚本思路见当日日志。
-
-### 用户规则
-- 必须用英语回答; 中文提问最后一句给英文写法提示, 英文提问先纠正语法
-- 必需通过项目代码论证
-- 内容以中文输出
-- 忽略 harness 工程
-- 所有代码修改必须先定位并解决根因，禁止只通过表层补丁掩盖状态所有权、事件时序或数据流问题（2026-08-20）
-- 新增个人规则：禁止添加防御性补丁；必须从根因解决问题，或重新选择能够从根本上解决问题的实现方案。不能用存在性判断、兜底分支、时间阈值等方式掩盖未定位的错误（2026-08-22）
+## 用户规则
+- 内容以中文输出；中文提问最后一句提示对应英文问法，英文提问最后一句先修正语法。
+- 必须依据项目代码论证根因和解决方案。
+- 忽略 `harness` 工程。
+- 禁止防御性、兜底、延时或定时器式表层补丁；必须定位并解决状态所有权、事件时序或数据流根因。
+- 不使用 emoji。

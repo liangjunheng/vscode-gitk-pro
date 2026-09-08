@@ -1,20 +1,22 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
-  <!-- 单色版 logo: 上/左/右/下 四个 45° 旋转圆角方块 -->
-  <g fill="none" stroke="#C5C5C5" stroke-width="1.1" stroke-linejoin="round">
-    <g transform="rotate(45 12 6.4)"><rect x="9.455" y="3.855" width="5.09" height="5.09" rx="1"/></g>
-    <g transform="rotate(45 6.4 12)"><rect x="3.855" y="9.455" width="5.09" height="5.09" rx="1"/></g>
-    <g transform="rotate(45 17.6 12)"><rect x="15.055" y="9.455" width="5.09" height="5.09" rx="1"/></g>
-    <g transform="rotate(45 12 17.6)"><rect x="9.455" y="15.055" width="5.09" height="5.09" rx="1"/></g>
-  </g>
-  <!-- 分支图: 竖线 + 斜线 -->
-  <g stroke="#C5C5C5" stroke-width="1.1" stroke-linecap="round" fill="none">
-    <line x1="12" y1="7.4" x2="12" y2="17.6"/>
-    <line x1="12" y1="7.4" x2="17.6" y2="12"/>
-  </g>
-  <!-- 三个 commit 节点 -->
-  <g fill="#C5C5C5">
-    <circle cx="12" cy="7.4" r="1.25"/>
-    <circle cx="12" cy="17.6" r="1.25"/>
-    <circle cx="17.6" cy="12" r="1.25"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="12.954 15.054 97.902 98.942" preserveAspectRatio="none">
+  <defs>
+    <mask id="hollow-branch" maskUnits="userSpaceOnUse" x="0" y="0" width="128" height="128">
+      <rect width="128" height="128" fill="#fff"/>
+      <g stroke="#000" stroke-width="7.86" stroke-linecap="round" fill="none">
+        <line x1="62.43" y1="41.48" x2="61.905" y2="92.33"/>
+        <line x1="62.43" y1="41.48" x2="90.19" y2="61.905"/>
+      </g>
+      <g fill="#000">
+        <circle cx="62.43" cy="41.48" r="9.43"/>
+        <circle cx="61.905" cy="92.33" r="9.43"/>
+        <circle cx="90.19" cy="61.905" r="9.43"/>
+      </g>
+    </mask>
+  </defs>
+  <g fill="#C5C5C5" mask="url(#hollow-branch)">
+    <g transform="rotate(45 61.905 35.72)"><rect x="45.145" y="18.96" width="33.52" height="33.52" rx="7.33"/></g>
+    <g transform="rotate(45 33.62 64)"><rect x="16.86" y="47.24" width="33.52" height="33.52" rx="7.33"/></g>
+    <g transform="rotate(45 90.19 61.905)"><rect x="73.43" y="45.145" width="33.52" height="33.52" rx="7.33"/></g>
+    <g transform="rotate(45 61.905 93.33)"><rect x="45.145" y="76.57" width="33.52" height="33.52" rx="7.33"/></g>
   </g>
 </svg>
