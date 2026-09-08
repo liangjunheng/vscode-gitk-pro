@@ -55,19 +55,21 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
         return cached ? new GitBranchOption({ ...cached, repoOption: repository }) : undefined;
     }
 
+    /**
+     * 读取 HEAD 真值, 不返回缓存。
+     * 唯一调用方是分支刷新, 它正是在 refs 已被改写之后来取值的; 此时缓存几乎必然停在旧 hash,
+     * 拿它组装的分支快照会被去重判定成"未变化", 外部提交便永远推不到提交列表。
+     */
     async getHeadBranchByRepo(repository: GitRepositoryOption): Promise<GitBranchOption | undefined> {
         const key = repositoryKey(repository.path);
-        const cached = this.headBranches.get(key);
-        if (cached) { return cached; }
         if (!this.repositories.has(key)) { return this.readHeadBranch(repository); }
         return this.enqueueHeadRead(key, repository);
     }
 
     /**
-     * 强制重新读取指定仓库的 HEAD。
-     * commit 只改写 refs/heads/<branch> 与 logs/HEAD, 不触碰 .git/HEAD(符号引用),
-     * 故 HEAD 文件监听器不会触发; 提交后必须显式重读, 让新 hash 经事件下发,
-     * 使 UncommittedFilesWatcher 的槽位换代并整表刷新, 清除过期的 staged 缓存。
+     * 强制重新读取指定仓库的 HEAD 并等待结果落地。
+     * logs/HEAD 监听已能异步感知外部提交, 但扩展自身提交后必须同步等到新 hash 落地:
+     * 否则新 HEAD 的 staged 清单尚未读出就刷新提交列表, CommitPanel 会命中旧 hash 的缓存。
      */
     async refreshHeadBranch(repositoryPath: string): Promise<void> {
         const key = repositoryKey(repositoryPath);
@@ -144,8 +146,11 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
             ], { windowsHide: true });
             const gitDir = stdout.trim();
             if (!gitDir || this.repositories.get(key)?.path !== repository.path) { return undefined; }
+            // HEAD 只存符号引用(ref: refs/heads/x), commit/amend/merge/rebase/reset 都不改写它,
+            // 只改写目标 ref 与 logs/HEAD; 只听 HEAD 就永远收不到这些移动的 HEAD 值变化信号。
+            // logs/HEAD 是 git 记录 HEAD 移动的 reflog, 覆盖范围与 HEAD 值变化一一对应。
             const headWatcher = vscode.workspace.createFileSystemWatcher(
-                new vscode.RelativePattern(vscode.Uri.file(gitDir), 'HEAD'),
+                new vscode.RelativePattern(vscode.Uri.file(gitDir), '{HEAD,logs/HEAD}'),
             );
             const refresh = () => {
                 const currentRepository = this.repositories.get(key);
