@@ -186,7 +186,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             ? this.uncommittedFilesWatcher.getCachedUncommittedFilesByHeadBranch(currentBranch) ?? new WorkingTreeChanges()
             : new WorkingTreeChanges();
         const workingTreeRepositoryPath = currentBranch?.repoOption.path;
-        const searchKeywords = this.commitController.searchKeywords;
+        const searchKeywords = this.commitController.displayedSearchKeywords;
         const matchesSearch = (label: string): boolean =>
             searchKeywords.length === 0
             || searchKeywords.some(keyword => label.toLowerCase().includes(keyword.toLowerCase()));

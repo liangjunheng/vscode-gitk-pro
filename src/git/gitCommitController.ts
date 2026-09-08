@@ -44,6 +44,8 @@ export class GitCommitController implements vscode.Disposable {
     private repositories: GitRepositoryOption[] = [];
     private branchesByRepository = new Map<string, GitBranchOption[]>();
     private keywords: string[] = [];
+    // 与已发布列表同步更新，不跟随尚未完成的搜索请求。
+    private appliedSearchKeywords: string[] = [];
     private searched: CommitMetadata[] = [];
     private total: CommitMetadata[] = [];
     private commitPageByRepository = new Map<string, CommitMetadata[]>();
@@ -119,6 +121,7 @@ export class GitCommitController implements vscode.Disposable {
     get totalCommitList(): readonly CommitMetadata[] { return this.total; }
     get searchedCommitList(): readonly CommitMetadata[] { return this.searched; }
     get searchKeywords(): readonly string[] { return this.keywords; }
+    get displayedSearchKeywords(): readonly string[] { return this.appliedSearchKeywords; }
     get selectedCommit(): CommitMetadata | undefined {
         const identity = this.selectedCommitIdentity;
         if (!identity) { return undefined; }
@@ -200,6 +203,7 @@ export class GitCommitController implements vscode.Disposable {
         this.hasMoreCommits = false;
         this.commitPageError = '';
         this.searched = [];
+        this.appliedSearchKeywords = [];
         this.total = [];
         this.selectedCommitIdentity = undefined;
         this._isLoading = true;
@@ -357,10 +361,11 @@ export class GitCommitController implements vscode.Disposable {
                 refs.push(branch.name);
                 refsByRepository.set(branch.repoOption.path, refs);
             }
-            const searchedPromise = this.readCommits(refsByRepository, this.keywords, abortController.signal);
-            const searched = await searchedPromise;
+            const requestKeywords = [...this.keywords];
+            const searched = await this.readCommits(refsByRepository, requestKeywords, abortController.signal);
             if (abortController.signal.aborted || generation !== this.commitReadGeneration) { return; }
             this.searched = searched;
+            this.appliedSearchKeywords = requestKeywords;
             this.resetCommitPages(searched);
             this.searchedEmitter.fire([...this.searched]);
             if (branchesChanged) {
