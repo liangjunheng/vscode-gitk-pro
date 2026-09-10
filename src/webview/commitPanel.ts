@@ -102,7 +102,7 @@ export class CommitPanel implements vscode.Disposable {
         if (this.panel && this.webviewReady) { this.publish(); }
     }
 
-    /** 定位到指定仓库卡片, 不重新渲染。 */
+    /** 把面板带回编辑器区前台并定位到指定仓库卡片, 不重新渲染。 */
     focus(repositoryPath: string): void {
         if (this.panel && this.webviewReady) {
             this.panel.reveal(this.panel.viewColumn ?? vscode.ViewColumn.Active, false);

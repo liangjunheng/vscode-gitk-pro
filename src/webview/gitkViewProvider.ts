@@ -1700,6 +1700,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         } catch (error) {
             void vscode.window.showErrorMessage(`Git Push 失败：${error instanceof Error ? error.message : String(error)}`);
         }
+        // 操作由 Commit 面板触发, 显示权归触发者: 结束后把面板带回编辑器区前台。
+        this.commitPanel.focus(rootRepositoryPath);
     }
 
     private async runCommit(repositoryPath: string, repositoryPaths: readonly string[], message: string, amend: boolean): Promise<void> {
@@ -1712,7 +1714,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (!orderedRepositoryPaths.includes(repositoryPath)) { orderedRepositoryPaths.push(repositoryPath); }
         if (orderedRepositoryPaths.some(path => this.commitCommittingByRepo.has(path))) { return; }
         orderedRepositoryPaths.forEach(path => this.commitCommittingByRepo.add(path));
-        this.openDiff(this.selectedPath);
         await this.refreshCommitPanel();
         const committedRepositoryPaths: string[] = [];
         try {
@@ -1752,6 +1753,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         } finally {
             orderedRepositoryPaths.forEach(path => this.commitCommittingByRepo.delete(path));
             await this.refreshCommitPanel();
+            // 操作由 Commit 面板触发, 显示权归触发者: 结束后把面板带回编辑器区前台。
+            this.commitPanel.focus(repositoryPath);
         }
     }
 

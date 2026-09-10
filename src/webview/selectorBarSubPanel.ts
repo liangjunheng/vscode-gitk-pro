@@ -62,6 +62,9 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   .dropdown-option.selected::before { content: '✓'; display: inline-block; width: 14px; color: var(--vscode-menu-selectionForeground, var(--vscode-textLink-foreground)); }
   #repositoryDropdown .dropdown-option, #branchDropdown .dropdown-option { display: flex; align-items: center; gap: 6px; }
   #repositoryDropdown .dropdown-option.selected::before, #branchDropdown .dropdown-option.selected::before { display: none; }
+  /* 仓库选项的 radio 被隐藏, 必须显式补回选中态(✓ + 菜单选中底色), 否则切换仓库后看不出当前是哪个仓库。 */
+  #repositoryDropdown .dropdown-option.selected::before { display: inline-block; }
+  #repositoryDropdown .dropdown-option.selected { background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-menu-selectionForeground, var(--vscode-foreground)); }
   #repositoryDropdown .dropdown-option input { display: none; }
   #branchDropdown .dropdown-option input { flex: 0 0 auto; margin: 0; accent-color: var(--vscode-checkbox-selectBackground, var(--vscode-focusBorder)); }
   .dropdown-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 2px 1px; border-top: 1px solid var(--vscode-menu-separatorBackground, var(--vscode-panel-border)); }
