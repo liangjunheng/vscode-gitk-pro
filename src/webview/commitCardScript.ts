@@ -90,9 +90,10 @@ export const COMMIT_CARD_SCRIPT = `
       });
     });
     commitBtn.addEventListener('click',function(){
-      const message=el._card.message.trim();
+      // 提交时以输入框的实时内容为准, 避免后端快照还未跟上时提交旧文本。
+      const message=messageInput.value.trim();
       if(!message){hint.textContent='提交信息不能为空';messageInput.focus();return}
-      vscode.postMessage({type:'commit',repositoryPath:repo,repositoryPaths:[...(el._card.selectedCommitSubmoduleRepositoryPaths||[]),repo],message:el._card.message,amend:el._amend===true});
+      vscode.postMessage({type:'commit',repositoryPath:repo,repositoryPaths:[...(el._card.selectedCommitSubmoduleRepositoryPaths||[]),repo],message:messageInput.value,amend:el._amend===true});
     });
     messageInput.addEventListener('input',function(){hint.textContent='';resizeMessageInput(messageInput);vscode.postMessage({type:'updateCardState',repositoryPath:repo,patch:{message:messageInput.value}})});
     pullBeforePushCheckbox.addEventListener('change',function(){vscode.postMessage({type:'updateCardState',repositoryPath:repo,patch:{pullBeforePush:pullBeforePushCheckbox.checked}})});
@@ -194,7 +195,9 @@ export const COMMIT_CARD_SCRIPT = `
     const isEmpty=card.stagedFiles.length===0&&card.unstagedFiles.length===0;
     refs.amendCheckbox.checked=card.amend;
     refs.amendCheckbox.disabled=false;
-    if(refs.messageInput.value!==card.message){refs.messageInput.value=card.message;resizeMessageInput(refs.messageInput)}
+    // 输入框处于焦点时不用后端快照覆盖本地输入, 否则快速在中间插入文字时会把光标重置到末尾。
+    const messageInputFocused=document.activeElement===refs.messageInput;
+    if(!messageInputFocused&&refs.messageInput.value!==card.message){refs.messageInput.value=card.message;resizeMessageInput(refs.messageInput)}
     el.querySelector('.pull-before-push-checkbox').checked=card.pullBeforePush;
     refs.commitBtn.textContent=card.amend?'amend':'commit';
     const disableCommit=card.committing;
