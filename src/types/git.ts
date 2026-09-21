@@ -14,6 +14,8 @@ export class CommitMetadata {
     authorDateLabel = '';
     message = '';
     body?: string;
+    // git log %B: 未经 %s/%b 拆分的原始完整提交信息, 用于原样还原用户输入。
+    rawMessage?: string;
     refs: string[] = [];
     lane?: number;
     inputSwimlanes?: GraphLane[];

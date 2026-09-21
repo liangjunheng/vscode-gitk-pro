@@ -746,7 +746,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private initializeCommitMessagesFromProjectHistory(): void {
         for (const commit of this.commits) {
             const repositoryPath = commit.gitBranchOption?.repoOption.path;
-            const message = commit.body?.trim() || commit.message.trim();
+            // rawMessage 取自 git log %B, 是未经拆分/裁剪的原始提交信息, 原样还原用户当时的输入。
+            const message = (commit.rawMessage ?? commit.message).replace(/\s+$/, '');
             if (!repositoryPath || !message || this.initializedCommitMessagesByRepo.has(repositoryPath)) { continue; }
             this.commitMessageByRepo.set(repositoryPath, message);
             this.initializedCommitMessagesByRepo.add(repositoryPath);
@@ -1568,18 +1569,16 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     /**
      * 历史提交信息选择器: 直接取当前项目已加载的提交历史(totalCommitList), 既不再执行 git log,
-     * 也不受搜索关键词影响; 填入的是 subject + 空行 + body 的完整信息, 保留原有换行。
+     * 也不受搜索关键词影响; 填入的是 rawMessage(git log %B) 原始完整信息, 不做拼接裁剪, 原样还原用户输入。
      */
     private async pickCommitHistoryMessage(repositoryPath: string): Promise<void> {
         // 同一条信息只保留首次出现(列表按时间倒序, 即最新一条)。
-        const history = new Map<string, { shortHash: string; subject: string; body: string; message: string }>();
+        const history = new Map<string, { shortHash: string; subject: string; message: string }>();
         for (const commit of this.commitController.totalCommitList) {
             if (commit.gitBranchOption?.repoOption.path !== repositoryPath) { continue; }
-            const subject = commit.message.trim();
-            const body = (commit.body ?? '').replace(/\s+$/, '');
-            const message = body ? `${subject}\n\n${body}` : subject;
+            const message = (commit.rawMessage ?? commit.message).replace(/\s+$/, '');
             if (!message || history.has(message)) { continue; }
-            history.set(message, { shortHash: commit.shortHash, subject, body, message });
+            history.set(message, { shortHash: commit.shortHash, subject: commit.message.trim(), message });
         }
         if (history.size === 0) {
             void vscode.window.showInformationMessage('当前项目没有已加载的历史提交信息。');
@@ -1588,8 +1587,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const items = [...history.values()].map(entry => ({
             label: entry.subject,
             description: entry.shortHash,
-            // detail 只支持单行, 把正文的换行折叠成可见分隔符, 便于挑出带多行正文的提交。
-            detail: entry.body.split('\n').filter(line => line.trim()).join(' ⏎ '),
+            // detail 只支持单行, 把正文中的换行折叠成可见分隔符, 便于挑出带多行正文的提交; 不影响实际填入的 message。
+            detail: entry.message.split('\n').slice(1).filter(line => line.trim()).join(' ⏎ '),
             message: entry.message,
         }));
         const picked = await vscode.window.showQuickPick(items, { placeHolder: '选择当前项目的历史提交信息填入' });

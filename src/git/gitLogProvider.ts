@@ -515,7 +515,7 @@ export async function runGitCommand(rootUri: vscode.Uri, args: string[]): Promis
 // 解析 git log --format 输出
 function parseLogOutput(stdout: string): CommitMetadata[] {
     return stdout.split('\x1e').flatMap(record => {
-        const [hash, parentText, author, authorEmail, committer, committerEmail, dateText, subject, body, decorations] = record.trim().split('\x1f');
+        const [hash, parentText, author, authorEmail, committer, committerEmail, dateText, subject, body, rawMessage, decorations] = record.trim().split('\x1f');
         if (!hash) { return []; }
         const authorDate = new Date(dateText);
         return [new CommitMetadata({
@@ -530,6 +530,8 @@ function parseLogOutput(stdout: string): CommitMetadata[] {
             authorDateLabel: formatDateLabel(authorDate),
             message: subject || '',
             body: body || '',
+            // %B 是 git 提交信息的原始完整文本, 不经 %s/%b 拆分裁剪, 用于需要还原用户原始输入的场景。
+            rawMessage: rawMessage || '',
             refs: decorations ? decorations.split(', ').map(ref => ref.replace(/^HEAD -> /, '')).filter(Boolean) : [],
         })];
     });
@@ -539,7 +541,7 @@ async function readCommitsFromCli(rootUri: vscode.Uri, limit: number, refs: read
     const commitRefs = refs.length > 0 ? [...refs] : ['HEAD'];
     const { stdout } = await execFileAsync('git', [
         ...noOptionalLocks, '-C', rootUri.fsPath, 'log', '--topo-order', `--max-count=${limit}`, ...(skip > 0 ? [`--skip=${skip}`] : []),
-        '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1f%D%x1e', ...commitRefs,
+        '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1f%B%x1f%D%x1e', ...commitRefs,
     ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
     return parseLogOutput(stdout);
 }
@@ -559,7 +561,7 @@ export async function searchCommits(rootUri: vscode.Uri, keywords: string[], ref
     const commitRefs = refs.length > 0 ? [...refs] : ['HEAD'];
     const { stdout } = await execFileAsync('git', [
         ...noOptionalLocks, '-C', rootUri.fsPath, 'log', '--topo-order',
-        '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1f%D%x1e', ...commitRefs,
+        '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1f%B%x1f%D%x1e', ...commitRefs,
     ], { windowsHide: true, maxBuffer: 64 * 1024 * 1024, signal });
     const allCommits = parseLogOutput(stdout);
     const lowerKeywords = keywords.map(k => k.toLowerCase());
