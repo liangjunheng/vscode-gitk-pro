@@ -18,7 +18,7 @@ export type GitkIntent =
     | { type: 'selectCommit'; hash: unknown; repositoryPath?: unknown }
     | { type: 'selectFile'; path?: unknown }
     | { type: 'copyFilePath'; path: unknown; absolute?: unknown }
-    | { type: 'workingTreeAction'; action: unknown; section: unknown; path?: unknown }
+    | { type: 'workingTreeAction'; action: unknown; section: unknown; path?: unknown; paths?: unknown }
     | { type: 'workingTreeCommit'; action: unknown; repositoryPath: unknown; message: unknown }
     | { type: 'updateCommitMessage'; repositoryPath: unknown; message: unknown }
     | { type: 'rendered'; target: unknown; fileCount: unknown }

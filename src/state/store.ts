@@ -12,7 +12,7 @@ export type StoreEffect =
     | { type: 'selectCommit'; hash: unknown; repositoryPath?: unknown }
     | { type: 'selectFile'; path?: unknown }
     | { type: 'copyFilePath'; path: unknown; absolute?: unknown }
-    | { type: 'workingTreeAction'; action: unknown; section: unknown; path?: unknown }
+    | { type: 'workingTreeAction'; action: unknown; section: unknown; path?: unknown; paths?: unknown }
     | { type: 'workingTreeCommit'; action: unknown; repositoryPath: unknown; message: unknown }
     | { type: 'updateCommitMessage'; repositoryPath: unknown; message: unknown }
     | { type: 'rendered'; fileCount: unknown }
@@ -113,8 +113,10 @@ export class Store {
             case 'workingTreeAction':
                 if ((intent.action === 'stage' || intent.action === 'unstage' || intent.action === 'discard')
                     && (intent.section === 'staged' || intent.section === 'unstaged')
-                    && (intent.path === undefined || typeof intent.path === 'string')) {
-                    effects = [{ type: 'workingTreeAction', action: intent.action, section: intent.section, path: intent.path }];
+                    && (intent.path === undefined || typeof intent.path === 'string')
+                    && (intent.paths === undefined
+                        || (Array.isArray(intent.paths) && intent.paths.every(path => typeof path === 'string')))) {
+                    effects = [{ type: 'workingTreeAction', action: intent.action, section: intent.section, path: intent.path, paths: intent.paths }];
                 }
                 break;
             case 'workingTreeCommit':

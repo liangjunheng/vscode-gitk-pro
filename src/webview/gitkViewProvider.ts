@@ -1268,7 +1268,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 }
                 break;
             case 'workingTreeAction':
-                void this.runWorkingTreeAction(effect.action, effect.section, effect.path);
+                void this.runWorkingTreeAction(effect.action, effect.section, effect.path, undefined, effect.paths);
                 break;
             case 'workingTreeCommit':
                 if (typeof effect.action === 'string'
@@ -1897,10 +1897,18 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         void this.processWorkingTreeActionQueue();
     }
 
-    private async runWorkingTreeAction(action: unknown, section: unknown, filePath?: unknown, repositoryPath?: string): Promise<void> {
+    private async runWorkingTreeAction(
+        action: unknown,
+        section: unknown,
+        filePath?: unknown,
+        repositoryPath?: string,
+        selectedPaths?: unknown,
+    ): Promise<void> {
         if ((action !== 'stage' && action !== 'unstage' && action !== 'discard')
             || (section !== 'staged' && section !== 'unstaged')
-            || (filePath !== undefined && typeof filePath !== 'string')) { return; }
+            || (filePath !== undefined && typeof filePath !== 'string')
+            || (selectedPaths !== undefined
+                && (!Array.isArray(selectedPaths) || selectedPaths.some(path => typeof path !== 'string')))) { return; }
         // Changed Files 区不带 repositoryPath, 用虚拟提交仓库; Commit 卡片显式指定其仓库。
         const targetRepositoryPath = repositoryPath ?? this.commitController.uncommittedRepositoryPath;
         if (!targetRepositoryPath) { return; }
@@ -1915,9 +1923,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 ? await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(branch).catch(() => ({ staged: [], changes: [] }))
                 : { staged: [], changes: [] };
         const unstagedFiles = changes.changes;
-        const paths = typeof filePath === 'string'
-            ? [filePath]
-            : (section === 'staged' ? changes.staged : unstagedFiles).map(file => file.path);
+        const sectionFiles = section === 'staged' ? changes.staged : unstagedFiles;
+        const availablePaths = new Set(sectionFiles.map(file => file.path));
+        const paths = Array.isArray(selectedPaths)
+            ? [...new Set(selectedPaths.filter((path): path is string => availablePaths.has(path)))]
+            : typeof filePath === 'string'
+                ? [filePath]
+                : sectionFiles.map(file => file.path);
         if (paths.length === 0) { return; }
         const untrackedPaths = new Set(unstagedFiles.filter(file => file.isUntracked).map(file => file.path));
         const gitlinkPaths = new Set<string>();
@@ -2023,6 +2035,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             : undefined;
     }
 
+    private async getCurrentlyTrackedPaths(rootUri: vscode.Uri, paths: readonly string[]): Promise<string[]> {
+        if (paths.length === 0) { return []; }
+        const output = await runGitReadCommand(rootUri, ['ls-files', '--cached', '-z', '--', ...paths]);
+        return output.split('\0').filter(Boolean);
+    }
+
     private async processWorkingTreeActionQueue(): Promise<void> {
         if (this.processingWorkingTreeActions) { return; }
         this.processingWorkingTreeActions = true;
@@ -2094,7 +2112,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                                     const targetCommit = (await runGitReadCommand(parentUri, ['rev-parse', `:${gitlinkPath}`])).trim();
                                     if (targetCommit) { targetCommitByRepository.set(repositoryPath, targetCommit); }
                                 }
-                                const trackedPaths = operation.paths.filter(filePath => !operation.untrackedPaths.has(filePath));
+                                // 状态快照可能在确认弹窗期间过期; 以当前 index 的实际跟踪状态为准,
+                                // 避免把后来变成未跟踪的文件传给 `git restore`。
+                                const currentlyTrackedPaths = new Set(await this.getCurrentlyTrackedPaths(operation.rootUri, operation.paths));
+                                const trackedPaths = operation.paths.filter(filePath =>
+                                    currentlyTrackedPaths.has(filePath) && !operation.untrackedPaths.has(filePath));
                                 for (const filePath of operation.paths) {
                                     if (operation.untrackedPaths.has(filePath)) {
                                         await vscode.workspace.fs.delete(

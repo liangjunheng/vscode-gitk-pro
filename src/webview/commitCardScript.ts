@@ -36,7 +36,7 @@ export const COMMIT_CARD_SCRIPT = `
         '</div>'+
       '</div>';
     // 空仓库卡片默认折叠；三个变更区域默认展开。
-    const state={unstagedOpen:true,stagedOpen:true,committedOpen:true};
+    const state={unstagedOpen:true,stagedOpen:true,committedOpen:true,selectedWorkingTreeFiles:new Set(),workingTreeSelectionAnchor:''};
     const messageInput=el.querySelector('.message-input');
     const commitBtn=el.querySelector('.commit-btn');
     const pushBtn=el.querySelector('.push-btn');
@@ -78,14 +78,18 @@ export const COMMIT_CARD_SCRIPT = `
     el.querySelectorAll('.section-actions .icon-btn[data-action]').forEach(function(button){
       button.addEventListener('click',function(event){
         event.stopPropagation();
-        const files=button.dataset.section==='staged'?el._card.stagedFiles:el._card.unstagedFiles;
+        const section=button.dataset.section;
+        const files=section==='staged'?el._card.stagedFiles:el._card.unstagedFiles;
+        const selectedPaths=selectedCommitWorkingTreePaths(el,section,'');
+        const paths=selectedPaths||files.map(function(file){return file.path});
+        const pathSet=new Set(paths);
         vscode.postMessage({
           type:'workingTreeAction',
           repositoryPath:repo,
           action:button.dataset.action,
-          section:button.dataset.section,
-          paths:files.map(function(file){return file.path}),
-          untrackedPaths:files.filter(function(file){return file.isUntracked}).map(function(file){return file.path}),
+          section:section,
+          paths:paths,
+          untrackedPaths:files.filter(function(file){return pathSet.has(file.path)&&file.isUntracked}).map(function(file){return file.path}),
         });
       });
     });
@@ -119,6 +123,62 @@ export const COMMIT_CARD_SCRIPT = `
     return el;
   }
 
+  function pruneCommitWorkingTreeSelection(cardElement){
+    const card=cardElement._card;
+    const state=cardElement._state;
+    const available=new Set();
+    (card.stagedFiles||[]).forEach(function(file){available.add(commitWorkingTreeSelectionKey('staged',file.path))});
+    (card.unstagedFiles||[]).forEach(function(file){available.add(commitWorkingTreeSelectionKey('unstaged',file.path))});
+    state.selectedWorkingTreeFiles.forEach(function(key){
+      if(!available.has(key))state.selectedWorkingTreeFiles.delete(key);
+    });
+    if(state.workingTreeSelectionAnchor&&!available.has(state.workingTreeSelectionAnchor))state.workingTreeSelectionAnchor='';
+  }
+
+  function selectedCommitWorkingTreePaths(cardElement,section,fallbackPath){
+    const prefix=section+'\u0000';
+    const paths=[];
+    cardElement._state.selectedWorkingTreeFiles.forEach(function(key){
+      if(key.indexOf(prefix)===0)paths.push(key.slice(prefix.length));
+    });
+    if(fallbackPath&&paths.indexOf(fallbackPath)<0)return [fallbackPath];
+    if(paths.length)return paths;
+    return fallbackPath?[fallbackPath]:undefined;
+  }
+
+  function selectCommitWorkingTreeRow(cardElement,row,event){
+    const section=row.dataset.section;
+    const path=row.dataset.path;
+    if(!section||!path||(section!=='staged'&&section!=='unstaged'))return;
+    const state=cardElement._state;
+    const key=commitWorkingTreeSelectionKey(section,path);
+    const additive=event.ctrlKey||event.metaKey;
+    const anchor=state.workingTreeSelectionAnchor;
+    const anchorPrefix=section+'\u0000';
+    const list=section==='staged'?cardElement._refs.stagedList:cardElement._refs.unstagedList;
+    const rows=Array.from(list.querySelectorAll('.file-row[data-section="'+section+'"]'));
+    const anchorIndex=anchor&&anchor.indexOf(anchorPrefix)===0
+      ? rows.findIndex(function(candidate){return commitWorkingTreeSelectionKey(section,candidate.dataset.path||'')===anchor})
+      : -1;
+    const currentIndex=rows.indexOf(row);
+    if(event.shiftKey&&anchorIndex>=0&&currentIndex>=0){
+      if(!additive)state.selectedWorkingTreeFiles.clear();
+      const start=Math.min(anchorIndex,currentIndex),end=Math.max(anchorIndex,currentIndex);
+      for(let index=start;index<=end;index++){
+        const candidatePath=rows[index].dataset.path;
+        if(candidatePath)state.selectedWorkingTreeFiles.add(commitWorkingTreeSelectionKey(section,candidatePath));
+      }
+    }else if(additive){
+      if(state.selectedWorkingTreeFiles.has(key))state.selectedWorkingTreeFiles.delete(key);
+      else state.selectedWorkingTreeFiles.add(key);
+    }else{
+      state.selectedWorkingTreeFiles.clear();
+      state.selectedWorkingTreeFiles.add(key);
+    }
+    state.workingTreeSelectionAnchor=key;
+    syncCommitWorkingTreeSelection(list,state.selectedWorkingTreeFiles);
+  }
+
   // 行节点跨渲染复用, 逐次渲染直接绑定会叠加监听器: 一次点击发出 N 条消息 -> N 个确认弹窗。
   // 改为卡片根节点单次事件委托, 点击时再按当前 _card 解析数据。
   function bindRowActions(cardElement,repo){
@@ -130,19 +190,22 @@ export const COMMIT_CARD_SCRIPT = `
         const section=button.dataset.section;
         const filePath=button.dataset.path;
         const files=section==='staged'?card.stagedFiles:card.unstagedFiles;
-        const file=files.find(function(item){return item.path===filePath});
+        const selectedPaths=selectedCommitWorkingTreePaths(cardElement,section,filePath);
+        const paths=selectedPaths||[filePath];
+        const pathSet=new Set(paths);
         vscode.postMessage({
           type:'workingTreeAction',
           repositoryPath:repo,
           action:button.dataset.action,
           section:section,
-          paths:[filePath],
-          untrackedPaths:file&&file.isUntracked?[filePath]:[],
+          paths:paths,
+          untrackedPaths:files.filter(function(file){return pathSet.has(file.path)&&file.isUntracked}).map(function(file){return file.path}),
         });
         return;
       }
       const row=event.target.closest('.file-row');
       if(row){
+        selectCommitWorkingTreeRow(cardElement,row,event);
         vscode.postMessage({type:'selectFile',repositoryPath:repo,section:row.dataset.section,path:row.dataset.path});
       }
     });
@@ -231,6 +294,7 @@ export const COMMIT_CARD_SCRIPT = `
     updateRepositoryStatusBadge('.untracked-count','Untracked',untrackedCount);
     updateRepositoryStatusBadge('.unstaged-header-count','Unstaged',unstagedHeaderCount);
     updateRepositoryStatusBadge('.staged-header-count','Staged',card.stagedFiles.length);
+    pruneCommitWorkingTreeSelection(el);
     const stagedList=el.querySelector('.staged-list');
     const committedSection=el.querySelector('.section.committed');
     const committedList=el.querySelector('.committed-list');
@@ -257,8 +321,8 @@ export const COMMIT_CARD_SCRIPT = `
     unstagedCount.hidden=card.unstagedFiles.length===0;
     el.querySelector('.discard-all').disabled=card.unstagedFiles.length===0;
     el.querySelector('.stage-all').disabled=card.unstagedFiles.length===0;
-    renderFileList(stagedList,card.stagedFiles,'staged',el.dataset.repo);
-    renderFileList(unstagedList,card.unstagedFiles,'unstaged',el.dataset.repo);
+    renderFileList(stagedList,card.stagedFiles,'staged',el.dataset.repo,el._state.selectedWorkingTreeFiles);
+    renderFileList(unstagedList,card.unstagedFiles,'unstaged',el.dataset.repo,el._state.selectedWorkingTreeFiles);
     stagedList.hidden=!el._state.stagedOpen;
     unstagedList.hidden=!el._state.unstagedOpen;
     refs.stagedChevron.className='codicon codicon-chevron-'+(el._state.stagedOpen?'down':'right')+' staged-chevron';

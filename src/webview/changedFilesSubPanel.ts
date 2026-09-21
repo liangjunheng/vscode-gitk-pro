@@ -61,6 +61,8 @@ export const CHANGED_FILES_SUB_PANEL_STYLES = `
   .working-tree-section-body .file-item { width: max-content; min-width: 100%; padding-left: 15px; padding-right: 0; background: var(--working-tree-row-background); }
   .working-tree-section-body .file-item:hover { --working-tree-row-background: var(--vscode-list-hoverBackground); }
   .working-tree-section-body .file-item.selected { --working-tree-row-background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  .working-tree-section-body .file-item.multi-selected { --working-tree-row-background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-list-inactiveSelectionForeground, var(--vscode-foreground)); }
+  .working-tree-section-body .file-item.selected.multi-selected { --working-tree-row-background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
   .working-tree-section-header.disabled { color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground)); }
   .working-tree-section-leading { position: sticky; left: 10px; z-index: 2; display: inline-flex; align-items: center; flex: 0 0 auto; min-width: 0; padding-right: 4px; background: var(--working-tree-header-background); }
   .working-tree-section-title { min-width: 0; }
@@ -136,6 +138,8 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
   let workingTreeCommitMessage = '';
   const collapsedFolders = new Set();
   const collapsedWorkingTreeSections = new Set();
+  const selectedWorkingTreeFiles = new Set();
+  let workingTreeSelectionAnchor = '';
   // 与 commitListModelKey 同一思路: focus/blur 等无关 stateChanged 不应重新渲染文件列表, 否则正在被点击的 .file-item 会被拆掉重建, 导致首击无效。
   let filesModelKey = '';
   document.getElementById('filesModeBtn').addEventListener('click', function() {
@@ -246,6 +250,55 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
     if (hashLabel) hashLabel.textContent = isCommit ? selectedCommitHash.slice(0, 8) : '';
   }
 
+  function workingTreeSelectionKey(section, path) {
+    return section + '\u0000' + path;
+  }
+
+  function getWorkingTreeSelectionParts(key) {
+    const separator = key.indexOf('\u0000');
+    return separator < 0 ? null : { section: key.slice(0, separator), path: key.slice(separator + 1) };
+  }
+
+  function pruneWorkingTreeSelection() {
+    const available = new Set(files.map(function(file) {
+      const section = file.workingTreeKind === 'staged' ? 'staged' : 'unstaged';
+      return workingTreeSelectionKey(section, file.path);
+    }));
+    selectedWorkingTreeFiles.forEach(function(key) {
+      if (!available.has(key)) selectedWorkingTreeFiles.delete(key);
+    });
+    if (workingTreeSelectionAnchor && !available.has(workingTreeSelectionAnchor)) workingTreeSelectionAnchor = '';
+  }
+
+  function selectedWorkingTreePaths(section, fallbackPath) {
+    const paths = [];
+    selectedWorkingTreeFiles.forEach(function(key) {
+      const parts = getWorkingTreeSelectionParts(key);
+      if (parts && parts.section === section) paths.push(parts.path);
+    });
+    if (fallbackPath && paths.indexOf(fallbackPath) < 0) return [fallbackPath];
+    if (paths.length > 0) return paths;
+    return fallbackPath ? [fallbackPath] : undefined;
+  }
+
+  function workingTreeActionPaths(button) {
+    const section = button.getAttribute('data-section');
+    if (!section) return undefined;
+    return selectedWorkingTreePaths(section, button.getAttribute('data-path') || '');
+  }
+
+  function syncWorkingTreeSelectionClasses(list) {
+    list.querySelectorAll('.file-item[data-diff-key]').forEach(function(item) {
+      const diffKey = item.getAttribute('data-diff-key') || '';
+      const section = item.getAttribute('data-section') || '';
+      const path = item.getAttribute('data-path') || '';
+      const selectionKey = workingTreeSelectionKey(section, path);
+      const multiSelected = selectedWorkingTreeFiles.has(selectionKey);
+      item.classList.toggle('multi-selected', multiSelected);
+      item.classList.toggle('selected', diffKey === selectedPath && (multiSelected || !workingTreeSelectionAnchor));
+    });
+  }
+
   function workingTreeActionButton(action, section, path, icon, title) {
     return '<button type="button" class="working-tree-action" data-working-tree-action="' + action + '" data-section="' + section + '"' +
       (path ? ' data-path="' + escapeAttr(path) + '"' : '') + ' title="' + title + '" aria-label="' + title + '"><span class="codicon codicon-' + icon + '" aria-hidden="true"></span></button>';
@@ -274,7 +327,10 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
       : workingTreeActionButton('discard', section, file.path, 'discard', '放弃当前文件的未暂存更改（不可撤销）') + workingTreeActionButton('stage', section, file.path, 'add', '暂存当前文件（移入 Staged Changes）');
     const untracked = section === 'unstaged' && file.isUntracked ? ' untracked' : '';
     const diffKey = section + ':' + file.path;
-    return '<div class="file-item' + (diffKey === selectedPath ? ' selected' : '') + untracked + '" data-path="' + escapeAttr(file.path) + '" data-diff-key="' + escapeAttr(diffKey) + '" data-section="' + section + '" title="' + escapeAttr(file.path) + '">' +
+    const selectionKey = workingTreeSelectionKey(section, file.path);
+    const multiSelected = selectedWorkingTreeFiles.has(selectionKey);
+    const activeSelected = diffKey === selectedPath && (multiSelected || !workingTreeSelectionAnchor);
+    return '<div class="file-item' + (activeSelected ? ' selected' : '') + (multiSelected ? ' multi-selected' : '') + untracked + '" data-path="' + escapeAttr(file.path) + '" data-diff-key="' + escapeAttr(diffKey) + '" data-section="' + section + '" title="' + escapeAttr(file.path) + '">' +
       workingTreeKindIconHTML(file, section) + '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span>' +
       '<span class="file-path"><span class="file-name">' + escapeHtml(name) + '</span>' + (folder ? ' <span class="file-folder">' + escapeHtml(folder) + '</span>' : '') + '</span><span class="file-actions">' + workingTreeActionsHTML(actions) + '</span></div>';
   }
@@ -307,7 +363,10 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
           : workingTreeActionButton('discard', section, file.path, 'discard', '放弃当前文件的未暂存更改（不可撤销）') + workingTreeActionButton('stage', section, file.path, 'add', '暂存当前文件（移入 Staged Changes）');
         const diffKey = section + ':' + file.path;
         const untracked = section === 'unstaged' && file.isUntracked ? ' untracked' : '';
-        html += '<div class="file-item' + (diffKey === selectedPath ? ' selected' : '') + untracked + '" data-path="' + escapeAttr(file.path) + '" data-diff-key="' + escapeAttr(diffKey) + '" data-section="' + section + '" style="padding-left:' + (folder ? 30 : 10) + 'px" title="' + escapeAttr(file.path) + '">';
+        const selectionKey = workingTreeSelectionKey(section, file.path);
+        const multiSelected = selectedWorkingTreeFiles.has(selectionKey);
+        const activeSelected = diffKey === selectedPath && (multiSelected || !workingTreeSelectionAnchor);
+        html += '<div class="file-item' + (activeSelected ? ' selected' : '') + (multiSelected ? ' multi-selected' : '') + untracked + '" data-path="' + escapeAttr(file.path) + '" data-diff-key="' + escapeAttr(diffKey) + '" data-section="' + section + '" style="padding-left:' + (folder ? 30 : 10) + 'px" title="' + escapeAttr(file.path) + '">';
         html += workingTreeKindIconHTML(file, section) + '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span><span class="file-path"><span class="file-name">' + escapeHtml(name) + '</span>' + (folder ? ' <span class="file-folder">' + escapeHtml(folder + '/') + '</span>' : '') + '</span><span class="file-actions">' + workingTreeActionsHTML(actions) + '</span></div>';
       });
     });
@@ -317,7 +376,9 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
   function workingTreeSectionHTML(section, label, sectionFiles) {
     const disabled = sectionFiles.length === 0;
     const collapsed = collapsedWorkingTreeSections.has(section);
-    const hasSelected = sectionFiles.some(function(file) { return section + ':' + file.path === selectedPath; });
+    const hasSelected = sectionFiles.some(function(file) {
+      return selectedWorkingTreeFiles.has(workingTreeSelectionKey(section, file.path));
+    });
     const actions = disabled ? '' : section === 'staged'
       ? workingTreeActionButton('unstage', section, '', 'remove', '取消暂存此分组的所有文件（全部移回 Unstaged Changes）')
       : workingTreeActionButton('discard', section, '', 'discard', '放弃此分组所有文件的未暂存更改（不可撤销）') + workingTreeActionButton('stage', section, '', 'add', '暂存此分组的所有文件（全部移入 Staged Changes）');
@@ -352,6 +413,7 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
     modeIcon.setAttribute('d', isTree ? 'M2.5 3h5M5 3v4M5 7h5M7.5 7v4M7.5 11h6' : 'M3 4h10M3 8h10M3 12h10');
     modeButton.title = '显示方式（当前：' + (isTree ? '树状' : '平铺') + '）';
     if (isWorkingTreeHash(selectedCommitHash)) {
+      pruneWorkingTreeSelection();
       // 虚拟提交的当前 DiffPayload[] 是宿主选中结果的权威快照；不能再读取异步维护的 stagedFiles/unstagedFiles。
       // uncommitted 行同时展示 staged 与 unstaged/untracked, 按 workingTreeKind 拆分为两个可折叠子分组。
       const sectionFiles = files;
@@ -370,6 +432,8 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
       revealSelectedFile();
       return;
     }
+    selectedWorkingTreeFiles.clear();
+    workingTreeSelectionAnchor = '';
     if (!files.length) {
       list.innerHTML = '<div id="filesEmpty">此提交没有变更文件</div>';
       return;
@@ -439,7 +503,10 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
         if (event.button !== 0) return;
         event.preventDefault();
         event.stopPropagation();
-        vscode.postMessage({ type: 'workingTreeAction', action: button.getAttribute('data-working-tree-action'), section: button.getAttribute('data-section'), path: button.getAttribute('data-path') || undefined });
+        const paths = workingTreeActionPaths(button);
+        const message = { type: 'workingTreeAction', action: button.getAttribute('data-working-tree-action'), section: button.getAttribute('data-section'), path: button.getAttribute('data-path') || undefined };
+        if (paths) message.paths = paths;
+        vscode.postMessage(message);
       });
     });
   }
@@ -455,10 +522,43 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
         event.preventDefault();
         const path = item.getAttribute('data-path');
         const diffKey = item.getAttribute('data-diff-key') || path;
+        const section = item.getAttribute('data-section');
         if (!path || !diffKey) return;
+        if (section && isWorkingTreeHash(selectedCommitHash)) {
+          const selectionKey = workingTreeSelectionKey(section, path);
+          const additive = event.ctrlKey || event.metaKey;
+          const anchorParts = workingTreeSelectionAnchor ? getWorkingTreeSelectionParts(workingTreeSelectionAnchor) : null;
+          const canSelectRange = event.shiftKey && anchorParts && anchorParts.section === section;
+          if (canSelectRange) {
+            const sectionItems = Array.from(list.querySelectorAll('.file-item[data-section="' + section + '"]'));
+            const anchorIndex = sectionItems.findIndex(function(candidate) {
+              const candidatePath = candidate.getAttribute('data-path') || '';
+              return workingTreeSelectionKey(section, candidatePath) === workingTreeSelectionAnchor;
+            });
+            const currentIndex = sectionItems.indexOf(item);
+            if (anchorIndex >= 0 && currentIndex >= 0) {
+              if (!additive) selectedWorkingTreeFiles.clear();
+              const start = Math.min(anchorIndex, currentIndex);
+              const end = Math.max(anchorIndex, currentIndex);
+              for (let index = start; index <= end; index++) {
+                const candidatePath = sectionItems[index].getAttribute('data-path');
+                if (candidatePath) selectedWorkingTreeFiles.add(workingTreeSelectionKey(section, candidatePath));
+              }
+            }
+          } else if (additive) {
+            if (selectedWorkingTreeFiles.has(selectionKey)) selectedWorkingTreeFiles.delete(selectionKey);
+            else selectedWorkingTreeFiles.add(selectionKey);
+          } else {
+            selectedWorkingTreeFiles.clear();
+            selectedWorkingTreeFiles.add(selectionKey);
+          }
+          workingTreeSelectionAnchor = selectionKey;
+        } else {
+          selectedWorkingTreeFiles.clear();
+          workingTreeSelectionAnchor = '';
+        }
         selectedPath = diffKey;
-        list.querySelectorAll('.file-item.selected').forEach(function(s) { s.classList.remove('selected'); });
-        item.classList.add('selected');
+        syncWorkingTreeSelectionClasses(list);
         vscode.postMessage({ type: 'selectFile', path: diffKey });
       });
     });

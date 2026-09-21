@@ -134,6 +134,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .file-row,.folder-row{display:flex;align-items:center;gap:6px;padding:var(--file-row-padding-y) var(--file-row-padding-x)}
 .gitlink-label{display:inline-flex;align-items:center;flex:0 0 auto;margin:0;padding:0 6px;border:1px solid var(--vscode-gitDecoration-addedResourceForeground,var(--vscode-badge-background));border-radius:8px;background:color-mix(in srgb,var(--vscode-gitDecoration-addedResourceForeground,var(--vscode-badge-background)) 12%,transparent);color:var(--vscode-gitDecoration-addedResourceForeground,var(--vscode-badge-foreground));font-size:10px;font-weight:600;line-height:16px;letter-spacing:.02em}
 .file-row:hover,.folder-row:hover{background:var(--vscode-list-hoverBackground)}
+.file-row.multi-selected{background:var(--vscode-list-inactiveSelectionBackground,var(--vscode-list-hoverBackground));color:var(--vscode-list-inactiveSelectionForeground,var(--vscode-foreground))}
 .file-row .status{width:14px;text-align:center;color:var(--vscode-gitDecoration-modifiedResourceForeground)}
 .file-row .path{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--file-path-font-size)}
 .file-row .file-folder{opacity:.55}

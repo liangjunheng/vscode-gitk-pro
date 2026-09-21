@@ -25,6 +25,14 @@ export const COMMIT_FILE_LIST_SCRIPT = `
     };
   }
 
+  function commitWorkingTreeSelectionKey(section,path){return section+'\u0000'+path}
+  function syncCommitWorkingTreeSelection(container,selection){
+    const selected=selection||new Set();
+    container.querySelectorAll('.file-row[data-path]').forEach(function(row){
+      row.classList.toggle('multi-selected',selected.has(commitWorkingTreeSelectionKey(row.dataset.section||'',row.dataset.path||'')));
+    });
+  }
+
   function fileRowHtml(file,section,treeIndent){
     const parts=fileParts(file);
     const row=document.createElement('div');
@@ -66,7 +74,7 @@ export const COMMIT_FILE_LIST_SCRIPT = `
     return row;
   }
 
-  function renderFileList(container,files,section,repositoryPath){
+  function renderFileList(container,files,section,repositoryPath,selectedWorkingTreeFiles){
     const previous=new Map();
     Array.from(container.children).forEach(function(node){if(node.dataset.key)previous.set(node.dataset.key,node)});
     const next=[];
@@ -97,7 +105,7 @@ export const COMMIT_FILE_LIST_SCRIPT = `
           const folderRow=useNode(key,function(){
             const row=document.createElement('div');row.addEventListener('click',function(){
               if(collapsedFolders.has(folderKey))collapsedFolders.delete(folderKey);else collapsedFolders.add(folderKey);
-              renderFileList(container,container._files,section,repositoryPath);
+              renderFileList(container,container._files,section,repositoryPath,container._selectedWorkingTreeFiles);
             });return row;
           },String(expanded));
           folderRow.className='folder-row';folderRow.innerHTML='<span class="codicon codicon-chevron-'+(expanded?'down':'right')+'"></span><span class="codicon codicon-folder'+(expanded?'-opened':'')+'"></span><span class="path"></span>';folderRow.querySelector('.path').textContent=folder;folderRow.title=folder;
@@ -107,8 +115,10 @@ export const COMMIT_FILE_LIST_SCRIPT = `
       });
     }
     container._files=files;
+    container._selectedWorkingTreeFiles=selectedWorkingTreeFiles;
     next.forEach(function(node,index){const current=container.children[index];if(current!==node)container.insertBefore(node,current||null)});
     previous.forEach(function(node){node.remove()});
+    syncCommitWorkingTreeSelection(container,selectedWorkingTreeFiles);
   }
 
 `;
