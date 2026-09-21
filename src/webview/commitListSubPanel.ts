@@ -613,8 +613,8 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     label.textContent = '—/' + total;
   }
 
-  // 虚拟行泳道: 与首个 commit 对齐(cx = LANE_W/2 + 5 = 11), 画空心圆节点。
-  // 'staged' 行向下用虚线连接到下方节点(HEAD); 'changes' 行只画空心圆, 不向下连接到 staged。
+  // 虚拟行泳道: 与首个 commit 对齐(cx = LANE_W/2 + 5 = 11), 画空心圆节点,
+  //   并向下用虚线连接到下方节点(HEAD), 表示合并后的 Uncommitted Changes 行仍处在历史链条上。
   function workingTreeGraphSvg(hash) {
     const cx = LANE_W / 2 + 5;
     const cy = ROW_H / 2;
@@ -622,7 +622,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     const width = LANE_W + 10;
     const color = 'var(--vscode-descriptionForeground, #999)';
     let inner = '';
-    if (hash === 'staged') {
+    if (hash === 'uncommitted') {
       inner += '<path d="M ' + cx + ' ' + (cy + r) + ' V ' + ROW_H + '" fill="none" stroke="' + color + '" stroke-width="1.5" stroke-dasharray="2 2" stroke-linecap="round"/>';
     }
     inner += '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="var(--vscode-editor-background)" stroke="' + color + '" stroke-width="1.5"/>';
@@ -648,11 +648,11 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
   }
 
   function isWorkingTreeHash(hash) {
-    return hash === 'changes' || hash === 'staged';
+    return hash === 'uncommitted';
   }
 
   function workingTreeRowsHTML() {
-    // 后端已按顺序下发(changes 在前, staged 在后); insertAdjacentHTML('afterbegin') 会反转顺序, 故倒序拼接。
+    // 只有单一行(uncommitted), 但 insertAdjacentHTML('afterbegin') 仍需与后端下发顺序一致, 此处保留倒序拼接以兼容多行情形。
     return workingTreeRowsState.slice().reverse().map(function(row) {
       return workingTreeRowHTML(row.hash, row.label, row.enabled);
     }).join('');
@@ -840,12 +840,11 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
       }
     }
 
-    // 工作区虚拟行插在列表最前(afterbegin), 其正下方就是 commits[0]。staged 行向下垂一段虚线,
-    //   需在该首行 commit 节点上方补一段虚线衔接, 使 Staged Changes 与节点视觉连通。
+    // 工作区虚拟行插在列表最前(afterbegin), 其正下方就是 commits[0]。Uncommitted Changes 行向下垂一段虚线,
+    //   需在该首行 commit 节点上方补一段虚线衔接, 使 Uncommitted Changes 与节点视觉连通。
     //   判定用 idx===0(布局上紧邻虚拟行)而非 refs 含 'HEAD'(部分仓库首行 refs 无字面量 HEAD, 导致永不命中)。
-    //   仅 staged 行会向下画虚线(unstaged 只画空心圆不连接), 故条件是"存在 staged 行"。
-    var hasStagedRow = workingTreeRowsState.some(function(row) { return row.hash === 'staged'; });
-    if (idx === 0 && hasStagedRow && inputIndex < 0) {
+    var hasUncommittedRow = workingTreeRowsState.some(function(row) { return row.hash === 'uncommitted'; });
+    if (idx === 0 && hasUncommittedRow && inputIndex < 0) {
       content += '<path d="M ' + cx + ' 0 V ' + y + '" fill="none" stroke="var(--vscode-descriptionForeground, #999)" stroke-width="1.5" stroke-dasharray="2 2" stroke-linecap="round"/>';
     }
 

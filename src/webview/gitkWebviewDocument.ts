@@ -107,6 +107,7 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP}
       stagedFiles = state.stagedFiles || [];
       unstagedFiles = state.unstagedFiles || [];
       filesMode = state.filesMode || 'flat';
+      var previousFilesLoading = filesLoading;
       filesLoading = Boolean(state.filesLoading);
       var diffProgress = state.diffProgress || { completed: 0, total: 0 };
       var diffLoading = Boolean(state.diffLoading);
@@ -137,10 +138,20 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP}
       applySelectedCommit();
       updateCountLabel();
       updateFilesCommitHash();
+      var nextFilesModelKey = JSON.stringify([
+        files.map(function(file) { return file.diffKey || file.path; }),
+        filesMode,
+        selectedPath,
+        selectedCommitHash,
+        selectedCommitRepositoryPath,
+      ]);
+      var shouldRenderFiles = previousFilesLoading !== filesLoading
+        || nextFilesModelKey !== filesModelKey;
+      filesModelKey = nextFilesModelKey;
       if (filesLoading) {
         var progressText = diffProgress.total > 0 ? '（已加载 ' + diffProgress.completed + ' / ' + diffProgress.total + '）' : '';
         document.getElementById('filesList').innerHTML = '<div id="filesEmpty"><span class="files-loading-spinner"></span><span>正在加载变更文件' + progressText + '...</span></div>';
-      } else {
+      } else if (shouldRenderFiles) {
         renderFiles();
       }
       if (isCommitLoading) {

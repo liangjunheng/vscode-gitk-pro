@@ -178,7 +178,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const commitListLoading = this.commitController.isLoading;
         // 与 loadingProgress 共用同一文案来源, 避免搜索时快照里仍是"加载提交历史"。
         const commitListLoadingMessage = commitListLoading ? this.commitLoadingMessage : undefined;
-        // 两个工作区虚拟行始终产出(未暂存在上, 已暂存在下), 空分组置灰(enabled=false)而非隐藏。
+        // 工作区虚拟行合并为一行(Uncommitted Changes), 同时承载 staged 与 unstaged/untracked 两类文件,
+        //   空分组置灰(enabled=false)而非隐藏。
         // 与 Commit editor 共用当前 HEAD 的 watcher 缓存，不能读取 Controller 的副本，否则两处会出现状态不同步。
         // 搜索非空时, 虚拟行不是真实 commit 不经 searchCommits 过滤, 按 label 是否命中关键词决定是否产出; 未命中则不出现。
         const currentBranch = this.commitController.selectedBranches.find(branch => branch.kind === 'current');
@@ -190,18 +191,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const matchesSearch = (label: string): boolean =>
             searchKeywords.length === 0
             || searchKeywords.some(keyword => label.toLowerCase().includes(keyword.toLowerCase()));
-        const workingTreeRows = workingTreeRepositoryPath
-            ? ([
-                { hash: 'changes' as const, label: 'Unstaged Changes', count: workingTree.changes.length },
-                { hash: 'staged' as const, label: 'Staged Changes', count: workingTree.staged.length },
-            ]
-                .filter(row => matchesSearch(row.label))
-                .map(row => ({
-                    hash: row.hash,
-                    label: row.label,
-                    repositoryPath: workingTreeRepositoryPath,
-                    enabled: row.count > 0,
-                })))
+        const uncommittedLabel = 'Uncommitted Changes';
+        const workingTreeRows = workingTreeRepositoryPath && matchesSearch(uncommittedLabel)
+            ? [{
+                hash: 'uncommitted' as const,
+                label: uncommittedLabel,
+                repositoryPath: workingTreeRepositoryPath,
+                enabled: workingTree.changes.length > 0 || workingTree.staged.length > 0,
+            }]
             : [];
         const selectedRepositoryPaths = this.selectedRepositoryPaths;
         const commits = this.commitController.searchedCommitList.map(commit => ({
@@ -478,7 +475,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private getWorkingTreeDiffCacheKey(repositoryPath: string, hash: 'staged' | 'changes', files: readonly CommitFile[]): string {
+    private getWorkingTreeDiffCacheKey(repositoryPath: string, hash: 'uncommitted', files: readonly CommitFile[]): string {
         const fileState = files.map(file => [
             file.diffKey,
             file.status,
@@ -518,7 +515,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             || this.currentRepositoryPath !== selectedBranch.repoOption.path) {
             return;
         }
-        // 'staged' 行只展示已暂存文件, 'changes' 行只展示未暂存/未跟踪文件; 两行共用同一 WorkingTreeChanges 数据源。
+        // 'uncommitted' 行同时展示已暂存与未暂存/未跟踪文件, staged 排在前, 与 Commit 面板列表顺序一致。
         const staged = workingTreeChanges.staged.map(file => new CommitFile({
             ...file,
             workingTreeKind: 'staged',
@@ -529,7 +526,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             workingTreeKind: file.isUntracked ? 'untracked' : 'unstaged',
             diffKey: `unstaged:${file.path}`,
         }));
-        const files = selectedHash === 'staged' ? staged : unstaged;
+        const files = [...staged, ...unstaged];
         const workingTreeDiffCacheKey = this.getWorkingTreeDiffCacheKey(selectedBranch.repoOption.path, selectedHash, files);
         const cachedDiffs = this.workingTreeDiffCache.get(workingTreeDiffCacheKey);
         if (cachedDiffs) {
@@ -1327,8 +1324,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 .find(candidate => candidate.repoOption.path === repositoryPath);
             if (!branch) { return; }
             const revealPath = `${section}:${filePath}`;
-            // Commit 面板的 staged 分组对应 'staged' 虚拟行, unstaged/untracked 对应 'changes' 虚拟行。
-            const targetHash = section === 'staged' ? 'staged' : 'changes';
+            // Commit 面板的 staged/unstaged 分组统一对应合并后的 'uncommitted' 虚拟行。
+            const targetHash = 'uncommitted' as const;
             const isCurrentWorkingTree = this.currentHash === targetHash
                 && this.currentRepositoryPath === repositoryPath;
             if (!isCurrentWorkingTree) {
@@ -1378,7 +1375,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         });
     }
 
-    private waitForWorkingTreeSelection(repositoryPath: string, targetHash: 'changes' | 'staged', generation: number, signal: AbortSignal): Promise<boolean> {
+    private waitForWorkingTreeSelection(repositoryPath: string, targetHash: 'uncommitted', generation: number, signal: AbortSignal): Promise<boolean> {
         return new Promise(resolve => {
             const complete = (): boolean => this.commitFilesGeneration >= generation
                 && this.currentHash === targetHash
@@ -2283,8 +2280,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     // 工作区 Diff 右侧编辑后回写文件。
     private async saveWorkspaceFile(filePath: string, content: string): Promise<void> {
-        // 只有 'changes' 行右侧是工作区文件, 可回写; 'staged' 行右侧是 index 内容, 回写工作区会篡改语义。
-        if (this.currentChangeSet !== 'changes') { return; }
+        // 只有工作区文件(unstaged/untracked)可回写; staged 行右侧是 index 内容, 回写工作区会篡改语义。
+        // filePath 是裸路径(不带 staged:/unstaged: 前缀), 合并展示后同一路径可能同时存在于两个分组,
+        //   必须按 workingTreeKind 精确区分, 不能只取首个命中。
+        if (this.currentChangeSet !== 'uncommitted') { return; }
+        const isStagedOnly = this.files.some(file => file.path === filePath && file.workingTreeKind === 'staged')
+            && !this.files.some(file => file.path === filePath && file.workingTreeKind !== 'staged');
+        if (isStagedOnly) { return; }
         const rootUri = this.getRepoRootUri();
         if (!rootUri) { return; }
         const fileUri = vscode.Uri.joinPath(rootUri, ...filePath.split('/'));

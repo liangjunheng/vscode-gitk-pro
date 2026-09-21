@@ -6,17 +6,17 @@
 
 /** 选择器栏子面板的样式片段。 */
 export const SELECTOR_BAR_SUB_PANEL_STYLES = `
-  /* 仓库/分支选择器与提交列表标题合成一块, 各占一行, 统一使用标题栏底色。 */
+  /* 仓库/分支选择器与提交列表标题合成一块, 合并为单行, 统一使用标题栏底色。 */
   #commitSelectors { display: flex; flex-direction: column; flex: 0 0 auto; min-width: 0; background: var(--commit-title-background); }
-  .selector-row { display: flex; align-items: center; gap: 0; min-width: 0; padding: 3px 10px; background: var(--commit-title-background); }
-  .selector-row + .selector-row { border-top: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); }
+  .selector-row { display: flex; align-items: center; gap: 2px; min-width: 0; padding: 3px 10px; background: var(--commit-title-background); }
   #commitSelectors { border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); }
   #commitSelectors button { border: none; cursor: pointer; border-radius: 2px; }
   .selector { display: flex; align-items: center; gap: 4px; min-width: 0; }
-  .selector-label { flex: 0 0 auto; color: var(--vscode-tab-activeForeground); font-size: 11px; font-weight: 600; white-space: nowrap; }
-  .selector-group { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 8px; }
-  .repo-group { padding-left: 0; }
-  #branchSelector { padding-left: 0; }
+  .selector-group { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0; }
+  #branchSelector { flex: 0 1 auto; min-width: 0; }
+  .repo-group { flex: 0 1 auto; min-width: 0; }
+  /* 分支@仓库之间保留 2px 间距, 分隔符使用不透明的加粗前景色。 */
+  .selector-separator { flex: 0 0 auto; color: var(--vscode-foreground); font-size: 11px; font-weight: 700; }
   /* 打开 Commit 面板 与 未提交仓库计数 合成一个可点击组: 整块都可点, 不再只有数字徽标。常驻 repo 行末尾, 无未提交时显示 0。 */
   /* 徽标尺寸: 高 18、圆角 10、图标 11, 字号 11px, 左右内边距 4px。 */
   #commitSelectors .uncommitted-repo-group { display: flex; align-items: center; align-self: center; gap: 3.75px; flex: 0 0 auto; height: 18px; margin-left: 0; padding: 0 4px; border: 1px solid var(--vscode-button-border, transparent); border-radius: 10px; background: var(--vscode-button-background, #007acc); color: var(--vscode-button-foreground, #fff); font: inherit; font-size: 11px; font-weight: 600; line-height: 1; cursor: pointer; white-space: nowrap; }
@@ -86,17 +86,16 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
 export const SELECTOR_BAR_SUB_PANEL_MARKUP = `
   <div id="commitSelectors">
     <div class="selector-row">
-      <div class="selector-group repo-group"><span class="selector-label">仓库列表</span><div class="dropdown" id="repositoryDropdown">
+      <div class="selector-group" id="branchSelector"><div class="dropdown" id="branchDropdown">
+        <button class="dropdown-current" type="button" title="切换分支" aria-expanded="false" disabled><span class="dropdown-label"><span class="dropdown-spinner" hidden aria-hidden="true"></span>加载分支...</span><span class="dropdown-chevron" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></span></button>
+        <div class="dropdown-menu" role="menu"><input class="dropdown-filter" type="text" placeholder="筛选分支" aria-label="筛选分支"><div class="dropdown-options"></div><div class="dropdown-actions"><button type="button" class="toggle-all" aria-pressed="false"><input type="checkbox" tabindex="-1" aria-hidden="true"><span>全选</span></button><div class="dropdown-actions-right"><button type="button" class="confirm-selection">确定</button><button type="button" class="cancel-selection">取消</button></div></div></div>
+      </div></div>
+      <span class="selector-separator" aria-hidden="true">@</span>
+      <div class="selector-group repo-group"><div class="dropdown" id="repositoryDropdown">
         <button class="dropdown-current" type="button" title="切换仓库或子仓库" aria-expanded="false" disabled><span class="dropdown-label"><span class="dropdown-spinner" hidden aria-hidden="true"></span>未选择仓库</span><span class="dropdown-chevron" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></span></button>
         <div class="dropdown-menu" role="menu"><input class="dropdown-filter" type="text" placeholder="筛选仓库" aria-label="筛选仓库"><div class="dropdown-options"></div></div>
       </div></div>
       <button class="uncommitted-repo-group" id="uncommittedRepoBadge" title="打开 Commit 面板" aria-label="打开存在未提交文件的仓库"><span class="codicon codicon-source-control" aria-hidden="true"></span><span class="uncommitted-repo-count">0</span></button>
-    </div>
-    <div class="selector-row">
-      <div class="selector-group" id="branchSelector"><span class="selector-label">分支列表</span><div class="dropdown" id="branchDropdown">
-        <button class="dropdown-current" type="button" title="切换分支" aria-expanded="false" disabled><span class="dropdown-label"><span class="dropdown-spinner" hidden aria-hidden="true"></span>加载分支...</span><span class="dropdown-chevron" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></span></button>
-        <div class="dropdown-menu" role="menu"><input class="dropdown-filter" type="text" placeholder="筛选分支" aria-label="筛选分支"><div class="dropdown-options"></div><div class="dropdown-actions"><button type="button" class="toggle-all" aria-pressed="false"><input type="checkbox" tabindex="-1" aria-hidden="true"><span>全选</span></button><div class="dropdown-actions-right"><button type="button" class="confirm-selection">确定</button><button type="button" class="cancel-selection">取消</button></div></div></div>
-      </div></div>
     </div>
   </div>
 `;

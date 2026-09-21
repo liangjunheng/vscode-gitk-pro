@@ -204,8 +204,7 @@ export class DiffReader {
     }
 
     private async readWorkingTreeDiffs(rootUri: vscode.Uri, files: CommitFile[], changeSetMode: ChangeSetMode, indexOffset = 0): Promise<DiffPayload[]> {
-        const readsIndex = (file: CommitFile) => changeSetMode === 'staged'
-            || (changeSetMode === 'uncommitted' && file.workingTreeKind === 'staged');
+        const readsIndex = (file: CommitFile) => changeSetMode === 'uncommitted' && file.workingTreeKind === 'staged';
         const originalRef = (file: CommitFile) => readsIndex(file) ? 'HEAD' : '';
         const objects: string[] = [];
         for (const file of files) {

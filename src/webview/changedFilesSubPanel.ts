@@ -40,6 +40,9 @@ export const CHANGED_FILES_SUB_PANEL_STYLES = `
   .working-tree-section + .working-tree-section { border-top: 1px solid var(--vscode-panel-border); }
   .working-tree-section { --working-tree-header-background: var(--vscode-sideBarSectionHeader-background, var(--vscode-editorWidget-background)); --working-tree-row-background: var(--vscode-editor-background); position: relative; width: 100%; min-width: 0; }
   .working-tree-section-header { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; width: 100%; min-width: 0; height: 26px; padding: 0 0 0 10px; box-sizing: border-box; font-weight: 600; background: var(--working-tree-header-background); }
+  .working-tree-section-header { cursor: pointer; user-select: none; }
+  .working-tree-section-header .working-tree-section-chevron { flex: 0 0 auto; margin-right: 2px; font-size: 14px; }
+  .working-tree-section-body[hidden] { display: none; }
   .working-tree-section-body .file-item { width: max-content; min-width: 100%; padding-left: 15px; padding-right: 0; background: var(--working-tree-row-background); }
   .working-tree-section-body .file-item:hover { --working-tree-row-background: var(--vscode-list-hoverBackground); }
   .working-tree-section-body .file-item.selected { --working-tree-row-background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
@@ -115,6 +118,9 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
   let filesMode = 'flat';
   let selectedPath = '';
   const collapsedFolders = new Set();
+  const collapsedWorkingTreeSections = new Set();
+  // 与 commitListModelKey 同一思路: focus/blur 等无关 stateChanged 不应重新渲染文件列表, 否则正在被点击的 .file-item 会被拆掉重建, 导致首击无效。
+  let filesModelKey = '';
   document.getElementById('filesModeBtn').addEventListener('click', function() {
     vscode.postMessage({ type: 'toggleFilesMode' });
   });
@@ -220,15 +226,15 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
   }
 
   function workingTreeSectionHTML(section, label, sectionFiles) {
-    if (section === 'staged' && sectionFiles.length === 0) return '';
     const disabled = sectionFiles.length === 0;
+    const collapsed = collapsedWorkingTreeSections.has(section);
     const hasSelected = sectionFiles.some(function(file) { return section + ':' + file.path === selectedPath; });
     const actions = disabled ? '' : section === 'staged'
       ? workingTreeActionButton('unstage', section, '', 'remove', '取消暂存此分组的所有文件（全部移回 Unstaged Changes）')
       : workingTreeActionButton('discard', section, '', 'discard', '放弃此分组所有文件的未暂存更改（不可撤销）') + workingTreeActionButton('stage', section, '', 'add', '暂存此分组的所有文件（全部移入 Staged Changes）');
     return '<section class="working-tree-section' + (hasSelected ? ' has-selected' : '') + '" data-section="' + section + '">' +
-      '<div class="working-tree-section-header' + (disabled ? ' disabled' : '') + '"><span class="working-tree-section-leading"><span class="working-tree-section-title">' + label + '</span><span class="working-tree-section-count">' + sectionFiles.length + '</span></span><span class="working-tree-section-actions">' + workingTreeActionsHTML(actions) + '</span></div>' +
-      '<div class="working-tree-section-body">' + workingTreeSectionFilesHTML(section, sectionFiles) + '</div></section>';
+      '<div class="working-tree-section-header' + (disabled ? ' disabled' : '') + '" data-working-tree-section-toggle="' + section + '"><span class="working-tree-section-chevron codicon codicon-chevron-' + (collapsed ? 'right' : 'down') + '"></span><span class="working-tree-section-leading"><span class="working-tree-section-title">' + label + '</span><span class="working-tree-section-count">' + sectionFiles.length + '</span></span><span class="working-tree-section-actions">' + workingTreeActionsHTML(actions) + '</span></div>' +
+      '<div class="working-tree-section-body"' + (collapsed ? ' hidden' : '') + '>' + workingTreeSectionFilesHTML(section, sectionFiles) + '</div></section>';
   }
 
   // 文件夹折叠绑定同时服务普通提交与虚拟提交两个渲染分支。
@@ -258,16 +264,17 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
     modeButton.title = '显示方式（当前：' + (isTree ? '树状' : '平铺') + '）';
     if (isWorkingTreeHash(selectedCommitHash)) {
       // 虚拟提交的当前 DiffPayload[] 是宿主选中结果的权威快照；不能再读取异步维护的 stagedFiles/unstagedFiles。
+      // uncommitted 行同时展示 staged 与 unstaged/untracked, 按 workingTreeKind 拆分为两个可折叠子分组。
       const sectionFiles = files;
-      // 选中的虚拟行对应分组为空时, 与普通提交一致显示"暂无变更文件", 不渲染空 section。
       if (!sectionFiles.length) {
         list.innerHTML = '<div id="filesEmpty">暂无变更文件</div>';
         return;
       }
-      const sectionHTML = selectedCommitHash === 'staged'
-        ? workingTreeSectionHTML('staged', 'Staged Changes', sectionFiles)
-        : workingTreeSectionHTML('unstaged', 'Unstaged Changes', sectionFiles);
+      const stagedSectionFiles = sectionFiles.filter(function(file) { return file.workingTreeKind === 'staged'; });
+      const unstagedSectionFiles = sectionFiles.filter(function(file) { return file.workingTreeKind !== 'staged'; });
+      const sectionHTML = workingTreeSectionHTML('staged', 'Staged Changes', stagedSectionFiles) + workingTreeSectionHTML('unstaged', 'Unstaged Changes', unstagedSectionFiles);
       list.innerHTML = '<div class="working-tree-content">' + sectionHTML + '</div>';
+      bindWorkingTreeSectionToggles(list);
       bindWorkingTreeActions(list);
       bindFolderItems(list);
       bindFileItems(list);
@@ -317,6 +324,19 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
     revealSelectedFile();
     bindFolderItems(list);
     bindFileItems(list);
+  }
+
+  // staged/unstaged 子分组的折叠交互参考 commit 列表的普通 click 监听, 不依赖焦点状态。
+  function bindWorkingTreeSectionToggles(list) {
+    list.querySelectorAll('[data-working-tree-section-toggle]').forEach(function(header) {
+      header.addEventListener('click', function(event) {
+        if (event.target.closest('.working-tree-action')) return;
+        const section = header.getAttribute('data-working-tree-section-toggle');
+        if (!section) return;
+        if (collapsedWorkingTreeSections.has(section)) collapsedWorkingTreeSections.delete(section); else collapsedWorkingTreeSections.add(section);
+        renderFiles();
+      });
+    });
   }
 
   function bindWorkingTreeActions(list) {

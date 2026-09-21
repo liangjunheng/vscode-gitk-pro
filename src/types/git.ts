@@ -216,13 +216,14 @@ export class CommitFile {
     }
 }
 
-export type ChangeSetMode = 'commit' | 'staged' | 'changes' | 'uncommitted';
+export type ChangeSetMode = 'commit' | 'uncommitted';
 
-// 工作区虚拟提交行拆分为两行: 'changes'(未暂存/未跟踪) 与 'staged'(已暂存), 二者共用同一份 WorkingTreeChanges 数据。
-export const WORKING_TREE_HASHES = ['changes', 'staged'] as const;
+// 工作区虚拟提交行合并为一行: 'uncommitted'(未提交变更), 同时承载 staged 与 unstaged/untracked 两类文件,
+//   二者共用同一份 WorkingTreeChanges 数据源, 展示时按 workingTreeKind 分组。
+export const WORKING_TREE_HASHES = ['uncommitted'] as const;
 export type WorkingTreeHash = typeof WORKING_TREE_HASHES[number];
 export function isWorkingTreeHash(hash: unknown): hash is WorkingTreeHash {
-    return hash === 'changes' || hash === 'staged';
+    return hash === 'uncommitted';
 }
 
 export class WorkingTreeChanges {

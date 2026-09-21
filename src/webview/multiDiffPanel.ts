@@ -153,8 +153,8 @@ export class MultiDiffPanel implements vscode.Disposable {
             .filter((file): file is DiffPayload => 'original' in file && 'modified' in file)
             .map(file => ({
                 ...file,
-                editable: state.currentChangeSet === 'changes'
-                    || (state.currentChangeSet === 'uncommitted' && file.workingTreeKind !== 'staged'),
+                // 'uncommitted' 行内 staged 分组右侧是 index 内容不可回写, unstaged/untracked 右侧是工作区本身可回写。
+                editable: state.currentChangeSet === 'uncommitted' && file.workingTreeKind !== 'staged',
             }));
         const snapshot: DiffSnapshot = {
             type: 'snapshot',
@@ -166,8 +166,8 @@ export class MultiDiffPanel implements vscode.Disposable {
             total: state.diffProgress.total,
             error: state.diffError,
             revealPath: state.selectedPath,
-            // changes 与 uncommitted 的右侧都是工作区文件本身，允许编辑并回写。
-            editable: state.currentChangeSet === 'changes' || state.currentChangeSet === 'uncommitted',
+            // uncommitted 行里至少含 unstaged/untracked 文件时右侧可编辑；逐文件的真实可写性以上方 diffs 里的 editable 为准。
+            editable: state.currentChangeSet === 'uncommitted',
             diffs,
         };
         void this.panel.webview.postMessage(snapshot);
