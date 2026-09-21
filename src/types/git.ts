@@ -179,7 +179,8 @@ export class CommitFile {
     gitlinkScanPending?: boolean;
     isBinary?: boolean;
     isUntracked?: boolean;
-    workingTreeKind?: 'untracked' | 'unstaged' | 'staged';
+    isConflict?: boolean;
+    workingTreeKind?: 'conflict' | 'untracked' | 'unstaged' | 'staged';
     diffKey?: string;
 
     constructor(init: Partial<CommitFile> = {}) {
@@ -211,6 +212,7 @@ export class CommitFile {
                 && commit.message === other.gitlinkRangeCommits[index]?.message) !== false
             && this.isBinary === other.isBinary
             && this.isUntracked === other.isUntracked
+            && this.isConflict === other.isConflict
             && this.workingTreeKind === other.workingTreeKind
             && this.diffKey === other.diffKey;
     }

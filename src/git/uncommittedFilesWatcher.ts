@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { GitBranchOption, WorkingTreeChanges } from '../types';
-import { getIndexChangedPaths, getWorkingTreeStatus, getWorkingTreeStatusForPaths, hasWorkingTreeChanges } from './gitLogProvider';
+import type { GitBackend } from './gitBackend';
 import { RepoHeadBranchWatcher } from './eachRepoHeadBranchWatcher';
 
 const execFileAsync = promisify(execFile);
@@ -65,7 +65,10 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
     /** 轻量存在性事件：不等完整清单，只为每个仓库尽快给出“是否有未提交文件”。 */
     readonly onRepositoryUncommittedPresenceChanged = this.presenceEmitter.event;
 
-    constructor(private readonly repoHeadBranchWatcher: RepoHeadBranchWatcher) {
+    constructor(
+        private readonly repoHeadBranchWatcher: RepoHeadBranchWatcher,
+        private readonly gitBackend: GitBackend,
+    ) {
         // 数据源改为全部仓库 HEAD 监听器, 不再跟随仓库选择, 天然覆盖所有仓库。
         this.branchSubscription = repoHeadBranchWatcher.onEachRepoHeadBranchChanged(event => {
             this.applyCurrentHeadBranch(event.repositoryPath, event.headBranch);
@@ -229,7 +232,7 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
     /** 以轻量命令尽快给出“是否有未提交文件”，结果只用于徽标，不写入清单缓存。 */
     private async probePresence(repositoryPath: string, branch: GitBranchOption): Promise<void> {
         try {
-            const hasChanges = await hasWorkingTreeChanges(vscode.Uri.parse(repositoryPath));
+            const hasChanges = await this.gitBackend.hasWorkingTreeChanges(vscode.Uri.parse(repositoryPath));
             const slot = this.slots.get(repositoryPath);
             if (!slot || slot.branch?.hash !== branch.hash) { return; }
             this.presenceEmitter.fire({ repositoryPath, branch, hasChanges });
@@ -409,19 +412,19 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             slot.indexRefreshPending = false;
             let currentIndexChangedPaths: Set<string> | undefined;
             if (previous && (reconcileIndex || fullRefresh)) {
-                currentIndexChangedPaths = await getIndexChangedPaths(rootUri, signal);
+                currentIndexChangedPaths = await this.gitBackend.getIndexChangedPaths(rootUri, signal);
             }
             if (previous && reconcileIndex && currentIndexChangedPaths) {
                 slot.indexChangedPaths.forEach(filePath => paths.add(filePath));
                 currentIndexChangedPaths.forEach(filePath => paths.add(filePath));
             }
             const changes = !previous || fullRefresh
-                ? await getWorkingTreeStatus(rootUri, signal)
+                ? await this.gitBackend.getWorkingTreeStatus(rootUri, signal)
                 : paths.size > 0
                     ? this.mergePathChanges(
                         repositoryPath,
                         branch.hash,
-                        await getWorkingTreeStatusForPaths(rootUri, [...paths], signal),
+                        await this.gitBackend.getWorkingTreeStatusForPaths(rootUri, [...paths], signal),
                         paths,
                     )
                     : previous;

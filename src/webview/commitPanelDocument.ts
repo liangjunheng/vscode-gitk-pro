@@ -120,7 +120,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .push-btn{display:inline-flex;align-items:center;gap:8px}
 .push-target-label{max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-left:1px solid color-mix(in srgb,currentColor 45%,transparent);padding-left:8px;font-size:13px;opacity:.85}
 
-.commit-btn:disabled,.push-btn:disabled{opacity:1;cursor:pointer}
+.commit-btn:disabled,.push-btn:disabled{opacity:.55;cursor:default}
 .commit-option input:disabled{cursor:default}
 .commit-option input:disabled+span{cursor:default}
 .section{display:flex;flex-direction:column;border:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:6px;overflow:hidden}
@@ -138,6 +138,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .file-row .status{width:14px;text-align:center;color:var(--vscode-gitDecoration-modifiedResourceForeground)}
 .file-row .path{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--file-path-font-size)}
 .file-row .file-folder{opacity:.55}
+.file-row.conflict .status,.file-row.conflict .file-name{color:var(--vscode-gitDecoration-conflictingResourceForeground,#e51400)}
 .file-row.staged .file-name{color:var(--vscode-gitDecoration-addedResourceForeground,#73c991)}
 .file-row.unstaged .file-name{color:var(--vscode-textLink-foreground,#3794ff)}
 .file-row.untracked .file-name{color:var(--vscode-gitDecoration-deletedResourceForeground,#f14c4c)}

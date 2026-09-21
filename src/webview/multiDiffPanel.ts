@@ -31,7 +31,7 @@ export class MultiDiffPanel implements vscode.Disposable {
         private readonly onRendered?: (identity?: string) => void,
         private readonly onOpenFileAtLine?: (path: string, line?: number, column?: number, side?: 'original' | 'modified') => void,
         private readonly onSaveFile?: (path: string, content: string) => void,
-        private readonly onWorkingTreeAction?: (action: 'stage' | 'unstage' | 'discard', section: 'staged' | 'unstaged', path: string) => void,
+        private readonly onWorkingTreeAction?: (action: 'stage' | 'unstage' | 'discard', section: 'conflict' | 'staged' | 'unstaged', path: string) => void,
     ) {
         this.unsubscribers = [
             store.subscribeSelector(state => state.diffLoading, () => this.schedulePublish()),
@@ -116,7 +116,8 @@ export class MultiDiffPanel implements vscode.Disposable {
                 this.onOpenFileAtLine?.(message.path, line, column, side);
             } else if (message?.type === 'workingTreeAction'
                 && (message.action === 'stage' || message.action === 'unstage' || message.action === 'discard')
-                && (message.section === 'staged' || message.section === 'unstaged')
+                && (message.section === 'conflict' || message.section === 'staged' || message.section === 'unstaged')
+                && (message.section !== 'conflict' || message.action === 'stage')
                 && typeof message.path === 'string') {
                 this.onWorkingTreeAction?.(message.action, message.section, message.path);
             } else if (message?.type === 'rendered') {

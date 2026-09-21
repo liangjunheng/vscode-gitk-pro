@@ -775,6 +775,7 @@ function parseWorkingTreeStatusV2(stdout: string): WorkingTreeChanges {
                     oldMode: baseMode,
                     newMode: oursMode,
                     isGitlink: gitlink,
+                    isConflict: true,
                 }));
             }
             if (xy[1] !== '.') {
@@ -786,6 +787,7 @@ function parseWorkingTreeStatusV2(stdout: string): WorkingTreeChanges {
                     oldMode: oursMode,
                     newMode: worktreeMode,
                     isGitlink: gitlink,
+                    isConflict: true,
                 }));
             }
         }

@@ -61,7 +61,9 @@ export const COMMIT_FILE_LIST_SCRIPT = `
     }
     const actions=document.createElement('span');
     actions.className='row-actions';
-    if(section==='staged'){
+    if(section==='conflict'){
+      actions.appendChild(actionButton('stage',section,file.path,'add','暂存并标记冲突已解决'));
+    }else if(section==='staged'){
       actions.appendChild(actionButton('unstage',section,file.path,'remove','取消暂存'));
     }else if(section==='unstaged'){
       actions.appendChild(actionButton('discard',section,file.path,'discard','放弃更改'));
@@ -91,7 +93,7 @@ export const COMMIT_FILE_LIST_SCRIPT = `
     };
     if(!files.length){
       next.push(useNode('empty',function(){const empty=document.createElement('div');empty.className='empty';return empty},section));
-      next[0].textContent=section==='staged'?'没有已暂存的更改':(section==='unstaged'?'没有未暂存的更改':'没有已提交的更改');
+      next[0].textContent=section==='conflict'?'没有合并冲突':(section==='staged'?'没有已暂存的更改':(section==='unstaged'?'没有未暂存的更改':'没有已提交的更改'));
     }else if(displayMode==='flat'){
       files.forEach(function(file){appendFile(file,false)});
     }else{

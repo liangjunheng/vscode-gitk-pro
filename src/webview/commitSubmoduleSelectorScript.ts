@@ -6,7 +6,7 @@ export const COMMIT_SUBMODULE_SELECTOR_SCRIPT = `
   function isDescendantRepository(candidate,parentPath){return candidate.repositoryAncestry.some(function(ancestor){return ancestor.path===parentPath})}
   function changedGitlinkDescendants(card){
     const changedPaths=new Set(card.changedSubmoduleRepositoryPaths||[]);
-    return currentCards.filter(function(item){return changedPaths.has(item.repositoryPath)&&(item.stagedFiles.length>0||item.unstagedFiles.length>0)});
+    return currentCards.filter(function(item){return changedPaths.has(item.repositoryPath)&&(item.conflictFiles.length>0||item.stagedFiles.length>0||item.unstagedFiles.length>0)});
   }
   function pushedDescendants(card){
     const result=[];
@@ -46,9 +46,10 @@ export const COMMIT_SUBMODULE_SELECTOR_SCRIPT = `
       const repository=document.createElement('button');repository.type='button';repository.className='submodule-inline-repository';repository.textContent=descendantLabel(submodule,card);repository.title='跳转到 '+submodule.repositoryLabel+' 的提交卡片';repository.addEventListener('click',function(event){event.preventDefault();event.stopPropagation();vscode.postMessage({type:'focusRepository',repositoryPath:submodule.repositoryPath})});
       label.appendChild(input);label.appendChild(repository);
       if(title==='同时提交子模块'){
+        const conflict=document.createElement('span');conflict.className='repository-status-badge';conflict.textContent=submodule.conflictFiles.length?'Merge '+submodule.conflictFiles.length:'';conflict.hidden=submodule.conflictFiles.length===0;
         const staged=document.createElement('span');staged.className='repository-status-badge';staged.textContent=submodule.stagedFiles.length?'Staged '+submodule.stagedFiles.length:'';staged.hidden=submodule.stagedFiles.length===0;
         const unstaged=document.createElement('span');unstaged.className='repository-status-badge';unstaged.textContent=submodule.unstagedFiles.length?'Unstaged '+submodule.unstagedFiles.length:'';unstaged.hidden=submodule.unstagedFiles.length===0;
-        label.appendChild(unstaged);label.appendChild(staged);
+        label.appendChild(conflict);label.appendChild(unstaged);label.appendChild(staged);
       }else{
         const commits=document.createElement('span');commits.className='repository-status-badge';commits.textContent='Commits '+submodule.unpushedCommitCount;label.appendChild(commits);
         const target=document.createElement('button');target.type='button';target.className='submodule-push-target';target.textContent=submodule.pushTargetLabel||'选择分支';target.title='选择 '+submodule.repositoryLabel+' 的推送分支';target.addEventListener('click',function(event){event.preventDefault();event.stopPropagation();vscode.postMessage({type:'pickPushBranch',repositoryPath:submodule.repositoryPath})});label.appendChild(target);

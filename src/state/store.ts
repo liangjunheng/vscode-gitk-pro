@@ -112,7 +112,8 @@ export class Store {
                 break;
             case 'workingTreeAction':
                 if ((intent.action === 'stage' || intent.action === 'unstage' || intent.action === 'discard')
-                    && (intent.section === 'staged' || intent.section === 'unstaged')
+                    && (intent.section === 'conflict' || intent.section === 'staged' || intent.section === 'unstaged')
+                    && (intent.section !== 'conflict' || intent.action === 'stage')
                     && (intent.path === undefined || typeof intent.path === 'string')
                     && (intent.paths === undefined
                         || (Array.isArray(intent.paths) && intent.paths.every(path => typeof path === 'string')))) {

@@ -12,11 +12,13 @@ export class GitkStatusBar {
         private readonly openCommand: string,
         private readonly getWorkingTreeSummary: () => {
             repositoryCount: number;
+            conflictCount: number;
             stagedCount: number;
             unstagedCount: number;
             untrackedCount: number;
             repositories: Array<{
                 label: string;
+                conflictCount: number;
                 stagedCount: number;
                 unstagedCount: number;
                 untrackedCount: number;
@@ -38,10 +40,10 @@ export class GitkStatusBar {
     }
 
     private refreshWorkingTreeSummary(): void {
-        const { repositoryCount, stagedCount, unstagedCount, untrackedCount, repositories } = this.getWorkingTreeSummary();
-        this.item.text = `$(git-merge): $(repo) ${repositoryCount} · $(pass) ${stagedCount} · $(warning) ${unstagedCount} · $(question) ${untrackedCount}`;
+        const { repositoryCount, conflictCount, stagedCount, unstagedCount, untrackedCount, repositories } = this.getWorkingTreeSummary();
+        this.item.text = `$(git-merge): $(repo) ${repositoryCount} · $(error) ${conflictCount} · $(pass) ${stagedCount} · $(warning) ${unstagedCount} · $(question) ${untrackedCount}`;
         const repositoryDetails = repositories
-            .map(repository => `${repository.label}: Staged ${repository.stagedCount} · Unstaged ${repository.unstagedCount} · Untracked ${repository.untrackedCount}`)
+            .map(repository => `${repository.label}: Merge ${repository.conflictCount} · Staged ${repository.stagedCount} · Unstaged ${repository.unstagedCount} · Untracked ${repository.untrackedCount}`)
             .join('\n');
         this.item.tooltip = `打开 Gitk 提交图面板${repositoryDetails ? `\n${repositoryDetails}` : ''}`;
     }

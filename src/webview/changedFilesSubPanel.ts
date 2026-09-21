@@ -29,6 +29,7 @@ export const CHANGED_FILES_SUB_PANEL_STYLES = `
   #workingTreeCommitMain:hover, #workingTreeCommitMore:hover { background: var(--vscode-button-hoverBackground); }
   #workingTreeCommitMain:active, #workingTreeCommitMore:active { background: var(--vscode-button-hoverBackground); }
   #workingTreeCommitMain:focus-visible, #workingTreeCommitMore:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  #workingTreeCommitMain:disabled, #workingTreeCommitMore:disabled, #workingTreeCommitMenu button:disabled { opacity: .55; cursor: default; }
   #workingTreeCommitMenu { position: absolute; top: calc(100% + 3px); right: 0; z-index: 10; min-width: 150px; margin: 0; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border)); border-radius: 4px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 4px 14px rgba(0, 0, 0, .28); }
   #workingTreeCommitMenu[hidden] { display: none !important; }
   #workingTreeCommitMenu button { display: block; width: 100%; padding: 5px 8px; border: 0; border-radius: 3px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: transparent; text-align: left; cursor: pointer; font: inherit; font-size: 13px; white-space: nowrap; }
@@ -86,6 +87,7 @@ export const CHANGED_FILES_SUB_PANEL_STYLES = `
   .working-tree-kind { display: inline-grid; place-items: center; flex: 0 0 20px; width: 20px; height: 20px; box-sizing: border-box; }
   .working-tree-kind svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
   .working-tree-kind .kind-accent { fill: currentColor; stroke: none; }
+  .working-tree-kind-conflict { color: var(--vscode-gitDecoration-conflictingResourceForeground, #e51400); }
   .working-tree-kind-untracked { color: var(--vscode-gitDecoration-untrackedResourceForeground, var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c)); }
   .working-tree-kind-untracked .kind-file { stroke-dasharray: 1.6 1.6; }
   .working-tree-kind-unstaged { color: var(--vscode-foreground); }
@@ -94,6 +96,8 @@ export const CHANGED_FILES_SUB_PANEL_STYLES = `
   .file-status-A { color: var(--vscode-gitDecoration-addedResourceForeground, #73c991); }
   .file-status-M { color: var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d); }
   .file-status-D { color: var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c); }
+  .file-status-U { color: var(--vscode-gitDecoration-conflictingResourceForeground, #e51400); }
+  .working-tree-section[data-section="conflict"] .file-name { color: var(--vscode-gitDecoration-conflictingResourceForeground, #e51400); }
   .working-tree-section[data-section="staged"] .file-name { color: var(--vscode-gitDecoration-addedResourceForeground, #73c991); }
   .working-tree-section[data-section="unstaged"] .file-name { color: var(--vscode-textLink-foreground, #3794ff); }
   .working-tree-section[data-section="unstaged"] .file-item.untracked .file-status,
@@ -155,7 +159,7 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
   }
   function postWorkingTreeCommit(action) {
     const input = document.getElementById('workingTreeCommitMessage');
-    if (!input || !isWorkingTreeHash(selectedCommitHash) || !selectedCommitRepositoryPath) return;
+    if (!input || !isWorkingTreeHash(selectedCommitHash) || !selectedCommitRepositoryPath || files.some(function(file) { return file.workingTreeKind === 'conflict'; })) return;
     vscode.postMessage({ type: 'workingTreeCommit', action: action, repositoryPath: selectedCommitRepositoryPath, message: input.value });
     closeWorkingTreeCommitMenu();
   }
@@ -168,6 +172,11 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
       ? 'Message (Ctrl+Enter to commit on \"' + branchName + '\")'
       : 'Message (Ctrl+Enter to commit)';
     const visible = isWorkingTreeHash(selectedCommitHash);
+    const hasConflicts = visible && files.some(function(file) { return file.workingTreeKind === 'conflict'; });
+    workingTreeCommitMain.disabled = hasConflicts;
+    workingTreeCommitMore.disabled = hasConflicts;
+    workingTreeCommitMenu.querySelectorAll('button').forEach(function(button) { button.disabled = hasConflicts; });
+    editor.title = hasConflicts ? '请先解决所有合并冲突' : '';
     editor.hidden = !visible;
     if (!visible) {
       closeWorkingTreeCommitMenu();
@@ -261,7 +270,7 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
 
   function pruneWorkingTreeSelection() {
     const available = new Set(files.map(function(file) {
-      const section = file.workingTreeKind === 'staged' ? 'staged' : 'unstaged';
+      const section = file.workingTreeKind === 'conflict' ? 'conflict' : file.workingTreeKind === 'staged' ? 'staged' : 'unstaged';
       return workingTreeSelectionKey(section, file.path);
     }));
     selectedWorkingTreeFiles.forEach(function(key) {
@@ -309,6 +318,9 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
   }
 
   function workingTreeKindIconHTML(file, section) {
+    if (section === 'conflict') {
+      return '<span class="working-tree-kind working-tree-kind-conflict" title="Conflict：存在未解决冲突" aria-label="Conflict：存在未解决冲突"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M9 2.5 16 15.5H2Z"/><path d="M9 6.25v4.5M9 13v.1" stroke-width="1.8"/></svg></span>';
+    }
     if (section === 'staged') {
       return '<span class="working-tree-kind working-tree-kind-staged" title="Staged：已暂存" aria-label="Staged：已暂存"><svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="6.25"/><path d="m5.8 9 2.1 2.1 4.35-4.45" stroke-width="2"/></svg></span>';
     }
@@ -318,13 +330,17 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
     return '<span class="working-tree-kind working-tree-kind-unstaged" title="Unstaged：未暂存" aria-label="Unstaged：未暂存"><svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="6.25"/><path d="M9 5.25v4.5M9 12.4v.1" stroke-width="2"/></svg></span>';
   }
 
+  function workingTreeFileActions(section, path) {
+    if (section === 'conflict') return workingTreeActionButton('stage', section, path, 'add', '暂存当前文件并标记冲突已解决');
+    if (section === 'staged') return workingTreeActionButton('unstage', section, path, 'remove', '取消暂存当前文件（移回 Unstaged Changes）');
+    return workingTreeActionButton('discard', section, path, 'discard', '放弃当前文件的未暂存更改（不可撤销）') + workingTreeActionButton('stage', section, path, 'add', '暂存当前文件（移入 Staged Changes）');
+  }
+
   function workingTreeFileHTML(file, section) {
     const lastSlash = file.path.lastIndexOf('/');
     const folder = lastSlash >= 0 ? file.path.slice(0, lastSlash + 1) : '';
     const name = lastSlash >= 0 ? file.path.slice(lastSlash + 1) : file.path;
-    const actions = section === 'staged'
-      ? workingTreeActionButton('unstage', section, file.path, 'remove', '取消暂存当前文件（移回 Unstaged Changes）')
-      : workingTreeActionButton('discard', section, file.path, 'discard', '放弃当前文件的未暂存更改（不可撤销）') + workingTreeActionButton('stage', section, file.path, 'add', '暂存当前文件（移入 Staged Changes）');
+    const actions = workingTreeFileActions(section, file.path);
     const untracked = section === 'unstaged' && file.isUntracked ? ' untracked' : '';
     const diffKey = section + ':' + file.path;
     const selectionKey = workingTreeSelectionKey(section, file.path);
@@ -358,9 +374,7 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
       folderFiles.forEach(function(file) {
         const lastSlash = file.path.lastIndexOf('/');
         const name = lastSlash >= 0 ? file.path.slice(lastSlash + 1) : file.path;
-        const actions = section === 'staged'
-          ? workingTreeActionButton('unstage', section, file.path, 'remove', '取消暂存当前文件（移回 Unstaged Changes）')
-          : workingTreeActionButton('discard', section, file.path, 'discard', '放弃当前文件的未暂存更改（不可撤销）') + workingTreeActionButton('stage', section, file.path, 'add', '暂存当前文件（移入 Staged Changes）');
+        const actions = workingTreeFileActions(section, file.path);
         const diffKey = section + ':' + file.path;
         const untracked = section === 'unstaged' && file.isUntracked ? ' untracked' : '';
         const selectionKey = workingTreeSelectionKey(section, file.path);
@@ -374,14 +388,17 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
   }
 
   function workingTreeSectionHTML(section, label, sectionFiles) {
+    if (section === 'conflict' && sectionFiles.length === 0) return '';
     const disabled = sectionFiles.length === 0;
     const collapsed = collapsedWorkingTreeSections.has(section);
     const hasSelected = sectionFiles.some(function(file) {
       return selectedWorkingTreeFiles.has(workingTreeSelectionKey(section, file.path));
     });
-    const actions = disabled ? '' : section === 'staged'
-      ? workingTreeActionButton('unstage', section, '', 'remove', '取消暂存此分组的所有文件（全部移回 Unstaged Changes）')
-      : workingTreeActionButton('discard', section, '', 'discard', '放弃此分组所有文件的未暂存更改（不可撤销）') + workingTreeActionButton('stage', section, '', 'add', '暂存此分组的所有文件（全部移入 Staged Changes）');
+    const actions = disabled ? '' : section === 'conflict'
+      ? workingTreeActionButton('stage', section, '', 'add', '暂存全部冲突文件并标记冲突已解决')
+      : section === 'staged'
+        ? workingTreeActionButton('unstage', section, '', 'remove', '取消暂存此分组的所有文件（全部移回 Unstaged Changes）')
+        : workingTreeActionButton('discard', section, '', 'discard', '放弃此分组所有文件的未暂存更改（不可撤销）') + workingTreeActionButton('stage', section, '', 'add', '暂存此分组的所有文件（全部移入 Staged Changes）');
     return '<section class="working-tree-section' + (hasSelected ? ' has-selected' : '') + '" data-section="' + section + '">' +
       '<div class="working-tree-section-header' + (disabled ? ' disabled' : '') + '" data-working-tree-section-toggle="' + section + '"><span class="working-tree-section-chevron codicon codicon-chevron-' + (collapsed ? 'right' : 'down') + '"></span><span class="working-tree-section-leading"><span class="working-tree-section-title">' + label + '</span><span class="working-tree-section-count">' + sectionFiles.length + '</span></span><span class="working-tree-section-actions">' + workingTreeActionsHTML(actions) + '</span></div>' +
       '<div class="working-tree-section-body"' + (collapsed ? ' hidden' : '') + '>' + workingTreeSectionFilesHTML(section, sectionFiles) + '</div></section>';
@@ -415,15 +432,16 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
     if (isWorkingTreeHash(selectedCommitHash)) {
       pruneWorkingTreeSelection();
       // 虚拟提交的当前 DiffPayload[] 是宿主选中结果的权威快照；不能再读取异步维护的 stagedFiles/unstagedFiles。
-      // uncommitted 行同时展示 staged 与 unstaged/untracked, 按 workingTreeKind 拆分为两个可折叠子分组。
+      // uncommitted 行按 conflict/staged/unstaged 拆分；冲突分组为空时完全隐藏。
       const sectionFiles = files;
       if (!sectionFiles.length) {
         list.innerHTML = '<div id="filesEmpty">暂无变更文件</div>';
         return;
       }
+      const conflictSectionFiles = sectionFiles.filter(function(file) { return file.workingTreeKind === 'conflict'; });
       const stagedSectionFiles = sectionFiles.filter(function(file) { return file.workingTreeKind === 'staged'; });
-      const unstagedSectionFiles = sectionFiles.filter(function(file) { return file.workingTreeKind !== 'staged'; });
-      const sectionHTML = workingTreeSectionHTML('staged', 'Staged Changes', stagedSectionFiles) + workingTreeSectionHTML('unstaged', 'Unstaged Changes', unstagedSectionFiles);
+      const unstagedSectionFiles = sectionFiles.filter(function(file) { return file.workingTreeKind === 'unstaged' || file.workingTreeKind === 'untracked'; });
+      const sectionHTML = workingTreeSectionHTML('conflict', 'Merge Changes', conflictSectionFiles) + workingTreeSectionHTML('staged', 'Staged Changes', stagedSectionFiles) + workingTreeSectionHTML('unstaged', 'Unstaged Changes', unstagedSectionFiles);
       list.innerHTML = '<div class="working-tree-content">' + sectionHTML + '</div>';
       bindWorkingTreeSectionToggles(list);
       bindWorkingTreeActions(list);
@@ -479,7 +497,7 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
     bindFileItems(list);
   }
 
-  // staged/unstaged 子分组的折叠交互参考 commit 列表的普通 click 监听, 不依赖焦点状态。
+  // conflict/staged/unstaged 子分组的折叠交互参考 commit 列表的普通 click 监听, 不依赖焦点状态。
   function bindWorkingTreeSectionToggles(list) {
     list.querySelectorAll('[data-working-tree-section-toggle]').forEach(function(header) {
       header.addEventListener('click', function(event) {

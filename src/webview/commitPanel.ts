@@ -34,6 +34,7 @@ export interface CommitCard {
     readonly hasUnpushedCommits: boolean;
     readonly unpushedCommitCount: number;
     readonly changedSubmoduleRepositoryPaths: readonly string[];
+    readonly conflictFiles: readonly CommitPanelFile[];
     readonly stagedFiles: readonly CommitPanelFile[];
     readonly unstagedFiles: readonly CommitPanelFile[];
     readonly committing: boolean;
@@ -60,11 +61,11 @@ type CommitPanelCallbacks = {
     readonly onToggleAmend: (repositoryPath: string, message: string) => void;
     readonly onHistory: (repositoryPath: string) => void;
     readonly onFocusRepository: (repositoryPath: string) => void;
-    readonly onSelectFile: (repositoryPath: string, section: 'staged' | 'unstaged', path: string) => void;
+    readonly onSelectFile: (repositoryPath: string, section: 'conflict' | 'staged' | 'unstaged', path: string) => void;
     readonly onWorkingTreeAction: (
         repositoryPath: string,
         action: 'stage' | 'unstage' | 'discard',
-        section: 'staged' | 'unstaged',
+        section: 'conflict' | 'staged' | 'unstaged',
         paths: readonly string[],
         untrackedPaths: readonly string[],
     ) => void;
@@ -194,12 +195,13 @@ export class CommitPanel implements vscode.Disposable {
         } else if (data.type === 'focusRepository' && repo) {
             this.callbacks.onFocusRepository(repo);
         } else if (data.type === 'selectFile' && repo
-            && (data.section === 'staged' || data.section === 'unstaged')
+            && (data.section === 'conflict' || data.section === 'staged' || data.section === 'unstaged')
             && typeof data.path === 'string') {
             this.callbacks.onSelectFile(repo, data.section, data.path);
         } else if (data.type === 'workingTreeAction' && repo
             && (data.action === 'stage' || data.action === 'unstage' || data.action === 'discard')
-            && (data.section === 'staged' || data.section === 'unstaged')
+            && (data.section === 'conflict' || data.section === 'staged' || data.section === 'unstaged')
+            && (data.section !== 'conflict' || data.action === 'stage')
             && Array.isArray(data.paths)
             && data.paths.every(filePath => typeof filePath === 'string')
             && Array.isArray(data.untrackedPaths)

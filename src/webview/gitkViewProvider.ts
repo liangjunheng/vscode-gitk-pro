@@ -8,6 +8,7 @@ import { CommitPanelViewTitleController } from './commitPanelViewTitleController
 import { renderGitkWebviewHtml } from './gitkWebviewDocument';
 import { commitWithMessage } from '../git/gitCommitService';
 import { DiffReader } from '../git/diffReader';
+import { CliGitBackend } from '../git/gitBackend';
 import { GitCommitEditMsgEditor } from './gitCommitEditMsgEditor';
 import { GitActionRunner } from '../services/gitActions';
 import { RepoSubmoduleWatcher } from '../git/gitRepoSubmoduleWatcher';
@@ -74,6 +75,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private readonly pullBeforePushByRepo = new Map<string, boolean>();
     private readonly pushBranchByRepository = new Map<string, Awaited<ReturnType<typeof getPushBranches>>[number]>();
     private readonly lastPushedBranchByRepository = new Map<string, Awaited<ReturnType<typeof getPushBranches>>[number]>();
+    private readonly gitBackend = new CliGitBackend();
     private readonly diffReader: DiffReader;
     private readonly workingTreeDiffCache = new Map<string, readonly DiffPayload[]>();
     private readonly gitActions: GitActionRunner;
@@ -112,7 +114,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private branchesLoadingSnapshot = false;
     private readonly workingTreeActionQueue: Array<{
         action: 'stage' | 'unstage' | 'discard';
-        section: 'staged' | 'unstaged';
+        section: 'conflict' | 'staged' | 'unstaged';
         paths: string[];
         untrackedPaths: ReadonlySet<string>;
         discardUntrackedToTrash: boolean;
@@ -269,13 +271,17 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.repoController,
             this.selectedRepoTotalBranchWatcher,
         );
-        this.uncommittedFilesWatcher = new UncommittedFilesWatcher(this.repoHeadBranchWatcher);
+        this.uncommittedFilesWatcher = new UncommittedFilesWatcher(
+            this.repoHeadBranchWatcher,
+            this.gitBackend,
+        );
         // 分支显示必须先订阅；提交 Controller 的监听器会在回调中启动刷新。
         this.selectedBranchesSubscription = this.branchesController.onSelectedBranchesChanged(branches => this.onSelectedBranchesChanged(branches));
         this.commitController = new GitCommitController(
             this.repoController,
             this.branchesController,
             this.uncommittedFilesWatcher,
+            this.gitBackend,
         );
         // Diff 面板顶部卡片变化时回写 selectedPath，驱动 Changed Files 高亮。
         this.multiDiffPanel = new MultiDiffPanel(
@@ -303,7 +309,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.syncCommitRepositories();
             this.commitPanel.show(this.buildCommitSnapshot());
         });
-        this.diffReader = new DiffReader();
+        this.diffReader = new DiffReader(this.gitBackend);
         this.gitActions = new GitActionRunner(
             repositoryPath => this.getRepoRootUri(repositoryPath),
             (_rootUri, reloadSelectors = true, refreshOnlyWhenCurrentBranchSelected?: boolean) => {
@@ -404,6 +410,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.storeUnsubscribe?.();
                 this.storeUnsubscribe = undefined;
                 this.cancelActiveRequests();
+                this.diffReader.dispose();
+                this.gitBackend.dispose();
                 this.viewDisposables.forEach(disposable => disposable.dispose());
                 this.viewDisposables = [];
                 this.gitWatchDisposables.forEach(disposable => disposable.dispose());
@@ -427,21 +435,26 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     getWorkingTreeSummary(): {
         repositoryCount: number;
+        conflictCount: number;
         stagedCount: number;
         unstagedCount: number;
         untrackedCount: number;
-        repositories: Array<{ label: string; stagedCount: number; unstagedCount: number; untrackedCount: number }>;
+        repositories: Array<{ label: string; conflictCount: number; stagedCount: number; unstagedCount: number; untrackedCount: number }>;
     } {
         const repositories = store.getState().commitRepositories;
         const summaries = repositories.map(repository => ({
             label: repository.repositoryLabel,
-            stagedCount: repository.staged.length,
-            unstagedCount: repository.unstaged.filter(file => !file.isUntracked).length,
-            untrackedCount: repository.unstaged.filter(file => file.isUntracked).length,
+            conflictCount: new Set([...repository.staged, ...repository.unstaged]
+                .filter(file => file.isConflict)
+                .map(file => file.path)).size,
+            stagedCount: repository.staged.filter(file => !file.isConflict).length,
+            unstagedCount: repository.unstaged.filter(file => !file.isConflict && !file.isUntracked).length,
+            untrackedCount: repository.unstaged.filter(file => !file.isConflict && file.isUntracked).length,
         }));
         return {
             // 仓库数只关心“有无变更”，与徽标共用轻量存在性结果，不等完整清单。
             repositoryCount: this.countUncommittedRepositories(repositories),
+            conflictCount: summaries.reduce((count, repository) => count + repository.conflictCount, 0),
             stagedCount: summaries.reduce((count, repository) => count + repository.stagedCount, 0),
             unstagedCount: summaries.reduce((count, repository) => count + repository.unstagedCount, 0),
             untrackedCount: summaries.reduce((count, repository) => count + repository.untrackedCount, 0),
@@ -485,6 +498,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             file.newObjectId,
             file.oldMode,
             file.newMode,
+            file.isConflict,
         ].join('\u0000')).join('\u0001');
         return `${repositoryPath}\u0002${hash}\u0002${fileState}`;
     }
@@ -516,6 +530,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             && diff.newMode === file.newMode
             && diff.isGitlink === file.isGitlink
             && diff.isUntracked === file.isUntracked
+            && diff.isConflict === file.isConflict
             && diff.workingTreeKind === file.workingTreeKind
             && diff.diffKey === file.diffKey;
     }
@@ -540,18 +555,27 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             || this.currentRepositoryPath !== selectedBranch.repoOption.path) {
             return;
         }
-        // 'uncommitted' 行同时展示已暂存与未暂存/未跟踪文件, staged 排在前, 与 Commit 面板列表顺序一致。
-        const staged = workingTreeChanges.staged.map(file => new CommitFile({
+        // porcelain 的 unmerged 记录会同时投影到 staged/changes；Changed Files 中按路径去重为独立冲突分组。
+        // 优先采用 changes 侧元数据，使 Diff 右侧展示包含冲突标记的当前工作区内容。
+        const conflictsByPath = new Map<string, ChangedFile>();
+        workingTreeChanges.staged.filter(file => file.isConflict).forEach(file => conflictsByPath.set(file.path, file));
+        workingTreeChanges.changes.filter(file => file.isConflict).forEach(file => conflictsByPath.set(file.path, file));
+        const conflicts = [...conflictsByPath.values()].map(file => new CommitFile({
+            ...file,
+            workingTreeKind: 'conflict',
+            diffKey: `conflict:${file.path}`,
+        }));
+        const staged = workingTreeChanges.staged.filter(file => !file.isConflict).map(file => new CommitFile({
             ...file,
             workingTreeKind: 'staged',
             diffKey: `staged:${file.path}`,
         }));
-        const unstaged = workingTreeChanges.changes.map(file => new CommitFile({
+        const unstaged = workingTreeChanges.changes.filter(file => !file.isConflict).map(file => new CommitFile({
             ...file,
             workingTreeKind: file.isUntracked ? 'untracked' : 'unstaged',
             diffKey: `unstaged:${file.path}`,
         }));
-        const files = [...staged, ...unstaged];
+        const files = [...conflicts, ...staged, ...unstaged];
         const workingTreeDiffCacheKey = this.getWorkingTreeDiffCacheKey(selectedBranch.repoOption.path, selectedHash, files);
         const cachedDiffs = this.workingTreeDiffCache.get(workingTreeDiffCacheKey);
         if (cachedDiffs) {
@@ -686,6 +710,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.commitFilesAbortController?.abort();
         this.commitPanelDiffAbortController?.abort();
         this.diffReader.stop();
+        if (repository) { void this.diffReader.warmup(vscode.Uri.parse(repository.path)).catch(() => undefined); }
         this.multiDiffPanel.cancelPending();
         this.pendingFilesRevealGeneration = undefined;
         store.setState({
@@ -1383,7 +1408,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     /** Commit Panel 文件点击统一切到对应仓库的虚拟提交，再由同一 MultiDiff 入口激活并定位。 */
     private async openCommitPanelWorkingTreeDiff(
         repositoryPath: string,
-        section: 'staged' | 'unstaged',
+        section: 'conflict' | 'staged' | 'unstaged',
         filePath: string,
     ): Promise<void> {
         this.commitPanelDiffAbortController?.abort();
@@ -1394,7 +1419,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 .find(candidate => candidate.repoOption.path === repositoryPath);
             if (!branch) { return; }
             const revealPath = `${section}:${filePath}`;
-            // Commit 面板的 staged/unstaged 分组统一对应合并后的 'uncommitted' 虚拟行。
+            // Commit 面板的 conflict/staged/unstaged 分组统一对应合并后的 'uncommitted' 虚拟行。
             const targetHash = 'uncommitted' as const;
             const isCurrentWorkingTree = this.currentHash === targetHash
                 && this.currentRepositoryPath === repositoryPath;
@@ -1516,6 +1541,16 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const amend = this.commitAmendByRepo.get(repo.repositoryPath) === true;
             const headKey = `${repo.repositoryPath}\u0000${currentBranchesByPath.get(repo.repositoryPath)?.hash ?? ''}`;
             const committedFiles = amend ? this.amendCommittedFilesByHead.get(headKey) ?? [] : [];
+            const conflictsByPath = new Map<string, ChangedFile>();
+            repo.staged.filter(file => file.isConflict).forEach(file => conflictsByPath.set(file.path, file));
+            // 冲突差异应优先展示工作区投影，以便看到冲突标记并直接编辑。
+            repo.unstaged.filter(file => file.isConflict).forEach(file => conflictsByPath.set(file.path, file));
+            const toCommitPanelFile = (file: ChangedFile) => ({
+                path: file.path,
+                status: file.status,
+                isUntracked: file.isUntracked,
+                isSubmodule: file.isGitlink || file.oldMode === '160000' || file.newMode === '160000',
+            });
             return {
                 repositoryPath: repo.repositoryPath,
                 repositoryLabel: repository.label,
@@ -1541,8 +1576,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                         path.normalize(vscode.Uri.parse(repository.path).fsPath).toLowerCase() === path.normalize(repositoryPath).toLowerCase(),
                     )?.path)
                     .filter((repositoryPath): repositoryPath is string => Boolean(repositoryPath)),
-                stagedFiles: repo.staged.map(file => ({ path: file.path, status: file.status, isUntracked: file.isUntracked, isSubmodule: file.isGitlink || file.oldMode === '160000' || file.newMode === '160000' })),
-                unstagedFiles: repo.unstaged.map(file => ({ path: file.path, status: file.status, isUntracked: file.isUntracked, isSubmodule: file.isGitlink || file.oldMode === '160000' || file.newMode === '160000' })),
+                conflictFiles: [...conflictsByPath.values()].map(toCommitPanelFile),
+                stagedFiles: repo.staged.filter(file => !file.isConflict).map(toCommitPanelFile),
+                unstagedFiles: repo.unstaged.filter(file => !file.isConflict).map(toCommitPanelFile),
                 committing: this.commitCommittingByRepo.has(repo.repositoryPath),
             } satisfies CommitCard;
         });
@@ -1804,6 +1840,25 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             .map(item => item.path);
         if (!orderedRepositoryPaths.includes(repositoryPath)) { orderedRepositoryPaths.push(repositoryPath); }
         if (orderedRepositoryPaths.some(path => this.commitCommittingByRepo.has(path))) { return false; }
+        let conflictedRepositories: string[];
+        try {
+            conflictedRepositories = (await Promise.all(orderedRepositoryPaths.map(async currentPath => {
+                const rootUri = this.getRepoRootUri(currentPath);
+                if (!rootUri) { return undefined; }
+                const output = await runGitReadCommand(rootUri, ['diff', '--name-only', '--diff-filter=U', '-z', '--']);
+                return output.split('\0').some(Boolean) ? currentPath : undefined;
+            }))).filter((currentPath): currentPath is string => Boolean(currentPath));
+        } catch (error) {
+            void vscode.window.showErrorMessage(`检查合并冲突失败：${error instanceof Error ? error.message : String(error)}`);
+            return false;
+        }
+        if (conflictedRepositories.length > 0) {
+            const labels = conflictedRepositories.map(currentPath =>
+                this.repoController.totalRepoList.find(repository => repository.path === currentPath)?.label ?? vscode.Uri.parse(currentPath).fsPath,
+            );
+            void vscode.window.showWarningMessage(`请先解决所有合并冲突：${labels.join('、')}`);
+            return false;
+        }
         orderedRepositoryPaths.forEach(path => this.commitCommittingByRepo.add(path));
         await this.refreshCommitPanel();
         const committedRepositoryPaths: string[] = [];
@@ -1892,11 +1947,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private async runCommitPanelWorkingTreeAction(
         repositoryPath: string,
         action: 'stage' | 'unstage' | 'discard',
-        section: 'staged' | 'unstaged',
+        section: 'conflict' | 'staged' | 'unstaged',
         paths: readonly string[],
         untrackedPaths: readonly string[],
     ): Promise<void> {
-        if (paths.length === 0) { return; }
+        if (paths.length === 0 || (section === 'conflict' && action !== 'stage')) { return; }
         const rootUri = this.getRepoRootUri(repositoryPath);
         if (!rootUri) { return; }
         const untrackedPathSet = new Set(untrackedPaths);
@@ -1951,7 +2006,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         selectedPaths?: unknown,
     ): Promise<void> {
         if ((action !== 'stage' && action !== 'unstage' && action !== 'discard')
-            || (section !== 'staged' && section !== 'unstaged')
+            || (section !== 'conflict' && section !== 'staged' && section !== 'unstaged')
+            || (section === 'conflict' && action !== 'stage')
             || (filePath !== undefined && typeof filePath !== 'string')
             || (selectedPaths !== undefined
                 && (!Array.isArray(selectedPaths) || selectedPaths.some(path => typeof path !== 'string')))) { return; }
@@ -1969,7 +2025,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 ? await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(branch).catch(() => ({ staged: [], changes: [] }))
                 : { staged: [], changes: [] };
         const unstagedFiles = changes.changes;
-        const sectionFiles = section === 'staged' ? changes.staged : unstagedFiles;
+        const sectionFiles = section === 'staged'
+            ? changes.staged.filter(file => !file.isConflict)
+            : section === 'conflict'
+                ? unstagedFiles.filter(file => file.isConflict)
+                : unstagedFiles.filter(file => !file.isConflict);
         const availablePaths = new Set(sectionFiles.map(file => file.path));
         const paths = Array.isArray(selectedPaths)
             ? [...new Set(selectedPaths.filter((path): path is string => availablePaths.has(path)))]
@@ -2172,7 +2232,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                                     }
                                 }
                                 if (trackedPaths.length > 0) {
-                                    await runGitCommand(operation.rootUri, ['restore', '--worktree', '--', ...trackedPaths]);
+                                    await this.gitBackend.discardWorktree(operation.rootUri, trackedPaths);
                                 }
                                 // 子模块撤销范围已由弹窗确定；逐仓库恢复并回到父仓库 gitlink 指定的提交。
                                 for (const repositoryPath of operation.affectedSubmoduleRepositoryPaths) {
@@ -2182,9 +2242,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                                     if (targetCommit) { await runGitCommand(repositoryUri, ['checkout', '--detach', targetCommit]); }
                                 }
                             } else if (operation.action === 'stage') {
-                                await runGitCommand(operation.rootUri, ['add', '--', ...operation.paths]);
+                                await this.gitBackend.stage(operation.rootUri, operation.paths);
                             } else {
-                                await runGitCommand(operation.rootUri, ['restore', '--staged', '--', ...operation.paths]);
+                                await this.gitBackend.unstage(operation.rootUri, operation.paths);
                             }
                             progress.report({ message: '正在同步 Git 工作区状态...' });
                             await endMutation(progress);

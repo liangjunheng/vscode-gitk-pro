@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
-import { spawn, type ChildProcess } from 'child_process';
 import * as path from 'path';
 import { DiffPayload, type ChangeSetMode, type CommitFile } from '../types';
 import { store } from '../state/store';
+import type { GitBackend } from './gitBackend';
 
 // git cat-file 已把内容解码为 utf8 字符串, 二进制内容会含 NUL 字符; 只探测前若干字符即可判定。
 function containsNul(text: string | undefined): boolean {
@@ -18,25 +18,28 @@ function containsNul(text: string | undefined): boolean {
  * Diff 读取器: 负责从 Git 仓库读取文件内容并写入 Store (单一数据源)
  *
  * 流程:
- * 1. prepare() 整轮只启动一个 git cat-file --batch 子进程
- * 2. 一次写入全部对象请求并流式解析 stdout，每完成 32 个文件更新进度
- * 3. stop() 终止当前子进程，代次门禁阻止旧结果落地
+ * 1. 每仓库复用一个长驻 git cat-file --batch 子进程
+ * 2. 对象请求串行写入并流式解析 stdout，避免重复支付 Git 进程启动成本
+ * 3. stop() 只推进代次门禁阻止旧结果落地，不销毁可复用的空闲会话
  * 4. 全部完成后一次性写回 store.files 并结束 diffLoading
  */
 export class DiffReader {
-    // stop() 终止当前整轮唯一的 git cat-file 子进程。
-    private childProcesses = new Set<ChildProcess>();
     private requestGeneration = 0;
 
-    constructor() {}
+    constructor(private readonly gitBackend: GitBackend) {}
 
-    /** 终止所有正在运行的 git cat-file 子进程 */
+    /** 使旧读取结果失效；batch 进程保留并串行排空，后续请求可直接复用。 */
     stop(): void {
         this.requestGeneration++;
-        for (const child of this.childProcesses) {
-            try { child.kill(); } catch { /* 已退出 */ }
-        }
-        this.childProcesses.clear();
+    }
+
+    dispose(): void {
+        this.requestGeneration++;
+    }
+
+    /** 后台完成 Git 进程与对象库冷启动，让首次用户操作直接复用已就绪会话。 */
+    warmup(rootUri: vscode.Uri): Promise<void> {
+        return this.gitBackend.warmup(rootUri);
     }
 
     /** 单个长驻 git cat-file 读取整轮对象，每完成 32 个文件更新进度 */
@@ -72,8 +75,8 @@ export class DiffReader {
         const objects = files.flatMap(file => {
             if (file.isBinary || file.isGitlink) { return []; }
             const refs: string[] = [];
-            if (file.status !== 'A') { refs.push(`${hash}^:${file.oldPath || file.path}`); }
-            if (file.status !== 'D') { refs.push(`${hash}:${file.path}`); }
+            if (file.status !== 'A') { refs.push(this.objectRef(file.oldObjectId, `${hash}^:${file.oldPath || file.path}`)); }
+            if (file.status !== 'D') { refs.push(this.objectRef(file.newObjectId, `${hash}:${file.path}`)); }
             return refs;
         });
         const contents = await this.readGitObjectsStreaming(rootUri, objects);
@@ -159,6 +162,11 @@ export class DiffReader {
         return range.map(commit => this.createGitlinkText(commit, commit.hash)).join('\n\n');
     }
 
+    /** 优先按不可变对象 ID 读取，避免长驻 cat-file 会话缓存旧 index 后让 `:path` 返回过期内容。 */
+    private objectRef(objectId: string | undefined, fallback: string): string {
+        return objectId && !/^0+$/.test(objectId) ? objectId : fallback;
+    }
+
     private createCommitPayloads(
         rootUri: vscode.Uri,
         hash: string,
@@ -184,22 +192,27 @@ export class DiffReader {
                     gitlinkRangeCommits: file.gitlinkRangeCommits,
                     gitlinkScanPending: true,
                     isUntracked: file.isUntracked,
+                    isConflict: file.isConflict,
                     workingTreeKind: file.workingTreeKind,
                     diffKey: file.diffKey,
                     original: file.status === 'A' ? '' : this.createGitlinkText(file.oldGitlinkCommit, file.oldObjectId),
                     modified: file.status === 'D' ? '' : this.createGitlinkRangeText(file.gitlinkRangeCommits ?? [], file.newGitlinkCommit, file.newObjectId),
                 });
             }
-            const originalObject = file.isBinary || file.status === 'A' ? undefined : `${hash}^:${file.oldPath || file.path}`;
-            const modifiedObject = file.isBinary || file.status === 'D' ? undefined : `${hash}:${file.path}`;
+            const originalObject = file.isBinary || file.status === 'A'
+                ? undefined
+                : this.objectRef(file.oldObjectId, `${hash}^:${file.oldPath || file.path}`);
+            const modifiedObject = file.isBinary || file.status === 'D'
+                ? undefined
+                : this.objectRef(file.newObjectId, `${hash}:${file.path}`);
             const original = originalObject ? contents.get(originalObject) : '';
             const modified = modifiedObject ? contents.get(modifiedObject) : '';
             const isBinary = file.isBinary || containsNul(original) || containsNul(modified);
             if (isBinary) {
-                return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isUntracked: file.isUntracked, workingTreeKind: file.workingTreeKind, diffKey: file.diffKey, isBinary: true, original: '', modified: '', error: undefined });
+                return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isUntracked: file.isUntracked, isConflict: file.isConflict, workingTreeKind: file.workingTreeKind, diffKey: file.diffKey, isBinary: true, original: '', modified: '', error: undefined });
             }
             const missing = [originalObject, modifiedObject].find(object => object && !contents.has(object));
-            return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isUntracked: file.isUntracked, workingTreeKind: file.workingTreeKind, diffKey: file.diffKey, isBinary: false, original: original || '', modified: modified || '', error: missing ? `无法读取 Git 对象：${missing}` : undefined });
+            return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isUntracked: file.isUntracked, isConflict: file.isConflict, workingTreeKind: file.workingTreeKind, diffKey: file.diffKey, isBinary: false, original: original || '', modified: modified || '', error: missing ? `无法读取 Git 对象：${missing}` : undefined });
         });
     }
 
@@ -209,8 +222,12 @@ export class DiffReader {
         const objects: string[] = [];
         for (const file of files) {
             if (file.isBinary || file.isGitlink) { continue; }
-            if (file.status !== 'A') { objects.push(`${originalRef(file)}:${file.oldPath || file.path}`); }
-            if (readsIndex(file) && file.status !== 'D') { objects.push(`:${file.path}`); }
+            if (file.status !== 'A') {
+                objects.push(this.objectRef(file.oldObjectId, `${originalRef(file)}:${file.oldPath || file.path}`));
+            }
+            if (readsIndex(file) && file.status !== 'D') {
+                objects.push(this.objectRef(file.newObjectId, `:${file.path}`));
+            }
         }
         const contents = await this.readGitObjects(rootUri, objects);
         return Promise.all(files.map(async (file, index) => {
@@ -231,6 +248,7 @@ export class DiffReader {
                     gitlinkRangeCommits: file.gitlinkRangeCommits,
                     gitlinkScanPending: true,
                     isUntracked: file.isUntracked,
+                    isConflict: file.isConflict,
                     workingTreeKind: file.workingTreeKind,
                     diffKey: file.diffKey,
                     original: file.status === 'A' ? '' : this.createGitlinkText(file.oldGitlinkCommit, file.oldObjectId),
@@ -238,8 +256,12 @@ export class DiffReader {
                 });
             }
             const fromIndex = readsIndex(file);
-            const originalObject = file.isBinary || file.status === 'A' ? undefined : `${originalRef(file)}:${file.oldPath || file.path}`;
-            const modifiedObject = file.isBinary || file.status === 'D' || !fromIndex ? undefined : `:${file.path}`;
+            const originalObject = file.isBinary || file.status === 'A'
+                ? undefined
+                : this.objectRef(file.oldObjectId, `${originalRef(file)}:${file.oldPath || file.path}`);
+            const modifiedObject = file.isBinary || file.status === 'D' || !fromIndex
+                ? undefined
+                : this.objectRef(file.newObjectId, `:${file.path}`);
             const original = originalObject ? contents.get(originalObject) || '' : '';
             const workingTreeFile = file.isBinary || fromIndex || file.status === 'D'
                 ? { content: '', error: undefined }
@@ -250,9 +272,9 @@ export class DiffReader {
             // 已移除 numstat, isBinary 靠内容侧 NUL 探测判定。
             const isBinary = file.isBinary || containsNul(original) || containsNul(modified);
             if (isBinary) {
-                return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isUntracked: file.isUntracked, workingTreeKind: file.workingTreeKind, diffKey: file.diffKey, isBinary: true, original: '', modified: '', error: workingTreeFile.error });
+                return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isUntracked: file.isUntracked, isConflict: file.isConflict, workingTreeKind: file.workingTreeKind, diffKey: file.diffKey, isBinary: true, original: '', modified: '', error: workingTreeFile.error });
             }
-            return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isUntracked: file.isUntracked, workingTreeKind: file.workingTreeKind, diffKey: file.diffKey, isBinary: false, original, modified, error: workingTreeFile.error });
+            return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isUntracked: file.isUntracked, isConflict: file.isConflict, workingTreeKind: file.workingTreeKind, diffKey: file.diffKey, isBinary: false, original, modified, error: workingTreeFile.error });
         }));
     }
 
@@ -274,57 +296,7 @@ export class DiffReader {
         rootUri: vscode.Uri,
         objects: string[],
     ): Promise<Map<string, string>> {
-        if (objects.length === 0) { return Promise.resolve(new Map()); }
-        const uniqueObjects = [...new Set(objects)];
-        return new Promise((resolve, reject) => {
-            const child = spawn('git', ['--no-optional-locks', '-C', rootUri.fsPath, 'cat-file', '--batch'], { windowsHide: true });
-            this.childProcesses.add(child);
-            const result = new Map<string, string>();
-            let stderr = '';
-            let buffer: Buffer = Buffer.alloc(0);
-            let objectIndex = 0;
-            let settled = false;
-            const fail = (error: unknown) => {
-                if (settled) { return; }
-                settled = true;
-                this.childProcesses.delete(child);
-                reject(error);
-            };
-            const parse = () => {
-                while (objectIndex < uniqueObjects.length) {
-                    const headerEnd = buffer.indexOf(0x0A);
-                    if (headerEnd < 0) { return; }
-                    const header = buffer.subarray(0, headerEnd).toString('utf8');
-                    const size = Number(header.split(' ')[2]);
-                    if (!Number.isFinite(size)) {
-                        buffer = buffer.subarray(headerEnd + 1);
-                        objectIndex++;
-                        continue;
-                    }
-                    const contentStart = headerEnd + 1;
-                    const responseEnd = contentStart + size + 1;
-                    if (buffer.length < responseEnd) { return; }
-                    result.set(uniqueObjects[objectIndex], buffer.subarray(contentStart, contentStart + size).toString('utf8'));
-                    buffer = buffer.subarray(responseEnd);
-                    objectIndex++;
-                }
-            };
-            child.stdout.on('data', (chunk: Buffer) => {
-                buffer = buffer.length === 0 ? chunk : Buffer.concat([buffer, chunk]);
-                try { parse(); } catch (error) { fail(error); }
-            });
-            child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
-            child.on('error', fail);
-            child.on('close', code => {
-                this.childProcesses.delete(child);
-                if (settled) { return; }
-                if (code !== 0) { fail(new Error(stderr || `git cat-file 失败（退出码 ${code}）`)); return; }
-                try { parse(); } catch (error) { fail(error); return; }
-                if (objectIndex !== uniqueObjects.length) { fail(new Error('git cat-file 输出不完整')); return; }
-                settled = true;
-                resolve(result);
-            });
-            child.stdin.end(`${uniqueObjects.join('\n')}\n`);
-        });
+        return this.gitBackend.readObjects(rootUri, objects);
     }
+
 }

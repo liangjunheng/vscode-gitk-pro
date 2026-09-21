@@ -45,6 +45,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .diff.collapsed .diff-chevron{transform:rotate(-90deg)}
 .working-tree-kind{display:inline-grid;place-items:center;flex:0 0 20px;width:20px;height:20px;box-sizing:border-box}
 .working-tree-kind svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.working-tree-kind-conflict{color:var(--vscode-gitDecoration-conflictingResourceForeground,#e51400)}
 .working-tree-kind-untracked{color:var(--vscode-gitDecoration-untrackedResourceForeground,var(--vscode-gitDecoration-deletedResourceForeground,#f14c4c))}
 .working-tree-kind-untracked .kind-file{stroke-dasharray:1.6 1.6}
 .working-tree-kind-unstaged{color:var(--vscode-foreground)}
@@ -53,6 +54,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .status-A{color:var(--vscode-gitDecoration-addedResourceForeground)}
 .status-M{color:var(--vscode-gitDecoration-modifiedResourceForeground)}
 .status-D{color:var(--vscode-gitDecoration-deletedResourceForeground)}
+.status-U{color:var(--vscode-gitDecoration-conflictingResourceForeground,#e51400)}
 .status-R,.status-C{color:var(--vscode-gitDecoration-renamedResourceForeground)}
 .line-stats{flex:0 0 auto;display:none;gap:6px;font-size:calc(var(--vscode-editor-font-size) * .85);font-variant-numeric:tabular-nums}
 .line-stats.ready{display:inline-flex}
@@ -279,6 +281,7 @@ function escapeHtml(value){return String(value==null?'':value).replace(/&/g,'&am
 function pathHtml(path,deleted){const slash=path.lastIndexOf('/');const name=slash<0?path:path.slice(slash+1),folder=slash<0?'':path.slice(0,slash+1);return '<span class="file-location'+(deleted?' is-deleted':'')+'" title="'+escapeHtml(path)+'"><span class="file-name">'+escapeHtml(name)+'</span>'+(folder?'<span class="file-path-gap"> </span><span class="file-folder">'+escapeHtml(folder)+'</span>':'')+'</span>'}
 function statusHtml(status){return '<span class="status status-'+escapeHtml(status)+'">'+escapeHtml(status)+'</span>'}
 function workingTreeKindHtml(kind){
+  if(kind==='conflict')return '<span class="working-tree-kind working-tree-kind-conflict" title="Conflict：存在未解决冲突" aria-label="Conflict：存在未解决冲突"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M9 2.5 16 15.5H2Z"/><path d="M9 6.25v4.5M9 13v.1" stroke-width="1.8"/></svg></span>';
   if(kind==='staged')return '<span class="working-tree-kind working-tree-kind-staged" title="Staged：已暂存" aria-label="Staged：已暂存"><svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="6.25"/><path d="m5.8 9 2.1 2.1 4.35-4.45" stroke-width="2"/></svg></span>';
   if(kind==='untracked')return '<span class="working-tree-kind working-tree-kind-untracked" title="Untracked：未跟踪" aria-label="Untracked：未跟踪"><svg viewBox="0 0 18 18" aria-hidden="true"><circle class="kind-file" cx="9" cy="9" r="6.25"/><path d="M7.15 7.15c.15-2.1 3.85-2.15 3.85.15 0 1.55-2 1.65-2 3.15M9 12.75v.1" stroke-width="1.7"/></svg></span>';
   if(kind==='unstaged')return '<span class="working-tree-kind working-tree-kind-unstaged" title="Unstaged：未暂存" aria-label="Unstaged：未暂存"><svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="6.25"/><path d="M9 5.25v4.5M9 12.4v.1" stroke-width="2"/></svg></span>';
@@ -349,7 +352,8 @@ function createCardShell(diff,order,parent){
   const header=document.createElement('button');header.type='button';header.className='file-header'+(diff.status==='R'&&diff.oldPath&&diff.oldPath!==diff.path?' rename-header':'');header.innerHTML=headerHtml(diff);
   const actions=document.createElement('div');actions.className='diff-actions';
   function actionButton(action,section,title,icon){const button=document.createElement('button');button.type='button';button.className='diff-action';button.dataset.action=action;button.dataset.section=section;button.title=title;button.setAttribute('aria-label',title);button.innerHTML='<span class="codicon codicon-'+icon+'" aria-hidden="true"></span>';return button}
-  if(diff.workingTreeKind==='staged')actions.append(actionButton('unstage','staged','取消暂存当前文件（移回 Unstaged Changes）','remove'));
+  if(diff.workingTreeKind==='conflict')actions.append(actionButton('stage','conflict','暂存当前文件并标记冲突已解决','add'));
+  else if(diff.workingTreeKind==='staged')actions.append(actionButton('unstage','staged','取消暂存当前文件（移回 Unstaged Changes）','remove'));
   else if(diff.workingTreeKind==='unstaged'||diff.workingTreeKind==='untracked')actions.append(actionButton('discard','unstaged','放弃当前文件的未暂存更改（不可撤销）','discard'),actionButton('stage','unstaged','暂存当前文件（移入 Staged Changes）','add'));
   const openFile=document.createElement('button');openFile.type='button';openFile.className='open-file';
   openFile.title='在编辑器中打开当前文件';openFile.setAttribute('aria-label','在编辑器中打开当前文件');

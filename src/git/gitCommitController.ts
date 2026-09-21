@@ -10,6 +10,7 @@ import {
     isWorkingTreeHash,
 } from '../types';
 import { DiffReader } from './diffReader';
+import type { GitBackend } from './gitBackend';
 import { GitBranchesController } from './gitBranchesController';
 import { GitRepoController } from './gitRepoController';
 import { UncommittedFilesWatcher } from './uncommittedFilesWatcher';
@@ -75,10 +76,10 @@ export class GitCommitController implements vscode.Disposable {
     /**
      * 内容读取专用实例, 不与 Provider 共用。
      *
-     * DiffReader 的 stop() 会推进内部 requestGeneration 并 kill 全部子进程,
-     * 共用一个实例时 Provider 侧的 stop() 会连坐中止控制器的纯查询。
+     * DiffReader 的 stop() 会推进内部 requestGeneration；共用一个实例时
+     * Provider 侧的代次切换会让控制器的纯查询结果一并失效。
      */
-    private readonly diffReader = new DiffReader();
+    private readonly diffReader: DiffReader;
 
     private readonly searchedEmitter = new vscode.EventEmitter<CommitMetadata[]>();
     private readonly totalEmitter = new vscode.EventEmitter<CommitMetadata[]>();
@@ -101,7 +102,9 @@ export class GitCommitController implements vscode.Disposable {
         repoController: GitRepoController,
         private readonly branchesController: GitBranchesController,
         private readonly uncommittedFilesWatcher: UncommittedFilesWatcher,
+        gitBackend: GitBackend,
     ) {
+        this.diffReader = new DiffReader(gitBackend);
         this.repositorySelectionSubscription = repoController.onSelectedRepoListChanged(repositories => {
             void this.selectRepositories(repositories);
         });
@@ -339,7 +342,7 @@ export class GitCommitController implements vscode.Disposable {
         this.uncommittedFilesSubscription.dispose();
         this.commitReadAbortController?.abort();
         this.pageAbortController?.abort();
-        this.diffReader.stop();
+        this.diffReader.dispose();
         this.searchedEmitter.dispose();
         this.totalEmitter.dispose();
         this.loadingEmitter.dispose();
