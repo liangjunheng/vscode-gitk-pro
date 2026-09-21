@@ -496,6 +496,30 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    /** 仅复用本次 Git 操作未影响且元数据未变化的 Diff，避免单文件操作重读整份工作区。 */
+    private canReuseWorkingTreeDiff(
+        diff: DiffPayload,
+        file: CommitFile,
+        affectedPaths: ReadonlySet<string>,
+    ): boolean {
+        const isAffected = affectedPaths.has(file.path)
+            || (!!file.oldPath && affectedPaths.has(file.oldPath))
+            || affectedPaths.has(diff.path)
+            || (!!diff.oldPath && affectedPaths.has(diff.oldPath));
+        return !isAffected
+            && diff.path === file.path
+            && diff.status === file.status
+            && diff.oldPath === file.oldPath
+            && diff.oldObjectId === file.oldObjectId
+            && diff.newObjectId === file.newObjectId
+            && diff.oldMode === file.oldMode
+            && diff.newMode === file.newMode
+            && diff.isGitlink === file.isGitlink
+            && diff.isUntracked === file.isUntracked
+            && diff.workingTreeKind === file.workingTreeKind
+            && diff.diffKey === file.diffKey;
+    }
+
     private async selectWorkingTreeChanges(
         changes?: { staged: ChangedFile[]; changes: ChangedFile[] },
         showLoading = true,
@@ -567,22 +591,44 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             }
         }
         const previousSelectedFile = this.files.find(file => (file.diffKey || file.path) === this.selectedPath);
+        const previousDiffsByKey = new Map(this.files
+            .filter((file): file is DiffPayload => file instanceof DiffPayload)
+            .map(file => [file.diffKey || file.path, file]));
+        const reusableDiffsByKey = new Map<string, DiffPayload>();
+        const filesToRead = affectedPaths && affectedPaths.size > 0
+            ? files.filter(file => {
+                const key = file.diffKey || file.path;
+                const previousDiff = previousDiffsByKey.get(key);
+                if (!previousDiff || !this.canReuseWorkingTreeDiff(previousDiff, file, affectedPaths)) { return true; }
+                reusableDiffsByKey.set(key, previousDiff);
+                return false;
+            })
+            : files;
+        const reusedCount = reusableDiffsByKey.size;
         const rootUri = vscode.Uri.parse(selectedBranch.repoOption.path);
         this.diffReader.stop();
         store.setState({
             diffLoading: true,
             diffError: undefined,
-            diffProgress: { completed: 0, total: files.length },
+            diffProgress: { completed: reusedCount, total: files.length },
         });
         store.setState({ diffGeneration: store.getState().diffGeneration + 1 });
-        const readDiffs = await this.diffReader.readDiffs(rootUri, 'uncommitted', files, 'uncommitted', 0, (completed, total) => {
-            if (generation !== this.commitFilesGeneration) { return; }
-            store.setState({ diffProgress: { completed, total } });
-        });
+        const readDiffs = filesToRead.length > 0
+            ? await this.diffReader.readDiffs(rootUri, 'uncommitted', filesToRead, 'uncommitted', 0, completed => {
+                if (generation !== this.commitFilesGeneration) { return; }
+                store.setState({ diffProgress: { completed: reusedCount + completed, total: files.length } });
+            })
+            : [];
         if (generation !== this.commitFilesGeneration
             || !isWorkingTreeHash(this.currentHash)
-            || this.currentRepositoryPath !== selectedBranch.repoOption.path) { return; }
-        const diffs = readDiffs.map((payload, index) => new DiffPayload({ ...payload, ...files[index], index }));
+            || this.currentRepositoryPath !== selectedBranch.repoOption.path
+            || readDiffs.length !== filesToRead.length) { return; }
+        const readDiffsByKey = new Map(readDiffs.map(file => [file.diffKey || file.path, file]));
+        const diffs = files.map((file, index) => {
+            const key = file.diffKey || file.path;
+            const payload = readDiffsByKey.get(key) ?? reusableDiffsByKey.get(key);
+            return new DiffPayload({ ...payload, ...file, index });
+        });
         this.workingTreeDiffCache.set(workingTreeDiffCacheKey, diffs);
         const selectedFile = diffs.find(file => (file.diffKey || file.path) === this.selectedPath)
             ?? diffs.find(file => file.path === previousSelectedFile?.path)
@@ -597,7 +643,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             diffProgress: { completed: diffs.length, total: diffs.length },
             selectedPath: selectedFilePath,
         });
-        void this.refreshGitlinkDiffs(rootUri, files, generation, workingTreeDiffCacheKey);
+        void this.refreshGitlinkDiffs(rootUri, filesToRead, generation, workingTreeDiffCacheKey);
         if (this.commitPanel.isVisible()) {
             this.commitPanel.update(this.buildCommitSnapshot());
         }

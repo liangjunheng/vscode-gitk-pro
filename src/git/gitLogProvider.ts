@@ -677,78 +677,120 @@ async function readWorkingTreeStatus(
     signal?: AbortSignal,
 ): Promise<WorkingTreeChanges> {
     try {
-        const statusArgs = [
+        // porcelain v2 已包含 HEAD/index 的对象 ID 与三端文件模式。普通文件只需一次 Git 调用，
+        // 避免旧实现同时启动 status、diff --cached、diff 三个进程争抢磁盘。
+        const statusResult = await execFileAsync('git', [
             '--no-optional-locks', '-C', rootUri.fsPath,
-            'status', '--porcelain=v1', '-z', '--untracked-files=all',
+            'status', '--porcelain=v2', '-z', '--untracked-files=all', '--find-renames',
             ...(paths.length > 0 ? ['--', ...paths] : []),
-        ];
-        const rawPaths = paths.length > 0 ? ['--', ...paths] : [];
-        const [statusResult, stagedMetadata, unstagedMetadata] = await Promise.all([
-            execFileAsync('git', statusArgs, { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
-            readWorkingTreeRawMetadata(rootUri, ['diff', '--cached', '--raw', '-z', '--no-abbrev', '-M', ...rawPaths], signal),
-            readWorkingTreeRawMetadata(rootUri, ['diff', '--raw', '-z', '--no-abbrev', '-M', ...rawPaths], signal),
-        ]);
-        const status = parseWorkingTreeStatus(statusResult.stdout);
-        return new WorkingTreeChanges({
-            staged: mergeWorkingTreeMetadata(status.staged, stagedMetadata),
-            changes: mergeWorkingTreeMetadata(status.changes, unstagedMetadata),
-        });
+        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
+        // 未暂存 gitlink 与 `git diff --raw` 一样使用全零 newObjectId；
+        // 后续 readGitlinkCommitSubjects 会直接从子模块 HEAD 解析真实新端，无需再启动额外 Git 进程。
+        return parseWorkingTreeStatusV2(statusResult.stdout);
     } catch (error: any) {
         if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
         throw new Error(`无法读取工作区状态: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
 
-// 从 git CLI 读完整工作区变更元数据。
-function parseWorkingTreeStatus(stdout: string): WorkingTreeChanges {
+// porcelain v2 的普通/重命名记录直接携带 Diff 所需元数据。
+function parseWorkingTreeStatusV2(stdout: string): WorkingTreeChanges {
     const staged: CommitFile[] = [];
     const changes: CommitFile[] = [];
     const entries = stdout.split('\0');
+    const zeroObjectId = (objectId: string) => '0'.repeat(objectId.length || 40);
+    const isGitlink = (submodule: string, ...modes: string[]) => submodule.startsWith('S') || modes.includes('160000');
+
     for (let index = 0; index < entries.length; index++) {
         const entry = entries[index];
-        if (!entry || entry.length < 4) { continue; }
-        const indexStatus = entry[0];
-        const workingTreeStatus = entry[1];
-        const filePath = entry.slice(3);
-        const hasRenameSource = indexStatus === 'R' || indexStatus === 'C' || workingTreeStatus === 'R' || workingTreeStatus === 'C';
-        const renameSourcePath = hasRenameSource ? entries[++index] || undefined : undefined;
-        if (indexStatus !== ' ' && indexStatus !== '?') {
-            staged.push(new CommitFile({
-                path: filePath,
-                status: porcelainStatus(indexStatus),
-                oldPath: indexStatus === 'R' || indexStatus === 'C' ? renameSourcePath : undefined,
-            }));
-        }
-        if (workingTreeStatus !== ' ') {
+        if (!entry) { continue; }
+        const fields = entry.split(' ');
+        const recordType = fields[0];
+        if (recordType === '?') {
             changes.push(new CommitFile({
-                path: filePath,
-                status: porcelainStatus(workingTreeStatus),
-                oldPath: workingTreeStatus === 'R' || workingTreeStatus === 'C' ? renameSourcePath : undefined,
-                isUntracked: indexStatus === '?' && workingTreeStatus === '?',
+                path: fields.slice(1).join(' '),
+                status: 'A',
+                isUntracked: true,
             }));
+            continue;
+        }
+        if (recordType === '1' || recordType === '2') {
+            const minimumFields = recordType === '2' ? 10 : 9;
+            if (fields.length < minimumFields) { continue; }
+            const xy = fields[1];
+            const submodule = fields[2];
+            const headMode = fields[3];
+            const indexMode = fields[4];
+            const worktreeMode = fields[5];
+            const headObjectId = fields[6];
+            const indexObjectId = fields[7];
+            const pathStart = recordType === '2' ? 9 : 8;
+            const filePath = fields.slice(pathStart).join(' ');
+            const renameSourcePath = recordType === '2' ? entries[++index] || undefined : undefined;
+            const indexStatus = xy[0];
+            const worktreeStatus = xy[1];
+            const gitlink = isGitlink(submodule, headMode, indexMode, worktreeMode);
+            if (indexStatus !== '.') {
+                staged.push(new CommitFile({
+                    path: filePath,
+                    status: porcelainStatus(indexStatus),
+                    oldPath: indexStatus === 'R' || indexStatus === 'C' ? renameSourcePath : undefined,
+                    oldObjectId: headObjectId,
+                    newObjectId: indexObjectId,
+                    oldMode: headMode,
+                    newMode: indexMode,
+                    isGitlink: gitlink,
+                }));
+            }
+            if (worktreeStatus !== '.') {
+                changes.push(new CommitFile({
+                    path: filePath,
+                    status: porcelainStatus(worktreeStatus),
+                    oldPath: worktreeStatus === 'R' || worktreeStatus === 'C' ? renameSourcePath : undefined,
+                    oldObjectId: indexObjectId,
+                    newObjectId: zeroObjectId(indexObjectId),
+                    oldMode: indexMode,
+                    newMode: worktreeMode,
+                    isGitlink: gitlink,
+                }));
+            }
+            continue;
+        }
+        if (recordType === 'u' && fields.length >= 11) {
+            const xy = fields[1];
+            const submodule = fields[2];
+            const baseMode = fields[3];
+            const oursMode = fields[4];
+            const worktreeMode = fields[6];
+            const baseObjectId = fields[7];
+            const oursObjectId = fields[8];
+            const filePath = fields.slice(10).join(' ');
+            const gitlink = isGitlink(submodule, baseMode, oursMode, worktreeMode);
+            if (xy[0] !== '.') {
+                staged.push(new CommitFile({
+                    path: filePath,
+                    status: 'U',
+                    oldObjectId: baseObjectId,
+                    newObjectId: oursObjectId,
+                    oldMode: baseMode,
+                    newMode: oursMode,
+                    isGitlink: gitlink,
+                }));
+            }
+            if (xy[1] !== '.') {
+                changes.push(new CommitFile({
+                    path: filePath,
+                    status: 'U',
+                    oldObjectId: oursObjectId,
+                    newObjectId: zeroObjectId(oursObjectId),
+                    oldMode: oursMode,
+                    newMode: worktreeMode,
+                    isGitlink: gitlink,
+                }));
+            }
         }
     }
     return new WorkingTreeChanges({ staged, changes });
-}
-
-function readWorkingTreeRawMetadata(
-    rootUri: vscode.Uri,
-    args: string[],
-    signal?: AbortSignal,
-): Promise<CommitFile[]> {
-    return execFileAsync('git', [
-        '--no-optional-locks', '-C', rootUri.fsPath,
-        ...args,
-    ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal })
-        .then(result => parseRawStatus(result.stdout));
-}
-
-function mergeWorkingTreeMetadata(files: readonly CommitFile[], metadata: readonly CommitFile[]): CommitFile[] {
-    const metadataByPath = new Map(metadata.map(file => [file.path, file]));
-    return files.map(file => {
-        const raw = metadataByPath.get(file.path);
-        return raw ? new CommitFile({ ...file, ...raw, status: file.status, isUntracked: file.isUntracked }) : file;
-    });
 }
 
 function porcelainStatus(status: string): FileStatus {

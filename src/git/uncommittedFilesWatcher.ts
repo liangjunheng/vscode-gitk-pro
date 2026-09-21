@@ -153,6 +153,9 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             throw new Error('该分支不是仓库当前 HEAD');
         }
         slot.mutationDepth++;
+        // 用户操作开始后，操作前启动的状态读取已经可能过期。立即终止它，
+        // 避免 endWorkingTreeMutation 先等待旧刷新，再额外执行一次操作后的刷新。
+        if (slot.mutationDepth === 1) { slot.refreshAbortController?.abort(); }
     }
 
     async endWorkingTreeMutation(
@@ -371,7 +374,7 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
                         slot.refreshAbortController = undefined;
                     }
                 }
-                if (!slot.needsRefresh) { return; }
+                if (slot.mutationDepth > 0 || !slot.needsRefresh) { return; }
             }
         } finally {
             slot.refreshAbortController?.abort();
