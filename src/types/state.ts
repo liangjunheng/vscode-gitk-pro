@@ -13,11 +13,14 @@ export type GitkIntent =
     | { type: 'selectBranches'; names: unknown }
     | { type: 'loadMoreCommits' }
     | { type: 'gitSync'; action: unknown }
+    | { type: 'openRepositoryTerminal' }
     | { type: 'commitAction'; action: unknown; hash: unknown; repositoryPath: unknown }
     | { type: 'selectCommit'; hash: unknown; repositoryPath?: unknown }
     | { type: 'selectFile'; path?: unknown }
     | { type: 'copyFilePath'; path: unknown; absolute?: unknown }
     | { type: 'workingTreeAction'; action: unknown; section: unknown; path?: unknown }
+    | { type: 'workingTreeCommit'; action: unknown; repositoryPath: unknown; message: unknown }
+    | { type: 'updateCommitMessage'; repositoryPath: unknown; message: unknown }
     | { type: 'rendered'; target: unknown; fileCount: unknown }
     | { type: 'openCommitEditor'; amend: unknown; repositoryPath: unknown }
     | { type: 'openCommitPanel' }

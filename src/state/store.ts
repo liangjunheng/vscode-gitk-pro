@@ -7,11 +7,14 @@ export type StoreEffect =
     | { type: 'selectBranches'; names: string[] }
     | { type: 'loadMoreCommits' }
     | { type: 'gitSync'; action: unknown }
+    | { type: 'openRepositoryTerminal' }
     | { type: 'commitAction'; action: unknown; hash: unknown; repositoryPath: unknown }
     | { type: 'selectCommit'; hash: unknown; repositoryPath?: unknown }
     | { type: 'selectFile'; path?: unknown }
     | { type: 'copyFilePath'; path: unknown; absolute?: unknown }
     | { type: 'workingTreeAction'; action: unknown; section: unknown; path?: unknown }
+    | { type: 'workingTreeCommit'; action: unknown; repositoryPath: unknown; message: unknown }
+    | { type: 'updateCommitMessage'; repositoryPath: unknown; message: unknown }
     | { type: 'rendered'; fileCount: unknown }
     | { type: 'openCommitEditor'; amend: boolean; repositoryPath: string }
     | { type: 'openCommitPanel' }
@@ -83,6 +86,9 @@ export class Store {
             case 'gitSync':
                 effects = [{ type: 'gitSync', action: intent.action }];
                 break;
+            case 'openRepositoryTerminal':
+                effects = [{ type: 'openRepositoryTerminal' }];
+                break;
             case 'commitAction':
                 effects = [{ type: 'commitAction', action: intent.action, hash: intent.hash, repositoryPath: intent.repositoryPath }];
                 break;
@@ -109,6 +115,18 @@ export class Store {
                     && (intent.section === 'staged' || intent.section === 'unstaged')
                     && (intent.path === undefined || typeof intent.path === 'string')) {
                     effects = [{ type: 'workingTreeAction', action: intent.action, section: intent.section, path: intent.path }];
+                }
+                break;
+            case 'workingTreeCommit':
+                if (typeof intent.action === 'string'
+                    && typeof intent.repositoryPath === 'string'
+                    && typeof intent.message === 'string') {
+                    effects = [{ type: 'workingTreeCommit', action: intent.action, repositoryPath: intent.repositoryPath, message: intent.message }];
+                }
+                break;
+            case 'updateCommitMessage':
+                if (typeof intent.repositoryPath === 'string' && typeof intent.message === 'string') {
+                    effects = [{ type: 'updateCommitMessage', repositoryPath: intent.repositoryPath, message: intent.message }];
                 }
                 break;
             case 'rendered':

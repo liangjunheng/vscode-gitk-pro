@@ -232,6 +232,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 stagedFiles: s.stagedFiles,
                 unstagedFiles: s.unstagedFiles,
                 filesLoading: s.filesLoading,
+                commitMessage: workingTreeRepositoryPath ? this.commitMessageByRepo.get(workingTreeRepositoryPath) ?? '' : '',
                 commitEditorLoading: s.commitEditorLoading,
                 diffLoading: s.diffLoading,
                 diffProgress: s.diffProgress,
@@ -1209,6 +1210,17 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 }
                 break;
             }
+            case 'openRepositoryTerminal': {
+                const repositoryPath = this.selectedRepositoryPath;
+                const rootUri = repositoryPath ? vscode.Uri.parse(repositoryPath) : undefined;
+                if (!rootUri) {
+                    void vscode.window.showWarningMessage('请先选择一个仓库。');
+                    break;
+                }
+                const terminalName = path.basename(rootUri.fsPath) || 'Gitk';
+                vscode.window.createTerminal({ name: `Gitk: ${terminalName}`, cwd: rootUri }).show();
+                break;
+            }
             case 'commitAction':
                 if (typeof effect.action === 'string' && typeof effect.hash === 'string' && typeof effect.repositoryPath === 'string') {
                     this.gitActions.runCommitAction(effect.action, effect.hash, effect.repositoryPath);
@@ -1257,6 +1269,18 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 break;
             case 'workingTreeAction':
                 void this.runWorkingTreeAction(effect.action, effect.section, effect.path);
+                break;
+            case 'workingTreeCommit':
+                if (typeof effect.action === 'string'
+                    && typeof effect.repositoryPath === 'string'
+                    && typeof effect.message === 'string') {
+                    void this.runWorkingTreeCommit(effect.action, effect.repositoryPath, effect.message);
+                }
+                break;
+            case 'updateCommitMessage':
+                if (typeof effect.repositoryPath === 'string' && typeof effect.message === 'string') {
+                    this.updateWorkingTreeCommitMessage(effect.repositoryPath, effect.message);
+                }
                 break;
             case 'openCommitEditor':
                 void this.runOpenCommitEditor(effect.repositoryPath, effect.amend);
@@ -1626,7 +1650,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
     }
 
-    private async runCommitPanelPush(repositoryPaths: readonly string[], pullBeforePush: boolean): Promise<void> {
+    private async runCommitPanelPush(
+        repositoryPaths: readonly string[],
+        pullBeforePush: boolean,
+        focusCommitPanel = true,
+    ): Promise<void> {
         const rootRepositoryPath = repositoryPaths.at(-1);
         if (!rootRepositoryPath) { return; }
         const rootUri = this.getRepoRootUri(rootRepositoryPath);
@@ -1710,10 +1738,18 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             void vscode.window.showErrorMessage(`Git Push 失败：${error instanceof Error ? error.message : String(error)}`);
         }
         // 操作由 Commit 面板触发, 显示权归触发者: 结束后把面板带回编辑器区前台。
-        this.commitPanel.focus(rootRepositoryPath);
+        if (focusCommitPanel) {
+            this.commitPanel.focus(rootRepositoryPath);
+        }
     }
 
-    private async runCommit(repositoryPath: string, repositoryPaths: readonly string[], message: string, amend: boolean): Promise<void> {
+    private async runCommit(
+        repositoryPath: string,
+        repositoryPaths: readonly string[],
+        message: string,
+        amend: boolean,
+        focusCommitPanel = true,
+    ): Promise<boolean> {
         const rootAncestry = new Set([repositoryPath, ...this.repoSubmoduleWatcher.getRepositorySubtree(repositoryPath).map(repository => repository.path)]);
         const orderedRepositoryPaths = [...new Set(repositoryPaths)]
             .filter(path => rootAncestry.has(path))
@@ -1721,12 +1757,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             .sort((left, right) => right.depth - left.depth || left.index - right.index)
             .map(item => item.path);
         if (!orderedRepositoryPaths.includes(repositoryPath)) { orderedRepositoryPaths.push(repositoryPath); }
-        if (orderedRepositoryPaths.some(path => this.commitCommittingByRepo.has(path))) { return; }
+        if (orderedRepositoryPaths.some(path => this.commitCommittingByRepo.has(path))) { return false; }
         orderedRepositoryPaths.forEach(path => this.commitCommittingByRepo.add(path));
         await this.refreshCommitPanel();
         const committedRepositoryPaths: string[] = [];
+        let committed = false;
         try {
-            let committed = false;
             for (const currentPath of orderedRepositoryPaths) {
                 const currentBranch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
                     .find(branch => branch.repoOption.path === currentPath);
@@ -1763,8 +1799,48 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             orderedRepositoryPaths.forEach(path => this.commitCommittingByRepo.delete(path));
             await this.refreshCommitPanel();
             // 操作由 Commit 面板触发, 显示权归触发者: 结束后把面板带回编辑器区前台。
-            this.commitPanel.focus(repositoryPath);
+            if (focusCommitPanel) {
+                this.commitPanel.focus(repositoryPath);
+            }
         }
+        return committed;
+    }
+
+    private async runWorkingTreeCommit(
+        action: string,
+        repositoryPath: string,
+        message: string,
+    ): Promise<void> {
+        if (!message.trim()) {
+            void vscode.window.showWarningMessage('提交信息不能为空');
+            return;
+        }
+        const normalizedAction = action === 'amend' || action === 'push' || action === 'sync'
+            ? action
+            : 'commit';
+        const committed = await this.runCommit(
+            repositoryPath,
+            [repositoryPath],
+            message,
+            normalizedAction === 'amend',
+            false,
+        );
+        if (!committed || (normalizedAction !== 'push' && normalizedAction !== 'sync')) {
+            return;
+        }
+        await this.runCommitPanelPush(
+            [repositoryPath],
+            normalizedAction === 'sync',
+            false,
+        );
+    }
+
+    private updateWorkingTreeCommitMessage(repositoryPath: string, message: string): void {
+        this.commitMessageByRepo.set(repositoryPath, message);
+        if (this.commitPanel.isVisible()) {
+            this.commitPanel.update(this.buildCommitSnapshot());
+        }
+        this.schedulePushState();
     }
 
     private async runCommitPanelWorkingTreeAction(

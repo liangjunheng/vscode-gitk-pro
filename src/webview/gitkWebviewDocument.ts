@@ -114,6 +114,8 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP}
       selectedPath = state.selectedPath || '';
       selectedCommitHash = state.selectedCommit ? state.selectedCommit.hash : '';
       selectedCommitRepositoryPath = state.selectedCommit ? state.selectedCommit.repositoryPath : '';
+      workingTreeCommitMessage = typeof state.commitMessage === 'string' ? state.commitMessage : '';
+      updateWorkingTreeCommitEditor();
       var nextCommitListModelKey = JSON.stringify([
         commits.map(function(commit) { return commit.key || ((commit.repositoryPath || '') + ':' + commit.hash); }),
         selectedRepositoryPaths,

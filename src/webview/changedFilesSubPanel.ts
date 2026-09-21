@@ -18,6 +18,21 @@ export const CHANGED_FILES_SUB_PANEL_STYLES = `
   #filesHeader .toolbar-icon:active { background: var(--vscode-toolbar-activeBackground, var(--vscode-toolbar-hoverBackground)); }
   #filesHeader .toolbar-icon:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   #filesHeader .toolbar-icon svg { width: 16px; height: 16px; stroke-width: 1.5; }
+  #workingTreeCommitEditor { display: flex; flex: 0 0 auto; flex-direction: column; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); background: var(--vscode-editor-background); }
+  #workingTreeCommitEditor[hidden] { display: none !important; }
+  #workingTreeCommitMessage { display: block; width: 100%; min-height: 42px; box-sizing: border-box; resize: none; overflow: hidden; padding: 6px 8px; border: 1px solid var(--vscode-input-border, transparent); border-radius: 3px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); font: inherit; line-height: 1.35; }
+  #workingTreeCommitMessage:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  #workingTreeCommitActions { position: relative; display: flex; width: 100%; align-items: stretch; }
+  #workingTreeCommitMain, #workingTreeCommitMore { height: 26px; border: 0; color: var(--vscode-button-foreground); background: var(--vscode-button-background); cursor: pointer; font: inherit; font-size: 13px; }
+  #workingTreeCommitMain { display: inline-flex; flex: 1 1 auto; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; border-radius: 3px 0 0 3px; }
+  #workingTreeCommitMore { flex: 0 0 26px; width: 26px; margin-left: auto; padding: 0; border-left: 1px solid color-mix(in srgb, var(--vscode-button-foreground) 45%, transparent); border-radius: 0 3px 3px 0; }
+  #workingTreeCommitMain:hover, #workingTreeCommitMore:hover { background: var(--vscode-button-hoverBackground); }
+  #workingTreeCommitMain:active, #workingTreeCommitMore:active { background: var(--vscode-button-hoverBackground); }
+  #workingTreeCommitMain:focus-visible, #workingTreeCommitMore:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  #workingTreeCommitMenu { position: absolute; top: calc(100% + 3px); right: 0; z-index: 10; min-width: 150px; margin: 0; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border)); border-radius: 4px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 4px 14px rgba(0, 0, 0, .28); }
+  #workingTreeCommitMenu[hidden] { display: none !important; }
+  #workingTreeCommitMenu button { display: block; width: 100%; padding: 5px 8px; border: 0; border-radius: 3px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: transparent; text-align: left; cursor: pointer; font: inherit; font-size: 13px; white-space: nowrap; }
+  #workingTreeCommitMenu button:hover { color: var(--vscode-menu-selectionForeground, var(--vscode-list-hoverForeground)); background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground)); }
   #filesList { min-width: 0; min-height: 0; flex: 1 1 auto; overflow-x: auto; overflow-y: auto; }
   #filesList > * { min-width: max-content; }
   #commitContextMenu { position: fixed; z-index: 20; min-width: 180px; max-height: calc(100vh - 8px); overflow-y: auto; margin: 0; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border)); border-radius: 5px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 4px 14px rgba(0, 0, 0, .28); }
@@ -94,6 +109,7 @@ export const CHANGED_FILES_SUB_PANEL_STYLES = `
 export const CHANGED_FILES_SUB_PANEL_MARKUP = `
     <section id="filesSection">
       <div id="filesHeader"><div id="filesTitle"><span>变更文件列表</span><span id="filesCommitHash"></span></div><div id="filesActions"><div class="action-group"><button class="toolbar-icon" id="filesModeBtn" title="显示方式（当前：树状）" aria-label="显示方式"><svg viewBox="0 0 16 16" aria-hidden="true"><path id="filesModeIcon" d="M2.5 3h5M5 3v4M5 7h5M7.5 7v4M7.5 11h6"/></svg></button></div></div></div>
+      <div id="workingTreeCommitEditor" hidden><textarea id="workingTreeCommitMessage" rows="2" spellcheck="false" placeholder="Message (Ctrl+Enter to commit)"></textarea><div id="workingTreeCommitActions"><button id="workingTreeCommitMain" type="button"><span>Commit</span></button><button id="workingTreeCommitMore" type="button" aria-label="更多提交操作"><span class="codicon codicon-chevron-down" aria-hidden="true"></span></button><div id="workingTreeCommitMenu" hidden><button type="button" data-working-tree-commit="commit">Commit</button><button type="button" data-working-tree-commit="amend">Commit (Amend)</button><button type="button" data-working-tree-commit="push">Commit &amp; Push</button><button type="button" data-working-tree-commit="sync">Commit &amp; Sync</button></div></div></div>
       <div id="filesList"><div id="filesEmpty">选择一个提交以查看变更文件</div></div>
       <div id="commitContextMenu" popover="manual"><button type="button" data-commit-action="toggleDescription"><svg class="context-menu-icon" viewBox="0 0 16 16"><path id="toggleDescriptionIcon" d="M3 5.5 8 10l5-4.5"/></svg><span>展开描述</span></button><button type="button" data-commit-action="copyHash"><svg class="context-menu-icon" viewBox="0 0 16 16"><rect x="5.5" y="5.5" width="7.5" height="8" rx="1"/><path d="M3 10.5v-7A1.5 1.5 0 0 1 4.5 2H10"/></svg><span>copy hash</span></button><div class="context-menu-separator"></div><button type="button" data-commit-action="checkout"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M4 3v8m0 0-2-2m2 2 2-2M4 11h4.5A3.5 3.5 0 0 0 12 7.5V5"/><path d="m10 6 2-2 2 2"/></svg><span>checkout</span></button><button type="button" data-commit-action="revert"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M5.5 4 3 6.5 5.5 9M3.5 6.5h6A3.5 3.5 0 1 1 6 10"/></svg><span>revert</span></button><button type="button" data-commit-action="drop"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M3 4.5h10M6 4.5V3h4v1.5M5 6.5v6h6v-6M7 8.5v2.5M9 8.5v2.5"/></svg><span>drop</span></button><button type="button" data-commit-action="cherryPick"><svg class="context-menu-icon" viewBox="0 0 16 16"><circle cx="4" cy="4" r="1.25"/><circle cx="12" cy="12" r="1.25"/><path d="M4 5.25v2.5A3.25 3.25 0 0 0 7.25 11H12M6 3h3"/></svg><span>cherry pick</span></button><div class="context-menu-separator"></div><button type="button" data-commit-action="merge"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M4 3v10M4 10c0-2.5 1.75-4 4.25-4H11"/><circle cx="4" cy="3" r="1.25"/><circle cx="4" cy="13" r="1.25"/><circle cx="12" cy="6" r="1.25"/></svg><span>merge</span></button><button type="button" data-commit-action="rebase"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M3 4h7M8.5 2 11 4 8.5 6M13 12H6M7.5 10 5 12l2.5 2"/></svg><span>rebase</span></button><button type="button" data-commit-action="reset"><svg class="context-menu-icon" viewBox="0 0 16 16"><rect x="4.5" y="5.5" width="8" height="8" rx="1"/><path d="M2.5 6A4.5 4.5 0 0 1 7 2.5h2M7 2.5l2 2-2 2"/></svg><span>reset</span></button><div class="context-menu-separator"></div><button type="button" data-commit-action="createBranch"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M4 3v10M4 5.5c0 2.1 1.4 3.5 3.5 3.5H11"/><circle cx="4" cy="3" r="1.25"/><circle cx="4" cy="13" r="1.25"/><circle cx="12" cy="9" r="1.25"/></svg><span>create branch</span></button><button type="button" data-commit-action="addTag"><svg class="context-menu-icon" viewBox="0 0 16 16"><path d="M2.5 7.75 7.25 3h5.75v5.75L8.25 13.5 2.5 7.75Z"/><circle cx="10.25" cy="5.75" r=".75" fill="currentColor" stroke="none"/></svg><span>add tag</span></button></div>
     </section>
@@ -117,12 +133,85 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
   let filesLoading = false;
   let filesMode = 'flat';
   let selectedPath = '';
+  let workingTreeCommitMessage = '';
   const collapsedFolders = new Set();
   const collapsedWorkingTreeSections = new Set();
   // 与 commitListModelKey 同一思路: focus/blur 等无关 stateChanged 不应重新渲染文件列表, 否则正在被点击的 .file-item 会被拆掉重建, 导致首击无效。
   let filesModelKey = '';
   document.getElementById('filesModeBtn').addEventListener('click', function() {
     vscode.postMessage({ type: 'toggleFilesMode' });
+  });
+  function closeWorkingTreeCommitMenu() {
+    const menu = document.getElementById('workingTreeCommitMenu');
+    if (menu) menu.hidden = true;
+  }
+  function resizeWorkingTreeCommitMessage(input) {
+    input.style.height = 'auto';
+    input.style.height = input.scrollHeight + 'px';
+  }
+  function postWorkingTreeCommit(action) {
+    const input = document.getElementById('workingTreeCommitMessage');
+    if (!input || !isWorkingTreeHash(selectedCommitHash) || !selectedCommitRepositoryPath) return;
+    vscode.postMessage({ type: 'workingTreeCommit', action: action, repositoryPath: selectedCommitRepositoryPath, message: input.value });
+    closeWorkingTreeCommitMenu();
+  }
+  function updateWorkingTreeCommitEditor() {
+    const editor = document.getElementById('workingTreeCommitEditor');
+    const input = document.getElementById('workingTreeCommitMessage');
+    if (!editor || !input) return;
+    const branchName = selectedBranches.length === 1 ? selectedBranches[0] : '';
+    input.placeholder = branchName
+      ? 'Message (Ctrl+Enter to commit on \"' + branchName + '\")'
+      : 'Message (Ctrl+Enter to commit)';
+    const visible = isWorkingTreeHash(selectedCommitHash);
+    editor.hidden = !visible;
+    if (!visible) {
+      closeWorkingTreeCommitMenu();
+      return;
+    }
+    const repositoryChanged = editor.dataset.repositoryPath !== selectedCommitRepositoryPath;
+    if (!repositoryChanged && document.activeElement === input) {
+      workingTreeCommitMessage = input.value;
+      return;
+    }
+    if (input.value !== workingTreeCommitMessage) {
+      input.value = workingTreeCommitMessage;
+      resizeWorkingTreeCommitMessage(input);
+    }
+    editor.dataset.repositoryPath = selectedCommitRepositoryPath || '';
+  }
+  const workingTreeCommitMessageInput = document.getElementById('workingTreeCommitMessage');
+  const workingTreeCommitMain = document.getElementById('workingTreeCommitMain');
+  const workingTreeCommitMore = document.getElementById('workingTreeCommitMore');
+  const workingTreeCommitMenu = document.getElementById('workingTreeCommitMenu');
+  workingTreeCommitMessageInput.addEventListener('input', function() {
+    workingTreeCommitMessage = workingTreeCommitMessageInput.value;
+    resizeWorkingTreeCommitMessage(workingTreeCommitMessageInput);
+    if (selectedCommitRepositoryPath) {
+      vscode.postMessage({ type: 'updateCommitMessage', repositoryPath: selectedCommitRepositoryPath, message: workingTreeCommitMessageInput.value });
+    }
+  });
+  workingTreeCommitMessageInput.addEventListener('keydown', function(event) {
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+      event.preventDefault();
+      postWorkingTreeCommit('commit');
+    }
+  });
+  workingTreeCommitMain.addEventListener('click', function() { postWorkingTreeCommit('commit'); });
+  workingTreeCommitMore.addEventListener('click', function(event) {
+    event.stopPropagation();
+    workingTreeCommitMenu.hidden = !workingTreeCommitMenu.hidden;
+  });
+  workingTreeCommitMenu.addEventListener('click', function(event) {
+    const button = event.target.closest('[data-working-tree-commit]');
+    if (!button) return;
+    postWorkingTreeCommit(button.getAttribute('data-working-tree-commit') || 'commit');
+  });
+  document.addEventListener('click', function(event) {
+    if (!event.target.closest('#workingTreeCommitActions')) closeWorkingTreeCommitMenu();
+  });
+  document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape') closeWorkingTreeCommitMenu();
   });
   document.getElementById('commitContextMenu').addEventListener('click', function(event) {
     var button = event.target.closest('[data-commit-action]');

@@ -15,6 +15,11 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   .selector-group { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0; }
   #branchSelector { flex: 0 1 auto; min-width: 0; }
   .repo-group { flex: 0 1 auto; min-width: 0; }
+  #commitSelectors .selector-icon-button { display: inline-grid; place-items: center; flex: 0 0 26px; width: 26px; height: 26px; padding: 0; background: transparent; color: var(--vscode-icon-foreground); }
+  #commitSelectors .selector-icon-button:hover:not(:disabled) { background: var(--vscode-toolbar-hoverBackground); }
+  #commitSelectors .selector-icon-button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  #commitSelectors .selector-icon-button:disabled { cursor: default; opacity: .45; }
+  #commitSelectors .selector-icon-button .codicon { font-size: 14px; line-height: 1; }
   /* 分支@仓库之间保留 2px 间距, 分隔符使用不透明的加粗前景色。 */
   .selector-separator { flex: 0 0 auto; color: var(--vscode-foreground); font-size: 11px; font-weight: 700; }
   /* 打开 Commit 面板 与 未提交仓库计数 合成一个可点击组: 整块都可点, 不再只有数字徽标。常驻 repo 行末尾, 无未提交时显示 0。 */
@@ -95,6 +100,7 @@ export const SELECTOR_BAR_SUB_PANEL_MARKUP = `
         <button class="dropdown-current" type="button" title="切换仓库或子仓库" aria-expanded="false" disabled><span class="dropdown-label"><span class="dropdown-spinner" hidden aria-hidden="true"></span>未选择仓库</span><span class="dropdown-chevron" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></span></button>
         <div class="dropdown-menu" role="menu"><input class="dropdown-filter" type="text" placeholder="筛选仓库" aria-label="筛选仓库"><div class="dropdown-options"></div></div>
       </div></div>
+      <button class="selector-icon-button" id="repositoryTerminalBtn" type="button" title="在终端中打开当前仓库" aria-label="在终端中打开当前仓库" disabled><span class="codicon codicon-terminal" aria-hidden="true"></span></button>
       <button class="uncommitted-repo-group" id="uncommittedRepoBadge" title="打开 Commit 面板" aria-label="打开存在未提交文件的仓库"><span class="codicon codicon-source-control" aria-hidden="true"></span><span class="uncommitted-repo-count">0</span></button>
     </div>
   </div>
@@ -138,6 +144,9 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
   function updateBranchLoading(loading) {
     updateDropdownLoading(branchDropdown, loading, '正在加载分支');
   }
+  document.getElementById('repositoryTerminalBtn').addEventListener('click', function() {
+    vscode.postMessage({ type: 'openRepositoryTerminal' });
+  });
   document.getElementById('uncommittedRepoBadge').addEventListener('click', function() {
     vscode.postMessage({ type: 'openCommitPanel' });
   });
@@ -261,6 +270,7 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
       ? repositoryIcon(repository.hasSubmodules, repository.isSubmodule) + '<span class="dropdown-value">' + escapeHtml(repository.label) + '</span>'
       : '<span class="dropdown-value">未选择仓库</span>') + '<span class="dropdown-spinner"' + (loading ? '' : ' hidden') + ' aria-hidden="true"></span>';
     repositoryDropdown.current.title = repository ? repository.path : '未选择仓库';
+    document.getElementById('repositoryTerminalBtn').disabled = !repository;
   }
   function updateSelectedBranchDisplay(display) {
     // 是否置灰只由完整分支列表是否为空决定，不能由当前选中分支决定。
