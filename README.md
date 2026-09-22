@@ -95,7 +95,7 @@ Gitk Pro 在 VS Code 底部面板中提供 Gitk 风格的提交图，并将历�
 - VS Code `1.94.0` 或更高版本。
 - 通用原生 VSIX 同时包含 Windows x64/arm64、Linux x64/arm64/armhf、Alpine x64/arm64、macOS x64/arm64 的 `.node` 文件，安装后会按扩展宿主的平台与架构加载对应模块。
 - 浏览器版 VS Code（Web Extension Host）暂不支持；libgit2 原生模块无法在浏览器内运行，需要另行实现 Web 后端。远程开发时，通用 VSIX 会在远程扩展宿主中选择对应的原生模块。
-- 日常运行不要求安装 Git CLI；SSH agent、credential helper、GPG/SSH 签名程序以及自定义 filter/LFS 程序仍按仓库配置调用。
+- 日常运行不要求安装 Git CLI；SSH agent、credential helper、GPG/SSH 签名程序以及自定义 filter/LFS 程序仍按仓库配置调用。若企业安全网关拦截 libgit2 的 HTTP 响应，远程 fetch/pull/push 与子模块更新会在检测到该响应后尝试回退到 Git CLI。
 - 当前工作区至少包含一个 Git 仓库。
 
 ## 开发

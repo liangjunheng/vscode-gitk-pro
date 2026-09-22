@@ -1,5 +1,45 @@
+import { execFile } from 'child_process';
 import * as vscode from 'vscode';
 import { invokeNativeGit } from './nativeGitBinding';
+
+function isUnexpectedHttpContentType(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.includes('unexpected content-type') && message.includes('class=Http');
+}
+
+function runGitCli(rootUri: vscode.Uri, args: readonly string[]): Promise<void> {
+    return new Promise((resolve, reject) => {
+        execFile('git', ['-C', rootUri.fsPath, ...args], {
+            windowsHide: true,
+            encoding: 'utf8',
+            maxBuffer: 64 * 1024 * 1024,
+        }, (error, stdout, stderr) => {
+            if (!error) {
+                resolve();
+                return;
+            }
+            const reason = stderr.trim() || stdout.trim() || error.message;
+            reject(new Error(`Git CLI 回退失败：${reason}`));
+        });
+    });
+}
+
+async function withHttpTransportFallback<T>(
+    rootUri: vscode.Uri,
+    operation: string,
+    nativeOperation: () => Promise<T>,
+    cliArgs: readonly string[],
+    fallbackValue: T,
+): Promise<T> {
+    try {
+        return await nativeOperation();
+    } catch (error) {
+        if (!isUnexpectedHttpContentType(error)) { throw error; }
+        console.warn(`[Gitk][Git] libgit2 ${operation} 收到非 Git HTTP 内容，改用 Git CLI 兼容企业安全网关。`);
+        await runGitCli(rootUri, cliArgs);
+        return fallbackValue;
+    }
+}
 
 export interface NativeStatusSummary { hasStagedChanges: boolean; hasUnstagedChanges: boolean; }
 export interface NativeSyncResult { changed?: boolean; fastForward?: boolean; }
@@ -37,14 +77,67 @@ export const rebase = (rootUri: vscode.Uri, revision: string): Promise<void> =>
     invokeNativeGit<void>('rebase', { rootPath: rootUri.fsPath, revision });
 export const reset = (rootUri: vscode.Uri, revision: string, mode: 'soft' | 'mixed' | 'hard'): Promise<void> =>
     invokeNativeGit<void>('reset', { rootPath: rootUri.fsPath, revision, mode });
-export const fetchRemotes = (rootUri: vscode.Uri, remote?: string): Promise<void> =>
-    invokeNativeGit<void>('fetch', { rootPath: rootUri.fsPath, remote, prune: true });
-export const pull = (rootUri: vscode.Uri, remote?: string, remoteBranch?: string, localBranch?: string): Promise<NativeSyncResult> =>
-    invokeNativeGit<NativeSyncResult>('pull', { rootPath: rootUri.fsPath, remote, remoteBranch, localBranch });
-export const push = (rootUri: vscode.Uri, remote?: string, localBranch?: string, remoteBranch?: string): Promise<void> =>
-    invokeNativeGit<void>('push', { rootPath: rootUri.fsPath, remote, localBranch, remoteBranch });
-export const updateSubmodules = (rootUri: vscode.Uri, paths: readonly string[] = []): Promise<void> =>
-    invokeNativeGit<void>('updateSubmodules', { rootPath: rootUri.fsPath, paths });
+export function fetchRemotes(rootUri: vscode.Uri, remote?: string): Promise<void> {
+    const cliArgs = remote
+        ? ['fetch', '--prune', remote]
+        : ['fetch', '--all', '--prune'];
+    return withHttpTransportFallback(
+        rootUri,
+        'fetch',
+        () => invokeNativeGit<void>('fetch', { rootPath: rootUri.fsPath, remote, prune: true }),
+        cliArgs,
+        undefined,
+    );
+}
+
+export function pull(
+    rootUri: vscode.Uri,
+    remote?: string,
+    remoteBranch?: string,
+    localBranch?: string,
+): Promise<NativeSyncResult> {
+    const cliArgs = ['pull'];
+    if (remote) { cliArgs.push(remote); }
+    if (remote && remoteBranch) { cliArgs.push(remoteBranch); }
+    return withHttpTransportFallback(
+        rootUri,
+        'pull',
+        () => invokeNativeGit<NativeSyncResult>('pull', { rootPath: rootUri.fsPath, remote, remoteBranch, localBranch }),
+        cliArgs,
+        {},
+    );
+}
+
+export function push(
+    rootUri: vscode.Uri,
+    remote?: string,
+    localBranch?: string,
+    remoteBranch?: string,
+): Promise<void> {
+    // libgit2 已在进入网络传输前执行 pre-push；回退时使用 --no-verify，避免同一 hook 执行两次。
+    const cliArgs = ['push', '--no-verify'];
+    if (remote) { cliArgs.push(remote); }
+    if (localBranch) {
+        cliArgs.push(remoteBranch ? `${localBranch}:${remoteBranch}` : localBranch);
+    }
+    return withHttpTransportFallback(
+        rootUri,
+        'push',
+        () => invokeNativeGit<void>('push', { rootPath: rootUri.fsPath, remote, localBranch, remoteBranch }),
+        cliArgs,
+        undefined,
+    );
+}
+
+export function updateSubmodules(rootUri: vscode.Uri, paths: readonly string[] = []): Promise<void> {
+    return withHttpTransportFallback(
+        rootUri,
+        'submodule update',
+        () => invokeNativeGit<void>('updateSubmodules', { rootPath: rootUri.fsPath, paths }),
+        ['submodule', 'update', '--init', '--recursive', ...(paths.length > 0 ? ['--', ...paths] : [])],
+        undefined,
+    );
+}
 export const restoreSubmodule = (rootUri: vscode.Uri, revision: string): Promise<void> =>
     invokeNativeGit<void>('restoreSubmodule', { rootPath: rootUri.fsPath, revision });
 export const indexGitlink = (rootUri: vscode.Uri, path: string): Promise<string | null> =>
