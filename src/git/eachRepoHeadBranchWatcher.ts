@@ -204,11 +204,14 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
             getCurrentGitHeadHash(rootUri).catch(() => undefined),
         ]);
         if (!headHash) { return undefined; }
-        return branchName
+        const branchRef = branchName && branchName.startsWith('refs/heads/')
+            ? branchName
+            : branchName ? `refs/heads/${branchName}` : undefined;
+        return branchRef
             ? new GitBranchOption({
                 repoOption: repository,
-                name: branchName,
-                label: branchName.replace(/^refs\/heads\//, ''),
+                name: branchRef,
+                label: branchRef.replace(/^refs\/heads\//, ''),
                 hash: headHash,
                 kind: 'current',
             })
