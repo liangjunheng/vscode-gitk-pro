@@ -1,11 +1,9 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { promises as fs } from 'fs';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { GitRepositoryOption } from '../types';
+import { invokeNativeGit } from './nativeGitBinding';
 
-const execFileAsync = promisify(execFile);
 
 function repoKey(filePath: string): string {
     return process.platform === 'win32' ? path.normalize(filePath).toLowerCase() : path.normalize(filePath);
@@ -273,8 +271,7 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
 
     private async resolveRepositoryRoot(directory: string): Promise<string | undefined> {
         try {
-            const { stdout } = await execFileAsync('git', ['--no-optional-locks', '-C', directory, 'rev-parse', '--show-toplevel'], { windowsHide: true });
-            const rootPath = stdout.trim();
+            const { workdir: rootPath } = await invokeNativeGit<{ workdir: string }>('discover', { path: directory });
             return rootPath ? path.normalize(rootPath) : undefined;
         } catch {
             return undefined;

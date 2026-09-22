@@ -1,13 +1,11 @@
-import { execFile } from 'child_process';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { promisify } from 'util';
 import { GitBranchOption, type GitRepositoryOption } from '../types';
 
-const execFileAsync = promisify(execFile);
 import { getGitBranches } from './gitLogProvider';
 import { GitRepoController } from './gitRepoController';
 import { RepoHeadBranchWatcher } from './eachRepoHeadBranchWatcher';
+import { invokeNativeGit } from './nativeGitBinding';
 
 interface BranchSnapshot {
     repository: GitRepositoryOption;
@@ -128,11 +126,9 @@ export class SelectedRepoTotalBranchWatcher implements vscode.Disposable {
 
     private async createRepositoryWatcher(key: string, repository: GitRepositoryOption): Promise<vscode.Disposable | undefined> {
         try {
-            const { stdout } = await execFileAsync('git', [
-                '--no-optional-locks', '-C', vscode.Uri.parse(repository.path).fsPath,
-                'rev-parse', '--absolute-git-dir',
-            ], { windowsHide: true });
-            const gitDir = stdout.trim();
+            const { gitDir } = await invokeNativeGit<{ gitDir: string }>('discover', {
+                path: vscode.Uri.parse(repository.path).fsPath,
+            });
             if (!gitDir || this.repositories.get(key)?.path !== repository.path) { return undefined; }
             const gitUri = vscode.Uri.file(gitDir);
             const watcher = vscode.workspace.createFileSystemWatcher(

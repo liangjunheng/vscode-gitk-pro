@@ -1,14 +1,15 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { type ChangeSetMode, type ChangedFile, type GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
-import { getCommitFiles, getGitAheadCount, getGitlinkPathsInCommit, getPushBranches, type PushBranchOption, runGitCommand, runGitReadCommand, readCurrentCommitMessage } from '../git/gitLogProvider';
+import { getCommitFiles, getGitAheadCount, getGitlinkPathsInCommit, getPushBranches, type PushBranchOption, readCurrentCommitMessage } from '../git/gitLogProvider';
+import { checkoutBranch, commitDetails, hasConflicts, indexGitlink, pull, push, rangeCommits, resolveRevision, restoreAll, restoreSubmodule, trackedPaths } from '../git/gitNativeOperations';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { CommitPanel, type CommitPanelSnapshot, type CommitCard, type CommitCardStatePatch } from './commitPanel';
 import { CommitPanelViewTitleController } from './commitPanelViewTitleController';
 import { renderGitkWebviewHtml } from './gitkWebviewDocument';
 import { commitWithMessage } from '../git/gitCommitService';
 import { DiffReader } from '../git/diffReader';
-import { CliGitBackend } from '../git/gitBackend';
+import { LibGit2Backend } from '../git/libGit2Backend';
 import { GitCommitEditMsgEditor } from './gitCommitEditMsgEditor';
 import { GitActionRunner } from '../services/gitActions';
 import { RepoSubmoduleWatcher } from '../git/gitRepoSubmoduleWatcher';
@@ -75,7 +76,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private readonly pullBeforePushByRepo = new Map<string, boolean>();
     private readonly pushBranchByRepository = new Map<string, Awaited<ReturnType<typeof getPushBranches>>[number]>();
     private readonly lastPushedBranchByRepository = new Map<string, Awaited<ReturnType<typeof getPushBranches>>[number]>();
-    private readonly gitBackend = new CliGitBackend();
+    private readonly gitBackend = new LibGit2Backend();
     private readonly diffReader: DiffReader;
     private readonly workingTreeDiffCache = new Map<string, readonly DiffPayload[]>();
     private readonly gitActions: GitActionRunner;
@@ -499,6 +500,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             file.oldMode,
             file.newMode,
             file.isConflict,
+            file.isUntracked,
+            file.workingTreeKind,
         ].join('\u0000')).join('\u0001');
         return `${repositoryPath}\u0002${hash}\u0002${fileState}`;
     }
@@ -578,20 +581,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const files = [...conflicts, ...staged, ...unstaged];
         const workingTreeDiffCacheKey = this.getWorkingTreeDiffCacheKey(selectedBranch.repoOption.path, selectedHash, files);
         const cachedDiffs = this.workingTreeDiffCache.get(workingTreeDiffCacheKey);
-        if (cachedDiffs) {
-            const selectedFile = cachedDiffs.find(file => (file.diffKey || file.path) === this.selectedPath)
-                ?? cachedDiffs.find(file => file.path === this.files.find(current => (current.diffKey || current.path) === this.selectedPath)?.path)
-                ?? cachedDiffs[0];
-            store.setState({
-                files: [...cachedDiffs],
-                filesLoading: false,
-                diffLoading: false,
-                diffError: undefined,
-                diffProgress: { completed: cachedDiffs.length, total: cachedDiffs.length },
-                selectedPath: selectedFile?.diffKey || selectedFile?.path,
-            });
-            return;
-        }
+        // Update both file-list consumers even when the Diff payload can be reused.
         if (updateWorkingTreeState) {
             const commitRepositories = store.getState().commitRepositories;
             const commitRepository = {
@@ -614,6 +604,22 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.commitPanel.update(this.buildCommitSnapshot());
             }
         }
+        // Worktree content has no stable object id. Never reuse a full snapshot
+        // for a mutation that names affected paths, even when the list is identical.
+        if (cachedDiffs && (!affectedPaths || affectedPaths.size === 0)) {
+            const selectedFile = cachedDiffs.find(file => (file.diffKey || file.path) === this.selectedPath)
+                ?? cachedDiffs.find(file => file.path === this.files.find(current => (current.diffKey || current.path) === this.selectedPath)?.path)
+                ?? cachedDiffs[0];
+            store.setState({
+                files: [...cachedDiffs],
+                filesLoading: false,
+                diffLoading: false,
+                diffError: undefined,
+                diffProgress: { completed: cachedDiffs.length, total: cachedDiffs.length },
+                selectedPath: selectedFile?.diffKey || selectedFile?.path,
+            });
+            return;
+        }
         const previousSelectedFile = this.files.find(file => (file.diffKey || file.path) === this.selectedPath);
         const previousDiffsByKey = new Map(this.files
             .filter((file): file is DiffPayload => file instanceof DiffPayload)
@@ -629,14 +635,28 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             })
             : files;
         const reusedCount = reusableDiffsByKey.size;
+        const interimFiles = files.map((file, index) => {
+            const key = file.diffKey || file.path;
+            const reusable = reusableDiffsByKey.get(key);
+            return reusable
+                ? new DiffPayload({ ...reusable, ...file, index })
+                : new CommitFile({ ...file });
+        });
+        const interimSelectedFile = files.find(file => (file.diffKey || file.path) === this.selectedPath)
+            ?? files.find(file => file.path === previousSelectedFile?.path)
+            ?? files[0];
         const rootUri = vscode.Uri.parse(selectedBranch.repoOption.path);
         this.diffReader.stop();
+        // 状态清单已经是权威结果，先立即切换分组；Diff 正文随后异步补齐。
+        // 否则操作期间仍显示旧 workingTreeKind，读取完成时文件会突然集中到另一个分组。
         store.setState({
+            files: interimFiles,
+            selectedPath: interimSelectedFile?.diffKey || interimSelectedFile?.path,
             diffLoading: true,
             diffError: undefined,
             diffProgress: { completed: reusedCount, total: files.length },
+            diffGeneration: store.getState().diffGeneration + 1,
         });
-        store.setState({ diffGeneration: store.getState().diffGeneration + 1 });
         const readDiffs = filesToRead.length > 0
             ? await this.diffReader.readDiffs(rootUri, 'uncommitted', filesToRead, 'uncommitted', 0, completed => {
                 if (generation !== this.commitFilesGeneration) { return; }
@@ -855,6 +875,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (!isWorkingTreeHash(selectedCommit?.hash)
             || selectedCommit.gitBranchOption?.repoOption.path !== branch.repoOption.path
             || selectedCommit.gitBranchOption.hash !== branch.hash) { return; }
+        // Do not let a content-only event invalidate the post-mutation list refresh.
+        // Re-read these paths together with the operation's own paths at the end.
+        if (this.workingTreeUiMutations.has(branch.repoOption.path)) {
+            this.pendingWorkingTreeDiffPaths = new Set([
+                ...(this.pendingWorkingTreeDiffPaths ?? []), ...affectedPaths,
+            ]);
+            return;
+        }
         // 内容事件覆盖工作区内容变化与 index 内容变化；DiffReader 会按 workingTreeKind 读取正确来源。
         if (affectedPaths.length > 0) { void this.refreshWorkingTreeDiffs(branch, affectedPaths); }
     }
@@ -917,7 +945,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     ): void {
         const repositoryPath = this.commitController.uncommittedRepositoryPath;
         if (repositoryPath && this.workingTreeUiMutations.has(repositoryPath)) {
-            this.deferredWorkingTreeChanges.set(repositoryPath, { changes, affectedPaths: eventAffectedPaths });
+            const previous = this.deferredWorkingTreeChanges.get(repositoryPath);
+            this.deferredWorkingTreeChanges.set(repositoryPath, {
+                changes,
+                affectedPaths: [...new Set([...(previous?.affectedPaths ?? []), ...(eventAffectedPaths ?? [])])],
+            });
             return;
         }
         this.applyWorkingTreeChanges(changes, eventAffectedPaths);
@@ -1783,20 +1815,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     }
                     if (pullBeforePush) {
                         progress.report({ message: `正在切换并拉取：${repositoryPath}` });
-                        await runGitCommand(repositoryUri, ['switch', repositoryBranch.name]);
-                        await runGitCommand(repositoryUri, ['pull', repositoryBranch.upstreamRemote, repositoryBranch.upstreamBranch]);
+                        await checkoutBranch(repositoryUri, repositoryBranch.name);
+                        await pull(repositoryUri, repositoryBranch.upstreamRemote, repositoryBranch.upstreamBranch, repositoryBranch.name);
                     }
                     progress.report({ message: `正在推送：${repositoryPath}` });
                     if (repositoryPath === rootRepositoryPath) {
-                        await runGitCommand(repositoryUri, [
-                            'push',
-                            branch.upstreamRemote,
-                            `${branch.name}:${branch.upstreamBranch}`,
-                        ]);
+                        await push(repositoryUri, branch.upstreamRemote, branch.name, branch.upstreamBranch);
                     } else {
-                        await runGitCommand(repositoryUri, [
-                            'push', repositoryBranch.upstreamRemote, `${repositoryBranch.name}:${repositoryBranch.upstreamBranch}`,
-                        ]);
+                        await push(repositoryUri, repositoryBranch.upstreamRemote, repositoryBranch.name, repositoryBranch.upstreamBranch);
                         pushedBranchByRepository.set(repositoryPath, repositoryBranch);
                     }
                 }
@@ -1845,8 +1871,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             conflictedRepositories = (await Promise.all(orderedRepositoryPaths.map(async currentPath => {
                 const rootUri = this.getRepoRootUri(currentPath);
                 if (!rootUri) { return undefined; }
-                const output = await runGitReadCommand(rootUri, ['diff', '--name-only', '--diff-filter=U', '-z', '--']);
-                return output.split('\0').some(Boolean) ? currentPath : undefined;
+                return await hasConflicts(rootUri) ? currentPath : undefined;
             }))).filter((currentPath): currentPath is string => Boolean(currentPath));
         } catch (error) {
             void vscode.window.showErrorMessage(`检查合并冲突失败：${error instanceof Error ? error.message : String(error)}`);
@@ -1883,7 +1908,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                         const childUri = vscode.Uri.parse(currentPath);
                         const parentUri = vscode.Uri.parse(parent.path);
                         const gitlinkPath = path.relative(parentUri.fsPath, childUri.fsPath).split(path.sep).join('/');
-                        await runGitCommand(parentUri, ['add', '--', gitlinkPath]);
+                        await this.gitBackend.stage(parentUri, [gitlinkPath]);
                     }
                 }
             }
@@ -2143,8 +2168,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     private async getCurrentlyTrackedPaths(rootUri: vscode.Uri, paths: readonly string[]): Promise<string[]> {
         if (paths.length === 0) { return []; }
-        const output = await runGitReadCommand(rootUri, ['ls-files', '--cached', '-z', '--', ...paths]);
-        return output.split('\0').filter(Boolean);
+        return trackedPaths(rootUri, paths);
     }
 
     private async processWorkingTreeActionQueue(): Promise<void> {
@@ -2159,11 +2183,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     const mutationBranches = [operation.rootUri.toString(), ...operation.affectedSubmoduleRepositoryPaths]
                         .flatMap(repositoryPath => currentBranches.filter(branch => branch.repoOption.path === repositoryPath));
                     mutationBranches.forEach(branch => this.uncommittedFilesWatcher.beginWorkingTreeMutation(branch));
+                    const rootRepositoryPath = operation.rootUri.toString();
+                    this.workingTreeUiMutations.add(rootRepositoryPath);
+                    this.deferredWorkingTreeChanges.delete(rootRepositoryPath);
                     let mutationEnded = false;
                     const endMutation = async (progress?: vscode.Progress<{ message?: string }>): Promise<void> => {
-                        const rootRepositoryPath = operation.rootUri.toString();
-                        this.workingTreeUiMutations.add(rootRepositoryPath);
-                        this.deferredWorkingTreeChanges.delete(rootRepositoryPath);
                         await Promise.all(mutationBranches.map(branch => {
                             const isRootRepository = branch.repoOption.path === rootRepositoryPath;
                             return this.uncommittedFilesWatcher.endWorkingTreeMutation(
@@ -2175,10 +2199,22 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                         mutationEnded = true;
                         const deferred = this.deferredWorkingTreeChanges.get(rootRepositoryPath);
                         this.deferredWorkingTreeChanges.delete(rootRepositoryPath);
+                        // A subsequent watcher event must be free to supersede this read.
                         this.workingTreeUiMutations.delete(rootRepositoryPath);
-                        if (deferred) {
+                        // Status may be structurally equal (same paths in both sections) even
+                        // though stage/discard changed their contents. In that case the watcher
+                        // emits no list event; always reconcile the selected view from its
+                        // post-mutation snapshot instead of leaving the old file cards onscreen.
+                        const rootBranch = mutationBranches.find(branch => branch.repoOption.path === rootRepositoryPath);
+                        const currentChanges = rootBranch
+                            ? this.uncommittedFilesWatcher.getCachedUncommittedFilesByHeadBranch(rootBranch)
+                            : undefined;
+                        const changes = currentChanges ?? deferred?.changes;
+                        if (changes) {
                             progress?.report({ message: '正在刷新变更文件和差异视图...' });
-                            await this.applyWorkingTreeChanges(deferred.changes, deferred.affectedPaths);
+                            await this.applyWorkingTreeChanges(changes, [
+                                ...new Set([...operation.paths, ...(deferred?.affectedPaths ?? [])]),
+                            ]);
                         }
                     };
                     try {
@@ -2215,7 +2251,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                                     const childUri = vscode.Uri.parse(repositoryPath);
                                     const parentUri = vscode.Uri.parse(parent.path);
                                     const gitlinkPath = path.relative(parentUri.fsPath, childUri.fsPath).split(path.sep).join('/');
-                                    const targetCommit = (await runGitReadCommand(parentUri, ['rev-parse', `:${gitlinkPath}`])).trim();
+                                    const targetCommit = await indexGitlink(parentUri, gitlinkPath);
                                     if (targetCommit) { targetCommitByRepository.set(repositoryPath, targetCommit); }
                                 }
                                 // 状态快照可能在确认弹窗期间过期; 以当前 index 的实际跟踪状态为准,
@@ -2237,9 +2273,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                                 // 子模块撤销范围已由弹窗确定；逐仓库恢复并回到父仓库 gitlink 指定的提交。
                                 for (const repositoryPath of operation.affectedSubmoduleRepositoryPaths) {
                                     const repositoryUri = vscode.Uri.parse(repositoryPath);
-                                    await runGitCommand(repositoryUri, ['restore', '--staged', '--worktree', '--', '.']);
+                                    await restoreAll(repositoryUri);
                                     const targetCommit = targetCommitByRepository.get(repositoryPath);
-                                    if (targetCommit) { await runGitCommand(repositoryUri, ['checkout', '--detach', targetCommit]); }
+                                    if (targetCommit) { await restoreSubmodule(repositoryUri, targetCommit); }
                                 }
                             } else if (operation.action === 'stage') {
                                 await this.gitBackend.stage(operation.rootUri, operation.paths);
@@ -2250,6 +2286,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                             await endMutation(progress);
                         });
                     } finally {
+                        this.workingTreeUiMutations.delete(rootRepositoryPath);
+                        this.deferredWorkingTreeChanges.delete(rootRepositoryPath);
                         if (!mutationEnded) {
                             await Promise.all(mutationBranches.map(branch => {
                                 const isRootRepository = branch.repoOption.path === operation.rootUri.toString();
@@ -2281,35 +2319,33 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const isRealObjectId = (hash: string | undefined): hash is string => Boolean(hash) && !/^0+$/.test(hash);
             // `git diff` 的工作区端 gitlink OID 是零占位；真实新端只能由子模块工作区 HEAD 提供。
             if (file.workingTreeKind === 'unstaged' && !isRealObjectId(file.newObjectId)) {
-                file.newObjectId = (await runGitReadCommand(submoduleUri, ['rev-parse', '--verify', 'HEAD'])).trim();
+                file.newObjectId = await resolveRevision(submoduleUri, 'HEAD');
             }
             const hashes = [file.oldObjectId, file.newObjectId].filter(isRealObjectId);            if (hashes.length === 0) { return; }
             try {
-                const output = await runGitReadCommand(submoduleUri, ['show', '-s', '--format=%H%x1f%h%x1f%B%x1e', ...hashes]);
+                const details = await commitDetails(submoduleUri, hashes);
                 const commits = new Map<string, GitlinkCommit>();
-                for (const record of output.split('\x1e')) {
-                    const [hash, shortHash, message] = record.split('\x1f');
-                    const normalizedMessage = message?.trim();
-                    const subject = normalizedMessage?.split(/\r?\n/).find(line => line.trim().length > 0)?.trim();
-                    if (hash && shortHash) { commits.set(hash, { hash, shortHash, subject, message: normalizedMessage || undefined }); }
+                for (const detail of details) {
+                    const normalizedMessage = detail.message.trim();
+                    const subject = normalizedMessage.split(/\r?\n/).find(line => line.trim().length > 0)?.trim();
+                    commits.set(detail.hash, { hash: detail.hash, shortHash: detail.shortHash, subject, message: normalizedMessage || undefined });
                 }
                 file.oldGitlinkCommit = file.oldObjectId ? commits.get(file.oldObjectId) : undefined;
                 file.newGitlinkCommit = file.newObjectId ? commits.get(file.newObjectId) : undefined;
                 if (file.status !== 'A' && file.status !== 'D'
                     && isRealObjectId(file.oldObjectId) && isRealObjectId(file.newObjectId)) {
-                    const rangeOutput = await runGitReadCommand(submoduleUri, [
-                        'log', '--format=%H%x1f%h%x1f%B%x1e', `${file.oldObjectId}..${file.newObjectId}`,
-                    ]);
-                    const rangeCommits = rangeOutput.split('\x1e').flatMap(record => {
-                        const [hash, shortHash, message] = record.split('\x1f');
-                        const normalizedMessage = message?.trim();
-                        const subject = normalizedMessage?.split(/\r?\n/).find(line => line.trim().length > 0)?.trim();
-                        return hash && shortHash ? [{ hash, shortHash, subject, message: normalizedMessage || undefined }] : [];
+                    const detailsInRange = await rangeCommits(submoduleUri, file.oldObjectId, file.newObjectId);
+                    const rangeValues: GitlinkCommit[] = detailsInRange.map(detail => {
+                        const normalizedMessage = detail.message.trim();
+                        return {
+                            hash: detail.hash,
+                            shortHash: detail.shortHash,
+                            subject: normalizedMessage.split(/\r?\n/).find(line => line.trim().length > 0)?.trim(),
+                            message: normalizedMessage || undefined,
+                        };
                     });
-                    file.gitlinkRangeCommits = [
-                        file.oldGitlinkCommit,
-                        ...rangeCommits,
-                    ].filter((commit): commit is GitlinkCommit => Boolean(commit));
+                    file.gitlinkRangeCommits = [file.oldGitlinkCommit, ...rangeValues]
+                        .filter((commit): commit is GitlinkCommit => Boolean(commit));
                 }
             } catch {
                 // SHA 仍由父仓库 gitlink 保存；子模块本地缺少对象或两端非线性时仅不显示范围消息。

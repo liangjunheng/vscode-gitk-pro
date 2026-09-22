@@ -1,0 +1,34 @@
+[package]
+name = "vscode-gitk-libgit2"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "3.12.7", default-features = false, features = ["napi8", "async", "dyn-symbols"] }
+napi-derive = "3.6.8"
+git2 = { version = "0.21.0", features = ["vendored-libgit2", "vendored-openssl", "https", "ssh", "cred"] }
+once_cell = "1.21.3"
+parking_lot = "0.12.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = "0.4"
+
+[dev-dependencies]
+tempfile = "3.23.0"
+
+[build-dependencies]
+napi-build = "2.4.4"
+
+[profile.release]
+lto = true
+strip = "symbols"
+codegen-units = 1
+
+
+
+[patch.crates-io]
+napi-build = { path = "../napi-build-patch" }

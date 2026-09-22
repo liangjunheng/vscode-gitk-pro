@@ -4,7 +4,7 @@ import { DiffPayload, type ChangeSetMode, type CommitFile } from '../types';
 import { store } from '../state/store';
 import type { GitBackend } from './gitBackend';
 
-// git cat-file 已把内容解码为 utf8 字符串, 二进制内容会含 NUL 字符; 只探测前若干字符即可判定。
+// libgit2 对象读取层已把内容解码为 UTF-8 字符串；二进制内容会含 NUL 字符，只探测前若干字符即可判定。
 function containsNul(text: string | undefined): boolean {
     if (!text) { return false; }
     const limit = Math.min(text.length, 8000);
@@ -18,9 +18,9 @@ function containsNul(text: string | undefined): boolean {
  * Diff 读取器: 负责从 Git 仓库读取文件内容并写入 Store (单一数据源)
  *
  * 流程:
- * 1. 每仓库复用一个长驻 git cat-file --batch 子进程
- * 2. 对象请求串行写入并流式解析 stdout，避免重复支付 Git 进程启动成本
- * 3. stop() 只推进代次门禁阻止旧结果落地，不销毁可复用的空闲会话
+ * 1. 通过异步 libgit2 原生后端批量读取对象
+ * 2. 原生任务在线程池执行，避免阻塞扩展宿主与重复启动外部进程
+ * 3. stop() 只推进代次门禁，阻止旧结果落地
  * 4. 全部完成后一次性写回 store.files 并结束 diffLoading
  */
 export class DiffReader {
@@ -28,7 +28,7 @@ export class DiffReader {
 
     constructor(private readonly gitBackend: GitBackend) {}
 
-    /** 使旧读取结果失效；batch 进程保留并串行排空，后续请求可直接复用。 */
+    /** 使旧读取结果失效；已提交的原生任务完成后会被代次门禁丢弃。 */
     stop(): void {
         this.requestGeneration++;
     }
@@ -37,7 +37,7 @@ export class DiffReader {
         this.requestGeneration++;
     }
 
-    /** 后台完成 Git 进程与对象库冷启动，让首次用户操作直接复用已就绪会话。 */
+    /** 后台完成 libgit2 原生模块与对象库冷启动。 */
     warmup(rootUri: vscode.Uri): Promise<void> {
         return this.gitBackend.warmup(rootUri);
     }

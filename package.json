@@ -19,6 +19,7 @@
   ],
   "icon": "media/gitk-logo.png",
   "main": "./out/extension.js",
+  "extensionKind": ["workspace"],
   "contributes": {
     "languages": [
       {
@@ -222,9 +223,17 @@
     "vscode:prepublish": "npm run compile",
     "compile": "node scripts/copy-monaco.cjs && tsc -p ./",
     "watch": "node scripts/copy-monaco.cjs && tsc -watch -p ./",
-    "lint": "eslint src --ext ts"
+    "lint": "eslint src --ext ts",
+    "build:native": "napi build --platform --no-js --release --manifest-path native/git2-backend/Cargo.toml -o native",
+    "build": "npm run build:native && npm run compile",
+    "test:native": "cargo test --manifest-path native/git2-backend/Cargo.toml",
+    "test:binding": "node scripts/test-native-binding.cjs",
+    "test:parity": "npm run check:native && npm run test:native && npm run build && npm run test:binding",
+    "check:native": "cargo fmt --check --manifest-path native/git2-backend/Cargo.toml && cargo clippy --manifest-path native/git2-backend/Cargo.toml --all-targets --all-features -- -D warnings",
+    "package:vsix": "npm run build && node scripts/package-native-vsix.cjs"
   },
   "devDependencies": {
+    "@napi-rs/cli": "^3.10.4",
     "@types/node": "^18.0.0",
     "@types/vscode": "^1.94.0",
     "@vscode/vsce": "^3.9.2",

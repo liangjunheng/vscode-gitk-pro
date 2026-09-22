@@ -1,14 +1,12 @@
 import * as vscode from 'vscode';
-import { execFile } from 'child_process';
 import * as path from 'path';
-import { promisify } from 'util';
+import { invokeNativeGit } from './nativeGitBinding';
+import { fetchRemotes, pull as pullNative, push as pushNative, updateSubmodules as updateSubmodulesNative } from './gitNativeOperations';
 // 类型定义统一从 types/ 导入, 消除重复
 export type { ChangeSetMode, FileStatus, GitBranchOption, GitRepositoryOption, GitRepositoryState, WorkingTreeChanges } from '../types';
 export { CommitFile, CommitMetadata } from '../types';
 import { CommitFile, CommitMetadata, GitBranchOption, GitRepositoryOption, GitRepositoryState, WorkingTreeChanges, type FileStatus } from '../types';
 
-const execFileAsync = promisify(execFile);
-const noOptionalLocks = ['--no-optional-locks'] as const;
 
 // 格式化日期
 function formatDateLabel(date: Date | string): string {
@@ -24,6 +22,28 @@ function formatDateLabel(date: Date | string): string {
         d.getSeconds().toString().padStart(2, '0'),
     ];
     return `${parts[0]}-${parts[1]}-${parts[2]} ${parts[3]}:${parts[4]}:${parts[5]}`;
+}
+
+interface NativeCommitMetadata {
+    hash: string;
+    shortHash: string;
+    parents: string[];
+    author: string;
+    authorEmail?: string;
+    committer: string;
+    committerEmail?: string;
+    authorDate: string;
+    message: string;
+    body?: string;
+    rawMessage?: string;
+    refs: string[];
+}
+
+function fromNativeCommit(commit: NativeCommitMetadata): CommitMetadata {
+    return new CommitMetadata({
+        ...commit,
+        authorDateLabel: formatDateLabel(commit.authorDate),
+    });
 }
 
 function repositoryKey(filePath: string): string {
@@ -43,25 +63,12 @@ interface RepositoryRecord {
 }
 
 async function getInitializedSubmodulePaths(rootPath: string, signal?: AbortSignal): Promise<string[]> {
-    try {
-        const { stdout } = await execFileAsync('git', [
-            ...noOptionalLocks, '-C', rootPath,
-            'config', '--null', '--file', '.gitmodules', '--get-regexp', '^submodule\\..*\\.path$',
-        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
-        return stdout.split('\0').flatMap(record => {
-            if (!record) { return []; }
-            const separator = record.indexOf('\n');
-            if (separator === -1) { return []; }
-            const submodulePath = record.slice(separator + 1);
-            return submodulePath ? [path.resolve(rootPath, submodulePath)] : [];
-        });
-    } catch (error: any) {
-        if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
-        return [];
-    }
+    throwIfAborted(signal);
+    const modules = await invokeNativeGit<Array<{ absolutePath: string }>>('submodules', { rootPath });
+    throwIfAborted(signal);
+    return modules.map(module => path.normalize(module.absolutePath));
 }
 
-// 递归任务调度: 同层验证并行，只有实际初始化的子模块才扫描下一层
 async function collectSubmoduleRepositories(
     initialRepositories: RepositoryRecord[],
     onDiscovered?: (count: number) => void,
@@ -101,14 +108,13 @@ async function collectSubmoduleRepositories(
 }
 
 async function resolveRepositoryRoot(directory: string, signal?: AbortSignal): Promise<string | undefined> {
+    throwIfAborted(signal);
     try {
-        const { stdout } = await execFileAsync('git', [...noOptionalLocks, '-C', directory, 'rev-parse', '--show-toplevel'], {
-            windowsHide: true,
-            signal,
-        });
-        return stdout.trim() || undefined;
-    } catch (error: any) {
-        if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
+        const repository = await invokeNativeGit<{ workdir: string }>('discover', { path: directory });
+        throwIfAborted(signal);
+        return path.normalize(repository.workdir);
+    } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') { throw error; }
         return undefined;
     }
 }
@@ -123,19 +129,13 @@ interface GitRefRecord {
 // 分支缓存与单飞请求；分支变更沿用 invalidateGitRefsCache 主动失效。// 批量解析 ref -> commit hash, 单次 git rev-parse 调用
 async function resolveCommitRefs(rootUri: vscode.Uri, refs: readonly string[], signal?: AbortSignal): Promise<string[]> {
     if (refs.length === 0) { return []; }
-    const hashPattern = /^[0-9a-f]{40}$/i;
-    const parseHashes = (stdout: string) =>
-        [...new Set(stdout.split('\n').map(line => line.trim()).filter(line => hashPattern.test(line)))];
-    try {
-        const { stdout } = await execFileAsync('git', [
-            ...noOptionalLocks, '-C', rootUri.fsPath, 'rev-parse', ...refs.map(ref => `${ref}^{commit}`),
-        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
-        return parseHashes(stdout);
-    } catch (error: any) {
-        if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
-        // 部分失败时 stdout 仍含有效哈希
-        return error.stdout ? parseHashes(error.stdout) : [];
-    }
+    throwIfAborted(signal);
+    const hashes = await invokeNativeGit<string[]>('resolveRevision', {
+        rootPath: rootUri.fsPath,
+        specs: refs.map(ref => `${ref}^{commit}`),
+    });
+    throwIfAborted(signal);
+    return [...new Set(hashes)];
 }
 
 
@@ -147,54 +147,24 @@ interface CommitAuthorDetails {
 
 async function getCommitAuthorDetails(rootUri: vscode.Uri, hashes: readonly string[]): Promise<Map<string, CommitAuthorDetails>> {
     if (hashes.length === 0) { return new Map(); }
-    try {
-        const { stdout } = await execFileAsync('git', [
-            ...noOptionalLocks, '-C', rootUri.fsPath, 'show', '-s', '--format=%H%x00%an%x00%ae%x00%aI%x00', ...hashes,
-        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
-        const values = stdout.split('\0');
-        const details = new Map<string, CommitAuthorDetails>();
-        for (let index = 0; index + 3 < values.length; index += 4) {
-            const [rawHash, name, email, date] = values.slice(index, index + 4);
-            const hash = rawHash.trim();
-            if (hash) { details.set(hash, { name, email, date: date.trim() }); }
-        }
-        return details;
-    } catch {
-        return new Map();
-    }
+    const commits = await invokeNativeGit<Array<{ hash: string; author: string; authorEmail: string; authorDate: string }>>('commitDetails', {
+        rootPath: rootUri.fsPath,
+        hashes,
+    });
+    return new Map(commits.map(commit => [commit.hash, {
+        name: commit.author,
+        email: commit.authorEmail,
+        date: commit.authorDate,
+    }]));
 }
 
 async function readBranchRefsFromCli(rootUri: vscode.Uri, signal?: AbortSignal): Promise<{ currentBranch?: string; detachedHead?: string; local: GitRefRecord[]; remote: GitRefRecord[] }> {
-    const parseRefs = (stdout: string) => stdout.split(/\r?\n/).flatMap(line => {
-        if (!line) { return []; }
-        const [hash, label, name, upstream] = line.split('\t');
-        if (!hash || !label || !name || label.endsWith('/HEAD')) { return []; }
-        return [{ hash, label, name, upstreamName: upstream || undefined }];
+    throwIfAborted(signal);
+    const result = await invokeNativeGit<{ currentBranch?: string; detachedHead?: string; local: GitRefRecord[]; remote: GitRefRecord[] }>('branches', {
+        rootPath: rootUri.fsPath,
     });
-    const [currentResult, refsResult, headResult] = await Promise.all([
-        execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, 'symbolic-ref', '--quiet', '--short', 'HEAD'], { windowsHide: true, signal }).catch(error => {
-            if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
-            return { stdout: '' };
-        }),
-        execFileAsync('git', [
-            ...noOptionalLocks, '-C', rootUri.fsPath,
-            'for-each-ref', '--format=%(objectname)%09%(refname:short)%09%(refname)%09%(upstream)', 'refs/heads', 'refs/remotes',
-        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
-        // detached HEAD 时用裸 hash 兜底当前项；空仓库解析失败按无 HEAD 处理。
-        execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, 'rev-parse', 'HEAD'], { windowsHide: true, signal }).catch(error => {
-            if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
-            return { stdout: '' };
-        }),
-    ]);
-    const refs = parseRefs(refsResult.stdout);
-    const currentName = currentResult.stdout.trim();
-    const headHash = headResult.stdout.trim();
-    return {
-        currentBranch: currentName ? `refs/heads/${currentName}` : undefined,
-        detachedHead: !currentName && headHash ? headHash : undefined,
-        local: refs.filter(ref => ref.name.startsWith('refs/heads/')),
-        remote: refs.filter(ref => ref.name.startsWith('refs/remotes/')),
-    };
+    throwIfAborted(signal);
+    return result;
 }
 
 // detached HEAD 的当前项：以裸 hash 作为 ref 名，git log 可直接接受。
@@ -223,67 +193,9 @@ export interface PushBranchOption {
  * 不按分支循环执行 Git 命令，始终只进行两次只读查询。
  */
 export async function getPushBranches(rootUri: vscode.Uri, commitLimit = 8): Promise<PushBranchOption[]> {
-    const [refsOutput, commitsOutput] = await Promise.all([
-        runGitReadCommand(rootUri, ['for-each-ref', '--format=%(refname)%00%(refname:short)%00%(upstream:short)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(HEAD)', 'refs/heads', 'refs/remotes']),
-        runGitReadCommand(rootUri, [
-            'log', '--branches', '--not', '--remotes', `--max-count=${commitLimit}`,
-            '--format=%ct%x1f%D%x1f%s%x1e',
-        ]),
-    ]);
-    const commitsByBranch = new Map<string, { subject: string; timestamp: number }[]>();
-    for (const record of commitsOutput.split('\x1e')) {
-        const [timestampText, decorations, subject] = record.replace(/^\r?\n/, '').split('\x1f');
-        const timestamp = Number(timestampText);
-        if (!subject || !Number.isFinite(timestamp)) { continue; }
-        for (const decoration of (decorations ?? '').split(', ')) {
-            const branch = decoration.replace(/^HEAD -> /, '').trim();
-            if (!branch || branch === 'HEAD' || branch.startsWith('tag: ') || branch.includes(' -> ')) { continue; }
-            const commits = commitsByBranch.get(branch) ?? [];
-            commits.push({ subject, timestamp });
-            commitsByBranch.set(branch, commits);
-        }
-    }
-    const localBranches: { name: string; upstreamName: string; upstreamRemote: string; upstreamBranch: string; isCurrent: boolean }[] = [];
-    const remoteBranches: { remote: string; branch: string; label: string }[] = [];
-    for (const line of refsOutput.split(/\r?\n/)) {
-        const [refname, shortName, upstreamName, upstreamRemote, upstreamRef, head] = line.split('\0');
-        if (!refname || !shortName) { continue; }
-        if (refname.startsWith('refs/heads/')) {
-            localBranches.push({
-                name: shortName,
-                upstreamName,
-                upstreamRemote,
-                upstreamBranch: upstreamRef?.replace(/^refs\/heads\//, '') ?? '',
-                isCurrent: head === '*',
-            });
-        } else if (refname.startsWith('refs/remotes/')) {
-            const [remote, ...branchParts] = shortName.split('/');
-            const branch = branchParts.join('/');
-            if (remote && branch && branch !== 'HEAD') { remoteBranches.push({ remote, branch, label: shortName }); }
-        }
-    }
-    const candidates = localBranches.flatMap(local => {
-        const preferredTargets = local.upstreamRemote && local.upstreamBranch
-            ? [{ remote: local.upstreamRemote, branch: local.upstreamBranch, label: local.upstreamName }]
-            : [];
-        const targets = [...preferredTargets, ...remoteBranches.filter(remote =>
-            !preferredTargets.some(preferred => preferred.remote === remote.remote && preferred.branch === remote.branch))];
-        return targets.map(target => ({
-            name: local.name,
-            upstreamName: target.label,
-            upstreamRemote: target.remote,
-            upstreamBranch: target.branch,
-            isCurrent: local.isCurrent,
-            recentUnpushedCommits: commitsByBranch.get(local.name) ?? [],
-        }));
-    });
-    return candidates.sort((left, right) => {
-        const leftTimestamp = left.recentUnpushedCommits[0]?.timestamp ?? 0;
-        const rightTimestamp = right.recentUnpushedCommits[0]?.timestamp ?? 0;
-        return Number(right.isCurrent) - Number(left.isCurrent)
-            || rightTimestamp - leftTimestamp
-            || left.upstreamName.localeCompare(right.upstreamName)
-            || left.name.localeCompare(right.name);
+    return invokeNativeGit<PushBranchOption[]>('pushBranches', {
+        rootPath: rootUri.fsPath,
+        limit: commitLimit,
     });
 }
 
@@ -317,31 +229,27 @@ export async function getGitBranches(rootUri: vscode.Uri, signal?: AbortSignal):
 }
 
 export async function getCurrentGitBranch(rootUri: vscode.Uri, signal?: AbortSignal): Promise<string | undefined> {
+    throwIfAborted(signal);
     try {
-        const { stdout } = await execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, 'symbolic-ref', '--quiet', '--short', 'HEAD'], {
-            windowsHide: true,
-            signal,
-        });
-        const label = stdout.trim();
-        return label ? `refs/heads/${label}` : undefined;
+        const head = await invokeNativeGit<{ branch?: string } | null>('head', { rootPath: rootUri.fsPath });
+        throwIfAborted(signal);
+        return head?.branch;
     } catch (error) {
-        // 中止需向上传播，避免被当成 detached HEAD 处理。
-        if ((error as { name?: string; code?: string })?.name === 'AbortError'
-            || (error as { name?: string; code?: string })?.code === 'ABORT_ERR') {
-            throw error;
-        }
-        // Detached HEAD 时 symbolic-ref 按 Git 约定返回非零。
+        if (error instanceof Error && error.name === 'AbortError') { throw error; }
         return undefined;
     }
 }
 
 export async function getCurrentGitHeadHash(rootUri: vscode.Uri, signal?: AbortSignal): Promise<string | undefined> {
-    const { stdout } = await execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, 'rev-parse', 'HEAD'], {
-        windowsHide: true,
-        signal,
-    });
-    const hash = stdout.trim();
-    return hash || undefined;
+    throwIfAborted(signal);
+    try {
+        const head = await invokeNativeGit<{ hash?: string } | null>('head', { rootPath: rootUri.fsPath });
+        throwIfAborted(signal);
+        return head?.hash;
+    } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') { throw error; }
+        return undefined;
+    }
 }
 
 export interface GitSyncResult {
@@ -357,20 +265,11 @@ interface GitlinkChange {
 }
 
 async function getGitlinkChanges(rootUri: vscode.Uri, beforeHead: string, afterHead: string): Promise<GitlinkChange[]> {
-    const output = await runGitReadCommand(rootUri, [
-        'diff', '--raw', '-z', '--no-abbrev', '--no-renames', beforeHead, afterHead, '--',
-    ]);
-    const fields = output.split('\0');
-    const changes: GitlinkChange[] = [];
-    for (let index = 0; index + 1 < fields.length; index += 2) {
-        const header = fields[index];
-        const path = fields[index + 1];
-        const match = /^:(\d{6}) (\d{6}) [0-9a-f]+ [0-9a-f]+ ([A-Z])$/.exec(header);
-        if (match && path && (match[1] === '160000' || match[2] === '160000')) {
-            changes.push({ status: match[3], path });
-        }
-    }
-    return changes;
+    return invokeNativeGit<GitlinkChange[]>('gitlinkChanges', {
+        rootPath: rootUri.fsPath,
+        before: beforeHead,
+        after: afterHead,
+    });
 }
 
 export async function runGitSync(
@@ -379,43 +278,27 @@ export async function runGitSync(
     onProgress?: (message: string) => void,
 ): Promise<GitSyncResult> {
     if (action === 'fetch') {
-        onProgress?.('正在获取所有远程仓库，并清理过期引用...');
-        await runGitCommand(rootUri, ['fetch', '--all', '--prune', '--recurse-submodules=on-demand']);
-
+        onProgress?.('正在通过 libgit2 获取所有远程仓库，并清理过期引用...');
+        await fetchRemotes(rootUri);
         const repositories = await collectSubmoduleRepositories([{ rootPath: rootUri.fsPath }]);
         const submodules = repositories.slice(1);
         for (let index = 0; index < submodules.length; index++) {
             const submodule = submodules[index];
             onProgress?.(`正在获取 Submodule 模块（${index + 1}/${submodules.length}）：${submodule.rootPath}`);
-            await runGitCommand(vscode.Uri.file(submodule.rootPath), ['fetch', '--all', '--prune']);
-            onProgress?.(`已完成 Submodule 模块（${index + 1}/${submodules.length}）：${submodule.rootPath}`);
+            await fetchRemotes(vscode.Uri.file(submodule.rootPath));
         }
-        return {
-            headChanged: false,
-            submodulesNeedUpdate: false,
-            submoduleTopologyChanged: false,
-            submodulePaths: [],
-        };
+        return { headChanged: false, submodulesNeedUpdate: false, submoduleTopologyChanged: false, submodulePaths: [] };
     }
-
     if (action === 'pull') {
         const beforeHead = await getCurrentGitHeadHash(rootUri);
-        onProgress?.('正在拉取远程代码...');
-        await runGitCommand(rootUri, ['pull']);
+        onProgress?.('正在通过 libgit2 拉取远程代码...');
+        await pullNative(rootUri);
         const afterHead = await getCurrentGitHeadHash(rootUri);
         if (!beforeHead || !afterHead || beforeHead === afterHead) {
-            return {
-                headChanged: false,
-                submodulesNeedUpdate: false,
-                submoduleTopologyChanged: false,
-                submodulePaths: [],
-            };
+            return { headChanged: false, submodulesNeedUpdate: false, submoduleTopologyChanged: false, submodulePaths: [] };
         }
-
         const gitlinkChanges = await getGitlinkChanges(rootUri, beforeHead, afterHead);
-        const submodulePaths = gitlinkChanges
-            .filter(change => change.status !== 'D')
-            .map(change => change.path);
+        const submodulePaths = gitlinkChanges.filter(change => change.status !== 'D').map(change => change.path);
         return {
             headChanged: true,
             submodulesNeedUpdate: submodulePaths.length > 0,
@@ -423,15 +306,9 @@ export async function runGitSync(
             submodulePaths,
         };
     }
-
-    onProgress?.('正在推送本地提交...');
-    await runGitCommand(rootUri, ['push']);
-    return {
-        headChanged: false,
-        submodulesNeedUpdate: false,
-        submoduleTopologyChanged: false,
-        submodulePaths: [],
-    };
+    onProgress?.('正在通过 libgit2 推送本地提交...');
+    await pushNative(rootUri);
+    return { headChanged: false, submodulesNeedUpdate: false, submoduleTopologyChanged: false, submodulePaths: [] };
 }
 
 export async function updateGitSubmodules(
@@ -439,14 +316,9 @@ export async function updateGitSubmodules(
     submodulePaths: readonly string[],
     onProgress?: (message: string) => void,
 ): Promise<void> {
-    for (let index = 0; index < submodulePaths.length; index++) {
-        const path = submodulePaths[index];
-        onProgress?.(`正在初始化并更新 Submodule 模块（${index + 1}/${submodulePaths.length}）：${path}`);
-        await runGitCommand(rootUri, ['submodule', 'update', '--init', '--recursive', '--', path]);
-        onProgress?.(`已完成 Submodule 模块（${index + 1}/${submodulePaths.length}）：${path}`);
-    }
+    onProgress?.(`正在通过 libgit2 初始化并更新 ${submodulePaths.length} 个 Submodule 模块...`);
+    await updateSubmodulesNative(rootUri, submodulePaths);
 }
-
 export interface CommitHistoryMessage {
     readonly shortHash: string;
     readonly subject: string;
@@ -454,103 +326,55 @@ export interface CommitHistoryMessage {
 }
 
 export async function readCurrentCommitMessage(rootUri: vscode.Uri): Promise<string> {
-    const output = await runGitReadCommand(rootUri, ['log', '-1', '--format=%B']);
-    return output.replace(/\s+$/, '');
+    const commits = await invokeNativeGit<NativeCommitMetadata[]>('commits', {
+        rootPath: rootUri.fsPath,
+        refs: [],
+        limit: 1,
+        skip: 0,
+    });
+    return (commits[0]?.rawMessage ?? '').replace(/\s+$/, '');
 }
 
 export async function readCommitHistoryMessages(rootUri: vscode.Uri): Promise<CommitHistoryMessage[]> {
-    const output = await runGitReadCommand(rootUri, [
-        'log', '--max-count=50', '--all', '--format=%h%x1f%s%x1f%B%x1e',
-    ]);
-    const seen = new Set<string>();
-    const messages: CommitHistoryMessage[] = [];
-    for (const record of output.split('\x1e')) {
-        const [shortHash, subject, body] = record.replace(/^\r?\n/, '').split('\x1f');
-        if (!shortHash) { continue; }
-        const message = (body ?? '').replace(/\s+$/, '');
-        if (!message || seen.has(message)) { continue; }
-        seen.add(message);
-        messages.push({ shortHash, subject: subject || message.split('\n')[0], message });
-        if (messages.length >= 10) { break; }
-    }
-    return messages;
+    const commits = await invokeNativeGit<NativeCommitMetadata[]>('commits', {
+        rootPath: rootUri.fsPath,
+        refs: [],
+        all: true,
+        limit: 50,
+        skip: 0,
+    });
+    return commits.map(commit => ({
+        shortHash: commit.shortHash,
+        subject: commit.message,
+        message: (commit.rawMessage ?? '').replace(/\s+$/, ''),
+    }));
 }
 
-/** 读取当前 HEAD 相对 upstream 的 ahead 数；没有 upstream 时返回 0。 */
 export async function getGitAheadCount(rootUri: vscode.Uri): Promise<number> {
     try {
-        const output = await runGitReadCommand(rootUri, ['rev-list', '--left-right', '--count', 'HEAD...@{upstream}']);
-        const [ahead] = output.trim().split(/\s+/).map(Number);
-        return Number.isFinite(ahead) ? ahead : 0;
+        const result = await invokeNativeGit<{ ahead: number }>('aheadBehind', { rootPath: rootUri.fsPath });
+        return result.ahead;
     } catch {
         return 0;
     }
 }
 
-export async function runGitReadCommand(rootUri: vscode.Uri, args: string[]): Promise<string> {
-    try {
-        const { stdout } = await execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, ...args], {
-            windowsHide: true,
-            maxBuffer: 16 * 1024 * 1024,
-        });
-        return stdout;
-    } catch (error) {
-        throw new Error(error instanceof Error ? error.message : String(error));
-    }
-}
-
-/** 执行可能修改 index、refs、工作区或远程状态的 Git 命令，保留 Git 原子锁。 */
-export async function runGitCommand(rootUri: vscode.Uri, args: string[]): Promise<string> {
-    try {
-        const { stdout } = await execFileAsync('git', ['-C', rootUri.fsPath, ...args], {
-            windowsHide: true,
-            maxBuffer: 16 * 1024 * 1024,
-        });
-        return stdout;
-    } catch (error) {
-        throw new Error(error instanceof Error ? error.message : String(error));
-    }
-}
-
-// 解析 git log --format 输出
-function parseLogOutput(stdout: string): CommitMetadata[] {
-    return stdout.split('\x1e').flatMap(record => {
-        const [hash, parentText, author, authorEmail, committer, committerEmail, dateText, subject, body, rawMessage, decorations] = record.trim().split('\x1f');
-        if (!hash) { return []; }
-        const authorDate = new Date(dateText);
-        return [new CommitMetadata({
-            hash,
-            shortHash: hash.slice(0, 8),
-            parents: parentText ? parentText.split(' ').filter(Boolean) : [],
-            author: author || authorEmail || 'Unknown author',
-            authorEmail,
-            committer: committer || committerEmail || author || authorEmail || 'Unknown committer',
-            committerEmail,
-            authorDate: !isNaN(authorDate.getTime()) ? authorDate.toISOString() : '',
-            authorDateLabel: formatDateLabel(authorDate),
-            message: subject || '',
-            body: body || '',
-            // %B 是 git 提交信息的原始完整文本, 不经 %s/%b 拆分裁剪, 用于需要还原用户原始输入的场景。
-            rawMessage: rawMessage || '',
-            refs: decorations ? decorations.split(', ').map(ref => ref.replace(/^HEAD -> /, '')).filter(Boolean) : [],
-        })];
+async function readCommitsFromNative(rootUri: vscode.Uri, limit: number, refs: readonly string[], skip: number, signal?: AbortSignal): Promise<CommitMetadata[]> {
+    throwIfAborted(signal);
+    const commits = await invokeNativeGit<NativeCommitMetadata[]>('commits', {
+        rootPath: rootUri.fsPath,
+        refs,
+        limit,
+        skip,
     });
+    throwIfAborted(signal);
+    return commits.map(fromNativeCommit);
 }
 
-async function readCommitsFromCli(rootUri: vscode.Uri, limit: number, refs: readonly string[], skip: number, signal?: AbortSignal): Promise<CommitMetadata[]> {
-    const commitRefs = refs.length > 0 ? [...refs] : ['HEAD'];
-    const { stdout } = await execFileAsync('git', [
-        ...noOptionalLocks, '-C', rootUri.fsPath, 'log', '--topo-order', `--max-count=${limit}`, ...(skip > 0 ? [`--skip=${skip}`] : []),
-        '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1f%B%x1f%D%x1e', ...commitRefs,
-    ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
-    return parseLogOutput(stdout);
-}
-
-// 获取仓库提交列表。
 export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, refs: readonly string[] = [], skip: number = 0, onProgress?: (current: number, total: number) => void, signal?: AbortSignal): Promise<CommitMetadata[]> {
     throwIfAborted(signal);
     onProgress?.(0, 1);
-    const commits = await readCommitsFromCli(rootUri, limit, refs, skip, signal);
+    const commits = await readCommitsFromNative(rootUri, limit, refs, skip, signal);
     onProgress?.(1, 1);
     return commits;
 }
@@ -558,24 +382,21 @@ export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, re
 // 搜索提交: 全量获取后在 TS 端过滤, 任意关键词命中任意字段即返回
 export async function searchCommits(rootUri: vscode.Uri, keywords: string[], refs: readonly string[] = [], signal?: AbortSignal): Promise<CommitMetadata[]> {
     if (keywords.length === 0) { return []; }
-    const commitRefs = refs.length > 0 ? [...refs] : ['HEAD'];
-    const { stdout } = await execFileAsync('git', [
-        ...noOptionalLocks, '-C', rootUri.fsPath, 'log', '--topo-order',
-        '--format=%H%x1f%P%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%aI%x1f%s%x1f%b%x1f%B%x1f%D%x1e', ...commitRefs,
-    ], { windowsHide: true, maxBuffer: 64 * 1024 * 1024, signal });
-    const allCommits = parseLogOutput(stdout);
-    const lowerKeywords = keywords.map(k => k.toLowerCase());
-    return allCommits.filter(c => {
+    throwIfAborted(signal);
+    const commits = (await invokeNativeGit<NativeCommitMetadata[]>('commits', {
+        rootPath: rootUri.fsPath,
+        refs,
+        skip: 0,
+    })).map(fromNativeCommit);
+    throwIfAborted(signal);
+    const lowerKeywords = keywords.map(keyword => keyword.toLowerCase());
+    return commits.filter(commit => {
         const fields = [
-            c.hash, c.shortHash,
-            c.parents.join(' '),
-            c.author, c.authorEmail,
-            c.committer, c.committerEmail,
-            c.authorDate, c.authorDateLabel,
-            c.message, c.body,
-            c.refs.join(' '),
-        ].map(f => (f || '').toLowerCase());
-        return lowerKeywords.some(kw => fields.some(f => f.includes(kw)));
+            commit.hash, commit.shortHash, commit.parents.join(' '), commit.author, commit.authorEmail,
+            commit.committer, commit.committerEmail, commit.authorDate, commit.authorDateLabel,
+            commit.message, commit.body, commit.refs.join(' '),
+        ].map(field => (field || '').toLowerCase());
+        return lowerKeywords.some(keyword => fields.some(field => field.includes(keyword)));
     });
 }
 
@@ -586,46 +407,28 @@ export async function isGitRepo(rootUri: vscode.Uri): Promise<boolean> {
 
 // 通过 git 命令获取指定提交的变更文件列表 (仅 --raw 清单, 不含行数统计)
 export async function getCommitFiles(rootUri: vscode.Uri, hash: string, signal?: AbortSignal, onProgress?: (current: number, total: number) => void): Promise<CommitFile[]> {
+    throwIfAborted(signal);
     onProgress?.(0, 0);
-    const rawResult = await execFileAsync('git', [
-        ...noOptionalLocks, '-C', rootUri.fsPath,
-        'diff-tree', '--root', '--no-commit-id', '--raw', '-z', '-M', '-r', hash,
-    ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
-    const files = parseRawStatus(rawResult.stdout);
-    onProgress?.(files.length, files.length);
-    return files;
+    const files = await invokeNativeGit<Array<Partial<CommitFile>>>('commitFiles', {
+        rootPath: rootUri.fsPath,
+        revision: hash,
+    });
+    throwIfAborted(signal);
+    const result = files.map(file => new CommitFile(file));
+    onProgress?.(result.length, result.length);
+    return result;
 }
 
 /** 读取当前提交树中实际包含的 gitlink 路径。 */
 export async function getGitlinkPathsInCommit(rootUri: vscode.Uri, hash: string): Promise<string[]> {
-    const output = await runGitReadCommand(rootUri, ['ls-tree', '-r', '--full-tree', hash]);
-    return output.split(/\r?\n/).flatMap(line => {
-        const match = /^(160000)\s+commit\s+[0-9a-f]+\t(.+)$/.exec(line);
-        return match ? [match[2]] : [];
-    });
+    return invokeNativeGit<string[]>('gitlinkPaths', { rootPath: rootUri.fsPath, revision: hash });
 }
 
 export async function getGitRepositoryState(rootUri: vscode.Uri, signal?: AbortSignal): Promise<GitRepositoryState> {
-    return readRepositoryStateFromCli(rootUri, signal);
-}
-
-// 从 git CLI 读取 refs 身份；工作区状态由 UncommittedFilesWatcher 独占读取。
-async function readRepositoryStateFromCli(rootUri: vscode.Uri, signal?: AbortSignal): Promise<GitRepositoryState> {
-    try {
-        const [headResult, branchResult, refsResult] = await Promise.all([
-            execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, 'rev-parse', '--verify', 'HEAD'], { windowsHide: true, signal }),
-            execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, 'branch', '--show-current'], { windowsHide: true, signal }),
-            execFileAsync('git', [...noOptionalLocks, '-C', rootUri.fsPath, 'for-each-ref', '--format=%(refname) %(objectname)'], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal }),
-        ]);
-        return new GitRepositoryState({
-            head: headResult.stdout.trim(),
-            branch: branchResult.stdout.trim() || 'HEAD',
-            refs: refsResult.stdout,
-        });
-    } catch (error: any) {
-        if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
-        throw new Error(`无法读取仓库状态: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    throwIfAborted(signal);
+    const state = await invokeNativeGit<Partial<GitRepositoryState>>('repositoryState', { rootPath: rootUri.fsPath });
+    throwIfAborted(signal);
+    return new GitRepositoryState(state);
 }
 
 export async function getWorkingTreeStatus(rootUri: vscode.Uri, signal?: AbortSignal): Promise<WorkingTreeChanges> {
@@ -638,16 +441,10 @@ export async function getWorkingTreeStatus(rootUri: vscode.Uri, signal?: AbortSi
  * --raw 元数据; 完整清单由 getWorkingTreeStatus 异步补齐, 二者互不阻塞。
  */
 export async function hasWorkingTreeChanges(rootUri: vscode.Uri, signal?: AbortSignal): Promise<boolean> {
-    try {
-        const result = await execFileAsync('git', [
-            '--no-optional-locks', '-C', rootUri.fsPath,
-            'status', '--porcelain=v1', '-z', '--untracked-files=normal',
-        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
-        return result.stdout.split('\0').some(entry => entry.length >= 4);
-    } catch (error: any) {
-        if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
-        throw new Error(`无法读取工作区状态: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    throwIfAborted(signal);
+    const result = await invokeNativeGit<boolean>('hasChanges', { rootPath: rootUri.fsPath });
+    throwIfAborted(signal);
+    return result;
 }
 
 export async function getWorkingTreeStatusForPaths(
@@ -659,16 +456,10 @@ export async function getWorkingTreeStatusForPaths(
 }
 
 export async function getIndexChangedPaths(rootUri: vscode.Uri, signal?: AbortSignal): Promise<Set<string>> {
-    try {
-        const result = await execFileAsync('git', [
-            '--no-optional-locks', '-C', rootUri.fsPath,
-            'diff', '--cached', '--ita-visible-in-index', '--name-only', '-z', '-M', '-C',
-        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
-        return new Set(result.stdout.split('\0').filter(Boolean));
-    } catch (error: any) {
-        if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
-        throw new Error(`无法读取 index 变更路径: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    throwIfAborted(signal);
+    const paths = await invokeNativeGit<string[]>('indexChangedPaths', { rootPath: rootUri.fsPath });
+    throwIfAborted(signal);
+    return new Set(paths);
 }
 
 async function readWorkingTreeStatus(
@@ -676,21 +467,17 @@ async function readWorkingTreeStatus(
     paths: readonly string[],
     signal?: AbortSignal,
 ): Promise<WorkingTreeChanges> {
-    try {
-        // porcelain v2 已包含 HEAD/index 的对象 ID 与三端文件模式。普通文件只需一次 Git 调用，
-        // 避免旧实现同时启动 status、diff --cached、diff 三个进程争抢磁盘。
-        const statusResult = await execFileAsync('git', [
-            '--no-optional-locks', '-C', rootUri.fsPath,
-            'status', '--porcelain=v2', '-z', '--untracked-files=all', '--find-renames',
-            ...(paths.length > 0 ? ['--', ...paths] : []),
-        ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
-        // 未暂存 gitlink 与 `git diff --raw` 一样使用全零 newObjectId；
-        // 后续 readGitlinkCommitSubjects 会直接从子模块 HEAD 解析真实新端，无需再启动额外 Git 进程。
-        return parseWorkingTreeStatusV2(statusResult.stdout);
-    } catch (error: any) {
-        if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') { throw error; }
-        throw new Error(`无法读取工作区状态: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    throwIfAborted(signal);
+    const changes = await invokeNativeGit<{ staged: Array<Partial<CommitFile>>; changes: Array<Partial<CommitFile>> }>('status', {
+        rootPath: rootUri.fsPath,
+        paths,
+        recurseUntrackedDirs: true,
+    });
+    throwIfAborted(signal);
+    return new WorkingTreeChanges({
+        staged: changes.staged.map(file => new CommitFile(file)),
+        changes: changes.changes.map(file => new CommitFile(file)),
+    });
 }
 
 // porcelain v2 的普通/重命名记录直接携带 Diff 所需元数据。

@@ -1,12 +1,10 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { GitBranchOption, WorkingTreeChanges } from '../types';
 import type { GitBackend } from './gitBackend';
 import { RepoHeadBranchWatcher } from './eachRepoHeadBranchWatcher';
+import { invokeNativeGit } from './nativeGitBinding';
 
-const execFileAsync = promisify(execFile);
 
 type HeadBranchUncommittedFilesChangedEvent = {
     branch: GitBranchOption;
@@ -277,12 +275,10 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
     private async createIndexWatcher(repositoryPath: string): Promise<void> {
         const rootPath = vscode.Uri.parse(repositoryPath).fsPath;
         try {
-            const { stdout } = await execFileAsync('git', [
-                '--no-optional-locks', '-C', rootPath, 'rev-parse', '--absolute-git-dir',
-            ], { windowsHide: true });
+            const { gitDir } = await invokeNativeGit<{ gitDir: string }>('discover', { path: rootPath });
             if (!this.slots.get(repositoryPath)?.branch || this.indexWatchers.has(repositoryPath)) { return; }
             const indexWatcher = vscode.workspace.createFileSystemWatcher(
-                new vscode.RelativePattern(vscode.Uri.file(stdout.trim()), 'index'),
+                new vscode.RelativePattern(vscode.Uri.file(gitDir), 'index'),
             );
             const requestRefresh = () => {
                 const slot = this.slots.get(repositoryPath);
@@ -492,8 +488,16 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         paths: ReadonlySet<string>,
     ): WorkingTreeChanges {
         const previous = this.changesByRepository.get(repositoryPath)?.get(branchHash) ?? new WorkingTreeChanges();
+        const pathIsAffected = (filePath: string): boolean => {
+            for (const affectedPath of paths) {
+                if (filePath === affectedPath || filePath.startsWith(`${affectedPath.replace(/\/$/, '')}/`)) {
+                    return true;
+                }
+            }
+            return false;
+        };
         const isAffected = (file: WorkingTreeChanges['staged'][number]) =>
-            paths.has(file.path) || (!!file.oldPath && paths.has(file.oldPath));
+            pathIsAffected(file.path) || (!!file.oldPath && pathIsAffected(file.oldPath));
         // 就地替换受影响项, 保持原有顺序。追加末尾会打乱列表, 让按下标比较的 WorkingTreeChanges.equals
         // 误判为状态变化, 使纯内容编辑被错误分流到状态通道而漏读内容。
         const mergeSection = (allFiles: WorkingTreeChanges['staged'], changedFiles: WorkingTreeChanges['staged']) => {

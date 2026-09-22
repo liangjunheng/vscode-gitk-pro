@@ -141,7 +141,10 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP}
       updateCountLabel();
       updateFilesCommitHash();
       var nextFilesModelKey = JSON.stringify([
-        files.map(function(file) { return file.diffKey || file.path; }),
+        files.map(function(file) {
+          return [file.diffKey || file.path, file.status, file.isUntracked, file.isConflict,
+            file.workingTreeKind, file.oldObjectId, file.newObjectId];
+        }),
         filesMode,
         selectedPath,
         selectedCommitHash,

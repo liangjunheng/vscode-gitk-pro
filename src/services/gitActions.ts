@@ -1,37 +1,11 @@
 import * as vscode from 'vscode';
-import {
-    runGitCommand,
-    runGitReadCommand,
-    runGitSync,
-    updateGitSubmodules,
-} from '../git/gitLogProvider';
+import { runGitSync, updateGitSubmodules } from '../git/gitLogProvider';
+import { checkout, cherryPick, createBranch, createTag, merge, rebase, reset, revertCommit, stageAll, statusSummary } from '../git/gitNativeOperations';
 import { GitCommitEditMsgEditor } from '../webview/gitCommitEditMsgEditor';
 
 /**
  * Git 操作执行器: 处理用户触发的 Git 命令 (tag, branch, checkout, merge, rebase, reset 等)
  */
-interface CommitWorkingTreeState {
-    hasStagedChanges: boolean;
-    hasUnstagedChanges: boolean;
-}
-
-async function getCommitWorkingTreeState(rootUri: vscode.Uri): Promise<CommitWorkingTreeState> {
-    const output = await runGitReadCommand(rootUri, [
-        'status', '--porcelain=v1', '-z', '--untracked-files=normal', '--ignore-submodules=dirty', '--no-renames',
-    ]);
-    let hasStagedChanges = false;
-    let hasUnstagedChanges = false;
-    for (const entry of output.split('\0')) {
-        if (entry.length < 3) { continue; }
-        const indexStatus = entry[0];
-        const workTreeStatus = entry[1];
-        hasStagedChanges ||= indexStatus !== ' ' && indexStatus !== '?' && indexStatus !== '!';
-        hasUnstagedChanges ||= workTreeStatus !== ' ' || indexStatus === '?';
-        if (hasStagedChanges && hasUnstagedChanges) { break; }
-    }
-    return { hasStagedChanges, hasUnstagedChanges };
-}
-
 export class GitActionRunner {
     private syncInProgress = false;
 
@@ -56,7 +30,7 @@ export class GitActionRunner {
         }, async progress => {
             // 单次 porcelain 只读取提交决策所需状态，不触发 VS Code SCM 全量刷新。
             progress.report({ message: '正在检查更改...' });
-            const state = await getCommitWorkingTreeState(rootUri);
+            const state = await statusSummary(rootUri);
             if (!state.hasStagedChanges) {
                 if (!state.hasUnstagedChanges) {
                     void vscode.window.showInformationMessage('没有可提交的更改。');
@@ -71,7 +45,7 @@ export class GitActionRunner {
                 );
                 if (choice !== '是') { return; }
                 progress.report({ message: '正在暂存更改...' });
-                await runGitCommand(rootUri, ['add', '-A', '--', '.']);
+                await stageAll(rootUri);
             }
             progress.report({ message: '正在打开 COMMIT_EDITMSG 编辑器...' });
             const session = await this.commitEditMsgEditor.edit(rootUri, amend);
@@ -105,44 +79,44 @@ export class GitActionRunner {
                 case 'addTag': {
                     const tagName = await vscode.window.showInputBox({ prompt: '输入新标签名称', validateInput: value => value.trim() ? undefined : '标签名称不能为空' });
                     if (!tagName) { return; }
-                    await runGitCommand(rootUri, ['tag', '-a', tagName.trim(), hash, '-m', `Tag ${tagName.trim()}`]);
+                    await createTag(rootUri, tagName.trim(), hash, `Tag ${tagName.trim()}`);
                     didMutateRepository = true;
                     break;
                 }
                 case 'createBranch': {
                     const branchName = await vscode.window.showInputBox({ prompt: '输入新分支名称', validateInput: value => value.trim() ? undefined : '分支名称不能为空' });
                     if (!branchName) { return; }
-                    await runGitCommand(rootUri, ['branch', branchName.trim(), hash]);
+                    await createBranch(rootUri, branchName.trim(), hash);
                     didMutateRepository = true;
                     break;
                 }
                 case 'checkout':
-                    await runGitCommand(rootUri, ['checkout', hash]);
+                    await checkout(rootUri, hash, true);
                     didMutateRepository = true;
                     break;
                 case 'cherryPick':
-                    await runGitCommand(rootUri, ['cherry-pick', hash]);
+                    await cherryPick(rootUri, hash);
                     didMutateRepository = true;
                     break;
                 case 'revert':
-                    await runGitCommand(rootUri, ['revert', '--no-edit', hash]);
+                    await revertCommit(rootUri, hash);
                     didMutateRepository = true;
                     break;
                 case 'drop':
                     await vscode.window.showWarningMessage('Drop 需要交互式 rebase，当前扩展不自动改写提交历史。', { modal: true });
                     return;
                 case 'merge':
-                    await runGitCommand(rootUri, ['merge', '--no-edit', hash]);
+                    await merge(rootUri, hash);
                     didMutateRepository = true;
                     break;
                 case 'rebase':
-                    await runGitCommand(rootUri, ['rebase', hash]);
+                    await rebase(rootUri, hash);
                     didMutateRepository = true;
                     break;
                 case 'reset': {
                     const choice = await vscode.window.showWarningMessage('将当前分支重置到所选提交。', { modal: true }, 'Soft', 'Mixed', 'Hard');
                     if (!choice) { return; }
-                    await runGitCommand(rootUri, ['reset', `--${choice.toLowerCase()}`, hash]);
+                    await reset(rootUri, hash, choice.toLowerCase() as 'soft' | 'mixed' | 'hard');
                     didMutateRepository = true;
                     break;
                 }

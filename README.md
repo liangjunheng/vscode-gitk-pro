@@ -17,7 +17,7 @@
 
 Gitk Pro 在 VS Code 底部面板中提供 Gitk 风格的提交图，并将历史浏览与日常 Git 操作整合在同一界面。插件会发现当前工作区中的仓库及已初始化子模块，绘制分支拓扑，并同步提交图、变更文件列表和多文件差异编辑器。
 
-插件直接使用 Git 完成仓库发现、历史读取、远程同步和写入操作，面向桌面版 VS Code 设计。
+插件通过随扩展分发的原生 libgit2 后端完成仓库发现、历史读取、远程同步和写入操作，不启动 `git` 命令行进程，面向桌面版 VS Code 设计。
 
 ## 主要功能
 
@@ -92,8 +92,10 @@ Gitk Pro 在 VS Code 底部面板中提供 Gitk 风格的提交图，并将历�
 
 ## 运行要求
 
-- VS Code `1.80.0` 或更高版本。
-- 已安装 Git，并且扩展宿主可以调用 Git。
+- VS Code `1.94.0` 或更高版本。
+- 原生扩展目标：Windows x64/arm64、Linux x64/arm64/armhf、Alpine x64/arm64、macOS x64/arm64。每个目标必须构建并安装带有对应 `.node` 文件的专用 VSIX，不能跨平台安装。
+- 浏览器版 VS Code（Web Extension Host）暂不支持；libgit2 原生模块无法在浏览器内运行，需要另行实现 Web 后端。远程开发时必须安装与远程扩展宿主平台匹配的包。
+- 日常运行不要求安装 Git CLI；SSH agent、credential helper、GPG/SSH 签名程序以及自定义 filter/LFS 程序仍按仓库配置调用。
 - 当前工作区至少包含一个 Git 仓库。
 
 ## 开发
@@ -112,6 +114,13 @@ npm run watch
 ```
 
 在已配置的 Windows 开发环境中，也可以运行 `run.bat`，该脚本会先编译扩展，再打开新的 Extension Development Host 窗口。
+打包当前平台的专用 VSIX：
+
+```bash
+npm run package:vsix
+```
+
+CI 为九个原生目标分别构建并生成带 `--target` 标识的安装包。流水线会检查 VSIX 仅包含该目标的一个原生模块；跨平台目标只有在对应 CI 构建及宿主测试通过后才能视作已验证。
 
 ## 项目结构
 

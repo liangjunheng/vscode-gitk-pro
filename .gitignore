@@ -2,3 +2,8 @@ out/
 node_modules/
 *.vsix
 .vscode-test/
+native/*.node
+native/git2-backend/target/
+native/index.d.ts
+native/*.tmp
+native/.napi-rs-filesystem-transaction.swp/

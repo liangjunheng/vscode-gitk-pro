@@ -8,5 +8,10 @@ out/**/*.d.ts
 .tsconfig.json
 README.md
 .codebuddy/**
-# 包含 media 资源 (状态栏 logo)
+# Include media resources (status bar icon).
 !media/**
+# Only the built binding is shipped, not N-API build artifacts or source.
+native/**
+!native/*.node
+scripts/**
+.github/**
