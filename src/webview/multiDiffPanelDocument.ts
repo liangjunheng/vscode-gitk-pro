@@ -701,12 +701,18 @@ function render(snapshot){
     if(!snapshot.diffs.length){dispose();list.classList.remove('rendering');list.textContent='暂无变更文件';loading.hidden=true;list.hidden=false;lastIdentity=snapshot.identity;log('render #'+snapshot.revision+': empty');notifyRendered(snapshot.revision,snapshot.identity);return}
     const total=snapshot.diffs.length;
     let token=renderToken;
+    // show() 会在读取期间隐藏 list。相同 identity 的刷新走 reconcileSnapshot,
+    // 原实现只在新 identity 分支恢复 list.hidden=false，导致空态之后再次出现同一文件时
+    // 卡片已创建但整个 list 仍被 hidden，最终表现为加载结束后的空白 Diff 面板。
+    list.hidden=false;
     if(!sameIdentity){
       dispose();
       token=renderToken;
-      list.classList.add('rendering');loading.textContent='正在创建 Diff 列表...';loading.hidden=false;list.hidden=false;
+      list.classList.add('rendering');loading.textContent='正在创建 Diff 列表...';loading.hidden=false;
       snapshot.diffs.forEach(function(diff,order){createCardShell(diff,order,list)});
     }else{
+      // 空态渲染会在 list 中留下“暂无变更文件”文本节点；重新出现卡片时清掉它。
+      if(!cards.length)list.replaceChildren();
       reconcileSnapshot(snapshot);
     }
     if(token!==renderToken)return;
