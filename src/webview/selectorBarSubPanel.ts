@@ -196,8 +196,25 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
   }
 
   function updateDropdownHeight(dropdown) {
-    const panelHeight = Math.max(document.documentElement.clientHeight, document.body.clientHeight);
-    dropdown.menu.style.maxHeight = Math.floor(panelHeight * 3 / 4) + 'px';
+    const commitSection = document.getElementById('commitSection');
+    const commitHeight = commitSection
+      ? commitSection.getBoundingClientRect().height
+      : Math.max(document.documentElement.clientHeight, document.body.clientHeight);
+    dropdown.menu.style.maxHeight = Math.floor(commitHeight * 2 / 3) + 'px';
+    updateRepositoryDropdownPosition(dropdown);
+  }
+
+  function updateRepositoryDropdownPosition(dropdown) {
+    if (dropdown !== repositoryDropdown) return;
+    dropdown.menu.style.left = '0px';
+    const commitSection = document.getElementById('commitSection');
+    if (!commitSection) return;
+    const menuRect = dropdown.menu.getBoundingClientRect();
+    const buttonRect = dropdown.current.getBoundingClientRect();
+    const overflow = Math.max(0, Math.ceil(menuRect.right - commitSection.getBoundingClientRect().right));
+    const maxOffset = Math.max(0, Math.floor(menuRect.right - buttonRect.right));
+    const offset = Math.min(overflow, maxOffset);
+    if (offset > 0) dropdown.menu.style.left = -offset + 'px';
   }
 
   function updateOpenDropdownHeights() {
@@ -221,6 +238,11 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
 
   const repositoryDropdown = createDropdown('repositoryDropdown', function() {});
   const branchDropdown = createDropdown('branchDropdown', function() {});
+  const commitSectionResizeTarget = document.getElementById('commitSection');
+  if (commitSectionResizeTarget && typeof ResizeObserver !== 'undefined') {
+    const dropdownHeightObserver = new ResizeObserver(updateOpenDropdownHeights);
+    dropdownHeightObserver.observe(commitSectionResizeTarget);
+  }
 
   document.addEventListener('click', function(event) {
     if (!event.target.closest('.dropdown')) closeDropdowns();
