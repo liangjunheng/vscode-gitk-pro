@@ -1,17 +1,35 @@
 .vscode/**
 .vscode-test/**
+.codebuddy/**
+.github/**
 src/**
+native/**
+scripts/**
 node_modules/**
+
+# Keep compiled extension JavaScript, but omit source maps and declarations.
 out/**/*.js.map
 out/**/*.d.ts
+
+# Project/build metadata not required at runtime.
+*.vsix
 .gitignore
-.tsconfig.json
+.vscodeignore
+tsconfig.json
 README.md
-.codebuddy/**
-# Include media resources (status bar icon).
+
+# Include media resources used by the extension UI.
 !media/**
-# Only the built binding is shipped, not N-API build artifacts or source.
-native/**
-!native/*.node
-scripts/**
-.github/**
+
+# Package only final native bindings; omit build caches and N-API transaction files.
+target/**
+cargo-target/**
+.xwin/**
+.native-tools/**
+lib/*
+lib/*/**
+!lib/*/*.node
+**/*.tmp
+**/*.swp
+**/.napi-rs-filesystem-transaction.swp/**
+**/*.d.ts

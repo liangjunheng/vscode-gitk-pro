@@ -93,34 +93,50 @@ Gitk Pro 在 VS Code 底部面板中提供 Gitk 风格的提交图，并将历�
 ## 运行要求
 
 - VS Code `1.94.0` 或更高版本。
-- 通用原生 VSIX 同时包含 Windows x64/arm64、Linux x64/arm64/armhf、Alpine x64/arm64、macOS x64/arm64 的 `.node` 文件，安装后会按扩展宿主的平台与架构加载对应模块。
+- 通用原生 VSIX 内置 Windows x64/arm64、Linux x64/arm64/armhf、Alpine x64/arm64、macOS x64/arm64 的 `.node` 二进制文件，并分别放在 `lib/<target>/` 下；安装后会按扩展宿主的系统、架构与 libc 类型加载对应模块。用户不需要额外安装 Node.js、Rust、Zig、libgit2 或 OpenSSL。
 - 浏览器版 VS Code（Web Extension Host）暂不支持；libgit2 原生模块无法在浏览器内运行，需要另行实现 Web 后端。远程开发时，通用 VSIX 会在远程扩展宿主中选择对应的原生模块。
 - 日常运行不要求安装 Git CLI；SSH agent、credential helper、GPG/SSH 签名程序以及自定义 filter/LFS 程序仍按仓库配置调用。若企业安全网关拦截 libgit2 的 HTTP 响应，远程 fetch/pull/push 与子模块更新会在检测到该响应后尝试回退到 Git CLI。
 - 当前工作区至少包含一个 Git 仓库。
 
 ## 开发
 
-安装依赖并编译：
+安装依赖并编译 TypeScript：
 
 ```bash
 npm install
 npm run compile
 ```
 
-按 `F5` 启动 Extension Development Host。开发期间可以运行：
+原生 `.node` 模块已经与 TypeScript 和 VSCE 打包流程分离，需要单独执行构建命令。构建产物只写入对应的 `lib/<target>/` 目录：
+
+```bash
+# 只构建当前开发系统
+npm run build:native
+
+# 在当前开发机交叉编译全部九个平台
+npm run build:native:all
+
+# 检查九个平台的产物是否齐全
+npm run verify:native:all
+```
+
+按 `F5` 启动 Extension Development Host。首次运行前需要先执行 `npm run build:native`，确保当前平台的模块已存在。开发期间可以运行：
 
 ```bash
 npm run watch
 ```
 
 在已配置的 Windows 开发环境中，也可以运行 `run.bat`，该脚本会先编译扩展，再打开新的 Extension Development Host 窗口。
-当 `native/` 已包含九个目标平台的原生模块时，打包通用 VSIX：
+
+当 `lib/` 已包含要分发的平台模块时，可以直接使用标准 VSCE 命令打包 VSIX：
 
 ```bash
-npm run package:vsix
+npx vsce package
 ```
 
-CI 会先为九个原生目标分别构建模块，再将九个 `.node` 文件合并到一个不带 `--target` 标识的通用 VSIX。流水线会检查每个目标恰好存在一个原生模块，并验证最终 VSIX 完整包含这些模块。跨平台运行能力只有在对应 CI 构建及宿主测试通过后才能视作已验证。
+`vsce package`（以及 `npm run package:vsix`）只执行 TypeScript 编译和打包，不会构建、补全或验证原生模块；它只会把 `lib/` 中已经存在的最终 `.node` 文件收入 VSIX。打包通用版本前应先独立执行 `npm run build:native:all` 和 `npm run verify:native:all`。Windows x64 首次交叉编译会把固定版本的 Zig、GNU Make 和 OpenSSL 配置所需的 Perl 模块下载并缓存到 `%LOCALAPPDATA%\vscode-gitk-native-tools`，不使用 WSL；之后会直接复用缓存。
+
+原生模块构建机仍需安装 Node.js/npm、Rust 与 Git for Windows；这些只用于生成 `lib/<target>/` 中的二进制文件，不是扩展用户的运行时依赖。CI 会显式地先运行独立原生构建和验证，再运行 `vsce package` 生成不带 `--target` 标识的通用 VSIX。各系统 CI 宿主只下载构建产物进行加载测试，不参与编译。扩展运行时只加载 VSIX 内置模块，绝不会要求用户现场编译。
 
 ## 项目结构
 
@@ -132,6 +148,7 @@ src/
   store/                       集中式应用状态与副作用
   webview/                     提交图与 Multi-Diff 界面
 media/                         产品图标、面板图标、Codicons 与 Monaco 资源
+lib/<target>/                  按 VS Code 平台划分的原生模块构建输出
 scripts/                       构建期资源脚本
 ```
 

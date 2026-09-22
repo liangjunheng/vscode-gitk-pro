@@ -1,9 +1,27 @@
-out/
+# JavaScript/TypeScript build outputs
 node_modules/
-*.vsix
+out/
 .vscode-test/
-native/*.node
+
+# Packaged extensions
+*.vsix
+
+# Rust/N-API build intermediates and local cross-compilation caches
+target/
+cargo-target/
 native/git2-backend/target/
+.xwin/
+.native-tools/
+
+# Legacy N-API output at the native project root
+native/*.node
 native/index.d.ts
 native/*.tmp
 native/.napi-rs-filesystem-transaction.swp/
+
+# Keep final platform binaries under lib/<target>/ trackable.
+# Ignore declarations, transaction files, temporary files and other artifacts.
+lib/*
+!lib/*/
+lib/*/**
+!lib/*/*.node

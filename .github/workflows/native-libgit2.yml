@@ -4,121 +4,11 @@ on:
   push:
   pull_request:
 
-jobs:
-  native:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: win32-x64
-            os: windows-latest
-            rust: x86_64-pc-windows-msvc
-            kind: native
-          - target: win32-arm64
-            os: windows-11-arm
-            rust: aarch64-pc-windows-msvc
-            kind: native
-          - target: linux-x64
-            os: ubuntu-24.04
-            rust: x86_64-unknown-linux-gnu
-            kind: native
-          - target: linux-arm64
-            os: ubuntu-24.04-arm
-            rust: aarch64-unknown-linux-gnu
-            kind: native
-          - target: linux-armhf
-            os: ubuntu-24.04
-            rust: armv7-unknown-linux-gnueabihf
-            kind: cross
-          - target: darwin-x64
-            os: macos-15-intel
-            rust: x86_64-apple-darwin
-            kind: native
-          - target: darwin-arm64
-            os: macos-15
-            rust: aarch64-apple-darwin
-            kind: native
-          - target: alpine-x64
-            os: ubuntu-24.04
-            rust: x86_64-unknown-linux-musl
-            kind: alpine
-          - target: alpine-arm64
-            os: ubuntu-24.04-arm
-            rust: aarch64-unknown-linux-musl
-            kind: alpine
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        if: matrix.kind != 'alpine'
-        with:
-          node-version: 22
-          cache: npm
-      - uses: dtolnay/rust-toolchain@stable
-        if: matrix.kind != 'alpine'
-        with:
-          components: rustfmt, clippy
-          targets: ${{ matrix.rust }}
-      - name: Set up ARMhf cross compiler
-        if: matrix.kind == 'cross'
-        run: sudo apt-get update && sudo apt-get install -y gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
-      - run: npm ci
-        if: matrix.kind != 'alpine'
-      - name: Test host Rust implementation
-        if: matrix.kind == 'native'
-        run: npm run check:native && npm run test:native
-      - name: Build native module
-        if: matrix.kind == 'native'
-        run: npm run build:native -- --target ${{ matrix.rust }}
-      - name: Cross-build ARMhf module
-        if: matrix.kind == 'cross'
-        env:
-          CC_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-gcc
-          AR_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-ar
-          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
-        run: |
-          npm run check:native
-          npm run test:native
-          npm run build:native -- --target ${{ matrix.rust }}
-      - name: Build and test on musl
-        if: matrix.kind == 'alpine'
-        shell: bash
-        run: |
-          docker run --rm -v "$PWD:/work" -w /work rust:alpine sh -euc '
-            apk add --no-cache build-base cmake perl pkgconf openssl-dev nodejs npm python3 git
-            npm ci
-            npm run check:native
-            npm run test:native
-            npm run build:native
-            node scripts/verify-native-platform.cjs "${{ matrix.target }}" --load
-          '
-      - uses: docker/setup-qemu-action@v3
-        if: matrix.kind == 'cross'
-        with:
-          platforms: arm
-      - name: Load ARMhf module under emulation
-        if: matrix.kind == 'cross'
-        shell: bash
-        run: |
-          docker run --rm --platform linux/arm/v7 -v "$PWD:/work" -w /work ubuntu:24.04 bash -euc '
-            apt-get update
-            apt-get install -y --no-install-recommends nodejs
-            node scripts/verify-native-platform.cjs linux-armhf --load
-          '
-      - name: Smoke-test Node to native operation dispatch
-        if: matrix.kind == 'native'
-        run: npm run compile && npm run test:binding
-      - name: Check native binary
-        if: matrix.kind != 'alpine'
-        run: node scripts/verify-native-platform.cjs ${{ matrix.target }} ${{ matrix.kind == 'native' && '--load' || '' }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: native-${{ matrix.target }}
-          path: native/*.node
-          if-no-files-found: error
+env:
+  MACOSX_DEPLOYMENT_TARGET: '10.13'
 
-  package:
-    needs: native
+jobs:
+  build-and-package:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -126,29 +16,41 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
-      - uses: actions/download-artifact@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          pattern: native-*
-          path: native
-          merge-multiple: true
-      - run: node scripts/verify-native-platform.cjs universal
-      - name: Package universal VSIX
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc,aarch64-pc-windows-gnullvm,x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,armv7-unknown-linux-gnueabihf,x86_64-unknown-linux-musl,aarch64-unknown-linux-musl,x86_64-apple-darwin,aarch64-apple-darwin
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+      - name: Install native cross-build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake perl pkg-config
+      - run: npm ci
+      - run: npm run check:native && npm run test:native
+      - name: Build all native modules into lib
+        run: npm run build:native:all
+      - name: Verify all generated native modules
+        run: npm run verify:native:all
+      - name: Package universal VSIX from existing lib outputs
         id: package
         shell: bash
         run: |
           version="$(node -p "require('./package.json').version")"
           output="vscode-gitk-pro-${version}.vsix"
-          npm run compile
-          node scripts/package-native-vsix.cjs -o "$output"
+          npx vsce package -o "$output"
           echo "output=$output" >> "$GITHUB_OUTPUT"
+      - name: Test the build-host native module
+        run: npm run test:binding
       - name: Verify the VSIX contains all native modules
         shell: bash
         env:
           VSIX: ${{ steps.package.outputs.output }}
         run: |
-          find native -maxdepth 1 -type f -name '*.node' -printf 'extension/native/%f\n' | sort > expected-native.txt
-          unzip -Z1 "$VSIX" | grep '^extension/native/.*\.node$' | sort > actual-native.txt
+          find lib -mindepth 2 -maxdepth 2 -type f -name '*.node' -printf 'extension/%p\n' | sort > expected-native.txt
+          unzip -Z1 "$VSIX" | grep '^extension/lib/[^/]*/.*\.node$' | sort > actual-native.txt
           diff -u expected-native.txt actual-native.txt
           if unzip -p "$VSIX" extension.vsixmanifest | grep -q 'TargetPlatform'; then
             echo 'Universal VSIX must not contain TargetPlatform metadata' >&2
@@ -156,6 +58,46 @@ jobs:
           fi
       - uses: actions/upload-artifact@v4
         with:
+          name: native-libraries
+          path: lib/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
           name: vscode-gitk-pro-universal
           path: ${{ steps.package.outputs.output }}
           if-no-files-found: error
+
+  host-smoke:
+    needs: build-and-package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: win32-x64
+            os: windows-latest
+            node-architecture: x64
+          - target: win32-arm64
+            os: windows-11-arm
+            node-architecture: arm64
+          - target: linux-arm64
+            os: ubuntu-24.04-arm
+            node-architecture: arm64
+          - target: darwin-x64
+            os: macos-15-intel
+            node-architecture: x64
+          - target: darwin-arm64
+            os: macos-15
+            node-architecture: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          architecture: ${{ matrix.node-architecture }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-libraries
+          path: lib
+      - name: Load the packaged module without compiling
+        run: node scripts/verify-native-platform.cjs ${{ matrix.target }} --load

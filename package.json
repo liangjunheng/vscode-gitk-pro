@@ -19,7 +19,9 @@
   ],
   "icon": "media/gitk-logo.png",
   "main": "./out/extension.js",
-  "extensionKind": ["workspace"],
+  "extensionKind": [
+    "workspace"
+  ],
   "contributes": {
     "languages": [
       {
@@ -224,13 +226,15 @@
     "compile": "node scripts/copy-monaco.cjs && tsc -p ./",
     "watch": "node scripts/copy-monaco.cjs && tsc -watch -p ./",
     "lint": "eslint src --ext ts",
-    "build:native": "napi build --platform --no-js --release --manifest-path native/git2-backend/Cargo.toml -o native",
-    "build": "npm run build:native && npm run compile",
+    "build:native": "node scripts/build-native.cjs",
+    "build": "npm run compile",
     "test:native": "cargo test --manifest-path native/git2-backend/Cargo.toml",
     "test:binding": "node scripts/test-native-binding.cjs",
-    "test:parity": "npm run check:native && npm run test:native && npm run build && npm run test:binding",
+    "test:parity": "npm run check:native && npm run test:native && npm run build:native && npm run compile && npm run test:binding",
     "check:native": "cargo fmt --check --manifest-path native/git2-backend/Cargo.toml && cargo clippy --manifest-path native/git2-backend/Cargo.toml --all-targets --all-features -- -D warnings",
-    "package:vsix": "npm run compile && node scripts/package-native-vsix.cjs"
+    "package:vsix": "vsce package",
+    "build:native:all": "node scripts/build-native-all.cjs",
+    "verify:native:all": "node scripts/verify-native-platform.cjs universal"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.10.4",

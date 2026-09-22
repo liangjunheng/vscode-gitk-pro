@@ -1,59 +1,56 @@
 const fs = require('node:fs');
 const path = require('node:path');
-
-// Keep this list in sync with the target matrix in .github/workflows/native-libgit2.yml.
-// Local Windows development may use GNU, while GitHub's Windows runners use MSVC.
-const bindings = Object.freeze({
-  'win32-x64': ['index.win32-x64-msvc.node', 'index.win32-x64-gnu.node'],
-  'win32-arm64': ['index.win32-arm64-msvc.node', 'index.win32-arm64-gnu.node'],
-  'linux-x64': ['index.linux-x64-gnu.node'],
-  'linux-arm64': ['index.linux-arm64-gnu.node'],
-  'linux-armhf': ['index.linux-arm-gnueabihf.node'],
-  'darwin-x64': ['index.darwin-x64.node'],
-  'darwin-arm64': ['index.darwin-arm64.node'],
-  'alpine-x64': ['index.linux-x64-musl.node'],
-  'alpine-arm64': ['index.linux-arm64-musl.node'],
-});
+const { bindings } = require('./native-targets.cjs');
 
 const target = process.argv[2];
-const directory = path.resolve(__dirname, '..', 'native');
-const actual = fs.readdirSync(directory).filter(name => name.endsWith('.node')).sort();
+const root = path.resolve(__dirname, '..');
+const libRoot = path.join(root, 'lib');
+
+function nativeFiles(directory) {
+  return fs.existsSync(directory)
+    ? fs.readdirSync(directory).filter(name => name.endsWith('.node')).sort()
+    : [];
+}
+
+function verifyTarget(platform, load) {
+  const directory = path.join(libRoot, platform);
+  const actual = nativeFiles(directory);
+  const matches = bindings[platform].filter(name => actual.includes(name));
+  if (actual.length !== 1 || matches.length !== 1) {
+    throw new Error(`${platform} requires exactly one of ${bindings[platform].join(' or ')} in lib/${platform}, found: ${actual.join(', ') || '(none)'}`);
+  }
+  const modulePath = path.join(directory, matches[0]);
+  if (load) {
+    const binding = require(modulePath);
+    if (!binding.bindingVersion() || !binding.libgit2Version()) {
+      throw new Error(`Could not call the ${platform} native binding`);
+    }
+    console.log(`${platform}: binding ${binding.bindingVersion()}, libgit2 ${binding.libgit2Version()}`);
+  } else {
+    console.log(`${platform}: ${path.relative(root, modulePath)}`);
+  }
+  return modulePath;
+}
 
 if (target === 'universal') {
-  const selected = [];
-  const errors = [];
-  for (const [platform, candidates] of Object.entries(bindings)) {
-    const matches = candidates.filter(name => actual.includes(name));
-    if (matches.length !== 1) {
-      errors.push(`${platform} requires exactly one of ${candidates.join(' or ')}, found ${matches.join(', ') || '(none)'}`);
-    } else {
-      selected.push(matches[0]);
+  const selected = Object.keys(bindings).map(platform => verifyTarget(platform, false));
+  const expected = new Set(selected.map(file => path.resolve(file)));
+  const extras = [];
+  if (fs.existsSync(libRoot)) {
+    for (const entry of fs.readdirSync(libRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      for (const name of nativeFiles(path.join(libRoot, entry.name))) {
+        const file = path.resolve(libRoot, entry.name, name);
+        if (!expected.has(file)) extras.push(path.relative(root, file));
+      }
     }
   }
-  const selectedSet = new Set(selected);
-  const extras = actual.filter(name => !selectedSet.has(name));
-  if (extras.length > 0) {
-    errors.push(`unexpected native modules: ${extras.join(', ')}`);
-  }
-  if (errors.length > 0) {
-    throw new Error(`Universal VSIX native module check failed:\n- ${errors.join('\n- ')}`);
-  }
-  console.log(`universal: ${selected.length} native modules (${selected.sort().join(', ')})`);
+  if (extras.length > 0) throw new Error(`Unexpected native modules: ${extras.join(', ')}`);
+  console.log(`universal: ${selected.length} platform modules under lib/`);
   process.exit(0);
 }
 
 if (!Object.hasOwn(bindings, target)) {
   throw new Error(`Unknown VS Code target: ${target}; expected universal or one of ${Object.keys(bindings).join(', ')}`);
 }
-if (actual.length !== 1 || !bindings[target].includes(actual[0])) {
-  throw new Error(`${target} requires only ${bindings[target].join(' or ')}, found: ${actual.join(', ') || '(none)'}`);
-}
-if (process.argv.includes('--load')) {
-  const binding = require(path.join(directory, actual[0]));
-  if (!binding.bindingVersion() || !binding.libgit2Version()) {
-    throw new Error(`Could not call the ${target} native binding`);
-  }
-  console.log(`${target}: binding ${binding.bindingVersion()}, libgit2 ${binding.libgit2Version()}`);
-} else {
-  console.log(`${target}: ${actual[0]}`);
-}
+verifyTarget(target, process.argv.includes('--load'));
