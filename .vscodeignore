@@ -33,3 +33,5 @@ lib/*/**
 **/*.swp
 **/.napi-rs-filesystem-transaction.swp/**
 **/*.d.ts
+vscode-gitk-native-tools/**
+build-native-all.ps1

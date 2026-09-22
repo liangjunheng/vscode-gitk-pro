@@ -25,3 +25,4 @@ lib/*
 !lib/*/
 lib/*/**
 !lib/*/*.node
+vscode-gitk-native-tools/

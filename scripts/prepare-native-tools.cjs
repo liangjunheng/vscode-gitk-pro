@@ -2,7 +2,6 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const https = require('node:https');
 const http = require('node:http');
-const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
@@ -35,8 +34,7 @@ const DOWNLOADS = Object.freeze({
 
 function toolsRoot() {
   if (process.env.VSCODE_GITK_NATIVE_TOOLS) return path.resolve(process.env.VSCODE_GITK_NATIVE_TOOLS);
-  const cache = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
-  return path.join(cache, 'vscode-gitk-native-tools');
+  return path.resolve(__dirname, '..', 'vscode-gitk-native-tools');
 }
 
 function run(command, args, options = {}) {
@@ -147,49 +145,49 @@ async function ensureWindowsTools() {
   }
   if (run(zig, ['version']) !== ZIG_VERSION) throw new Error(`Expected Zig ${ZIG_VERSION} at ${zig}`);
 
+  const copyScript = path.join(bin, 'native-copy.cjs');
+  fs.writeFileSync(copyScript, [
+    "const fs = require('node:fs');",
+    "const path = require('node:path');",
+    "function nativePath(value) {",
+    "  const match = /^\\/([A-Za-z])\\/(.*)$/.exec(value);",
+    "  return match ? match[1] + ':\\\\' + match[2].replaceAll('/', '\\\\') : value;",
+    "}",
+    "const values = process.argv.slice(2).filter(value => !value.startsWith('-')).map(nativePath);",
+    "if (values.length < 2) { console.error('usage: cp SOURCE... DESTINATION'); process.exit(2); }",
+    "const destination = values.pop();",
+    "const multiple = values.length > 1;",
+    "for (const source of values) {",
+    "  const destinationExists = fs.existsSync(destination);",
+    "  const target = multiple || (destinationExists && fs.statSync(destination).isDirectory())",
+    "    ? path.join(destination, path.basename(source))",
+    "    : destination;",
+    "  fs.mkdirSync(path.dirname(target), { recursive: true });",
+    "  fs.writeFileSync(target, fs.readFileSync(source));",
+    "}",
+    "",
+  ].join('\n'));
+
   const copySource = path.join(bin, 'copy-file.rs');
   const copyExecutable = path.join(bin, 'cp.exe');
-  fs.writeFileSync(copySource, String.raw`use std::{env, fs, path::PathBuf};
+  fs.writeFileSync(copySource, String.raw`use std::{env, process::{Command, Stdio}};
 
-fn native_path(value: String) -> PathBuf {
-    let bytes = value.as_bytes();
-    if bytes.len() > 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b'/' {
-        let mut native = String::new();
-        native.push(bytes[1] as char);
-        native.push(':');
-        native.push('\\');
-        native.push_str(&value[3..].replace('/', "\\"));
-        PathBuf::from(native)
-    } else {
-        PathBuf::from(value)
-    }
+fn exit_code(status: std::process::ExitStatus) -> i32 {
+    status.code().unwrap_or(1)
 }
 
 fn main() {
-    let mut values: Vec<String> = env::args().skip(1).filter(|value| !value.starts_with('-')).collect();
-    if values.len() < 2 {
-        eprintln!("usage: cp SOURCE... DESTINATION");
-        std::process::exit(2);
-    }
-    let destination = native_path(values.pop().unwrap());
-    let multiple = values.len() > 1;
-    for value in values {
-        let source = native_path(value);
-        let target = if multiple || destination.is_dir() {
-            destination.join(source.file_name().expect("source has no file name"))
-        } else {
-            destination.clone()
-        };
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).expect("failed to create destination directory");
-        }
-        let contents = fs::read(&source).unwrap_or_else(|error| {
-            panic!("failed to read {}: {error}", source.display())
-        });
-        fs::write(&target, contents).unwrap_or_else(|error| {
-            panic!("failed to write {}: {error}", target.display())
-        });
-    }
+    let node = env::var("VSCODE_GITK_NODE").expect("VSCODE_GITK_NODE is required");
+    let script = env::var("VSCODE_GITK_NATIVE_COPY").expect("VSCODE_GITK_NATIVE_COPY is required");
+    let status = Command::new(node)
+        .arg(script)
+        .args(env::args().skip(1))
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .expect("failed to launch native copy helper");
+    std::process::exit(exit_code(status));
 }
 `);
   run('rustc', [copySource, '-O', '-o', copyExecutable]);
@@ -336,7 +334,7 @@ fn main() {
     CARGO_ZIGBUILD_ZIG_COMMAND: zig,
     CARGO_ZIGBUILD_ZIG_VERSION: ZIG_VERSION,
     CARGO_MAKEFLAGS: process.env.VSCODE_GITK_MAKEFLAGS || '-j8',
-    MAKEFLAGS: [process.env.MAKEFLAGS, `SHELL=${toMsysPath(shellWrapper)}`, `PERL=${toMsysPath(gitTools.perl)}`].filter(Boolean).join(' '),
+    MAKEFLAGS: [process.env.MAKEFLAGS, `SHELL=${shellWrapper.replaceAll('\\', '/')}`, `PERL=${gitTools.perl.replaceAll('\\', '/')}`].filter(Boolean).join(' '),
     BASH_ENV: toMsysPath(bashEnvironment),
     MSYSTEM: process.env.MSYSTEM || 'MINGW64',
     SHELL: process.env.SHELL || '/usr/bin/bash',
@@ -346,10 +344,11 @@ fn main() {
     PERL: gitTools.perl,
     VSCODE_GITK_REAL_BASH: gitTools.bash,
     VSCODE_GITK_NODE: process.execPath,
+    VSCODE_GITK_NATIVE_COPY: copyScript,
     VSCODE_GITK_NATIVE_WRITER: writerScript,
     VSCODE_GITK_ZIG_AR: zigAr.replaceAll('\\', '/'),
     VSCODE_GITK_ZIG_RANLIB: zigRanlib.replaceAll('\\', '/'),
-    VSCODE_GITK_CARGO_TARGET_DIR: path.join(root, 'cargo-target'),
+    VSCODE_GITK_CARGO_TARGET_DIR: process.env.VSCODE_GITK_CARGO_TARGET_DIR || path.join(root, 'cargo-target'),
     PATH: [bin, path.dirname(zig), gitTools.bin, process.env.PATH].filter(Boolean).join(path.delimiter),
   };
   run(gitTools.perl, ['-MPod::Usage', '-MLocale::Maketext::Simple', '-MExtUtils::MakeMaker', '-MIPC::Cmd', '-e', '1'], { env });

@@ -134,7 +134,7 @@ npm run watch
 npx vsce package
 ```
 
-`vsce package`（以及 `npm run package:vsix`）只执行 TypeScript 编译和打包，不会构建、补全或验证原生模块；它只会把 `lib/` 中已经存在的最终 `.node` 文件收入 VSIX。打包通用版本前应先独立执行 `npm run build:native:all` 和 `npm run verify:native:all`。Windows x64 首次交叉编译会把固定版本的 Zig、GNU Make 和 OpenSSL 配置所需的 Perl 模块下载并缓存到 `%LOCALAPPDATA%\vscode-gitk-native-tools`，不使用 WSL；之后会直接复用缓存。
+`vsce package`（以及 `npm run package:vsix`）只执行 TypeScript 编译和打包，不会构建、补全或验证原生模块；它只会把 `lib/` 中已经存在的最终 `.node` 文件收入 VSIX。打包通用版本前应先独立执行 `npm run build:native:all` 和 `npm run verify:native:all`。`build:native:all` 默认并行构建 3 个目标，可通过 `npm run build:native:all -- --jobs 4` 或环境变量 `VSCODE_GITK_NATIVE_JOBS` 调整；每个目标使用独立的 Cargo target 目录。Windows x64 首次交叉编译会把固定版本的 Zig、GNU Make、OpenSSL 配置所需的 Perl 模块及各平台 Cargo 中间产物存放到仓库根目录的 `vscode-gitk-native-tools/`，不使用 WSL；之后会直接复用缓存。可执行 `.\build-native-all.ps1 -Jobs 4` 编译全部平台，或添加 `-MissingOnly` 只补齐缺失平台。
 
 原生模块构建机仍需安装 Node.js/npm、Rust 与 Git for Windows；这些只用于生成 `lib/<target>/` 中的二进制文件，不是扩展用户的运行时依赖。CI 会显式地先运行独立原生构建和验证，再运行 `vsce package` 生成不带 `--target` 标识的通用 VSIX。各系统 CI 宿主只下载构建产物进行加载测试，不参与编译。扩展运行时只加载 VSIX 内置模块，绝不会要求用户现场编译。
 

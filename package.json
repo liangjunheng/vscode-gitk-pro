@@ -234,7 +234,8 @@
     "check:native": "cargo fmt --check --manifest-path native/git2-backend/Cargo.toml && cargo clippy --manifest-path native/git2-backend/Cargo.toml --all-targets --all-features -- -D warnings",
     "package:vsix": "vsce package",
     "build:native:all": "node scripts/build-native-all.cjs",
-    "verify:native:all": "node scripts/verify-native-platform.cjs universal"
+    "verify:native:all": "node scripts/verify-native-platform.cjs universal",
+    "build:native:all:local": "powershell -NoProfile -ExecutionPolicy Bypass -File ./build-native-all.ps1"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.10.4",
