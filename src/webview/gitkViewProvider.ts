@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { type ChangeSetMode, type ChangedFile, type GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
+import { type AppState, type ChangeSetMode, type ChangedFile, type GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
 import { getCommitFiles, getGitAheadCount, getGitlinkPathsInCommit, getPushBranches, type PushBranchOption, readCurrentCommitMessage } from '../git/gitLogProvider';
 import { checkoutBranch, commitDetails, hasConflicts, indexGitlink, pull, push, rangeCommits, resolveRevision, restoreAll, restoreSubmodule, trackedPaths, type NativePushResult } from '../git/gitNativeOperations';
 import { MultiDiffPanel } from './multiDiffPanel';
@@ -218,28 +218,22 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const commitListLoading = this.commitController.isLoading;
         // 与 loadingProgress 共用同一文案来源, 避免搜索时快照里仍是"加载提交历史"。
         const commitListLoadingMessage = commitListLoading ? this.commitLoadingMessage : undefined;
-        // 工作区虚拟行合并为一行(Uncommitted Changes), 同时承载 staged 与 unstaged/untracked 两类文件,
-        //   空分组置灰(enabled=false)而非隐藏。
-        // 与 Commit editor 共用当前 HEAD 的 watcher 缓存，不能读取 Controller 的副本，否则两处会出现状态不同步。
+        // Commit 列表与 Changed Files 必须消费同一份已发布的 Store 快照。
+        // watcher 缓存可能在工作区事务收尾前先更新；若在这里直接读取，会让虚拟行先置灰、文件列表仍显示旧数据。
         // 搜索非空时, 虚拟行不是真实 commit 不经 searchCommits 过滤, 按 label 是否命中关键词决定是否产出; 未命中则不出现。
-        const currentBranch = this.commitController.selectedBranches.find(branch => branch.kind === 'current');
-        const workingTree = currentBranch
-            ? this.uncommittedFilesWatcher.getCachedUncommittedFilesByHeadBranch(currentBranch) ?? new WorkingTreeChanges()
-            : new WorkingTreeChanges();
+        const currentBranch = [...this.selectedBranchesMap.values()].flat().find(branch => branch.kind === 'current');
         const workingTreeRepositoryPath = currentBranch?.repoOption.path;
         const searchKeywords = this.commitController.displayedSearchKeywords;
         const matchesSearch = (label: string): boolean =>
             searchKeywords.length === 0
             || searchKeywords.some(keyword => label.toLowerCase().includes(keyword.toLowerCase()));
-        const uncommittedLabel = 'Uncommitted Changes';
-        const workingTreeRows = workingTreeRepositoryPath && matchesSearch(uncommittedLabel)
-            ? [{
-                hash: 'uncommitted' as const,
-                label: uncommittedLabel,
-                repositoryPath: workingTreeRepositoryPath,
-                enabled: workingTree.changes.length > 0 || workingTree.staged.length > 0,
-            }]
+        const workingTreeRows = currentBranch
+            ? s.workingTreeRows.filter(row =>
+                row.repositoryPath === currentBranch.repoOption.path
+                && row.headHash === currentBranch.hash
+                && matchesSearch(row.label))
             : [];
+        const workingTreeRow = workingTreeRows[0];
         const selectedRepositoryPaths = this.selectedRepositoryPaths;
         const commits = this.commitController.searchedCommitList.map(commit => ({
             ...commit,
@@ -259,8 +253,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 showCommitLanes: searchKeywords.length === 0,
                 workingTreeRows,
                 uncommittedRepositoryCount: this.countUncommittedRepositories(s.commitRepositories),
-                stagedCount: workingTree.staged.length,
-                changesCount: workingTree.changes.length,
+                stagedCount: workingTreeRow?.stagedCount ?? 0,
+                changesCount: workingTreeRow?.changesCount ?? 0,
                 hasMoreCommits: this.commitController.canLoadMoreCommits,
                 isLoadingMoreCommits: this.commitController.isLoadingMoreCommits,
                 commitPageError: this.commitController.commitPageErrorMessage,
@@ -581,6 +575,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         revealDiff = false,
         affectedPaths?: ReadonlySet<string>,
         updateWorkingTreeState = true,
+        publishedWorkingTreeRows?: AppState['workingTreeRows'],
     ): Promise<void> {
         const selectedBranch = this.commitController.selectedCommit?.gitBranchOption;
         const selectedHash = this.commitController.selectedCommit?.hash;
@@ -618,7 +613,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const files = [...conflicts, ...staged, ...unstaged];
         const workingTreeDiffCacheKey = this.getWorkingTreeDiffCacheKey(selectedBranch.repoOption.path, selectedHash, files);
         const cachedDiffs = this.workingTreeDiffCache.get(workingTreeDiffCacheKey);
-        // Update both file-list consumers even when the Diff payload can be reused.
+        // Commit 列表虚拟行、Changed Files 分组与 Commit Panel 投影必须作为同一份 UI 快照发布。
+        let workingTreeStatePatch: Partial<AppState> | undefined;
         if (updateWorkingTreeState) {
             const commitRepositories = store.getState().commitRepositories;
             const commitRepository = {
@@ -632,22 +628,30 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const nextCommitRepositories = existingRepositoryIndex < 0
                 ? [...commitRepositories, commitRepository]
                 : commitRepositories.map((repository, index) => index === existingRepositoryIndex ? commitRepository : repository);
-            store.setState({
+            workingTreeStatePatch = {
+                workingTreeRows: publishedWorkingTreeRows
+                    ?? this.buildWorkingTreeRows(selectedBranch, workingTreeChanges),
                 stagedFiles: [...workingTreeChanges.staged],
                 unstagedFiles: [...workingTreeChanges.changes],
                 commitRepositories: nextCommitRepositories,
+            };
+        }
+        const publishWorkingTreeFiles = (fileStatePatch: Partial<AppState>): void => {
+            store.batch(() => {
+                if (workingTreeStatePatch) { store.setState(workingTreeStatePatch); }
+                store.setState(fileStatePatch);
             });
-            if (this.commitPanel.isVisible()) {
+            if (workingTreeStatePatch && this.commitPanel.isVisible()) {
                 this.commitPanel.update(this.buildCommitSnapshot());
             }
-        }
+        };
         // Worktree content has no stable object id. Never reuse a full snapshot
         // for a mutation that names affected paths, even when the list is identical.
         if (cachedDiffs && (!affectedPaths || affectedPaths.size === 0)) {
             const selectedFile = cachedDiffs.find(file => (file.diffKey || file.path) === this.selectedPath)
                 ?? cachedDiffs.find(file => file.path === this.files.find(current => (current.diffKey || current.path) === this.selectedPath)?.path)
                 ?? cachedDiffs[0];
-            store.setState({
+            publishWorkingTreeFiles({
                 files: [...cachedDiffs],
                 filesLoading: false,
                 diffLoading: false,
@@ -686,7 +690,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.diffReader.stop();
         // 状态清单已经是权威结果，先立即切换分组；Diff 正文随后异步补齐。
         // 否则操作期间仍显示旧 workingTreeKind，读取完成时文件会突然集中到另一个分组。
-        store.setState({
+        publishWorkingTreeFiles({
             files: interimFiles,
             selectedPath: interimSelectedFile?.diffKey || interimSelectedFile?.path,
             diffLoading: true,
@@ -774,6 +778,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             files: [],
             stagedFiles: [],
             unstagedFiles: [],
+            workingTreeRows: [],
             selectedPath: undefined,
             currentHash: undefined,
             currentRepositoryPath: undefined,
@@ -822,6 +827,22 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         });
     }
 
+    private buildWorkingTreeRows(
+        branch: GitBranchOption | undefined,
+        changes: { staged: readonly ChangedFile[]; changes: readonly ChangedFile[] },
+    ): AppState['workingTreeRows'] {
+        if (!branch) { return []; }
+        return [{
+            hash: 'uncommitted',
+            label: 'Uncommitted Changes',
+            repositoryPath: branch.repoOption.path,
+            headHash: branch.hash,
+            enabled: changes.staged.length > 0 || changes.changes.length > 0,
+            stagedCount: changes.staged.length,
+            changesCount: changes.changes.length,
+        }];
+    }
+
     /**
      * 徽标计数优先取轻量存在性结果。存在性探测不等 --untracked-files=all 递归展开，
      * 因此能在完整清单就绪前给出计数；存在性缺失的仓库回退到完整清单判定。
@@ -841,9 +862,19 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     /** 分支选择变化后的唯一下游入口：更新显示快照，提交加载只由 CommitController 事件驱动。 */
     private onSelectedBranchesChanged(branchesMap: ReadonlyMap<GitRepositoryOption, GitBranchOption[]>): void {
         this.selectedBranchesMap = new Map([...branchesMap].map(([repository, branches]) => [repository, [...branches]]));
-        this.schedulePushState();
         const branches = [...this.selectedBranchesMap.values()].flat();
         const currentBranch = branches.find(branch => branch.kind === 'current');
+        const publishedRow = store.getState().workingTreeRows[0];
+        if (!currentBranch) {
+            store.setState({ workingTreeRows: [] });
+        } else if (publishedRow?.repositoryPath === currentBranch.repoOption.path) {
+            // 同仓库切换 HEAD 时先沿用已发布状态并更新身份。若新旧清单结构相同，Controller 会去重事件；
+            // 保留快照可避免非空工作区被永久重置为禁用，后续不同状态仍会由 watcher 精确覆盖。
+            store.setState({ workingTreeRows: [{ ...publishedRow, headHash: currentBranch.hash }] });
+        } else {
+            // 切换仓库后不能展示上一仓库的状态；新仓库完整清单就绪后再覆盖占位。
+            store.setState({ workingTreeRows: this.buildWorkingTreeRows(currentBranch, new WorkingTreeChanges()) });
+        }
         const names = [...new Set(branches.map(branch => branch.name))];
         const displayBranch = currentBranch ?? branches[0];
         this.selectedBranchDisplaySnapshot = displayBranch && names.length === 1
@@ -996,7 +1027,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         changes: { staged: ChangedFile[]; changes: ChangedFile[] },
         eventAffectedPaths?: readonly string[],
     ): Promise<void> {
-        this.schedulePushState();
         // 显式 Git 操作的 pending 路径与 watcher 事件携带的受影响路径取并集,
         // 后者覆盖"状态与内容同时变化"时被编辑文件需连内容重读的场景。
         const pending = this.pendingWorkingTreeDiffPaths;
@@ -1004,11 +1034,16 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const affectedPaths = pending || eventAffectedPaths
             ? new Set<string>([...(pending ?? []), ...(eventAffectedPaths ?? [])])
             : undefined;
+        const currentBranch = this.commitController.selectedBranches.find(branch => branch.kind === 'current');
+        const workingTreeRows = this.buildWorkingTreeRows(currentBranch, changes);
         const selectedBranch = this.commitController.selectedCommit?.gitBranchOption;
         if (!isWorkingTreeHash(this.currentHash)
             || !selectedBranch
-            || selectedBranch.repoOption.path !== this.commitController.uncommittedRepositoryPath) { return Promise.resolve(); }
-        return this.selectWorkingTreeChanges(changes, false, false, affectedPaths)
+            || selectedBranch.repoOption.path !== currentBranch?.repoOption.path) {
+            store.setState({ workingTreeRows });
+            return Promise.resolve();
+        }
+        return this.selectWorkingTreeChanges(changes, false, false, affectedPaths, true, workingTreeRows)
             .then(() => this.refreshCommitPanel());
     }
 
