@@ -258,6 +258,32 @@ export interface GitSyncResult {
     pushResults?: readonly NativePushResult[];
     submoduleTopologyChanged: boolean;
     submodulePaths: readonly string[];
+    summary?: string;
+    details?: readonly string[];
+}
+
+async function readRemoteBranchHashes(rootUri: vscode.Uri): Promise<Map<string, string> | undefined> {
+    try {
+        const { remote } = await readBranchRefsFromCli(rootUri);
+        return new Map(remote.map(ref => [ref.label, ref.hash]));
+    } catch {
+        // 读取结果失败不应把成功的网络操作误报为失败。
+        return undefined;
+    }
+}
+
+function describeRemoteBranchChanges(before: Map<string, string> | undefined, after: Map<string, string> | undefined): string[] {
+    if (!before || !after) { return ['无法读取远程分支变化。']; }
+    const changes: string[] = [];
+    for (const name of [...new Set([...before.keys(), ...after.keys()])].sort()) {
+        const previous = before.get(name);
+        const current = after.get(name);
+        if (previous === current) { continue; }
+        if (!previous) { changes.push(`新增 ${name}：${current?.slice(0, 8)}`); }
+        else if (!current) { changes.push(`删除 ${name}（原 ${previous.slice(0, 8)}）`); }
+        else { changes.push(`更新 ${name}：${previous.slice(0, 8)} → ${current.slice(0, 8)}`); }
+    }
+    return changes;
 }
 
 interface GitlinkChange {
@@ -280,24 +306,47 @@ export async function runGitSync(
     pushTargets?: readonly Pick<PushBranchOption, 'name' | 'upstreamRemote' | 'upstreamBranch'>[],
 ): Promise<GitSyncResult> {
     if (action === 'fetch') {
+        const before = await readRemoteBranchHashes(rootUri);
         onProgress?.('正在通过 libgit2 获取所有远程仓库，并清理过期引用...');
         await fetchRemotes(rootUri);
+        const changes = describeRemoteBranchChanges(before, await readRemoteBranchHashes(rootUri));
         const repositories = await collectSubmoduleRepositories([{ rootPath: rootUri.fsPath }]);
         const submodules = repositories.slice(1);
         for (let index = 0; index < submodules.length; index++) {
             const submodule = submodules[index];
+            const submoduleUri = vscode.Uri.file(submodule.rootPath);
+            const submoduleBefore = await readRemoteBranchHashes(submoduleUri);
             onProgress?.(`正在获取 Submodule 模块（${index + 1}/${submodules.length}）：${submodule.rootPath}`);
-            await fetchRemotes(vscode.Uri.file(submodule.rootPath));
+            await fetchRemotes(submoduleUri);
+            const submoduleChanges = describeRemoteBranchChanges(submoduleBefore, await readRemoteBranchHashes(submoduleUri));
+            changes.push(...submoduleChanges.map(change => `${submodule.rootPath}：${change}`));
         }
-        return { headChanged: false, submodulesNeedUpdate: false, submoduleTopologyChanged: false, submodulePaths: [] };
+        return {
+            headChanged: false, submodulesNeedUpdate: false, submoduleTopologyChanged: false, submodulePaths: [],
+            summary: `Fetch 完成：${changes.filter(change => !change.includes('无法读取远程分支变化')).length} 项远程分支变化，${submodules.length} 个 Submodule 已获取${changes.some(change => change.includes('无法读取远程分支变化')) ? '（部分变化无法确认）' : ''}`,
+            details: changes.length ? changes : ['远程分支无变化（标签等其他引用未列出）。'],
+        };
     }
     if (action === 'pull') {
         const beforeHead = await getCurrentGitHeadHash(rootUri);
+        const before = await readRemoteBranchHashes(rootUri);
         onProgress?.('正在通过 libgit2 拉取远程代码...');
         await pullNative(rootUri);
         const afterHead = await getCurrentGitHeadHash(rootUri);
+        const changes = describeRemoteBranchChanges(before, await readRemoteBranchHashes(rootUri));
+        const headChanged = Boolean(beforeHead && afterHead && beforeHead !== afterHead);
+        const details = [
+            !beforeHead || !afterHead ? '无法读取拉取前后的 HEAD。'
+                : headChanged ? `本地 HEAD：${beforeHead.slice(0, 8)} → ${afterHead.slice(0, 8)}`
+                    : `本地 HEAD 未变化（${afterHead.slice(0, 8)}）。`,
+            ...(changes.length ? changes.map(change => `远程分支：${change}`) : ['远程分支无变化（标签等其他引用未列出）。']),
+        ];
         if (!beforeHead || !afterHead || beforeHead === afterHead) {
-            return { headChanged: false, submodulesNeedUpdate: false, submoduleTopologyChanged: false, submodulePaths: [] };
+            return {
+                headChanged: false, submodulesNeedUpdate: false, submoduleTopologyChanged: false, submodulePaths: [],
+                summary: beforeHead && afterHead ? 'Pull 完成：本地 HEAD 未变化' : 'Pull 完成：无法确认本地 HEAD 变化',
+                details,
+            };
         }
         const gitlinkChanges = await getGitlinkChanges(rootUri, beforeHead, afterHead);
         const submodulePaths = gitlinkChanges.filter(change => change.status !== 'D').map(change => change.path);
@@ -306,6 +355,8 @@ export async function runGitSync(
             submodulesNeedUpdate: submodulePaths.length > 0,
             submoduleTopologyChanged: gitlinkChanges.some(change => change.status === 'A' || change.status === 'D'),
             submodulePaths,
+            summary: `Pull 完成：本地 HEAD ${beforeHead.slice(0, 8)} → ${afterHead.slice(0, 8)}`,
+            details,
         };
     }
     onProgress?.('正在通过 libgit2 推送本地提交...');

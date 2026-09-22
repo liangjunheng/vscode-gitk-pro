@@ -196,7 +196,13 @@ export class GitActionRunner {
                         const detail = formatPushResultDetail(result.pushResults);
                         await showPushResult('Git Push 已完成', detail);
                     } else {
-                        void vscode.window.showInformationMessage(`Git ${operation}操作已完成。`);
+                        const details = [
+                            result.summary ?? `Git ${operation}操作已完成。`,
+                            ...(result.details ?? []),
+                            ...(action === 'pull' && result.submodulesNeedUpdate
+                                ? [`已更新 ${result.submodulePaths.length} 个 Submodule`] : []),
+                        ];
+                        void vscode.window.showInformationMessage(details.join('；'));
                     }
                 } catch (error) {
                     const reason = error instanceof Error ? error.message : String(error);
