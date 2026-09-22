@@ -230,7 +230,7 @@
     "test:binding": "node scripts/test-native-binding.cjs",
     "test:parity": "npm run check:native && npm run test:native && npm run build && npm run test:binding",
     "check:native": "cargo fmt --check --manifest-path native/git2-backend/Cargo.toml && cargo clippy --manifest-path native/git2-backend/Cargo.toml --all-targets --all-features -- -D warnings",
-    "package:vsix": "npm run build && node scripts/package-native-vsix.cjs"
+    "package:vsix": "npm run compile && node scripts/package-native-vsix.cjs"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.10.4",

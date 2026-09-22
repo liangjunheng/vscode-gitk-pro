@@ -93,8 +93,8 @@ Gitk Pro 在 VS Code 底部面板中提供 Gitk 风格的提交图，并将历�
 ## 运行要求
 
 - VS Code `1.94.0` 或更高版本。
-- 原生扩展目标：Windows x64/arm64、Linux x64/arm64/armhf、Alpine x64/arm64、macOS x64/arm64。每个目标必须构建并安装带有对应 `.node` 文件的专用 VSIX，不能跨平台安装。
-- 浏览器版 VS Code（Web Extension Host）暂不支持；libgit2 原生模块无法在浏览器内运行，需要另行实现 Web 后端。远程开发时必须安装与远程扩展宿主平台匹配的包。
+- 通用原生 VSIX 同时包含 Windows x64/arm64、Linux x64/arm64/armhf、Alpine x64/arm64、macOS x64/arm64 的 `.node` 文件，安装后会按扩展宿主的平台与架构加载对应模块。
+- 浏览器版 VS Code（Web Extension Host）暂不支持；libgit2 原生模块无法在浏览器内运行，需要另行实现 Web 后端。远程开发时，通用 VSIX 会在远程扩展宿主中选择对应的原生模块。
 - 日常运行不要求安装 Git CLI；SSH agent、credential helper、GPG/SSH 签名程序以及自定义 filter/LFS 程序仍按仓库配置调用。
 - 当前工作区至少包含一个 Git 仓库。
 
@@ -114,13 +114,13 @@ npm run watch
 ```
 
 在已配置的 Windows 开发环境中，也可以运行 `run.bat`，该脚本会先编译扩展，再打开新的 Extension Development Host 窗口。
-打包当前平台的专用 VSIX：
+当 `native/` 已包含九个目标平台的原生模块时，打包通用 VSIX：
 
 ```bash
 npm run package:vsix
 ```
 
-CI 为九个原生目标分别构建并生成带 `--target` 标识的安装包。流水线会检查 VSIX 仅包含该目标的一个原生模块；跨平台目标只有在对应 CI 构建及宿主测试通过后才能视作已验证。
+CI 会先为九个原生目标分别构建模块，再将九个 `.node` 文件合并到一个不带 `--target` 标识的通用 VSIX。流水线会检查每个目标恰好存在一个原生模块，并验证最终 VSIX 完整包含这些模块。跨平台运行能力只有在对应 CI 构建及宿主测试通过后才能视作已验证。
 
 ## 项目结构
 

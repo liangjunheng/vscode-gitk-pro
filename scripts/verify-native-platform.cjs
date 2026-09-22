@@ -16,11 +16,35 @@ const bindings = Object.freeze({
 });
 
 const target = process.argv[2];
-if (!Object.hasOwn(bindings, target)) {
-  throw new Error(`Unknown VS Code target: ${target}; expected one of ${Object.keys(bindings).join(', ')}`);
-}
 const directory = path.resolve(__dirname, '..', 'native');
-const actual = fs.readdirSync(directory).filter(name => name.endsWith('.node'));
+const actual = fs.readdirSync(directory).filter(name => name.endsWith('.node')).sort();
+
+if (target === 'universal') {
+  const selected = [];
+  const errors = [];
+  for (const [platform, candidates] of Object.entries(bindings)) {
+    const matches = candidates.filter(name => actual.includes(name));
+    if (matches.length !== 1) {
+      errors.push(`${platform} requires exactly one of ${candidates.join(' or ')}, found ${matches.join(', ') || '(none)'}`);
+    } else {
+      selected.push(matches[0]);
+    }
+  }
+  const selectedSet = new Set(selected);
+  const extras = actual.filter(name => !selectedSet.has(name));
+  if (extras.length > 0) {
+    errors.push(`unexpected native modules: ${extras.join(', ')}`);
+  }
+  if (errors.length > 0) {
+    throw new Error(`Universal VSIX native module check failed:\n- ${errors.join('\n- ')}`);
+  }
+  console.log(`universal: ${selected.length} native modules (${selected.sort().join(', ')})`);
+  process.exit(0);
+}
+
+if (!Object.hasOwn(bindings, target)) {
+  throw new Error(`Unknown VS Code target: ${target}; expected universal or one of ${Object.keys(bindings).join(', ')}`);
+}
 if (actual.length !== 1 || !bindings[target].includes(actual[0])) {
   throw new Error(`${target} requires only ${bindings[target].join(' or ')}, found: ${actual.join(', ') || '(none)'}`);
 }

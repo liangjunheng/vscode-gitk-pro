@@ -119,10 +119,6 @@ jobs:
 
   package:
     needs: native
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [win32-x64, win32-arm64, linux-x64, linux-arm64, linux-armhf, darwin-x64, darwin-arm64, alpine-x64, alpine-arm64]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -133,18 +129,33 @@ jobs:
       - run: npm ci
       - uses: actions/download-artifact@v4
         with:
-          name: native-${{ matrix.target }}
+          pattern: native-*
           path: native
-      - run: node scripts/verify-native-platform.cjs ${{ matrix.target }}
-      - run: npx vsce package --target ${{ matrix.target }} -o vscode-gitk-pro-${{ matrix.target }}.vsix
-      - name: Verify the VSIX contains exactly the target native module
+          merge-multiple: true
+      - run: node scripts/verify-native-platform.cjs universal
+      - name: Package universal VSIX
+        id: package
         shell: bash
         run: |
-          expected="extension/native/$(basename native/*.node)"
-          actual="$(unzip -Z1 vscode-gitk-pro-${{ matrix.target }}.vsix | grep '^extension/native/.*\.node$')"
-          test "$actual" = "$expected"
+          version="$(node -p "require('./package.json').version")"
+          output="vscode-gitk-pro-${version}.vsix"
+          npm run compile
+          node scripts/package-native-vsix.cjs -o "$output"
+          echo "output=$output" >> "$GITHUB_OUTPUT"
+      - name: Verify the VSIX contains all native modules
+        shell: bash
+        env:
+          VSIX: ${{ steps.package.outputs.output }}
+        run: |
+          find native -maxdepth 1 -type f -name '*.node' -printf 'extension/native/%f\n' | sort > expected-native.txt
+          unzip -Z1 "$VSIX" | grep '^extension/native/.*\.node$' | sort > actual-native.txt
+          diff -u expected-native.txt actual-native.txt
+          if unzip -p "$VSIX" extension.vsixmanifest | grep -q 'TargetPlatform'; then
+            echo 'Universal VSIX must not contain TargetPlatform metadata' >&2
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         with:
-          name: vscode-gitk-pro-${{ matrix.target }}
-          path: vscode-gitk-pro-${{ matrix.target }}.vsix
+          name: vscode-gitk-pro-universal
+          path: ${{ steps.package.outputs.output }}
           if-no-files-found: error
