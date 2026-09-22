@@ -1,15 +1,18 @@
 import * as vscode from 'vscode';
-import { getPushBranches, runGitSync, updateGitSubmodules } from '../git/gitLogProvider';
+import { getPushBranches, runGitSync, updateGitSubmodules, type PushBranchOption } from '../git/gitLogProvider';
 import { checkout, cherryPick, createBranch, createTag, merge, rebase, reset, revertCommit, stageAll, statusSummary, type NativePushResult } from '../git/gitNativeOperations';
 import { GitCommitEditMsgEditor } from '../webview/gitCommitEditMsgEditor';
+import { pickPushBranches, showPushResult } from './pushDialogs';
 
-function formatPushResultDetail(result: NativePushResult | undefined): string {
-    if (!result) { return 'Git 已完成推送，但没有返回详细信息。'; }
-    const target = result.remote && result.remoteBranch
-        ? `${result.remote}/${result.remoteBranch}`
-        : result.remoteBranch ?? '远程分支';
-    const source = result.localBranch ?? '本地分支';
-    return `${source} → ${target}\n${result.output ?? 'Git 未返回额外信息。'}`;
+function formatPushResultDetail(results: readonly NativePushResult[] | undefined): string {
+    if (!results || results.length === 0) { return 'Git 已完成推送，但没有返回详细信息。'; }
+    return results.map(result => {
+        const target = result.remote && result.remoteBranch
+            ? `${result.remote}/${result.remoteBranch}`
+            : result.remoteBranch ?? '远程分支';
+        const source = result.localBranch ?? '本地分支';
+        return `${source} → ${target}\n${result.output ?? 'Git 未返回额外信息。'}`;
+    }).join('\n\n');
 }
 
 /**
@@ -150,23 +153,16 @@ export class GitActionRunner {
         this.syncInProgress = true;
         try {
             const operation = action === 'fetch' ? '获取' : action === 'pull' ? '拉取' : '推送';
+            let selectedPushBranches: PushBranchOption[] | undefined;
             if (action === 'push') {
                 const branches = await getPushBranches(rootUri);
-                const branch = branches.find(candidate => candidate.isCurrent) ?? branches[0];
-                if (!branch) {
-                    void vscode.window.showWarningMessage('当前仓库没有配置 upstream 的本地分支，无法确认推送目标。');
+                if (branches.length === 0) {
+                    void vscode.window.showWarningMessage('当前仓库没有可推送的远程分支。');
                     return;
                 }
-                const confirmed = await vscode.window.showInformationMessage(
-                    '确认推送？',
-                    {
-                        modal: true,
-                        detail: `本地分支：${branch.name}\n远程分支：${branch.upstreamName}`,
-                    },
-                    '推送',
-                    '取消',
-                );
-                if (confirmed !== '推送') { return; }
+                const defaultBranch = branches.find(candidate => candidate.isCurrent) ?? branches[0];
+                selectedPushBranches = await pickPushBranches(branches, [defaultBranch], defaultBranch.name);
+                if (!selectedPushBranches || selectedPushBranches.length === 0) { return; }
             }
             await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
@@ -175,7 +171,12 @@ export class GitActionRunner {
             }, async progress => {
                 try {
                     progress.report({ message: '正在执行 Git 命令...' });
-                    const result = await runGitSync(rootUri, action, message => progress.report({ message }));
+                    const result = await runGitSync(
+                        rootUri,
+                        action,
+                        message => progress.report({ message }),
+                        selectedPushBranches,
+                    );
                     if (action === 'pull' && result.submodulesNeedUpdate) {
                         await updateGitSubmodules(rootUri, result.submodulePaths, message => progress.report({ message }));
                     }
@@ -192,13 +193,8 @@ export class GitActionRunner {
                         shouldRefreshHistory,
                     );
                     if (action === 'push') {
-                        const pushResult = result.pushResult;
-                        const detail = formatPushResultDetail(pushResult);
-                        await vscode.window.showInformationMessage(
-                            'Git Push 已完成',
-                            { modal: true, detail },
-                            '关闭',
-                        );
+                        const detail = formatPushResultDetail(result.pushResults);
+                        await showPushResult('Git Push 已完成', detail);
                     } else {
                         void vscode.window.showInformationMessage(`Git ${operation}操作已完成。`);
                     }

@@ -255,7 +255,7 @@ export async function getCurrentGitHeadHash(rootUri: vscode.Uri, signal?: AbortS
 export interface GitSyncResult {
     headChanged: boolean;
     submodulesNeedUpdate: boolean;
-    pushResult?: NativePushResult;
+    pushResults?: readonly NativePushResult[];
     submoduleTopologyChanged: boolean;
     submodulePaths: readonly string[];
 }
@@ -277,6 +277,7 @@ export async function runGitSync(
     rootUri: vscode.Uri,
     action: 'fetch' | 'pull' | 'push',
     onProgress?: (message: string) => void,
+    pushTargets?: readonly Pick<PushBranchOption, 'name' | 'upstreamRemote' | 'upstreamBranch'>[],
 ): Promise<GitSyncResult> {
     if (action === 'fetch') {
         onProgress?.('正在通过 libgit2 获取所有远程仓库，并清理过期引用...');
@@ -308,8 +309,17 @@ export async function runGitSync(
         };
     }
     onProgress?.('正在通过 libgit2 推送本地提交...');
-    const pushResult = await pushNative(rootUri);
-    return { headChanged: false, submodulesNeedUpdate: false, submoduleTopologyChanged: false, submodulePaths: [], pushResult };
+    const targets = pushTargets && pushTargets.length > 0 ? pushTargets : [undefined];
+    const pushResults: NativePushResult[] = [];
+    for (const target of targets) {
+        pushResults.push(await pushNative(
+            rootUri,
+            target?.upstreamRemote,
+            target?.name,
+            target?.upstreamBranch,
+        ));
+    }
+    return { headChanged: false, submodulesNeedUpdate: false, submoduleTopologyChanged: false, submodulePaths: [], pushResults };
 }
 
 export async function updateGitSubmodules(
