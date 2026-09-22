@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { getPushBranches, runGitSync, updateGitSubmodules, type PushBranchOption } from '../git/gitLogProvider';
 import { checkout, cherryPick, createBranch, createTag, merge, rebase, reset, revertCommit, stageAll, statusSummary, type NativePushResult } from '../git/gitNativeOperations';
 import { GitCommitEditMsgEditor } from '../webview/gitCommitEditMsgEditor';
-import { pickPushBranches, showPushResult } from './pushDialogs';
+import { confirmPush, pickPushBranches, showPushResult } from './pushDialogs';
 
 function formatPushResultDetail(results: readonly NativePushResult[] | undefined): string {
     if (!results || results.length === 0) { return 'Git 已完成推送，但没有返回详细信息。'; }
@@ -163,6 +163,10 @@ export class GitActionRunner {
                 const defaultBranch = branches.find(candidate => candidate.isCurrent) ?? branches[0];
                 selectedPushBranches = await pickPushBranches(branches, [defaultBranch], defaultBranch.name);
                 if (!selectedPushBranches || selectedPushBranches.length === 0) { return; }
+                const confirmed = await confirmPush(selectedPushBranches
+                    .map(branch => `本地分支：${branch.name} → 远程分支：${branch.upstreamName}`)
+                    .join('\n'));
+                if (!confirmed) { return; }
             }
             await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,

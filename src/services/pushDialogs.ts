@@ -8,7 +8,7 @@ function branchKey(branch: PushBranchOption): string {
 }
 
 /**
- * 选择一个或多个 Push 目标。已选项会自动移动到列表顶部, 并保持勾选状态。
+ * 选择一个或多个 Push 目标。上次成功 Push 的目标默认勾选并显示在列表顶部。
  */
 export function pickPushBranches(
     branches: readonly PushBranchOption[],
@@ -22,26 +22,27 @@ export function pickPushBranches(
         branch,
     }));
     const defaultKeys = new Set(defaultBranches.map(branchKey));
-    const findItem = (key: string) => baseItems.find(item => branchKey(item.branch) === key);
     const initialSelected = baseItems.filter(item => defaultKeys.has(branchKey(item.branch)));
-    const sortItems = (selected: readonly PushBranchQuickPickItem[]) => {
-        const selectedKeys = new Set(selected.map(item => branchKey(item.branch)));
-        return [...baseItems].sort((left, right) => {
-            const leftSelected = selectedKeys.has(branchKey(left.branch));
-            const rightSelected = selectedKeys.has(branchKey(right.branch));
-            return Number(rightSelected) - Number(leftSelected);
-        });
-    };
+    const initialSelectedKeys = new Set(initialSelected.map(item => branchKey(item.branch)));
+    const orderedItems = [
+        ...initialSelected,
+        ...baseItems.filter(item => !initialSelectedKeys.has(branchKey(item.branch))),
+    ];
+
 
     quickPick.title = `${localBranchLabel} 要推送的远程分支`;
     quickPick.placeholder = '勾选后按 Enter 提交，按 Esc 取消';
     quickPick.canSelectMany = true;
-    quickPick.items = sortItems(initialSelected);
+    quickPick.keepScrollPosition = true;
+    quickPick.buttons = [{
+        iconPath: new vscode.ThemeIcon('close'),
+        tooltip: '关闭',
+    }];
+    quickPick.items = orderedItems;
     quickPick.selectedItems = initialSelected;
 
     return new Promise(resolve => {
         let settled = false;
-        let reordering = false;
         const finish = (value: PushBranchOption[] | undefined) => {
             if (settled) { return; }
             settled = true;
@@ -49,24 +50,47 @@ export function pickPushBranches(
             quickPick.dispose();
             resolve(value);
         };
-        quickPick.onDidChangeSelection(selected => {
-            if (reordering) { return; }
-            reordering = true;
-            const selectedKeys = new Set(selected.map(item => branchKey(item.branch)));
-            const activeKey = quickPick.activeItems[0] ? branchKey(quickPick.activeItems[0].branch) : undefined;
-            quickPick.items = sortItems(selected);
-            quickPick.selectedItems = quickPick.items.filter(item => selectedKeys.has(branchKey(item.branch)));
-            const activeItem = activeKey ? findItem(activeKey) : undefined;
-            if (activeItem) {
-                const reorderedActiveItem = quickPick.items.find(item => branchKey(item.branch) === activeKey);
-                if (reorderedActiveItem) { quickPick.activeItems = [reorderedActiveItem]; }
-            }
-            reordering = false;
-        });
-        quickPick.onDidAccept(() => {
-            finish(quickPick.selectedItems.map(item => item.branch));
-        });
+        quickPick.onDidAccept(() => finish(quickPick.selectedItems.map(item => item.branch)));
+        quickPick.onDidTriggerButton(() => finish(undefined));
         quickPick.onDidHide(() => finish(undefined));
+        quickPick.show();
+    });
+}
+
+type PushConfirmItem = vscode.QuickPickItem & { readonly action: 'push' | 'cancel' };
+
+/** 使用 QuickPick 弹窗确认 Push, 不依赖通知或 VS Code 的系统 OK/Cancel 文案。 */
+export function confirmPush(detail: string): Promise<boolean> {
+    const quickPick = vscode.window.createQuickPick<PushConfirmItem>();
+    const items: PushConfirmItem[] = [
+        {
+            label: '$(cloud-upload) 推送',
+            detail,
+            action: 'push',
+        },
+        {
+            label: '$(close) 取消',
+            detail: '放弃本次远程推送',
+            action: 'cancel',
+        },
+    ];
+    quickPick.title = '确认推送';
+    quickPick.placeholder = '请选择操作；按 Esc 也可以取消';
+    quickPick.items = items;
+    quickPick.activeItems = [items[0]];
+    return new Promise(resolve => {
+        let settled = false;
+        const finish = (value: boolean) => {
+            if (settled) { return; }
+            settled = true;
+            quickPick.hide();
+            quickPick.dispose();
+            resolve(value);
+        };
+        quickPick.onDidAccept(() => {
+            finish(quickPick.activeItems[0]?.action === 'push');
+        });
+        quickPick.onDidHide(() => finish(false));
         quickPick.show();
     });
 }

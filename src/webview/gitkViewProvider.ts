@@ -12,7 +12,7 @@ import { DiffReader } from '../git/diffReader';
 import { LibGit2Backend } from '../git/libGit2Backend';
 import { GitCommitEditMsgEditor } from './gitCommitEditMsgEditor';
 import { GitActionRunner } from '../services/gitActions';
-import { pickPushBranches, showPushResult } from '../services/pushDialogs';
+import { confirmPush, pickPushBranches, showPushResult } from '../services/pushDialogs';
 import { RepoSubmoduleWatcher } from '../git/gitRepoSubmoduleWatcher';
 import { GitRepoController } from '../git/gitRepoController';
 import { RepoHeadBranchWatcher } from '../git/eachRepoHeadBranchWatcher';
@@ -1841,6 +1841,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             }
             repositoryBranches.set(repositoryPath, [repositoryBranch]);
         }
+        const confirmed = await confirmPush([
+            pullBeforePush ? '推送前会先拉取并更新本地分支。' : '',
+            ...[...repositoryBranches.entries()].flatMap(([repositoryPath, branchesToPush]) =>
+                branchesToPush.map(repositoryBranch =>
+                    `${path.basename(repositoryPath)}：本地分支：${repositoryBranch.name} → 远程分支：${repositoryBranch.upstreamName}`)),
+        ].filter(Boolean).join('\n'));
+        if (!confirmed) { return; }
         const pushResults: Array<{ repositoryPath: string; branch: PushBranchOption; result: NativePushResult }> = [];
         try {
             await vscode.window.withProgress({
