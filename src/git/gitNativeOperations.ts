@@ -7,18 +7,23 @@ function isUnexpectedHttpContentType(error: unknown): boolean {
     return message.includes('unexpected content-type') && message.includes('class=Http');
 }
 
-function runGitCli(rootUri: vscode.Uri, args: readonly string[]): Promise<void> {
+function sanitizeGitOutput(output: string): string {
+    return output.replace(/(https?:\/\/)([^\s/@]+)@/gi, '$1[credentials]@').trim();
+}
+
+function runGitCli(rootUri: vscode.Uri, args: readonly string[]): Promise<string> {
     return new Promise((resolve, reject) => {
         execFile('git', ['-C', rootUri.fsPath, ...args], {
             windowsHide: true,
             encoding: 'utf8',
             maxBuffer: 64 * 1024 * 1024,
         }, (error, stdout, stderr) => {
+            const output = sanitizeGitOutput([stdout, stderr].filter(Boolean).join('\n'));
             if (!error) {
-                resolve();
+                resolve(output);
                 return;
             }
-            const reason = stderr.trim() || stdout.trim() || error.message;
+            const reason = output || error.message;
             reject(new Error(`Git CLI 回退失败：${reason}`));
         });
     });
@@ -30,14 +35,15 @@ async function withHttpTransportFallback<T>(
     nativeOperation: () => Promise<T>,
     cliArgs: readonly string[],
     fallbackValue: T,
+    fallbackResult?: (output: string) => T,
 ): Promise<T> {
     try {
         return await nativeOperation();
     } catch (error) {
         if (!isUnexpectedHttpContentType(error)) { throw error; }
         console.warn(`[Gitk][Git] libgit2 ${operation} 收到非 Git HTTP 内容，改用 Git CLI 兼容企业安全网关。`);
-        await runGitCli(rootUri, cliArgs);
-        return fallbackValue;
+        const output = await runGitCli(rootUri, cliArgs);
+        return fallbackResult ? fallbackResult(output) : fallbackValue;
     }
 }
 
@@ -108,24 +114,33 @@ export function pull(
     );
 }
 
+export interface NativePushResult {
+    readonly remote?: string;
+    readonly localBranch?: string;
+    readonly remoteBranch?: string;
+    readonly output?: string;
+}
+
 export function push(
     rootUri: vscode.Uri,
     remote?: string,
     localBranch?: string,
     remoteBranch?: string,
-): Promise<void> {
+): Promise<NativePushResult> {
     // libgit2 已在进入网络传输前执行 pre-push；回退时使用 --no-verify，避免同一 hook 执行两次。
     const cliArgs = ['push', '--no-verify'];
     if (remote) { cliArgs.push(remote); }
     if (localBranch) {
         cliArgs.push(remoteBranch ? `${localBranch}:${remoteBranch}` : localBranch);
     }
+    const requestedTarget: NativePushResult = { remote, localBranch, remoteBranch };
     return withHttpTransportFallback(
         rootUri,
         'push',
-        () => invokeNativeGit<void>('push', { rootPath: rootUri.fsPath, remote, localBranch, remoteBranch }),
+        () => invokeNativeGit<NativePushResult>('push', { rootPath: rootUri.fsPath, remote, localBranch, remoteBranch }),
         cliArgs,
-        undefined,
+        requestedTarget,
+        output => ({ ...requestedTarget, output }),
     );
 }
 

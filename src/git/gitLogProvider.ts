@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { invokeNativeGit } from './nativeGitBinding';
-import { fetchRemotes, pull as pullNative, push as pushNative, updateSubmodules as updateSubmodulesNative } from './gitNativeOperations';
+import { fetchRemotes, pull as pullNative, push as pushNative, updateSubmodules as updateSubmodulesNative, type NativePushResult } from './gitNativeOperations';
 // 类型定义统一从 types/ 导入, 消除重复
 export type { ChangeSetMode, FileStatus, GitBranchOption, GitRepositoryOption, GitRepositoryState, WorkingTreeChanges } from '../types';
 export { CommitFile, CommitMetadata } from '../types';
@@ -255,6 +255,7 @@ export async function getCurrentGitHeadHash(rootUri: vscode.Uri, signal?: AbortS
 export interface GitSyncResult {
     headChanged: boolean;
     submodulesNeedUpdate: boolean;
+    pushResult?: NativePushResult;
     submoduleTopologyChanged: boolean;
     submodulePaths: readonly string[];
 }
@@ -307,8 +308,8 @@ export async function runGitSync(
         };
     }
     onProgress?.('正在通过 libgit2 推送本地提交...');
-    await pushNative(rootUri);
-    return { headChanged: false, submodulesNeedUpdate: false, submoduleTopologyChanged: false, submodulePaths: [] };
+    const pushResult = await pushNative(rootUri);
+    return { headChanged: false, submodulesNeedUpdate: false, submoduleTopologyChanged: false, submodulePaths: [], pushResult };
 }
 
 export async function updateGitSubmodules(

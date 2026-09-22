@@ -1,7 +1,16 @@
 import * as vscode from 'vscode';
-import { runGitSync, updateGitSubmodules } from '../git/gitLogProvider';
-import { checkout, cherryPick, createBranch, createTag, merge, rebase, reset, revertCommit, stageAll, statusSummary } from '../git/gitNativeOperations';
+import { getPushBranches, runGitSync, updateGitSubmodules } from '../git/gitLogProvider';
+import { checkout, cherryPick, createBranch, createTag, merge, rebase, reset, revertCommit, stageAll, statusSummary, type NativePushResult } from '../git/gitNativeOperations';
 import { GitCommitEditMsgEditor } from '../webview/gitCommitEditMsgEditor';
+
+function formatPushResultDetail(result: NativePushResult | undefined): string {
+    if (!result) { return 'Git 已完成推送，但没有返回详细信息。'; }
+    const target = result.remote && result.remoteBranch
+        ? `${result.remote}/${result.remoteBranch}`
+        : result.remoteBranch ?? '远程分支';
+    const source = result.localBranch ?? '本地分支';
+    return `${source} → ${target}\n${result.output ?? 'Git 未返回额外信息。'}`;
+}
 
 /**
  * Git 操作执行器: 处理用户触发的 Git 命令 (tag, branch, checkout, merge, rebase, reset 等)
@@ -141,6 +150,24 @@ export class GitActionRunner {
         this.syncInProgress = true;
         try {
             const operation = action === 'fetch' ? '获取' : action === 'pull' ? '拉取' : '推送';
+            if (action === 'push') {
+                const branches = await getPushBranches(rootUri);
+                const branch = branches.find(candidate => candidate.isCurrent) ?? branches[0];
+                if (!branch) {
+                    void vscode.window.showWarningMessage('当前仓库没有配置 upstream 的本地分支，无法确认推送目标。');
+                    return;
+                }
+                const confirmed = await vscode.window.showInformationMessage(
+                    '确认推送？',
+                    {
+                        modal: true,
+                        detail: `本地分支：${branch.name}\n远程分支：${branch.upstreamName}`,
+                    },
+                    '推送',
+                    '取消',
+                );
+                if (confirmed !== '推送') { return; }
+            }
             await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
                 title: `Git ${operation}`,
@@ -164,7 +191,17 @@ export class GitActionRunner {
                         result.submoduleTopologyChanged,
                         shouldRefreshHistory,
                     );
-                    void vscode.window.showInformationMessage(`Git ${operation}操作已完成。`);
+                    if (action === 'push') {
+                        const pushResult = result.pushResult;
+                        const detail = formatPushResultDetail(pushResult);
+                        await vscode.window.showInformationMessage(
+                            'Git Push 已完成',
+                            { modal: true, detail },
+                            '关闭',
+                        );
+                    } else {
+                        void vscode.window.showInformationMessage(`Git ${operation}操作已完成。`);
+                    }
                 } catch (error) {
                     const reason = error instanceof Error ? error.message : String(error);
                     void vscode.window.showErrorMessage(`Git ${operation}操作失败：${reason}`);

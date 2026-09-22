@@ -391,7 +391,13 @@ fn fetch_and_push_match_cli_on_local_remote() {
     let f = Fixture::new();
     let first = f.seed();
     f.git(&["remote", "add", "origin", &origin.path().to_string_lossy()]);
-    remote::push(&json!({"rootPath": f.root(), "remote": "origin"})).unwrap();
+    let push_result = remote::push(&json!({"rootPath": f.root(), "remote": "origin"})).unwrap();
+    assert_eq!(push_result["remote"], "origin");
+    assert!(
+        push_result["output"]
+            .as_str()
+            .is_some_and(|value| value.contains("->"))
+    );
     let branch = f.git(&["branch", "--show-current"]).trim().to_owned();
     cli(
         origin.path(),

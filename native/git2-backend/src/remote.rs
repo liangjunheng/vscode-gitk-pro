@@ -180,7 +180,22 @@ pub fn push(payload: &Value) -> NativeResult<Value> {
     remote
         .push(&[refspec.as_str()], Some(&mut options))
         .map_err(format_git_error)?;
-    Ok(json!({ "remote": remote_name, "localBranch": local_branch, "remoteBranch": remote_branch }))
+    let output = if remote_oid == local_oid {
+        format!("Everything up-to-date: {local_branch} -> {remote_branch}")
+    } else if remote_oid == git2::Oid::ZERO_SHA1 {
+        format!("[new branch] {local_branch} -> {remote_branch}")
+    } else {
+        format!(
+            "{}..{} {local_branch} -> {remote_branch}",
+            remote_oid, local_oid
+        )
+    };
+    Ok(json!({
+        "remote": remote_name,
+        "localBranch": local_branch,
+        "remoteBranch": remote_branch,
+        "output": output,
+    }))
 }
 
 fn fast_forward(repo: &Repository, branch: &str, target: git2::Oid) -> NativeResult<()> {

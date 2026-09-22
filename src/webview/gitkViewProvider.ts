@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { type ChangeSetMode, type ChangedFile, type GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
 import { getCommitFiles, getGitAheadCount, getGitlinkPathsInCommit, getPushBranches, type PushBranchOption, readCurrentCommitMessage } from '../git/gitLogProvider';
-import { checkoutBranch, commitDetails, hasConflicts, indexGitlink, pull, push, rangeCommits, resolveRevision, restoreAll, restoreSubmodule, trackedPaths } from '../git/gitNativeOperations';
+import { checkoutBranch, commitDetails, hasConflicts, indexGitlink, pull, push, rangeCommits, resolveRevision, restoreAll, restoreSubmodule, trackedPaths, type NativePushResult } from '../git/gitNativeOperations';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { CommitPanel, type CommitPanelSnapshot, type CommitCard, type CommitCardStatePatch } from './commitPanel';
 import { CommitPanelViewTitleController } from './commitPanelViewTitleController';
@@ -1798,6 +1798,32 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const pushedBranchByRepository = new Map<string, Awaited<ReturnType<typeof getPushBranches>>[number]>([
             [rootRepositoryPath, branch],
         ]);
+        const pushTargets: Array<{ repositoryPath: string; branch: PushBranchOption }> = [];
+        for (const repositoryPath of orderedRepositoryPaths) {
+            const repositoryBranch = repositoryPath === rootRepositoryPath
+                ? branch
+                : this.pushBranchByRepository.get(repositoryPath);
+            if (!repositoryBranch) {
+                void vscode.window.showWarningMessage(`仓库未选择可推送分支：${repositoryPath}`);
+                return;
+            }
+            pushTargets.push({ repositoryPath, branch: repositoryBranch });
+        }
+        const confirmed = await vscode.window.showInformationMessage(
+            '确认推送？',
+            {
+                modal: true,
+                detail: [
+                    pullBeforePush ? '推送前会先拉取并更新本地分支。' : '',
+                    ...pushTargets.map(({ repositoryPath, branch: target }) =>
+                        `${path.basename(repositoryPath)}：${target.name} → ${target.upstreamName}`),
+                ].filter(Boolean).join('\n'),
+            },
+            '推送',
+            '取消',
+        );
+        if (confirmed !== '推送') { return; }
+        const pushResults: Array<{ repositoryPath: string; branch: PushBranchOption; result: NativePushResult }> = [];
         try {
             await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
@@ -1819,10 +1845,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                         await pull(repositoryUri, repositoryBranch.upstreamRemote, repositoryBranch.upstreamBranch, repositoryBranch.name);
                     }
                     progress.report({ message: `正在推送：${repositoryPath}` });
-                    if (repositoryPath === rootRepositoryPath) {
-                        await push(repositoryUri, branch.upstreamRemote, branch.name, branch.upstreamBranch);
-                    } else {
-                        await push(repositoryUri, repositoryBranch.upstreamRemote, repositoryBranch.name, repositoryBranch.upstreamBranch);
+                    const pushResult = repositoryPath === rootRepositoryPath
+                        ? await push(repositoryUri, branch.upstreamRemote, branch.name, branch.upstreamBranch)
+                        : await push(repositoryUri, repositoryBranch.upstreamRemote, repositoryBranch.name, repositoryBranch.upstreamBranch);
+                    pushResults.push({ repositoryPath, branch: repositoryBranch, result: pushResult });
+                    if (repositoryPath !== rootRepositoryPath) {
                         pushedBranchByRepository.set(repositoryPath, repositoryBranch);
                     }
                 }
@@ -1842,8 +1869,22 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 }
             }
             await this.commitController.forceRefreshCurrentSelection();
+            const detail = pushResults.map(({ repositoryPath, branch: target, result }) => {
+                const response = result.output ?? 'Git 未返回额外信息。';
+                return `${path.basename(repositoryPath)}：${target.name} → ${target.upstreamName}\n${response}`;
+            }).join('\n\n');
+            await vscode.window.showInformationMessage(
+                'Git Push 已完成',
+                { modal: true, detail: detail || 'Git 已完成推送，但没有返回详细信息。' },
+                '关闭',
+            );
         } catch (error) {
-            void vscode.window.showErrorMessage(`Git Push 失败：${error instanceof Error ? error.message : String(error)}`);
+            const reason = error instanceof Error ? error.message : String(error);
+            await vscode.window.showErrorMessage(
+                'Git Push 失败',
+                { modal: true, detail: reason },
+                '关闭',
+            );
         }
         // 操作由 Commit 面板触发, 显示权归触发者: 结束后把面板带回编辑器区前台。
         if (focusCommitPanel) {
