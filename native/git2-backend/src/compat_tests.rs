@@ -656,3 +656,56 @@ fn conflicting_merge_reports_the_index_conflict_without_moving_head() {
             .any(|file| file["isConflict"] == true)
     );
 }
+
+#[cfg(windows)]
+#[test]
+fn multi_file_restore_ignores_unrelated_windows_long_paths() {
+    let f = Fixture::new();
+    f.write("one/a.gkt", "base a\n");
+    f.write("two/b.gkt", "base b\n");
+    f.write(".gitignore", "ignored/\n");
+    f.git(&["add", "."]);
+    f.git(&["commit", "-m", "base"]);
+    Repository::open(f.dir.path())
+        .unwrap()
+        .config()
+        .unwrap()
+        .set_bool("core.longpaths", false)
+        .unwrap();
+
+    let file_name = "NativeCanvasListener$Companion$onNativeScreenTargetFinished$1.dex";
+    let mut relative = std::path::PathBuf::from("ignored");
+    while f
+        .dir
+        .path()
+        .join(&relative)
+        .join(file_name)
+        .as_os_str()
+        .len()
+        <= 260
+    {
+        relative.push("abcdefghij");
+    }
+    let long_path = f.dir.path().join(relative).join(file_name);
+    fs::create_dir_all(long_path.parent().unwrap()).unwrap();
+    fs::write(&long_path, "generated\n").unwrap();
+    assert!(long_path.as_os_str().len() > 260);
+
+    f.write("one/a.gkt", "changed a\n");
+    f.write("two/b.gkt", "changed b\n");
+    mutations::restore_worktree(&json!({
+        "rootPath": f.root(),
+        "paths": ["one/a.gkt", "two/b.gkt"]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(f.dir.path().join("one/a.gkt")).unwrap(),
+        "base a\n"
+    );
+    assert_eq!(
+        fs::read_to_string(f.dir.path().join("two/b.gkt")).unwrap(),
+        "base b\n"
+    );
+    assert!(long_path.exists());
+}

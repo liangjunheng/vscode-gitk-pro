@@ -95,13 +95,19 @@ pub fn restore_worktree(payload: &Value) -> NativeResult<Value> {
         return Ok(Value::Null);
     }
     let repo = open_repository(root_path)?;
-    let mut checkout = CheckoutBuilder::new();
-    checkout.force().recreate_missing(true).update_index(false);
+    // libgit2 expands a checkout containing multiple pathspecs into a wider
+    // worktree scan on Windows. Restore each selected file independently so
+    // unrelated ignored build artifacts cannot block the operation.
     for path in &paths {
-        checkout.path(path);
+        let mut checkout = CheckoutBuilder::new();
+        checkout
+            .force()
+            .recreate_missing(true)
+            .update_index(false)
+            .path(path);
+        repo.checkout_index(None, Some(&mut checkout))
+            .map_err(format_git_error)?;
     }
-    repo.checkout_index(None, Some(&mut checkout))
-        .map_err(format_git_error)?;
     apply_smudge_filters(&repo, &paths)?;
     Ok(Value::Null)
 }
