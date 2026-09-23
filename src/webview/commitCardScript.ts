@@ -172,17 +172,16 @@ export const COMMIT_CARD_SCRIPT = `
     const anchor=state.workingTreeSelectionAnchor;
     const anchorPrefix=section+'\u0000';
     const list=cardSectionList(cardElement,section);
-    const rows=Array.from(list.querySelectorAll('.file-row[data-section="'+section+'"]'));
+    const sectionFiles=cardSectionFiles(cardElement._card,section);
     const anchorIndex=anchor&&anchor.indexOf(anchorPrefix)===0
-      ? rows.findIndex(function(candidate){return commitWorkingTreeSelectionKey(section,candidate.dataset.path||'')===anchor})
+      ? sectionFiles.findIndex(function(file){return file.path===anchor.slice(anchorPrefix.length)})
       : -1;
-    const currentIndex=rows.indexOf(row);
+    const currentIndex=sectionFiles.findIndex(function(file){return file.path===path});
     if(event.shiftKey&&anchorIndex>=0&&currentIndex>=0){
       if(!additive)state.selectedWorkingTreeFiles.clear();
       const start=Math.min(anchorIndex,currentIndex),end=Math.max(anchorIndex,currentIndex);
       for(let index=start;index<=end;index++){
-        const candidatePath=rows[index].dataset.path;
-        if(candidatePath)state.selectedWorkingTreeFiles.add(commitWorkingTreeSelectionKey(section,candidatePath));
+        state.selectedWorkingTreeFiles.add(commitWorkingTreeSelectionKey(section,sectionFiles[index].path));
       }
     }else if(additive){
       if(state.selectedWorkingTreeFiles.has(key))state.selectedWorkingTreeFiles.delete(key);

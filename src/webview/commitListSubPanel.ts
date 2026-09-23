@@ -9,6 +9,8 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   #graph { --graph-lane-width: 22px; --main-width: calc(var(--graph-lane-width) + 60ch); --hash-width: max-content; --author-width: max-content; --date-width: max-content; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
   /* 竖向铺满: 列表吃掉表头以外的剩余高度。flex-shrink 必须为 0, 否则内容超高时会被压扁而无法滚动。 */
   #commitList { flex: 1 0 auto; min-width: 0; }
+  #commitWorkingTreeRows, #commitVirtualRows { min-width: max-content; }
+  .commit-virtual-spacer { width: 1px; min-height: 0; pointer-events: none; }
   /* 搜索/计数/刷新都是提交列表的能力, 随面板一起放在列头之上并吸顶。 */
   .count { opacity: 0.7; font-size: 11px; white-space: nowrap; }
   #searchBox { display: flex; align-items: center; position: relative; }
@@ -213,8 +215,16 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
   let resizing = null;
 
     const ROW_H = 26;
+    const COMMIT_OVERSCAN = 50;
     const LANE_W = 12;
     const expandedCommits = new Set();
+    const expandedCommitRowHeights = new Map();
+    let commitLayoutPrefix = [];
+    let commitLayoutTotal = 0;
+    let commitLayoutDirty = true;
+    let commitVirtualStart = -1;
+    let commitVirtualEnd = -1;
+    let commitVirtualFrame = 0;
   const DOT_R = 5;
   let graphViewportWidth = 0;
   // 增量渲染状态
@@ -352,7 +362,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     }
     footer.textContent = '继续滚动以加载更多提交';
     if ('IntersectionObserver' in window) {
-      var triggerIndex = Math.max(0, commits.length - 20);
+      var triggerIndex = Math.max(0, commits.length - COMMIT_OVERSCAN);
       var graph = document.getElementById('graph');
       var triggerRow = graph.querySelector('.commit-row[data-row="' + triggerIndex + '"]');
       if (!triggerRow) return;
@@ -491,9 +501,11 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
   // 仅更新提交选择，避免无关状态改变时重绘整张提交图。
   function applyCommitSelection(hash, repositoryPath) {
     var selectedKey = (repositoryPath || '') + ':' + (hash || '');
+    var collapsedExpandedCommit = false;
     expandedCommits.forEach(function(key) {
-      if (key !== selectedKey) expandedCommits.delete(key);
+      if (key !== selectedKey) { expandedCommits.delete(key); collapsedExpandedCommit = true; }
     });
+    if (collapsedExpandedCommit) { commitLayoutDirty = true; scheduleCommitVirtualWindow(); }
     // 不重建列表，避免 Store 确认前的旧快照撤销乐观高亮。
     document.querySelectorAll('.commit-row.expanded').forEach(function(row) {
       var rowKey = (row.getAttribute('data-repository-path') || '') + ':' + (row.getAttribute('data-hash') || '');
@@ -573,6 +585,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
         } else {
           expandedCommits.add(commitKey);
         }
+        commitLayoutDirty = true;
         render();
         return;
       }
@@ -659,14 +672,118 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
   }
 
   function updateWorkingTreeRows() {
-    const list = document.getElementById('commitList');
-    if (!list) return;
-    list.querySelectorAll('.working-tree').forEach(function(row) { row.remove(); });
+    const host = document.getElementById('commitWorkingTreeRows');
+    if (!host) return;
     const branch = getSelectedCurrentBranch();
-    if (!branch) return;
-    list.insertAdjacentHTML('afterbegin', workingTreeRowsHTML());
-    list.querySelectorAll('.working-tree').forEach(function(row) { setupRow(row, currentGraphW); });
+    host.innerHTML = branch ? workingTreeRowsHTML() : '';
+    host.querySelectorAll('.working-tree').forEach(function(row) { setupRow(row, currentGraphW); });
+    scheduleCommitVirtualWindow();
   }
+
+  function commitKeyAt(index) {
+    const commit = commits[index];
+    return commit ? commit.gitBranchOption.repoOption.path + ':' + commit.hash : '';
+  }
+
+  function commitLogicalHeight(index) {
+    const key = commitKeyAt(index);
+    return key && expandedCommits.has(key) ? (expandedCommitRowHeights.get(key) || ROW_H) : ROW_H;
+  }
+
+  function rebuildCommitLayout() {
+    commitLayoutPrefix = new Array(commits.length + 1);
+    commitLayoutPrefix[0] = 0;
+    for (let index = 0; index < commits.length; index++) {
+      commitLayoutPrefix[index + 1] = commitLayoutPrefix[index] + commitLogicalHeight(index);
+    }
+    commitLayoutTotal = commitLayoutPrefix[commits.length] || 0;
+    commitLayoutDirty = false;
+  }
+
+  function commitLowerBound(offset) {
+    let low = 0, high = commits.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (commitLayoutPrefix[middle + 1] > offset) high = middle; else low = middle + 1;
+    }
+    return Math.min(low, Math.max(0, commits.length - 1));
+  }
+
+  function commitUpperBound(offset) {
+    let low = 0, high = commits.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (commitLayoutPrefix[middle] < offset) low = middle + 1; else high = middle;
+    }
+    return Math.min(low, commits.length);
+  }
+
+  function commitVirtualRange(graph) {
+    if (commitLayoutDirty) rebuildCommitLayout();
+    const topSpacer = document.getElementById('commitVirtualTop');
+    if (!topSpacer || !commits.length) return { start: 0, end: 0 };
+    const graphRect = graph.getBoundingClientRect();
+    const regionTop = topSpacer.getBoundingClientRect().top - graphRect.top + graph.scrollTop;
+    const stickyHeight = document.getElementById('commitHeader').offsetHeight + document.getElementById('commitSearchRow').offsetHeight;
+    const viewportTop = Math.max(0, graph.scrollTop + stickyHeight - regionTop);
+    const viewportBottom = Math.max(viewportTop, graph.scrollTop + graph.clientHeight - regionTop);
+    const first = commitLowerBound(viewportTop);
+    const lastExclusive = Math.max(first + 1, commitUpperBound(viewportBottom));
+    return {
+      start: Math.max(0, first - COMMIT_OVERSCAN),
+      end: Math.min(commits.length, lastExclusive + COMMIT_OVERSCAN),
+    };
+  }
+
+  function measureExpandedCommitRows() {
+    let changed = false;
+    document.querySelectorAll('#commitVirtualRows .commit-row.expanded[data-row]').forEach(function(row) {
+      const index = Number(row.getAttribute('data-row'));
+      const key = Number.isInteger(index) ? commitKeyAt(index) : '';
+      const height = row.getBoundingClientRect().height;
+      if (!key || height <= 0 || Math.abs((expandedCommitRowHeights.get(key) || ROW_H) - height) < .5) return;
+      expandedCommitRowHeights.set(key, height);
+      changed = true;
+    });
+    if (!changed) return;
+    commitLayoutDirty = true;
+    rebuildCommitLayout();
+    const top = document.getElementById('commitVirtualTop');
+    const bottom = document.getElementById('commitVirtualBottom');
+    if (top) top.style.height = (commitLayoutPrefix[commitVirtualStart] || 0) + 'px';
+    if (bottom) bottom.style.height = Math.max(0, commitLayoutTotal - (commitLayoutPrefix[commitVirtualEnd] || 0)) + 'px';
+    scheduleCommitVirtualWindow();
+  }
+
+  function renderCommitVirtualWindow(force) {
+    const graph = document.getElementById('graph');
+    const rowsHost = document.getElementById('commitVirtualRows');
+    const top = document.getElementById('commitVirtualTop');
+    const bottom = document.getElementById('commitVirtualBottom');
+    if (!graph || !rowsHost || !top || !bottom || !commits.length) return;
+    const range = commitVirtualRange(graph);
+    if (!force && range.start === commitVirtualStart && range.end === commitVirtualEnd) return;
+    commitVirtualStart = range.start;
+    commitVirtualEnd = range.end;
+    top.style.height = (commitLayoutPrefix[range.start] || 0) + 'px';
+    bottom.style.height = Math.max(0, commitLayoutTotal - (commitLayoutPrefix[range.end] || 0)) + 'px';
+    let html = '';
+    for (let index = range.start; index < range.end; index++) html += buildCommitRowHTML(index, currentGraphW);
+    rowsHost.innerHTML = html;
+    rowsHost.querySelectorAll('.commit-row').forEach(function(row) { setupRow(row, currentGraphW); });
+    measureExpandedCommitRows();
+    renderCommitFooter();
+  }
+
+  function scheduleCommitVirtualWindow() {
+    if (commitVirtualFrame) return;
+    commitVirtualFrame = requestAnimationFrame(function() {
+      commitVirtualFrame = 0;
+      renderCommitVirtualWindow(false);
+    });
+  }
+
+  document.getElementById('graph').addEventListener('scroll', scheduleCommitVirtualWindow, { passive: true });
 
   function captureVisibleCommitAnchor(graph, list) {
     if (!graph || !list) return null;
@@ -718,6 +835,8 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     if (commits.length === 0) {
       list.style.display = 'block';
       list.innerHTML = '<div id="commitEmpty">暂无提交记录</div>';
+      commitVirtualStart = -1;
+      commitVirtualEnd = -1;
       renderCommitFooter();
       return;
     }
@@ -734,30 +853,29 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     document.getElementById('commitHeaderColumns').innerHTML =
       headerCell('Commit列表', 'main') +
       headerCell('作者', 'author') + headerCell('Commit ID', 'hash') + headerCell('时间', 'date');
-    var html = '';
     var selectedBranch = getSelectedCurrentBranch();
-    // 正序拼接(changes 在前, staged 在后), 与后端下发顺序一致; 此处用 innerHTML 不会反转。
-    if (selectedBranch) {
-      html += workingTreeRowsState.map(function(row) {
-        return workingTreeRowHTML(row.hash, row.label, row.enabled);
-      }).join('');
-    }
-    for (let i = 0; i < commits.length; i++) {
-      html += buildCommitRowHTML(i, graphW);
-    }
+    var workingTreeHtml = selectedBranch ? workingTreeRowsState.map(function(row) {
+      return workingTreeRowHTML(row.hash, row.label, row.enabled);
+    }).join('') : '';
+
+    commitLayoutDirty = true;
+    rebuildCommitLayout();
+    commitVirtualStart = -1;
+    commitVirtualEnd = -1;
+    // 工作区虚拟行始终保留；普通提交只挂载可视范围与前后各 50 条。
+    list.innerHTML = '<div id="commitWorkingTreeRows">' + workingTreeHtml + '</div>'
+      + '<div id="commitVirtualTop" class="commit-virtual-spacer"></div>'
+      + '<div id="commitVirtualRows"></div>'
+      + '<div id="commitVirtualBottom" class="commit-virtual-spacer" style="height:' + commitLayoutTotal + 'px"></div>';
+
     // SVG 泳道子列宽随泳道数变化; col-main 总宽由 --main-width (默认 = 泳道宽 + 60ch) 决定。
     graph.style.setProperty('--graph-lane-width', naturalGraphW + 'px');
     list.style.setProperty('--graph-lane-width', naturalGraphW + 'px');
     updateColumnWidths(commits, 0);
-    list.innerHTML = html;
-
-    var rows = list.querySelectorAll('.commit-row');
-    rows.forEach(function(row) {
-      setupRow(row, graphW);
-    });
+    document.querySelectorAll('#commitWorkingTreeRows .commit-row').forEach(function(row) { setupRow(row, graphW); });
+    renderCommitVirtualWindow(true);
 
     updateCountLabel();
-    renderCommitFooter();
     restoreVisibleCommitAnchor(graph, list, visibleCommitAnchor, scrollTop);
   }
 

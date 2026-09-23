@@ -36,6 +36,8 @@ export const CHANGED_FILES_SUB_PANEL_STYLES = `
   #workingTreeCommitMenu button:hover { color: var(--vscode-menu-selectionForeground, var(--vscode-list-hoverForeground)); background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground)); }
   #filesList { min-width: 0; min-height: 0; flex: 1 1 auto; overflow-x: auto; overflow-y: auto; }
   #filesList > * { min-width: max-content; }
+  .changed-virtual-list { width: 100%; min-width: max-content; }
+  .changed-virtual-spacer { width: 1px; min-height: 0; pointer-events: none; }
   #commitContextMenu { position: fixed; z-index: 20; min-width: 180px; max-height: calc(100vh - 8px); overflow-y: auto; margin: 0; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border)); border-radius: 5px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 4px 14px rgba(0, 0, 0, .28); }
   #commitContextMenu:not(:popover-open) { display: none; }
   #commitContextMenu button { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; border-radius: 3px; padding: 5px 8px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: transparent; text-align: left; font: inherit; }
@@ -336,7 +338,7 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
     return workingTreeActionButton('discard', section, path, 'discard', '放弃当前文件的未暂存更改（不可撤销）') + workingTreeActionButton('stage', section, path, 'add', '暂存当前文件（移入 Staged Changes）');
   }
 
-  function workingTreeFileHTML(file, section) {
+  function workingTreeFileHTML(file, section, treeIndent) {
     const lastSlash = file.path.lastIndexOf('/');
     const folder = lastSlash >= 0 ? file.path.slice(0, lastSlash + 1) : '';
     const name = lastSlash >= 0 ? file.path.slice(lastSlash + 1) : file.path;
@@ -346,7 +348,7 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
     const selectionKey = workingTreeSelectionKey(section, file.path);
     const multiSelected = selectedWorkingTreeFiles.has(selectionKey);
     const activeSelected = diffKey === selectedPath && (multiSelected || !workingTreeSelectionAnchor);
-    return '<div class="file-item' + (activeSelected ? ' selected' : '') + (multiSelected ? ' multi-selected' : '') + untracked + '" data-path="' + escapeAttr(file.path) + '" data-diff-key="' + escapeAttr(diffKey) + '" data-section="' + section + '" title="' + escapeAttr(file.path) + '">' +
+    return '<div class="file-item' + (activeSelected ? ' selected' : '') + (multiSelected ? ' multi-selected' : '') + untracked + '" data-path="' + escapeAttr(file.path) + '" data-diff-key="' + escapeAttr(diffKey) + '" data-section="' + section + '"' + (treeIndent ? ' style="padding-left:30px"' : '') + ' title="' + escapeAttr(file.path) + '">' +
       workingTreeKindIconHTML(file, section) + '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span>' +
       '<span class="file-path"><span class="file-name">' + escapeHtml(name) + '</span>' + (folder ? ' <span class="file-folder">' + escapeHtml(folder) + '</span>' : '') + '</span><span class="file-actions">' + workingTreeActionsHTML(actions) + '</span></div>';
   }
@@ -401,7 +403,7 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
         : workingTreeActionButton('discard', section, '', 'discard', '放弃此分组所有文件的未暂存更改（不可撤销）') + workingTreeActionButton('stage', section, '', 'add', '暂存此分组的所有文件（全部移入 Staged Changes）');
     return '<section class="working-tree-section' + (hasSelected ? ' has-selected' : '') + '" data-section="' + section + '">' +
       '<div class="working-tree-section-header' + (disabled ? ' disabled' : '') + '" data-working-tree-section-toggle="' + section + '"><span class="working-tree-section-chevron codicon codicon-chevron-' + (collapsed ? 'right' : 'down') + '"></span><span class="working-tree-section-leading"><span class="working-tree-section-title">' + label + '</span><span class="working-tree-section-count">' + sectionFiles.length + '</span></span><span class="working-tree-section-actions">' + workingTreeActionsHTML(actions) + '</span></div>' +
-      '<div class="working-tree-section-body"' + (collapsed ? ' hidden' : '') + '>' + workingTreeSectionFilesHTML(section, sectionFiles) + '</div></section>';
+      '<div class="working-tree-section-body"' + (collapsed ? ' hidden' : '') + '></div></section>';
   }
 
   // 文件夹折叠绑定同时服务普通提交与虚拟提交两个渲染分支。
@@ -422,6 +424,99 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
     });
   }
 
+  const CHANGED_FILE_ROW_HEIGHT = 24;
+  const CHANGED_FILE_OVERSCAN = 50;
+  let changedVirtualFrame = 0;
+
+  function changedCommitFileHTML(file, treeIndent) {
+    const lastSlash = file.path.lastIndexOf('/');
+    const folder = lastSlash >= 0 ? file.path.slice(0, lastSlash + 1) : '';
+    const name = lastSlash >= 0 ? file.path.slice(lastSlash + 1) : file.path;
+    return '<div class="file-item' + (file.path === selectedPath ? ' selected' : '') + '" data-path="' + escapeAttr(file.path) + '"' + (treeIndent ? ' style="padding-left:30px"' : '') + ' title="' + escapeAttr(file.path) + '">' +
+      (file.isGitlink ? '<span class="gitlink-label">Repo</span>' : '') +
+      '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span>' +
+      '<span class="file-path"><span class="file-name">' + escapeHtml(name) + '</span>' + (folder ? ' <span class="file-folder">' + escapeHtml(folder) + '</span>' : '') + '</span></div>';
+  }
+
+  function changedFolderHTML(folder, expanded, folderKey) {
+    return '<div class="folder-item" data-folder="' + escapeAttr(folderKey || folder) + '" title="' + escapeAttr(folder) + '">' +
+      '<span class="tree-chevron codicon codicon-chevron-' + (expanded ? 'down' : 'right') + '"></span><span class="tree-folder-icon codicon codicon-folder' + (expanded ? '-opened' : '') + '"></span><span class="file-path">' + escapeHtml(folder) + '</span></div>';
+  }
+
+  function changedVirtualEntries(section, sectionFiles) {
+    if (filesMode !== 'tree') return sectionFiles.map(function(file) { return { type: 'file', key: 'file:' + file.path, file: file, section: section }; });
+    const byFolder = new Map();
+    sectionFiles.forEach(function(file) {
+      const slash = file.path.lastIndexOf('/');
+      const folder = slash >= 0 ? file.path.slice(0, slash) : '';
+      const group = byFolder.get(folder) || [];
+      group.push(file);
+      byFolder.set(folder, group);
+    });
+    const entries = [];
+    byFolder.forEach(function(folderFiles, folder) {
+      if (folder) {
+        const expanded = !collapsedFolders.has(section ? 'working-tree:' + section + ':' + folder : folder);
+        entries.push({ type: 'folder', key: 'folder:' + folder, folder: folder, folderKey: section ? 'working-tree:' + section + ':' + folder : folder, expanded: expanded, section: section });
+        if (!expanded) return;
+      }
+      folderFiles.forEach(function(file) { entries.push({ type: 'file', key: 'file:' + file.path, file: file, section: section, folder: folder }); });
+    });
+    return entries;
+  }
+
+  function renderChangedVirtualList(host, entries, renderEntry) {
+    const list = document.getElementById('filesList');
+    if (!list) return;
+    host._entries = entries;
+    host._renderEntry = renderEntry;
+    const listRect = list.getBoundingClientRect();
+    const hostRect = host.getBoundingClientRect();
+    const hostTop = hostRect.top - listRect.top;
+    const start = Math.max(0, Math.min(entries.length, Math.floor((list.scrollTop - hostTop) / CHANGED_FILE_ROW_HEIGHT) - CHANGED_FILE_OVERSCAN));
+    const end = Math.max(start, Math.min(entries.length, Math.ceil((list.scrollTop + list.clientHeight - hostTop) / CHANGED_FILE_ROW_HEIGHT) + CHANGED_FILE_OVERSCAN));
+    const top = document.createElement('div');
+    top.className = 'changed-virtual-spacer';
+    top.style.height = (start * CHANGED_FILE_ROW_HEIGHT) + 'px';
+    const bottom = document.createElement('div');
+    bottom.className = 'changed-virtual-spacer';
+    bottom.style.height = (Math.max(0, entries.length - end) * CHANGED_FILE_ROW_HEIGHT) + 'px';
+    const fragment = document.createDocumentFragment();
+    fragment.appendChild(top);
+    for (let index = start; index < end; index++) {
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = renderEntry(entries[index]);
+      if (wrapper.firstElementChild) fragment.appendChild(wrapper.firstElementChild);
+    }
+    fragment.appendChild(bottom);
+    host.replaceChildren(fragment);
+  }
+
+  function renderWorkingTreeVirtualBody(body, section, sectionFiles) {
+    const entries = changedVirtualEntries(section, sectionFiles);
+    const virtual = document.createElement('div');
+    virtual.className = 'changed-virtual-list';
+    body.replaceChildren(virtual);
+    renderChangedVirtualList(virtual, entries, function(entry) {
+      if (entry.type === 'folder') return changedFolderHTML(entry.folder, entry.expanded, entry.folderKey);
+      return workingTreeFileHTML(entry.file, section, Boolean(entry.folder));
+    });
+    syncWorkingTreeSelectionClasses(document.getElementById('filesList'));
+  }
+
+  function refreshChangedVirtualLists() {
+    document.querySelectorAll('#filesList .changed-virtual-list').forEach(function(host) {
+      renderChangedVirtualList(host, host._entries || [], host._renderEntry || function() { return ''; });
+    });
+  }
+
+  function scheduleChangedVirtualLists() {
+    if (changedVirtualFrame) return;
+    changedVirtualFrame = requestAnimationFrame(function() { changedVirtualFrame = 0; refreshChangedVirtualLists(); });
+  }
+  document.getElementById('filesList').addEventListener('scroll', scheduleChangedVirtualLists, { passive: true });
+  window.addEventListener('resize', scheduleChangedVirtualLists, { passive: true });
+
   function renderFiles() {
     const list = document.getElementById('filesList');
     const modeButton = document.getElementById('filesModeBtn');
@@ -429,156 +524,112 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
     const isTree = filesMode === 'tree';
     modeIcon.setAttribute('d', isTree ? 'M2.5 3h5M5 3v4M5 7h5M7.5 7v4M7.5 11h6' : 'M3 4h10M3 8h10M3 12h10');
     modeButton.title = '显示方式（当前：' + (isTree ? '树状' : '平铺') + '）';
+    bindFilesListInteractions(list);
     if (isWorkingTreeHash(selectedCommitHash)) {
       pruneWorkingTreeSelection();
-      // 虚拟提交的当前 DiffPayload[] 是宿主选中结果的权威快照；不能再读取异步维护的 stagedFiles/unstagedFiles。
-      // uncommitted 行按 conflict/staged/unstaged 拆分；冲突分组为空时完全隐藏。
       const sectionFiles = files;
-      if (!sectionFiles.length) {
-        list.innerHTML = '<div id="filesEmpty">暂无变更文件</div>';
-        return;
-      }
+      if (!sectionFiles.length) { list.innerHTML = '<div id="filesEmpty">暂无变更文件</div>'; return; }
       const conflictSectionFiles = sectionFiles.filter(function(file) { return file.workingTreeKind === 'conflict'; });
       const stagedSectionFiles = sectionFiles.filter(function(file) { return file.workingTreeKind === 'staged'; });
       const unstagedSectionFiles = sectionFiles.filter(function(file) { return file.workingTreeKind === 'unstaged' || file.workingTreeKind === 'untracked'; });
       const sectionHTML = workingTreeSectionHTML('conflict', 'Merge Changes', conflictSectionFiles) + workingTreeSectionHTML('staged', 'Staged Changes', stagedSectionFiles) + workingTreeSectionHTML('unstaged', 'Unstaged Changes', unstagedSectionFiles);
       list.innerHTML = '<div class="working-tree-content">' + sectionHTML + '</div>';
-      bindWorkingTreeSectionToggles(list);
-      bindWorkingTreeActions(list);
-      bindFolderItems(list);
-      bindFileItems(list);
+      [['conflict', conflictSectionFiles], ['staged', stagedSectionFiles], ['unstaged', unstagedSectionFiles]].forEach(function(pair) {
+        const body = list.querySelector('.working-tree-section[data-section="' + pair[0] + '"] .working-tree-section-body');
+        if (body && pair[1].length && !body.hidden) renderWorkingTreeVirtualBody(body, pair[0], pair[1]);
+      });
       revealSelectedFile();
       return;
     }
     selectedWorkingTreeFiles.clear();
     workingTreeSelectionAnchor = '';
-    if (!files.length) {
-      list.innerHTML = '<div id="filesEmpty">此提交没有变更文件</div>';
-      return;
-    }
-    const ordered = files;
-    let html = '';
-    if (filesMode === 'tree') {
-      const filesByFolder = new Map();
-      ordered.forEach(function(file) {
-        const lastSlash = file.path.lastIndexOf('/');
-        const folder = lastSlash >= 0 ? file.path.slice(0, lastSlash) : '';
-        const group = filesByFolder.get(folder) || [];
-        group.push(file);
-        filesByFolder.set(folder, group);
-      });
-      filesByFolder.forEach(function(folderFiles, folder) {
-        if (folder) {
-          const expanded = !collapsedFolders.has(folder);
-          html += '<div class="folder-item" data-folder="' + escapeAttr(folder) + '" title="' + escapeAttr(folder) + '">';
-          html += '<span class="tree-chevron codicon codicon-chevron-' + (expanded ? 'down' : 'right') + '"></span><span class="tree-folder-icon codicon codicon-folder' + (expanded ? '-opened' : '') + '"></span><span class="file-path">' + escapeHtml(folder) + '</span></div>';
-          if (!expanded) return;
-        }
-        folderFiles.forEach(function(file) {
-          const lastSlash = file.path.lastIndexOf('/');
-          const name = lastSlash >= 0 ? file.path.slice(lastSlash + 1) : file.path;
-          html += '<div class="file-item' + (file.path === selectedPath ? ' selected' : '') + '" data-path="' + escapeAttr(file.path) + '" style="padding-left:' + (folder ? 30 : 10) + 'px" title="' + escapeAttr(file.path) + '">';
-          html += (file.isGitlink ? '<span class="gitlink-label">Repo</span>' : '') + '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span><span class="file-path"><span class="file-name">' + escapeHtml(name) + '</span>' + (folder ? ' <span class="file-folder">' + escapeHtml(folder + '/') + '</span>' : '') + '</span></div>';
-        });
-      });
-    } else {
-      for (const file of ordered) {
-        const lastSlash = file.path.lastIndexOf('/');
-        const folder = lastSlash >= 0 ? file.path.slice(0, lastSlash + 1) : '';
-        const name = lastSlash >= 0 ? file.path.slice(lastSlash + 1) : file.path;
-        html += '<div class="file-item' + (file.path === selectedPath ? ' selected' : '') + '" data-path="' + escapeAttr(file.path) + '" title="' + escapeAttr(file.path) + '">';
-        html += (file.isGitlink ? '<span class="gitlink-label">Repo</span>' : '') + '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span>';
-        html += '<span class="file-path"><span class="file-name">' + escapeHtml(name) + '</span>' + (folder ? ' <span class="file-folder">' + escapeHtml(folder) + '</span>' : '') + '</span>' + (file.isGitlink ? '<span class="gitlink-label">Repo</span>' : '') + '</div>';
-      }
-    }
-    list.innerHTML = html;
-    revealSelectedFile();
-    bindFolderItems(list);
-    bindFileItems(list);
-  }
-
-  // conflict/staged/unstaged 子分组的折叠交互参考 commit 列表的普通 click 监听, 不依赖焦点状态。
-  function bindWorkingTreeSectionToggles(list) {
-    list.querySelectorAll('[data-working-tree-section-toggle]').forEach(function(header) {
-      header.addEventListener('click', function(event) {
-        if (event.target.closest('.working-tree-action')) return;
-        const section = header.getAttribute('data-working-tree-section-toggle');
-        if (!section) return;
-        if (collapsedWorkingTreeSections.has(section)) collapsedWorkingTreeSections.delete(section); else collapsedWorkingTreeSections.add(section);
-        renderFiles();
-      });
+    if (!files.length) { list.innerHTML = '<div id="filesEmpty">此提交没有变更文件</div>'; return; }
+    const virtual = document.createElement('div');
+    virtual.className = 'changed-virtual-list';
+    list.replaceChildren(virtual);
+    const entries = changedVirtualEntries('', files);
+    renderChangedVirtualList(virtual, entries, function(entry) {
+      if (entry.type === 'folder') return changedFolderHTML(entry.folder, entry.expanded, entry.folderKey);
+      return changedCommitFileHTML(entry.file, Boolean(entry.folder));
     });
+    revealSelectedFile();
   }
 
-  function bindWorkingTreeActions(list) {
-    list.querySelectorAll('[data-working-tree-action]').forEach(function(button) {
-      button.addEventListener('pointerdown', function(event) {
+  // 所有文件行统一使用事件委托；虚拟化会反复替换可视范围内的 DOM，不能给每一行重复绑定监听器。
+  function bindFilesListInteractions(list) {
+    if (list.dataset.virtualInteractionsBound === '1') return;
+    list.dataset.virtualInteractionsBound = '1';
+    list.addEventListener('click', function(event) {
+      const target = event.target;
+      const header = target.closest('[data-working-tree-section-toggle]');
+      if (header && list.contains(header) && !target.closest('.working-tree-action')) {
+        const section = header.getAttribute('data-working-tree-section-toggle');
+        if (section) {
+          if (collapsedWorkingTreeSections.has(section)) collapsedWorkingTreeSections.delete(section); else collapsedWorkingTreeSections.add(section);
+          renderFiles();
+        }
+        return;
+      }
+      const folder = target.closest('.folder-item');
+      if (folder && list.contains(folder)) {
+        const key = folder.getAttribute('data-folder');
+        if (key) { if (collapsedFolders.has(key)) collapsedFolders.delete(key); else collapsedFolders.add(key); renderFiles(); }
+      }
+    });
+    list.addEventListener('pointerdown', function(event) {
+      const action = event.target.closest('.working-tree-action');
+      const item = event.target.closest('.file-item');
+      if (action || item) {
         if (event.button !== 0) return;
         event.preventDefault();
-        event.stopPropagation();
-      });
-      button.addEventListener('pointerup', function(event) {
-        if (event.button !== 0) return;
-        event.preventDefault();
-        event.stopPropagation();
-        const paths = workingTreeActionPaths(button);
-        const message = { type: 'workingTreeAction', action: button.getAttribute('data-working-tree-action'), section: button.getAttribute('data-section'), path: button.getAttribute('data-path') || undefined };
+        if (action) event.stopPropagation();
+      }
+    });
+    list.addEventListener('pointerup', function(event) {
+      if (event.button !== 0) return;
+      const action = event.target.closest('.working-tree-action');
+      if (action && list.contains(action)) {
+        event.preventDefault(); event.stopPropagation();
+        const paths = workingTreeActionPaths(action);
+        const message = { type: 'workingTreeAction', action: action.getAttribute('data-working-tree-action'), section: action.getAttribute('data-section'), path: action.getAttribute('data-path') || undefined };
         if (paths) message.paths = paths;
         vscode.postMessage(message);
-      });
-    });
-  }
-
-  function bindFileItems(list) {
-    list.querySelectorAll('.file-item').forEach(function(item) {
-      item.addEventListener('pointerdown', function(event) {
-        if (event.button !== 0 || event.target.closest('.working-tree-action')) return;
-        event.preventDefault();
-      });
-      item.addEventListener('pointerup', function(event) {
-        if (event.button !== 0 || event.target.closest('.working-tree-action')) return;
-        event.preventDefault();
-        const path = item.getAttribute('data-path');
-        const diffKey = item.getAttribute('data-diff-key') || path;
-        const section = item.getAttribute('data-section');
-        if (!path || !diffKey) return;
-        if (section && isWorkingTreeHash(selectedCommitHash)) {
-          const selectionKey = workingTreeSelectionKey(section, path);
-          const additive = event.ctrlKey || event.metaKey;
-          const anchorParts = workingTreeSelectionAnchor ? getWorkingTreeSelectionParts(workingTreeSelectionAnchor) : null;
-          const canSelectRange = event.shiftKey && anchorParts && anchorParts.section === section;
-          if (canSelectRange) {
-            const sectionItems = Array.from(list.querySelectorAll('.file-item[data-section="' + section + '"]'));
-            const anchorIndex = sectionItems.findIndex(function(candidate) {
-              const candidatePath = candidate.getAttribute('data-path') || '';
-              return workingTreeSelectionKey(section, candidatePath) === workingTreeSelectionAnchor;
-            });
-            const currentIndex = sectionItems.indexOf(item);
-            if (anchorIndex >= 0 && currentIndex >= 0) {
-              if (!additive) selectedWorkingTreeFiles.clear();
-              const start = Math.min(anchorIndex, currentIndex);
-              const end = Math.max(anchorIndex, currentIndex);
-              for (let index = start; index <= end; index++) {
-                const candidatePath = sectionItems[index].getAttribute('data-path');
-                if (candidatePath) selectedWorkingTreeFiles.add(workingTreeSelectionKey(section, candidatePath));
-              }
-            }
-          } else if (additive) {
-            if (selectedWorkingTreeFiles.has(selectionKey)) selectedWorkingTreeFiles.delete(selectionKey);
-            else selectedWorkingTreeFiles.add(selectionKey);
-          } else {
-            selectedWorkingTreeFiles.clear();
-            selectedWorkingTreeFiles.add(selectionKey);
-          }
-          workingTreeSelectionAnchor = selectionKey;
+        return;
+      }
+      const item = event.target.closest('.file-item');
+      if (!item || !list.contains(item)) return;
+      event.preventDefault();
+      const path = item.getAttribute('data-path');
+      const diffKey = item.getAttribute('data-diff-key') || path;
+      const section = item.getAttribute('data-section');
+      if (!path || !diffKey) return;
+      if (section && isWorkingTreeHash(selectedCommitHash)) {
+        const selectionKey = workingTreeSelectionKey(section, path);
+        const additive = event.ctrlKey || event.metaKey;
+        const anchorParts = workingTreeSelectionAnchor ? getWorkingTreeSelectionParts(workingTreeSelectionAnchor) : null;
+        const sectionFiles = files.filter(function(file) {
+          return (section === 'conflict' && file.workingTreeKind === 'conflict') ||
+            (section === 'staged' && file.workingTreeKind === 'staged') ||
+            (section === 'unstaged' && (file.workingTreeKind === 'unstaged' || file.workingTreeKind === 'untracked'));
+        });
+        const anchorIndex = event.shiftKey && anchorParts && anchorParts.section === section
+          ? sectionFiles.findIndex(function(file) { return file.path === anchorParts.path; }) : -1;
+        const currentIndex = sectionFiles.findIndex(function(file) { return file.path === path; });
+        if (event.shiftKey && anchorIndex >= 0 && currentIndex >= 0) {
+          if (!additive) selectedWorkingTreeFiles.clear();
+          for (let index = Math.min(anchorIndex, currentIndex); index <= Math.max(anchorIndex, currentIndex); index++) selectedWorkingTreeFiles.add(workingTreeSelectionKey(section, sectionFiles[index].path));
+        } else if (additive) {
+          if (selectedWorkingTreeFiles.has(selectionKey)) selectedWorkingTreeFiles.delete(selectionKey); else selectedWorkingTreeFiles.add(selectionKey);
         } else {
-          selectedWorkingTreeFiles.clear();
-          workingTreeSelectionAnchor = '';
+          selectedWorkingTreeFiles.clear(); selectedWorkingTreeFiles.add(selectionKey);
         }
-        selectedPath = diffKey;
-        syncWorkingTreeSelectionClasses(list);
-        vscode.postMessage({ type: 'selectFile', path: diffKey });
-      });
+        workingTreeSelectionAnchor = selectionKey;
+      } else {
+        selectedWorkingTreeFiles.clear(); workingTreeSelectionAnchor = '';
+      }
+      selectedPath = diffKey;
+      syncWorkingTreeSelectionClasses(list);
+      vscode.postMessage({ type: 'selectFile', path: diffKey });
     });
   }
 `;

@@ -5,6 +5,8 @@ import { store } from '../state/store';
 import type { GitBackend } from './gitBackend';
 
 // libgit2 对象读取层已把内容解码为 UTF-8 字符串；二进制内容会含 NUL 字符，只探测前若干字符即可判定。
+const MAX_WORKTREE_READ_CONCURRENCY = 64;
+
 function containsNul(text: string | undefined): boolean {
     if (!text) { return false; }
     const limit = Math.min(text.length, 8000);
@@ -92,7 +94,7 @@ export class DiffReader {
         isCurrent: () => boolean,
         onProgress: (completed: number) => void,
     ): Promise<DiffPayload[]> {
-        const data = await this.readWorkingTreeDiffs(rootUri, files, changeSetMode);
+        const data = await this.readWorkingTreeDiffs(rootUri, files, changeSetMode, onProgress);
         if (!isCurrent()) { return []; }
         onProgress(files.length);
         return data;
@@ -216,7 +218,7 @@ export class DiffReader {
         });
     }
 
-    private async readWorkingTreeDiffs(rootUri: vscode.Uri, files: CommitFile[], changeSetMode: ChangeSetMode, indexOffset = 0): Promise<DiffPayload[]> {
+    private async readWorkingTreeDiffs(rootUri: vscode.Uri, files: CommitFile[], changeSetMode: ChangeSetMode, onProgress?: (completed: number) => void, indexOffset = 0): Promise<DiffPayload[]> {
         const readsIndex = (file: CommitFile) => changeSetMode === 'uncommitted' && file.workingTreeKind === 'staged';
         const originalRef = (file: CommitFile) => readsIndex(file) ? 'HEAD' : '';
         const objects: string[] = [];
@@ -230,7 +232,7 @@ export class DiffReader {
             }
         }
         const contents = await this.readGitObjects(rootUri, objects);
-        return Promise.all(files.map(async (file, index) => {
+        const readFile = async (file: CommitFile, index: number): Promise<DiffPayload> => {
             if (file.isGitlink) {
                 return new DiffPayload({
                     index: index + indexOffset,
@@ -275,7 +277,22 @@ export class DiffReader {
                 return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isUntracked: file.isUntracked, isConflict: file.isConflict, workingTreeKind: file.workingTreeKind, diffKey: file.diffKey, isBinary: true, original: '', modified: '', error: workingTreeFile.error });
             }
             return new DiffPayload({ index: index + indexOffset, path: file.path, fullPath: path.join(rootUri.fsPath, file.path), oldPath: file.oldPath, status: file.status, oldObjectId: file.oldObjectId, newObjectId: file.newObjectId, oldMode: file.oldMode, newMode: file.newMode, isUntracked: file.isUntracked, isConflict: file.isConflict, workingTreeKind: file.workingTreeKind, diffKey: file.diffKey, isBinary: false, original, modified, error: workingTreeFile.error });
-        }));
+        };
+        const results = new Array<DiffPayload>(files.length);
+        let nextIndex = 0;
+        let completed = 0;
+        const workerCount = Math.min(MAX_WORKTREE_READ_CONCURRENCY, files.length);
+        const worker = async (): Promise<void> => {
+            while (true) {
+                const index = nextIndex++;
+                if (index >= files.length) { return; }
+                results[index] = await readFile(files[index], index);
+                completed++;
+                onProgress?.(completed);
+            }
+        };
+        await Promise.all(Array.from({ length: workerCount }, () => worker()));
+        return results;
     }
 
     private async readWorkingTreeFile(rootUri: vscode.Uri, filePath: string): Promise<{ content: string; error?: string }> {

@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
-import type { DiffPayload } from '../types';
+import type { ChangedFile, DiffPayload } from '../types';
 import { store } from '../state/store';
 import { renderMultiDiffHtml } from './multiDiffPanelDocument';
+
+type DiffEntry = Omit<ChangedFile, 'equals'> & Partial<Pick<DiffPayload, 'original' | 'modified'>> & { loaded: boolean; editable?: boolean };
 
 type DiffSnapshot = {
     type: 'snapshot';
@@ -14,7 +16,18 @@ type DiffSnapshot = {
     revealPath?: string;
     // changes 虚拟提交对比的是工作区文件, 右侧允许编辑并回写。
     editable: boolean;
-    diffs: Array<Omit<DiffPayload, 'equals'> & { editable?: boolean }>;
+    diffs: DiffEntry[];
+};
+
+type DiffUpdateMessage = {
+    type: 'diffUpdates';
+    revision: number;
+    identity: string;
+    loading: boolean;
+    completed: number;
+    total: number;
+    error?: string;
+    diffs: DiffEntry[];
 };
 
 // 单一 Webview 接收 Store 的原子完整快照，并为每个文件创建一套共享 Monaco Diff 配置。
@@ -24,10 +37,16 @@ export class MultiDiffPanel implements vscode.Disposable {
     private revision = 0;
     private publishScheduled = false;
     private renderSideBySide = true;
+    private publishedIdentity?: string;
+    private publishedEditable?: boolean;
+    private publishedKeys: string[] = [];
+    private publishedFiles?: readonly ChangedFile[];
+    private readonly publishedEntries = new Map<string, { source: ChangedFile; value: DiffEntry }>();
     private readonly unsubscribers: (() => void)[];
 
     constructor(
         private readonly onSelectFile?: (path: string, generation: number) => void,
+        private readonly onRequestDiffs?: (paths: string[], generation: number) => void,
         private readonly onRendered?: (identity?: string) => void,
         private readonly onOpenFileAtLine?: (path: string, line?: number, column?: number, side?: 'original' | 'modified') => void,
         private readonly onSaveFile?: (path: string, content: string) => void,
@@ -106,6 +125,9 @@ export class MultiDiffPanel implements vscode.Disposable {
             } else if (message?.type === 'selectFile' && typeof message.path === 'string') {
                 // 顶部卡片变化时同步 Changed Files 高亮。
                 this.onSelectFile?.(message.path, store.getState().diffGeneration);
+            } else if (message?.type === 'ensureDiffs' && Array.isArray(message.paths)) {
+                const paths = (message.paths as unknown[]).filter((path): path is string => typeof path === 'string');
+                if (paths.length > 0) { this.onRequestDiffs?.([...new Set(paths)], store.getState().diffGeneration); }
             } else if (message?.type === 'saveFile' && typeof message.path === 'string' && typeof message.content === 'string') {
                 this.onSaveFile?.(message.path, message.content);
             } else if (message?.type === 'openFileAtLine' && typeof message.path === 'string') {
@@ -133,6 +155,11 @@ export class MultiDiffPanel implements vscode.Disposable {
         this.panel.onDidDispose(() => {
             this.panel = undefined;
             this.webviewReady = false;
+            this.publishedIdentity = undefined;
+            this.publishedEditable = undefined;
+            this.publishedKeys = [];
+            this.publishedFiles = undefined;
+            this.publishedEntries.clear();
             this.onRendered?.();
         });
         this.panel.webview.html = this.getHtml(monacoRoot, codiconsRoot);
@@ -150,17 +177,66 @@ export class MultiDiffPanel implements vscode.Disposable {
     private publish(): void {
         if (!this.panel || !this.webviewReady) { return; }
         const state = store.getState();
-        const diffs = state.files
-            .filter((file): file is DiffPayload => 'original' in file && 'modified' in file)
-            .map(file => ({
+        const identity = `${state.currentRepositoryPath ?? ''}\u0000${state.currentHash ?? ''}`;
+        const editable = state.currentChangeSet === 'uncommitted';
+        const keys = state.files.map(file => file.diffKey || file.path);
+        const sameKeys = state.files === this.publishedFiles
+            || (keys.length === this.publishedKeys.length
+                && keys.every((key, index) => key === this.publishedKeys[index]));
+        const canPatch = this.publishedIdentity === identity
+            && this.publishedEditable === editable
+            && sameKeys;
+        const revision = ++this.revision;
+        const toEntry = (file: ChangedFile): DiffEntry => {
+            const key = file.diffKey || file.path;
+            const cached = this.publishedEntries.get(key);
+            if (cached?.source === file) { return cached.value; }
+            const loaded = 'original' in file && 'modified' in file;
+            const value: DiffEntry = {
                 ...file,
+                loaded,
                 // 'uncommitted' 行内 staged 分组右侧是 index 内容不可回写, unstaged/untracked 右侧是工作区本身可回写。
-                editable: state.currentChangeSet === 'uncommitted' && file.workingTreeKind !== 'staged',
-            }));
+                editable: editable && file.workingTreeKind !== 'staged',
+            };
+            this.publishedEntries.set(key, { source: file, value });
+            return value;
+        };
+        if (canPatch) {
+            const updates: DiffEntry[] = [];
+            state.files.forEach(file => {
+                const key = file.diffKey || file.path;
+                    const previous = this.publishedEntries.get(key);
+                if (!previous || previous.source !== file) {
+                    updates.push(toEntry(file));
+                }
+            });
+            const message: DiffUpdateMessage = {
+                type: 'diffUpdates',
+                revision,
+                identity,
+                loading: state.diffLoading,
+                completed: state.diffProgress.completed,
+                total: state.diffProgress.total,
+                error: state.diffError,
+                diffs: updates,
+            };
+            void this.panel.webview.postMessage(message);
+            return;
+        }
+        this.publishedEntries.clear();
+        const diffs = state.files.map(file => {
+            const value = toEntry(file);
+            this.publishedEntries.set(file.diffKey || file.path, { source: file, value });
+            return value;
+        });
+        this.publishedIdentity = identity;
+        this.publishedEditable = editable;
+        this.publishedKeys = keys;
+        this.publishedFiles = state.files;
         const snapshot: DiffSnapshot = {
             type: 'snapshot',
-            revision: ++this.revision,
-            identity: `${state.currentRepositoryPath ?? ''}\u0000${state.currentHash ?? ''}`,
+            revision,
+            identity,
             // 与 CustomDiffPanel 一致：只由 Store 的 diffLoading 决定加载态；完成空快照也必须结束 loading。
             loading: state.diffLoading,
             completed: state.diffProgress.completed,
@@ -168,7 +244,7 @@ export class MultiDiffPanel implements vscode.Disposable {
             error: state.diffError,
             revealPath: state.selectedPath,
             // uncommitted 行里至少含 unstaged/untracked 文件时右侧可编辑；逐文件的真实可写性以上方 diffs 里的 editable 为准。
-            editable: state.currentChangeSet === 'uncommitted',
+            editable,
             diffs,
         };
         void this.panel.webview.postMessage(snapshot);
