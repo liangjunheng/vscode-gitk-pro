@@ -92,13 +92,15 @@
         "command": "vscode-gitk.multiDiff.previousChange",
         "title": "上一个差异",
         "category": "Gitk",
-        "icon": "$(arrow-up)"
+        "icon": "$(arrow-up)",
+        "enablement": "activeWebviewPanelId == vscode-gitk.multiDiff && gitk:multiDiffCanNavigatePrevious"
       },
       {
         "command": "vscode-gitk.multiDiff.nextChange",
         "title": "下一个差异",
         "category": "Gitk",
-        "icon": "$(arrow-down)"
+        "icon": "$(arrow-down)",
+        "enablement": "activeWebviewPanelId == vscode-gitk.multiDiff && gitk:multiDiffCanNavigateNext"
       },
       {
         "command": "vscode-gitk.multiDiff.useInlineView",

@@ -46,6 +46,8 @@ export class MultiDiffPanel implements vscode.Disposable {
     private renderSideBySide = true;
     private selectionEpoch = 0;
     private parentCommitNavigation?: ParentCommitNavigation;
+    private canNavigatePrevious = false;
+    private canNavigateNext = false;
     private publishedIdentity?: string;
     private publishedEditable?: boolean;
     private publishedKeys: string[] = [];
@@ -100,7 +102,19 @@ export class MultiDiffPanel implements vscode.Disposable {
     }
 
     navigateChange(direction: -1 | 1): void {
+        if (direction < 0 ? !this.canNavigatePrevious : !this.canNavigateNext) { return; }
         this.post({ type: 'navigateChange', direction });
+    }
+
+    private setNavigationState(canPrevious: boolean, canNext: boolean): void {
+        if (this.canNavigatePrevious !== canPrevious) {
+            this.canNavigatePrevious = canPrevious;
+            void vscode.commands.executeCommand('setContext', 'gitk:multiDiffCanNavigatePrevious', canPrevious);
+        }
+        if (this.canNavigateNext !== canNext) {
+            this.canNavigateNext = canNext;
+            void vscode.commands.executeCommand('setContext', 'gitk:multiDiffCanNavigateNext', canNext);
+        }
     }
 
     setRenderSideBySide(renderSideBySide: boolean): void {
@@ -128,6 +142,7 @@ export class MultiDiffPanel implements vscode.Disposable {
     dispose(): void {
         this.unsubscribers.forEach(unsubscribe => unsubscribe());
         this.panel?.dispose();
+        this.setNavigationState(false, false);
     }
 
     private ensurePanel(): void {
@@ -147,6 +162,10 @@ export class MultiDiffPanel implements vscode.Disposable {
                 this.post({ type: 'setRenderSideBySide', renderSideBySide: this.renderSideBySide });
                 this.post({ type: 'setParentCommitNavigation', parentCommit: this.parentCommitNavigation });
                 this.publish();
+            } else if (message?.type === 'navigationState'
+                && typeof message.canPrevious === 'boolean'
+                && typeof message.canNext === 'boolean') {
+                this.setNavigationState(message.canPrevious, message.canNext);
             } else if (message?.type === 'selectFile' && typeof message.path === 'string') {
                 // 顶部卡片变化时同步 Changed Files 高亮。
                 const selectionEpoch = typeof message.selectionEpoch === 'number' ? message.selectionEpoch : -1;
@@ -192,6 +211,7 @@ export class MultiDiffPanel implements vscode.Disposable {
             this.publishedKeys = [];
             this.publishedFiles = undefined;
             this.publishedEntries.clear();
+            this.setNavigationState(false, false);
             this.onRendered?.();
         });
         this.panel.webview.html = this.getHtml(monacoRoot, codiconsRoot);
