@@ -141,6 +141,8 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
   let filesLoading = false;
   let filesMode = 'flat';
   let selectedPath = '';
+  // 记录由变更列表自身发起的选择；Store 回显时只更新高亮，不反向滚动列表。
+  let pendingLocalFileSelectionPath = '';
   let workingTreeCommitMessage = '';
   const collapsedFolders = new Set();
   const collapsedWorkingTreeSections = new Set();
@@ -240,9 +242,7 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
     }
     this.hidePopover();
   });
-  function revealSelectedFile() {
-    if (!selectedPath) return;
-    const list = document.getElementById('filesList');
+  function revealMountedSelectedFile(list) {
     const item = list.querySelector('.file-item.selected');
     if (!item) return;
     const itemRect = item.getBoundingClientRect();
@@ -251,8 +251,43 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
     const viewportBottom = viewportTop + list.clientHeight;
     const sectionHeader = item.closest('.working-tree-section')?.querySelector('.working-tree-section-header');
     const visibleTop = sectionHeader ? Math.max(viewportTop, sectionHeader.getBoundingClientRect().bottom) : viewportTop;
-    if (itemRect.bottom > viewportBottom) list.scrollTop += itemRect.bottom - viewportBottom;
-    else if (itemRect.top < visibleTop) list.scrollTop -= visibleTop - itemRect.top;
+    // MultiDiff 回写高亮时让对应文件固定出现在当前分组标题下方，而不是只滚到“勉强可见”。
+    const delta = itemRect.top - visibleTop;
+    if (Math.abs(delta) > .5) list.scrollTop += delta;
+  }
+
+  function changedEntryDiffKey(entry) {
+    if (!entry || entry.type !== 'file') return '';
+    return entry.section ? entry.section + ':' + entry.file.path : (entry.file.diffKey || entry.file.path);
+  }
+
+  // 虚拟列表中的远端目标可能尚未挂载；先按逻辑卡片索引定位，再渲染目标附近窗口并做像素级校正。
+  function revealSelectedFile() {
+    if (!selectedPath) return;
+    const list = document.getElementById('filesList');
+    const hosts = Array.from(list.querySelectorAll('.changed-virtual-list'));
+    let targetHost = null;
+    let targetIndex = -1;
+    for (const host of hosts) {
+      const index = host._entryIndexByDiffKey instanceof Map
+        ? (host._entryIndexByDiffKey.get(selectedPath) ?? -1)
+        : -1;
+      if (index >= 0) { targetHost = host; targetIndex = index; break; }
+    }
+    if (targetHost && targetIndex >= 0) {
+      const listRect = list.getBoundingClientRect();
+      const hostRect = targetHost.getBoundingClientRect();
+      const targetTop = list.scrollTop + hostRect.top - listRect.top - list.clientTop + targetIndex * CHANGED_FILE_ROW_HEIGHT;
+      const sectionHeader = targetHost.closest('.working-tree-section')?.querySelector('.working-tree-section-header');
+      const stickyHeaderHeight = sectionHeader ? sectionHeader.getBoundingClientRect().height : 0;
+      // 外部高亮始终置顶到分组标题下方；本地点击回显会被 localFileSelectionEcho 跳过，不改变用户刚点击时的列表位置。
+      let nextScrollTop = targetTop - stickyHeaderHeight;
+      nextScrollTop = Math.max(0, Math.min(nextScrollTop, Math.max(0, list.scrollHeight - list.clientHeight)));
+      if (Math.abs(nextScrollTop - list.scrollTop) > .5) list.scrollTop = nextScrollTop;
+      refreshChangedVirtualLists();
+      syncWorkingTreeSelectionClasses(list);
+    }
+    revealMountedSelectedFile(list);
   }
 
   function updateFilesCommitHash() {
@@ -432,7 +467,8 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
     const lastSlash = file.path.lastIndexOf('/');
     const folder = lastSlash >= 0 ? file.path.slice(0, lastSlash + 1) : '';
     const name = lastSlash >= 0 ? file.path.slice(lastSlash + 1) : file.path;
-    return '<div class="file-item' + (file.path === selectedPath ? ' selected' : '') + '" data-path="' + escapeAttr(file.path) + '"' + (treeIndent ? ' style="padding-left:30px"' : '') + ' title="' + escapeAttr(file.path) + '">' +
+    const diffKey = file.diffKey || file.path;
+    return '<div class="file-item' + (diffKey === selectedPath ? ' selected' : '') + '" data-path="' + escapeAttr(file.path) + '" data-diff-key="' + escapeAttr(diffKey) + '"' + (treeIndent ? ' style="padding-left:30px"' : '') + ' title="' + escapeAttr(file.path) + '">' +
       (file.isGitlink ? '<span class="gitlink-label">Repo</span>' : '') +
       '<span class="file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span>' +
       '<span class="file-path"><span class="file-name">' + escapeHtml(name) + '</span>' + (folder ? ' <span class="file-folder">' + escapeHtml(folder) + '</span>' : '') + '</span></div>';
@@ -465,31 +501,89 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
     return entries;
   }
 
+  function createChangedVirtualRow(entry, index, renderEntry) {
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = renderEntry(entry);
+    const row = wrapper.firstElementChild;
+    if (row) row.dataset.virtualIndex = String(index);
+    return row;
+  }
+
+  function rebuildChangedVirtualWindow(host, entries, renderEntry, start, end) {
+    const top = document.createElement('div');
+    top.className = 'changed-virtual-spacer';
+    const bottom = document.createElement('div');
+    bottom.className = 'changed-virtual-spacer';
+    const fragment = document.createDocumentFragment();
+    fragment.appendChild(top);
+    for (let index = start; index < end; index++) {
+      const row = createChangedVirtualRow(entries[index], index, renderEntry);
+      if (row) fragment.appendChild(row);
+    }
+    fragment.appendChild(bottom);
+    host.replaceChildren(fragment);
+    host._virtualTop = top;
+    host._virtualBottom = bottom;
+  }
+
   function renderChangedVirtualList(host, entries, renderEntry) {
     const list = document.getElementById('filesList');
     if (!list) return;
+    const previousEntries = host._entries;
+    const previousRenderEntry = host._renderEntry;
+    const previousStart = Number.isInteger(host._virtualStart) ? host._virtualStart : -1;
+    const previousEnd = Number.isInteger(host._virtualEnd) ? host._virtualEnd : -1;
     host._entries = entries;
     host._renderEntry = renderEntry;
+    if (previousEntries !== entries) {
+      const entryIndexByDiffKey = new Map();
+      entries.forEach(function(entry, index) {
+        const key = changedEntryDiffKey(entry);
+        if (key) entryIndexByDiffKey.set(key, index);
+      });
+      host._entryIndexByDiffKey = entryIndexByDiffKey;
+    }
     const listRect = list.getBoundingClientRect();
     const hostRect = host.getBoundingClientRect();
     const hostTop = hostRect.top - listRect.top;
     const start = Math.max(0, Math.min(entries.length, Math.floor((list.scrollTop - hostTop) / CHANGED_FILE_ROW_HEIGHT) - CHANGED_FILE_OVERSCAN));
     const end = Math.max(start, Math.min(entries.length, Math.ceil((list.scrollTop + list.clientHeight - hostTop) / CHANGED_FILE_ROW_HEIGHT) + CHANGED_FILE_OVERSCAN));
-    const top = document.createElement('div');
-    top.className = 'changed-virtual-spacer';
-    top.style.height = (start * CHANGED_FILE_ROW_HEIGHT) + 'px';
-    const bottom = document.createElement('div');
-    bottom.className = 'changed-virtual-spacer';
-    bottom.style.height = (Math.max(0, entries.length - end) * CHANGED_FILE_ROW_HEIGHT) + 'px';
-    const fragment = document.createDocumentFragment();
-    fragment.appendChild(top);
-    for (let index = start; index < end; index++) {
-      const wrapper = document.createElement('div');
-      wrapper.innerHTML = renderEntry(entries[index]);
-      if (wrapper.firstElementChild) fragment.appendChild(wrapper.firstElementChild);
+    if (previousEntries === entries && previousRenderEntry === renderEntry && previousStart === start && previousEnd === end) return;
+
+    const canReuse = previousEntries === entries
+      && previousRenderEntry === renderEntry
+      && host._virtualTop && host._virtualBottom
+      && previousStart < end && start < previousEnd;
+    if (!canReuse) {
+      rebuildChangedVirtualWindow(host, entries, renderEntry, start, end);
+    } else {
+      // RecyclerView 式增量更新：普通滚动只移除离屏边缘，并补上新进入 overscan 的少量行。
+      Array.from(host.children).forEach(function(child) {
+        const index = Number(child.dataset.virtualIndex);
+        if (Number.isInteger(index) && (index < start || index >= end)) child.remove();
+      });
+      if (start < previousStart) {
+        const prepend = document.createDocumentFragment();
+        for (let index = start; index < Math.min(previousStart, end); index++) {
+          const row = createChangedVirtualRow(entries[index], index, renderEntry);
+          if (row) prepend.appendChild(row);
+        }
+        const firstRow = Array.from(host.children).find(function(child) { return child.dataset.virtualIndex !== undefined; });
+        host.insertBefore(prepend, firstRow || host._virtualBottom);
+      }
+      if (end > previousEnd) {
+        const append = document.createDocumentFragment();
+        for (let index = Math.max(start, previousEnd); index < end; index++) {
+          const row = createChangedVirtualRow(entries[index], index, renderEntry);
+          if (row) append.appendChild(row);
+        }
+        host.insertBefore(append, host._virtualBottom);
+      }
     }
-    fragment.appendChild(bottom);
-    host.replaceChildren(fragment);
+    host._virtualTop.style.height = (start * CHANGED_FILE_ROW_HEIGHT) + 'px';
+    host._virtualBottom.style.height = (Math.max(0, entries.length - end) * CHANGED_FILE_ROW_HEIGHT) + 'px';
+    host._virtualStart = start;
+    host._virtualEnd = end;
   }
 
   function renderWorkingTreeVirtualBody(body, section, sectionFiles) {
@@ -628,6 +722,7 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
         selectedWorkingTreeFiles.clear(); workingTreeSelectionAnchor = '';
       }
       selectedPath = diffKey;
+      pendingLocalFileSelectionPath = diffKey;
       syncWorkingTreeSelectionClasses(list);
       vscode.postMessage({ type: 'selectFile', path: diffKey });
     });

@@ -6,7 +6,7 @@
 
 /** Commit 列表子面板的样式片段。 */
 export const COMMIT_LIST_SUB_PANEL_STYLES = `
-  #graph { --graph-lane-width: 22px; --main-width: calc(var(--graph-lane-width) + 60ch); --hash-width: max-content; --author-width: max-content; --date-width: max-content; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+  #graph { --graph-lane-width: 22px; --main-width: calc(var(--graph-lane-width) + 60ch); --hash-width: max-content; --author-width: max-content; --date-width: max-content; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: auto; overflow-anchor: none; display: flex; flex-direction: column; }
   /* 竖向铺满: 列表吃掉表头以外的剩余高度。flex-shrink 必须为 0, 否则内容超高时会被压扁而无法滚动。 */
   #commitList { flex: 1 0 auto; min-width: 0; }
   #commitWorkingTreeRows, #commitVirtualRows { min-width: max-content; }
@@ -763,6 +763,9 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     if (!graph || !rowsHost || !top || !bottom || !commits.length) return;
     const range = commitVirtualRange(graph);
     if (!force && range.start === commitVirtualStart && range.end === commitVirtualEnd) return;
+    // 原生滚动锚定会把顶部 spacer 的增长再次累加到 scrollTop，形成“越渲染越往下”的正反馈。
+    // 虚拟列表的总高度和行位置已由上下 spacer 保持，这里只允许用户滚动改变 scrollTop。
+    const stableScrollTop = graph.scrollTop;
     commitVirtualStart = range.start;
     commitVirtualEnd = range.end;
     top.style.height = (commitLayoutPrefix[range.start] || 0) + 'px';
@@ -773,6 +776,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     rowsHost.querySelectorAll('.commit-row').forEach(function(row) { setupRow(row, currentGraphW); });
     measureExpandedCommitRows();
     renderCommitFooter();
+    if (Math.abs(graph.scrollTop - stableScrollTop) >= .5) graph.scrollTop = stableScrollTop;
   }
 
   function scheduleCommitVirtualWindow() {

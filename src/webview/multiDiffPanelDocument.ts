@@ -13,12 +13,24 @@ export function renderMultiDiffHtml(
     return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src ${cspSource} 'nonce-${nonce}' 'unsafe-eval'; worker-src ${cspSource}; font-src ${cspSource};"><link rel="stylesheet" href="${codiconCssUri}"><style>
 /* 吸顶组与文件顶部高亮轮廓对齐，不额外向上偏移。
    --header-cover-bleed 控制标题栏背后不透明盖板向上及向两侧的延展。 */
-:root{color-scheme:light dark;--header-surface:var(--vscode-editorWidget-background,var(--vscode-tab-activeBackground));--card-radius:9px;--card-border:1px;--card-ring:1px;--header-gap:0px;--header-inset:0px;--header-cover-bleed:8px}
+:root{color-scheme:light dark;--header-surface:var(--vscode-editorWidget-background,var(--vscode-tab-activeBackground));--card-radius:9px;--card-border:1px;--card-ring:1px;--header-gap:0px;--header-inset:0px;--header-cover-bleed:8px;--parent-navigation-height:0px}
+body.has-parent-navigation{--parent-navigation-height:40px}
 *{box-sizing:border-box}
 /* 不要给 html/body 设 overflow 或 min-height: 那会改变滚动容器归属, 使 window.scrollY /
    window 的 scroll 事件失效, 并让 sticky 的参照系偏移导致标题栏无法吸顶。保持文档视口滚动。 */
+html.programmatic-reveal,html.programmatic-reveal body,html.settled-reveal-anchor,html.settled-reveal-anchor body{overflow-anchor:none}
 body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-editor-background) 50%, #000);color:var(--vscode-editor-foreground);font-family:var(--vscode-editor-font-family);font-size:var(--vscode-editor-font-size)}
-#loading{min-height:calc(100vh - 14px);display:grid;place-items:center;color:var(--vscode-descriptionForeground)}
+#parent-commit-navigation{position:sticky;z-index:30;top:0;isolation:isolate;display:flex;width:100%;min-width:100%;height:40px;align-items:center;gap:10px;padding:0 10px;background:transparent}
+#parent-commit-navigation::before{content:"";position:absolute;z-index:-1;top:0;bottom:0;left:calc(50% - 50vw);right:calc(50% - 50vw);pointer-events:none;border-bottom:1px solid color-mix(in srgb,var(--vscode-focusBorder) 36%,var(--vscode-editorGroup-border));background:var(--vscode-editorGroupHeader-tabsBackground,var(--vscode-editorWidget-background,var(--vscode-editor-background)));box-shadow:0 2px 7px rgba(0,0,0,.2)}
+#parent-commit-navigation[hidden]{display:none}
+#back-to-parent-commit{display:inline-flex;flex:0 0 auto;height:26px;align-items:center;justify-content:center;padding:0 10px;border:1px solid color-mix(in srgb,var(--vscode-focusBorder) 48%,transparent);border-radius:5px;color:var(--vscode-button-foreground,var(--vscode-foreground));background:color-mix(in srgb,var(--vscode-button-background) 72%,transparent);font:inherit;font-size:calc(var(--vscode-editor-font-size,13px) - 2px);font-weight:600;cursor:pointer}
+#back-to-parent-commit:hover{background:var(--vscode-button-hoverBackground,var(--vscode-list-hoverBackground));border-color:var(--vscode-focusBorder)}
+#back-to-parent-commit:active{transform:translateY(1px)}
+#back-to-parent-commit:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:2px}
+#parent-commit-info{display:flex;min-width:0;height:22px;flex:1 1 auto;align-items:center;gap:8px;padding-left:10px;border-left:1px solid color-mix(in srgb,var(--vscode-foreground) 18%,transparent)}
+#parent-commit-title{min-width:0;overflow:hidden;color:var(--vscode-foreground);font-size:12px;font-weight:500;text-overflow:ellipsis;white-space:nowrap}
+#parent-commit-hash{flex:0 0 auto;padding:2px 6px;border:1px solid color-mix(in srgb,var(--vscode-badge-background) 64%,var(--vscode-widget-border));border-radius:10px;color:var(--vscode-badge-foreground,var(--vscode-foreground));background:color-mix(in srgb,var(--vscode-badge-background) 78%,transparent);font-family:var(--vscode-editor-font-family,monospace);font-size:10px;line-height:14px;white-space:nowrap}
+#loading{min-height:calc(100vh - var(--parent-navigation-height) - 14px);display:grid;place-items:center;color:var(--vscode-descriptionForeground)}
 #loading[hidden]{display:none}
 #list{width:100%;padding:8px}.multi-virtual-root{width:100%;min-width:0}.multi-virtual-spacer{width:1px;pointer-events:none}.multi-virtual-cards{display:flow-root;width:100%;min-width:0}
 /* 渲染中：卡片已在文档流内（保证 Monaco 拿到真实宽度），仅视觉隐藏，避免逐个跳动。 */
@@ -68,7 +80,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 /* 标题栏和 index 栏是同一吸顶组: 顶部与左右边都复刻卡片的 border + ring 宽度。
    负水平 margin 让这三条高亮边精确覆盖卡片的外环和边框；不能用 overflow:hidden 裁圆角，
    否则会改变 sticky 滚动上下文。 */
-.pinned-group{position:sticky;top:calc(var(--header-gap) + var(--header-inset));z-index:2;margin-top:calc((var(--card-border) + var(--card-ring)) * -1);margin-right:calc((var(--card-border) + var(--card-ring)) * -1);margin-bottom:0;margin-left:calc((var(--card-border) + var(--card-ring)) * -1);border-top:calc(var(--card-border) + var(--card-ring)) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-right:calc(var(--card-border) + var(--card-ring)) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-left:calc(var(--card-border) + var(--card-ring)) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:var(--card-radius) var(--card-radius) 0 0;background:var(--vscode-editorWidget-background,var(--vscode-tab-activeBackground));box-shadow:0 1px 3px rgba(0,0,0,.18)}
+.pinned-group{position:sticky;top:calc(var(--parent-navigation-height) + var(--header-gap) + var(--header-inset));z-index:2;margin-top:calc((var(--card-border) + var(--card-ring)) * -1);margin-right:calc((var(--card-border) + var(--card-ring)) * -1);margin-bottom:0;margin-left:calc((var(--card-border) + var(--card-ring)) * -1);border-top:calc(var(--card-border) + var(--card-ring)) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-right:calc(var(--card-border) + var(--card-ring)) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-left:calc(var(--card-border) + var(--card-ring)) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:var(--card-radius) var(--card-radius) 0 0;background:var(--vscode-editorWidget-background,var(--vscode-tab-activeBackground));box-shadow:0 1px 3px rgba(0,0,0,.18)}
 /* 独立标题层在 pinned 组内建立完整的遮罩层叠上下文: 盖板覆盖相邻 diff 内容和其 box-shadow 高亮，
    但低于标题内容与 pinned 轮廓。底边严格等于标题栏底边，上/左/右外延 8px。 */
 .diff.selected>.pinned-group{border-color:var(--vscode-focusBorder)}
@@ -97,7 +109,9 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .gitlink-label{display:inline-block;margin-left:6px;padding:1px 5px;border:1px solid var(--vscode-badge-background,var(--vscode-widget-border));border-radius:3px;color:var(--vscode-badge-foreground,var(--vscode-descriptionForeground));font-size:10px;font-weight:400;line-height:14px;vertical-align:middle}
 .meta-gitlink{color:var(--vscode-foreground)}
 .gitlink-commits{padding:4px 0;background:var(--vscode-editor-background)}
-.gitlink-commit{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px;padding:7px 10px;border-bottom:1px solid var(--vscode-editorWidget-border,var(--vscode-panel-border));font-family:var(--vscode-editor-font-family,monospace);line-height:1.45}
+.gitlink-commit{display:grid;width:100%;grid-template-columns:auto minmax(0,1fr);gap:8px;margin:0;padding:7px 10px;border:0;border-bottom:1px solid var(--vscode-editorWidget-border,var(--vscode-panel-border));color:inherit;background:transparent;font:inherit;font-family:var(--vscode-editor-font-family,monospace);line-height:1.45;text-align:left;cursor:pointer;appearance:none}
+.gitlink-commit:hover{background:var(--vscode-list-hoverBackground)}
+.gitlink-commit:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:-2px}
 .gitlink-commit:last-child{border-bottom:0}
 .gitlink-commit-hash{color:var(--vscode-textLink-foreground);white-space:nowrap}
 .gitlink-commit-message{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
@@ -107,27 +121,51 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .diff-body{border-radius:0 0 calc(var(--card-radius) - var(--card-border)) calc(var(--card-radius) - var(--card-border));overflow:hidden}
 .diff.collapsed>.diff-body{display:none}
 .editor{position:relative;width:100%;min-width:0;height:80px}
+/* 二进制文件沿用旧版 Custom Diff 的左右面板展示，而不是压缩成单行空态。 */
+.binary-diff{display:grid;width:100%;min-width:0;min-height:80px;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:stretch;background:var(--vscode-editor-background)}
+.binary-diff.inline{display:block}
+.binary-pane{min-width:0;overflow:hidden;border-right:1px solid var(--vscode-editorGroup-border)}
+.binary-pane-right{border-right:0}
+.binary-unified-pane{display:none}
+.binary-diff.inline>.binary-pane{display:none}
+.binary-diff.inline>.binary-unified-pane{display:block}
+.binary-pane-title{box-sizing:border-box;display:block;height:25px;padding:4px 8px;overflow:hidden;border-bottom:1px solid var(--vscode-editorGroup-border);color:var(--vscode-editor-foreground);background:color-mix(in srgb,var(--vscode-editorWidget-background,var(--vscode-tab-activeBackground)) 85%,#000 15%);text-overflow:ellipsis;white-space:nowrap}
+.binary-empty{min-height:55px}
 .empty{padding:16px 8px;color:var(--vscode-descriptionForeground);text-align:center}.diff-loading{min-height:80px;display:grid;place-items:center;color:var(--vscode-descriptionForeground)}
 .gitk-diff-link-hover{text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:2px;cursor:pointer}
 .gitk-change-flash{position:absolute;z-index:12;right:2px;left:2px;pointer-events:none;border-radius:4px;background:color-mix(in srgb,var(--vscode-focusBorder,#007acc) 30%,transparent);box-shadow:inset 0 0 0 2px var(--vscode-focusBorder,#007acc),0 3px 8px rgba(0,0,0,.38),0 1px 2px rgba(0,0,0,.28);transform:translateY(-1px)}
 #global-hscroll{position:fixed;z-index:20;right:0;bottom:0;left:0;height:14px;overflow-x:auto;overflow-y:hidden;background:var(--vscode-scrollbar-shadow,rgba(0,0,0,.18));scrollbar-color:var(--vscode-scrollbarSlider-background) transparent;scrollbar-width:auto}
 #global-hscroll[hidden]{display:none}
 #global-hscroll-content{height:1px;pointer-events:none}
-</style></head><body><div id="loading">正在准备 Diff...</div><main id="list" hidden></main><div id="global-hscroll" role="scrollbar" aria-label="当前 Diff 水平滚动" aria-orientation="horizontal" hidden><div id="global-hscroll-content"></div></div><script nonce="${nonce}">window.gitkQueue=[];window.addEventListener('message',event=>window.gitkQueue.push(event.data));window.gitkVscode=acquireVsCodeApi();</script><script nonce="${nonce}" src="${monacoUri}/loader.js"></script><script nonce="${nonce}">
+</style></head><body><div id="parent-commit-navigation" hidden><button id="back-to-parent-commit" type="button" title="回到父提交"><span>回到父提交</span></button><div id="parent-commit-info"><span id="parent-commit-title"></span><span id="parent-commit-hash"></span></div></div><div id="loading">正在准备 Diff...</div><main id="list" hidden></main><div id="global-hscroll" role="scrollbar" aria-label="当前 Diff 水平滚动" aria-orientation="horizontal" hidden><div id="global-hscroll-content"></div></div><script nonce="${nonce}">window.gitkQueue=[];window.addEventListener('message',event=>window.gitkQueue.push(event.data));window.gitkVscode=acquireVsCodeApi();</script><script nonce="${nonce}" src="${monacoUri}/loader.js"></script><script nonce="${nonce}">
 self.MonacoEnvironment={getWorker:()=>new Worker('${monacoUri}/base/worker/workerMain.js')};
-const loading=document.getElementById('loading'),list=document.getElementById('list'),globalHScroll=document.getElementById('global-hscroll'),globalHScrollContent=document.getElementById('global-hscroll-content'),languages=${JSON.stringify(MONACO_DIFF_LANGUAGES)},diffOptions=${JSON.stringify(MONACO_DIFF_OPTIONS)};
+const parentCommitNavigation=document.getElementById('parent-commit-navigation'),backToParentCommit=document.getElementById('back-to-parent-commit'),parentCommitTitle=document.getElementById('parent-commit-title'),parentCommitHash=document.getElementById('parent-commit-hash'),loading=document.getElementById('loading'),list=document.getElementById('list'),globalHScroll=document.getElementById('global-hscroll'),globalHScrollContent=document.getElementById('global-hscroll-content'),languages=${JSON.stringify(MONACO_DIFF_LANGUAGES)},diffOptions=${JSON.stringify(MONACO_DIFF_OPTIONS)};
 const report=message=>{try{window.gitkVscode.postMessage({type:'error',message})}catch(_){}};
 const log=message=>{try{window.gitkVscode.postMessage({type:'log',message})}catch(_){}};
 const notifyRendered=(revision,identity)=>{try{window.gitkVscode.postMessage({type:'rendered',revision,identity})}catch(_){}};
-let monacoReady=false,lastRevision=0,lastIdentity='',pending,cards=[],cardByPath=new Map(),activePath='',clickedPath='',suppressSyncUntil=0,scrollAnimationFrame=0,renderToken=0,editable=false,renderSideBySide=diffOptions.renderSideBySide!==false,virtualFrame=0,editorPool=[],syncingGlobalHScroll=false,hScrollFrame=0,pinnedAnchor=null,virtualRoot=null,virtualTop=null,virtualCardsHost=null,virtualBottom=null,layoutPrefix=[],layoutTotal=0,layoutDirty=true,virtualWindowStart=0,virtualWindowEnd=-1,mountedCardEntries=new Set();
+function setParentCommitNavigation(parentCommit){
+  const visible=Boolean(parentCommit&&parentCommit.hash);
+  parentCommitNavigation.hidden=!visible;document.body.classList.toggle('has-parent-navigation',visible);
+  const fullTitle=visible&&parentCommit.title?String(parentCommit.title):'';
+  const title=fullTitle?fullTitle.split(/\\r?\\n/,1)[0]:'父提交';
+  parentCommitTitle.textContent=visible?title:'';parentCommitTitle.title=visible?fullTitle:'';
+  parentCommitHash.textContent=visible?String(parentCommit.hash).slice(0,8):'';
+  backToParentCommit.title=visible?(fullTitle?'回到父提交：'+title:'回到父提交'):'';
+  if(programmaticRevealPath)scheduleProgrammaticReveal();else scheduleVirtualization();
+}
+backToParentCommit.addEventListener('click',function(){try{window.gitkVscode.postMessage({type:'backToParentCommit'})}catch(_){}});
+let monacoReady=false,lastRevision=0,lastIdentity='',selectionEpoch=0,pending,pendingRevealPath='',cards=[],cardByPath=new Map(),activePath='',clickedPath='',externalRevealPath='',externalRevealFrame=0,suppressSyncUntil=0,scrollAnimationFrame=0,programmaticRevealPath='',programmaticRevealFrame=0,programmaticRevealStableFrames=0,programmaticRevealTargetReady=false,programmaticRevealTimer=0,virtualJumpAnchorFrame=0,settledRevealAnchorPath='',settledRevealObserver=null,settledRevealAlignFrame=0,revealTailPath='',renderToken=0,editable=false,renderSideBySide=diffOptions.renderSideBySide!==false,virtualFrame=0,editorPool=[],syncingGlobalHScroll=false,hScrollFrame=0,pinnedAnchor=null,virtualRoot=null,virtualTop=null,virtualCardsHost=null,virtualBottom=null,layoutPrefix=[],layoutTotal=0,layoutDirty=true,virtualWindowStart=0,virtualWindowEnd=-1,mountedCardEntries=new Set();
 function setRenderSideBySide(nextValue){
   renderSideBySide=nextValue;
-  for(const entry of cards){if(entry.editor){entry.editor.updateOptions({renderSideBySide:renderSideBySide});entry.fit()}}
+  for(const entry of cards){
+    if(entry.editor){entry.editor.updateOptions({renderSideBySide:renderSideBySide});entry.fit()}
+    const binary=entry.body&&entry.body.querySelector('.binary-diff');if(binary)binary.classList.toggle('inline',!renderSideBySide)
+  }
   for(const slot of editorPool)slot.editor.updateOptions({renderSideBySide:renderSideBySide});
   updateGlobalHScroll();
 }
 function diffKey(diff){return diff.diffKey||diff.path}
-let activeChangeIndex=-1,activeChangePage=0;const requestedDiffPaths=new Set(),pendingDiffRequestPaths=new Set();let diffRequestScheduled=false,mountedEntries=new Set(),pendingDiffUpdates=[];
+let activeChangeIndex=-1,activeChangePage=0;const requestedDiffPaths=new Set(),prioritizedDiffPaths=new Set(),pendingDiffRequestPaths=new Set(),pendingPriorityDiffRequestPaths=new Set();let diffRequestScheduled=false,mountedEntries=new Set(),pendingDiffUpdates=[],editorMountQueue=[],queuedEditorMounts=new Set(),editorMountFrame=0;
 function activeEntry(){return activePath&&cardByPath.get(activePath)}
 function navigableChanges(entry){
   const changes=entry.editor&&entry.editor.getLineChanges()||[];
@@ -159,11 +197,12 @@ function changePageInfo(entry,change){
   if(change.modifiedEndLineNumber>0)blocks.push(changeBlockGeometry(right,change.modifiedStartLineNumber,change.modifiedEndLineNumber));
   const top=Math.min.apply(null,blocks.map(function(block){return block.top}));
   const height=Math.max.apply(null,blocks.map(function(block){return block.height}));
-  const visibleTop=entry.pinnedGroup.getBoundingClientRect().height;
+  const stickyTop=parseFloat(getComputedStyle(entry.pinnedGroup).top)||0;
+  const visibleTop=stickyTop+entry.pinnedGroup.getBoundingClientRect().height;
   const visibleBottom=window.innerHeight-14;
   const navigationTop=visibleTop+(visibleBottom-visibleTop)/5;
   const pageHeight=Math.max(80,visibleBottom-navigationTop);
-  return {top:top,height:height,navigationTop:navigationTop,pageHeight:pageHeight,pageCount:Math.max(1,Math.ceil(height/pageHeight))}
+  return {top:top,height:height,visibleTop:visibleTop,visibleBottom:visibleBottom,navigationTop:navigationTop,pageHeight:pageHeight,pageCount:Math.max(1,Math.ceil(height/pageHeight))}
 }
 function flashChange(entry,pageInfo,page,wholeFile){
   clearChangeFlash(entry);
@@ -179,23 +218,56 @@ function selectLineChange(entry,index,page){
   if(!change)return false;
   const left=entry.editor.getOriginalEditor(),right=entry.editor.getModifiedEditor(),pageInfo=changePageInfo(entry,change);
   const targetPage=Math.max(0,Math.min(pageInfo.pageCount-1,page||0));
-  clickedPath=entry.path;setActive(entry.path,true);activeChangeIndex=index;activeChangePage=targetPage;
-  flashChange(entry,pageInfo,targetPage,change.wholeFileRename===true);
   const baseTop=change.originalEndLineNumber>0?changePageTop(left,change.originalStartLineNumber,pageInfo.navigationTop):changePageTop(right,change.modifiedStartLineNumber,pageInfo.navigationTop);
-  animateScrollTo(Math.max(0,baseTop+targetPage*pageInfo.pageHeight));
+  const targetTop=Math.max(0,baseTop+targetPage*pageInfo.pageHeight);
+  const targetHeight=change.wholeFileRename===true?pageInfo.height:Math.min(pageInfo.pageHeight,pageInfo.height-targetPage*pageInfo.pageHeight);
+  const targetViewportTop=targetTop+pageInfo.navigationTop-window.scrollY;
+  const targetWasVisible=targetViewportTop<pageInfo.visibleBottom&&targetViewportTop+Math.max(2,targetHeight)>pageInfo.visibleTop;
+  externalRevealPath='';cancelProgrammaticReveal();clickedPath=entry.path;setActive(entry.path,true);activeChangeIndex=index;activeChangePage=targetPage;
+  flashChange(entry,pageInfo,targetPage,change.wholeFileRename===true);
+  // 保留原有差异游标状态；仅在目标差异离屏时直接定位，避免大跨度滚动沿途切换文件。
+  if(targetWasVisible&&Math.abs(targetTop-window.scrollY)<=Math.max(1200,window.innerHeight*2))animateScrollTo(targetTop,function(){scheduleVirtualization()});
+  else{
+    if(scrollAnimationFrame){cancelAnimationFrame(scrollAnimationFrame);scrollAnimationFrame=0}
+    suppressSyncUntil=performance.now()+120;window.scrollTo({top:targetTop,behavior:'auto'});scheduleVirtualization()
+  }
   return true
 }
-async function findNavigableEntry(start,direction){
+function nextNavigationFrame(){return new Promise(function(resolve){requestAnimationFrame(resolve)})}
+async function prepareNavigationEntry(entry,originPath){
+  if(!entry||entry.collapsed)return false;
+  const deadline=performance.now()+5000;
+  if(entry.diff.loaded!==true){
+    ensureDiffRequested(entry,true);
+    while(entry.diff.loaded!==true&&activePath===originPath&&cardByPath.get(entry.path)===entry&&performance.now()<deadline)await nextNavigationFrame()
+  }
+  if(activePath!==originPath||cardByPath.get(entry.path)!==entry||entry.diff.loaded!==true||entry.staticContent||entry.collapsed)return false;
+  // 虚拟化只在跨文件导航时补齐目标外壳；当前卡片内仍完全沿用原来的差异游标逻辑。
+  if(!entry.card||!entry.body)updateVirtualizationAtIndex(entry.index,true,true);
+  if(!entry.card||!entry.body)return false;
+  if(!entry.mounted&&!entry.mounting)mountEntry(entry,false).catch(function(error){markCardFailed(entry,error)});
+  // updateVirtualizationAtIndex 可能已开始异步挂载，等待 Monaco 真正算完差异后再读取游标。
+  while(activePath===originPath&&cardByPath.get(entry.path)===entry&&performance.now()<deadline){
+    try{if(entry.editor&&entry.editor.getLineChanges()!==null)return true}catch(_){}
+    await nextNavigationFrame()
+  }
+  return false
+}
+async function findNavigableEntry(start,direction,originPath){
   for(let index=start;index>=0&&index<cards.length;index+=direction){
+    if(activePath!==originPath)return null;
     const entry=cards[index];
-    if(entry.staticContent||entry.collapsed)continue;
-    await mountEntry(entry,false);
+    if(!await prepareNavigationEntry(entry,originPath))continue;
     const changes=navigableChanges(entry);
     if(changes.length)return {entry:entry,index:direction>0?0:changes.length-1}
   }
   return null
 }
 async function navigateChange(direction){
+  // 差异导航是独立用户操作，先解除 Changed Files 的程序化定位；游标推进规则保持旧版不变。
+  externalRevealPath='';
+  if(externalRevealFrame){cancelAnimationFrame(externalRevealFrame);externalRevealFrame=0}
+  cancelProgrammaticReveal();
   const current=activeEntry();
   if(current&&current.editor){
     const changes=navigableChanges(current);
@@ -209,8 +281,9 @@ async function navigateChange(direction){
       selectLineChange(current,candidate,direction>0?0:pageInfo.pageCount-1);return
     }
   }
+  const originPath=activePath;
   const start=current?current.index+direction:(direction>0?0:cards.length-1);
-  const target=await findNavigableEntry(start,direction);
+  const target=await findNavigableEntry(start,direction,originPath);
   if(target){
     const changes=navigableChanges(target.entry),pageInfo=changePageInfo(target.entry,changes[target.index]);
     selectLineChange(target.entry,target.index,direction>0?0:pageInfo.pageCount-1)
@@ -232,7 +305,8 @@ function updateGlobalHScroll(){
     syncingGlobalHScroll=true;globalHScroll.scrollLeft=entry.horizontalLeft||Math.max(left.getScrollLeft(),right.getScrollLeft());syncingGlobalHScroll=false;
   });
 }
-const SCROLL_DURATION=150,MAX_IDLE_EDITORS=6,EDITOR_OVERSCAN_CARDS=10;
+// 空闲编辑器池覆盖前后 overscan 卡片，避免跨虚拟窗口时销毁后又立即重建同等数量的 Monaco。
+const SCROLL_DURATION=150,EDITOR_OVERSCAN_CARDS=10,MAX_IDLE_EDITORS=EDITOR_OVERSCAN_CARDS*2,MAX_EDITOR_MOUNTS_PER_FRAME=2;
 function show(message){loading.textContent=message;loading.hidden=false;list.hidden=true;list.classList.remove('rendering')}
 function fail(error){const message=error&&error.message||String(error);show('Diff 渲染失败: '+message);report(message)}
 function destroySlot(slot){try{slot.editor.setModel(null)}catch(_){}try{slot.editor.dispose()}catch(_){}try{slot.host.remove()}catch(_){}}
@@ -246,10 +320,12 @@ function acquireSlot(entry){
     const editor=monaco.editor.createDiffEditor(host,Object.assign({},diffOptions,{readOnly:!editable,renderSideBySide:renderSideBySide}));
     applyVsCodeFont(editor);return {host:host,editor:editor,owner:null,generation:0};
   }();
-  slot.owner=entry;slot.generation++;entry.body.replaceChildren(slot.host);return slot;
+  // 对象池中的 host 可能保留上一张卡片的高度；挂载前同步当前逻辑高度，避免首次测量基于旧尺寸。
+  const initialHeight=Math.max(80,entry.bodyHeight||80);
+  slot.owner=entry;slot.generation++;slot.host.style.height=initialHeight+'px';entry.body.style.height=initialHeight+'px';entry.body.replaceChildren(slot.host);return slot;
 }
 function disposeEntry(entry){
-  mountedEntries.delete(entry);
+  mountedEntries.delete(entry);queuedEditorMounts.delete(entry);
   clearChangeFlash(entry);
   entry.mountVersion++;
   if(entry.path===activePath)globalHScroll.hidden=true;
@@ -268,12 +344,20 @@ function disposeEntry(entry){
   if(entry.body&&!entry.collapsed&&!entry.staticContent){entry.body.replaceChildren();entry.body.style.height=Math.max(80,entry.bodyHeight||80)+'px'}
 }
 function dispose(){
-  renderToken++;
+  renderToken++;clearVirtualJumpAnchor();clearSettledRevealAnchor();
   if(virtualFrame){cancelAnimationFrame(virtualFrame);virtualFrame=0}
+  if(externalRevealFrame){cancelAnimationFrame(externalRevealFrame);externalRevealFrame=0}
+  if(editorMountFrame){cancelAnimationFrame(editorMountFrame);editorMountFrame=0}
+  editorMountQueue=[];queuedEditorMounts.clear();
+  if(programmaticRevealFrame){cancelAnimationFrame(programmaticRevealFrame);programmaticRevealFrame=0}
+  if(scrollAnimationFrame){cancelAnimationFrame(scrollAnimationFrame);scrollAnimationFrame=0}
+  if(programmaticRevealTimer){clearTimeout(programmaticRevealTimer);programmaticRevealTimer=0}
+  programmaticRevealPath='';programmaticRevealStableFrames=0;programmaticRevealTargetReady=false;revealTailPath='';externalRevealPath='';
   for(const entry of cards){disposeEntry(entry);if(entry.card)entry.card.remove();entry.card=null;entry.header=null;entry.meta=null;entry.pinnedGroup=null;entry.body=null}
   mountedCardEntries.clear();
   while(editorPool.length)destroySlot(editorPool.pop());
   mountedEntries.clear();
+  requestedDiffPaths.clear();prioritizedDiffPaths.clear();pendingDiffRequestPaths.clear();pendingPriorityDiffRequestPaths.clear();diffRequestScheduled=false;
   virtualRoot=null;virtualTop=null;virtualCardsHost=null;virtualBottom=null;layoutPrefix=[];layoutTotal=0;layoutDirty=true;virtualWindowStart=0;virtualWindowEnd=-1;
   // 去重键必须随卡片集合一起归零：卡片全部销毁后旧的可视路径不再成立，
   // 否则重建出相同路径时会被误判为"未变化"而永不重新上报，使 Host 集合停留在空态。
@@ -294,9 +378,14 @@ function workingTreeKindHtml(kind){
 function gitlinkLabelHtml(){return '<span class="gitlink-label" title="Submodule repository">Repo</span>'}
 function gitlinkBodyHtml(diff){
   if(diff.gitlinkScanPending)return '<div class="empty gitlink-loading"><span class="gitlink-loading-spinner" aria-hidden="true"></span><span>正在扫描子模块提交…</span></div>';
-  const commits=diff.gitlinkRangeCommits&&diff.gitlinkRangeCommits.length?diff.gitlinkRangeCommits:(diff.newGitlinkCommit?[diff.newGitlinkCommit]:[]);
+  const commits=diff.gitlinkRangeCommits&&diff.gitlinkRangeCommits.length?diff.gitlinkRangeCommits:[diff.status==='A'?undefined:diff.oldGitlinkCommit,diff.status==='D'?undefined:diff.newGitlinkCommit].filter(function(commit,index,values){return commit&&values.findIndex(function(item){return item&&item.hash===commit.hash})===index});
   if(!commits.length)return '<div class="empty">没有可显示的子模块提交。</div>';
-  return '<div class="gitlink-commits">'+commits.map(function(commit){return '<div class="gitlink-commit"><span class="gitlink-commit-hash" title="'+escapeHtml(commit.hash)+'">'+escapeHtml(commit.shortHash||String(commit.hash||'').slice(0,7))+'</span><span class="gitlink-commit-message">'+escapeHtml(commit.message||commit.subject||'')+'</span></div>'}).join('')+'</div>';
+  return '<div class="gitlink-commits">'+commits.map(function(commit){return '<button type="button" class="gitlink-commit" data-hash="'+escapeHtml(commit.hash)+'" title="查看子模块提交 '+escapeHtml(commit.hash)+'"><span class="gitlink-commit-hash">'+escapeHtml(commit.shortHash||String(commit.hash||'').slice(0,7))+'</span><span class="gitlink-commit-message">'+escapeHtml(commit.message||commit.subject||'')+'</span></button>'}).join('')+'</div>';
+}
+function binaryBodyHtml(diff){
+  const oldLabel=diff.status==='A'?'/dev/null':(diff.oldPath||diff.path),newLabel=diff.status==='D'?'/dev/null':diff.path;
+  const unavailable='<div class="empty binary-empty">二进制文件不同，无法显示文本差异。</div>';
+  return '<div class="binary-diff'+(renderSideBySide?'':' inline')+'"><section class="binary-pane"><span class="binary-pane-title">'+escapeHtml(oldLabel)+'</span>'+unavailable+'</section><section class="binary-pane binary-pane-right"><span class="binary-pane-title">'+escapeHtml(newLabel)+'</span>'+unavailable+'</section><section class="binary-unified-pane"><span class="binary-pane-title">'+escapeHtml(diff.path)+'</span>'+unavailable+'</section></div>';
 }
 function headerHtml(diff){const chevron='<svg class="diff-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 5.5 5 5 5-5"/></svg>';const kind=workingTreeKindHtml(diff.workingTreeKind);const stats='<span class="line-stats"><span class="line-stat-added"></span><span class="line-stat-removed"></span></span>';const gitlink=diff.isGitlink?gitlinkLabelHtml():'';const renamed=diff.status==='R'&&diff.oldPath&&diff.oldPath!==diff.path;const leftPath=renamed?diff.oldPath:diff.path;const left=chevron+gitlink+kind+stats+statusHtml(diff.status)+pathHtml(leftPath,diff.status==='D'||renamed);if(!renamed)return '<span class="title-side title-side-left">'+left+'</span>';return '<span class="title-side title-side-left">'+left+'</span><span class="title-side title-side-right">'+statusHtml(diff.status)+pathHtml(diff.path,false)+'</span>'}
 // 对象 id 按 git 惯例截断到 7 位; 全 0 表示该侧不存在(新增或删除)。
@@ -377,7 +466,7 @@ function upperBoundOffset(offset){
   return Math.min(low,cards.length);
 }
 function unmountCardShell(entry){
-  if(!entry.card)return;
+  if(!entry.card)return
   disposeEntry(entry);
   entry.card.remove();
   mountedCardEntries.delete(entry);
@@ -411,10 +500,8 @@ function mountCardShell(entry,parent){
   card.append(pinnedGroup,body);parent.append(card);
   entry.card=card;entry.header=header;entry.meta=meta;entry.pinnedGroup=pinnedGroup;entry.body=body;entry.staticContent=!loaded;
   card.classList.toggle('collapsed',entry.collapsed);card.classList.toggle('selected',entry.path===activePath);
-  const measuredPinnedHeight=pinnedGroup.getBoundingClientRect().height;
-  if(measuredPinnedHeight>0&&Math.abs(entry.pinnedHeight-measuredPinnedHeight)>.5){entry.pinnedHeight=measuredPinnedHeight;layoutDirty=true}
   header.addEventListener('click',function(){toggle(entry)});
-  card.addEventListener('pointerdown',function(){clickedPath=entry.path;setActive(entry.path,true)});
+  card.addEventListener('pointerdown',function(){externalRevealPath='';cancelProgrammaticReveal();clickedPath=entry.path;setActive(entry.path,true)});
   actions.querySelectorAll('.diff-action').forEach(function(button){
     button.addEventListener('pointerdown',function(event){if(event.button!==0)return;event.preventDefault();event.stopPropagation()});
     button.addEventListener('pointerup',function(event){if(event.button!==0)return;event.preventDefault();event.stopPropagation();try{window.gitkVscode.postMessage({type:'workingTreeAction',action:button.dataset.action,section:button.dataset.section,path:diff.path})}catch(_){}});
@@ -424,45 +511,80 @@ function mountCardShell(entry,parent){
     event.stopPropagation();
     try{window.gitkVscode.postMessage({type:'openFileAtLine',path:diff.path})}catch(_){}
   });
+  // Gitlink 提交行使用事件委托，异步元数据刷新替换 innerHTML 后仍可点击跳转。
+  body.addEventListener('click',function(event){
+    const target=event.target instanceof Element?event.target.closest('.gitlink-commit[data-hash]'):null;
+    if(!target||!body.contains(target))return;
+    const hash=target.dataset.hash;if(!hash)return;
+    event.stopPropagation();
+    try{window.gitkVscode.postMessage({type:'selectGitlinkCommit',path:entry.filePath,hash:hash})}catch(_){}
+  });
   mountedCardEntries.add(entry);
   if(!loaded){body.style.height=entry.bodyHeight+'px';return entry;}
   if(diff.isGitlink){
-    body.innerHTML=gitlinkBodyHtml(diff);entry.staticContent=true;
-    const measuredBodyHeight=body.getBoundingClientRect().height;
-    if(measuredBodyHeight>0){entry.bodyHeight=Math.max(80,measuredBodyHeight);layoutDirty=true}
+    body.style.height='';body.innerHTML=gitlinkBodyHtml(diff);entry.staticContent=true;
     return entry;
   }
-  if(diff.error||diff.isBinary){
-    const message=document.createElement('div');message.className='empty';
-    message.textContent=diff.error?('无法读取此文件：'+diff.error):'二进制文件不同，无法显示文本差异。';
+  if(diff.error){
+    const message=document.createElement('div');message.className='empty';message.textContent='无法读取此文件：'+diff.error;
     body.append(message);entry.staticContent=true;
-    const measuredBodyHeight=body.getBoundingClientRect().height;
-    if(measuredBodyHeight>0){entry.bodyHeight=Math.max(80,measuredBodyHeight);layoutDirty=true}
     return entry;
   }
+  if(diff.isBinary){body.style.height='';body.innerHTML=binaryBodyHtml(diff);entry.staticContent=true;return entry}
   body.style.height=entry.bodyHeight+'px';
   return entry;
 }
 
+function measureMountedCardShell(entry){
+  if(!entry.card||!entry.pinnedGroup||!entry.body)return;
+  const measuredPinnedHeight=entry.pinnedGroup.getBoundingClientRect().height;
+  if(measuredPinnedHeight>0&&Math.abs(entry.pinnedHeight-measuredPinnedHeight)>.5){entry.pinnedHeight=measuredPinnedHeight;layoutDirty=true;if(externalRevealPath)scheduleExternalRevealAlignment()}
+  if(entry.diff.loaded===true&&entry.staticContent){
+    const measuredBodyHeight=Math.max(entry.body.scrollHeight,entry.body.getBoundingClientRect().height);
+    if(measuredBodyHeight>0&&Math.abs(entry.bodyHeight-measuredBodyHeight)>.5){entry.bodyHeight=Math.max(80,Math.ceil(measuredBodyHeight));layoutDirty=true;if(externalRevealPath)scheduleExternalRevealAlignment()}
+  }
+  if(settledRevealAnchorPath)alignSettledRevealAnchor()
+}
 function flushDiffRequests(){
   diffRequestScheduled=false;
-  if(!pendingDiffRequestPaths.size)return;
+  if(!pendingPriorityDiffRequestPaths.size&&!pendingDiffRequestPaths.size)return;
+  const priorityPaths=Array.from(pendingPriorityDiffRequestPaths);
+  pendingPriorityDiffRequestPaths.clear();
+  priorityPaths.forEach(function(path){pendingDiffRequestPaths.delete(path)});
   const paths=Array.from(pendingDiffRequestPaths);
   pendingDiffRequestPaths.clear();
-  try{window.gitkVscode.postMessage({type:'ensureDiffs',paths:paths})}catch(_){paths.forEach(function(path){requestedDiffPaths.delete(path)})}
+  if(priorityPaths.length){
+    try{window.gitkVscode.postMessage({type:'ensureDiffs',paths:priorityPaths,priority:true})}
+    catch(_){priorityPaths.forEach(function(path){requestedDiffPaths.delete(path);prioritizedDiffPaths.delete(path)})}
+  }
+  if(paths.length){
+    try{window.gitkVscode.postMessage({type:'ensureDiffs',paths:paths})}
+    catch(_){paths.forEach(function(path){requestedDiffPaths.delete(path)})}
+  }
 }
-function ensureDiffRequested(entry){
-  if(entry.diff.loaded===true||requestedDiffPaths.has(entry.path))return;
-  requestedDiffPaths.add(entry.path);
-  pendingDiffRequestPaths.add(entry.path);
+function ensureDiffRequested(entry,priority=false){
+  if(entry.diff.loaded===true)return;
+  if(priority){
+    if(prioritizedDiffPaths.has(entry.path))return;
+    prioritizedDiffPaths.add(entry.path);requestedDiffPaths.add(entry.path);pendingPriorityDiffRequestPaths.add(entry.path);
+  }else{
+    if(requestedDiffPaths.has(entry.path))return;
+    requestedDiffPaths.add(entry.path);pendingDiffRequestPaths.add(entry.path);
+  }
   if(!diffRequestScheduled){diffRequestScheduled=true;queueMicrotask(flushDiffRequests)}
+}
+function hasMountedEditorContent(entry){
+  return Boolean(entry.mounted&&entry.editor&&entry.slot&&entry.slot.owner===entry&&entry.body&&entry.body.contains(entry.slot.host))
 }
 // 为可视逻辑项借用 Monaco 模板；离屏后归还对象池并保留等高占位。
 function mountEntry(entry,fromScroll=false){
-  if(entry.staticContent||entry.collapsed||entry.mounted||entry.mounting)return Promise.resolve();
+  if(entry.staticContent||entry.collapsed)return Promise.resolve();
+  if(hasMountedEditorContent(entry)||entry.mounting)return Promise.resolve();
+  // mounted 标记与真实 host 脱节时先完整回收，再重新绑定，避免留下只有高度的空白卡片。
+  if(entry.mounted||entry.editor||entry.slot)disposeEntry(entry);
   entry.mounting=true;mountedEntries.add(entry);entry.mountVersion++;
-  const mountVersion=entry.mountVersion,diff=entry.diff,allowScrollCompensation=!fromScroll;
-  entry.body.style.height='';
+  const mountVersion=entry.mountVersion,diff=entry.diff;
+  entry.body.style.height=Math.max(80,entry.bodyHeight||80)+'px';
   const slot=acquireSlot(entry),host=slot.host,editor=slot.editor;
   let original,modified;
   try{
@@ -543,26 +665,46 @@ function mountEntry(entry,fromScroll=false){
     entry.mounting=false;
     return Promise.reject(error);
   }
+  let fitting=false,fitFrame=0;
+  const scheduleFit=function(){
+    if(fitFrame||entry.mountVersion!==mountVersion)return;
+    fitFrame=requestAnimationFrame(function(){fitFrame=0;fit()});
+  };
   const fit=function(){
-    if(entry.collapsed||entry.mountVersion!==mountVersion)return;
-    const left=editor.getOriginalEditor(),right=editor.getModifiedEditor();
-    const nextHeight=Math.ceil(Math.max(80,left.getContentHeight(),right.getContentHeight()));
-    const width=host.clientWidth||Math.max(0,window.innerWidth-18);
-    const delta=nextHeight-entry.bodyHeight;
-    const aboveViewport=entry.card.getBoundingClientRect().bottom<=0;
-    entry.bodyHeight=nextHeight;entry.body.style.height='';host.style.height=entry.bodyHeight+'px';layoutDirty=true;
-    editor.layout({width:Math.ceil(width),height:entry.bodyHeight});
-    if(entry.path===activePath)updateGlobalHScroll();
-    // 刷新锚点存在时由锚点统一对齐真实高度，避免逐张卡片各自补偿导致累积偏移。
-    if(pinnedAnchor)applyPinnedAnchor();
-    // 滚动触发的异步挂载不得改写用户当前位置；首次渲染等静态挂载才补偿上方高度。
-    else if(delta&&aboveViewport&&allowScrollCompensation)window.scrollTo({top:Math.max(0,window.scrollY+delta),behavior:'auto'});
-    scheduleVirtualization();
+    if(fitting||entry.collapsed||entry.mountVersion!==mountVersion)return;
+    fitting=true;
+    try{
+      const left=editor.getOriginalEditor(),right=editor.getModifiedEditor();
+      const width=Math.ceil(host.clientWidth||Math.max(0,window.innerWidth-18));
+      const currentHeight=Math.max(80,entry.bodyHeight||80);
+      // 先用当前卡片尺寸完成一次真实 layout，再读取 Monaco 内容高度；复用 host 或首次挂载时缓存值可能已过期。
+      entry.body.style.height=currentHeight+'px';host.style.height=currentHeight+'px';
+      editor.layout({width:width,height:currentHeight});
+      const nextHeight=Math.ceil(Math.max(80,left.getContentHeight(),right.getContentHeight()));
+      const delta=nextHeight-entry.bodyHeight;
+      const heightChanged=Math.abs(delta)>.5;
+      const viewportAnchor=heightChanged?captureViewportAnchorForEntry(entry):null;
+      entry.bodyHeight=nextHeight;entry.body.style.height=nextHeight+'px';host.style.height=nextHeight+'px';
+      editor.layout({width:width,height:nextHeight});
+      if(entry.path===activePath)updateGlobalHScroll();
+      if(!heightChanged)return;
+      layoutDirty=true;
+      if(programmaticRevealPath)scheduleProgrammaticReveal();else if(externalRevealPath)scheduleExternalRevealAlignment();
+      // 高度变化发生在目标或当前视口上方时，同一轮布局内恢复锚点，不能等下一帧再补偿。
+      if(settledRevealAnchorPath)alignSettledRevealAnchor();
+      else if(pinnedAnchor)applyPinnedAnchor();
+      else restoreViewportAnchor(viewportAnchor);
+      scheduleVirtualization();
+      // 第二次 layout 可能改变折行/对齐区高度；下一帧再收敛一次，避免只显示部分新增、删除或修改内容。
+      scheduleFit();
+    }finally{fitting=false}
   };
   entry.disposables.push(editor.onDidUpdateDiff(function(){fit();updateLineStats(entry)}));
   entry.disposables.push(editor.getOriginalEditor().onDidContentSizeChange(fit));
   entry.disposables.push(editor.getModifiedEditor().onDidContentSizeChange(fit));
   entry.slot=slot;entry.editor=editor;entry.original=original;entry.modified=modified;entry.fit=fit;entry.mounted=true;entry.mounting=false;
+  // 不依赖 Monaco 事件是否恰好在监听器注册前触发；挂载后的连续两帧主动校准真实内容高度。
+  scheduleFit();requestAnimationFrame(scheduleFit);
   if(entry.path===activePath)updateGlobalHScroll();
   // 纯事件驱动：onDidUpdateDiff 到达即就绪；若挂监听前差异已算完，
   // getLineChanges() 已非 null，直接就绪，避免错过事件而永久等待。
@@ -601,62 +743,219 @@ function markCardFailed(entry,error){
   const notice=document.createElement('div');notice.className='empty';
   notice.textContent='此文件差异渲染失败：'+message;
   if(entry.body){entry.body.replaceChildren(notice);entry.body.style.height=Math.max(80,entry.bodyHeight||80)+'px'}
-  entry.bodyHeight=Math.max(80,entry.bodyHeight||80);layoutDirty=true;
+  entry.bodyHeight=Math.max(80,entry.bodyHeight||80);layoutDirty=true;if(settledRevealAnchorPath)scheduleSettledRevealAlignment();
   report('card '+entry.path+' failed: '+message);
 }
 function toggle(entry){
+  externalRevealPath='';
   entry.collapsed=!entry.collapsed;
   entry.card.classList.toggle('collapsed',entry.collapsed);
   if(entry.collapsed)disposeEntry(entry);else scheduleVirtualization();
   setActive(entry.path,true);updateGlobalHScroll();
 }
 function setActive(path,notify){
+  // Changed Files 发起定位后，残余滚动/刷新不得把活动项切回其他文件；用户主动操作会先解除该锁。
+  if(notify&&externalRevealPath&&path!==externalRevealPath)return;
   const changed=activePath!==path;
   activePath=path;
-  for(const entry of cards){
+  if(!changed){
+    // 虚拟窗口重建时 mountCardShell 已按 activePath 恢复 class；这里只兜底补回当前卡片，避免每个 scroll 帧遍历全部卡片。
+    const current=cardByPath.get(path);if(current&&current.card)current.card.classList.add('selected');
+    return
+  }
+  // 只处理当前挂载的 Monaco；大量文件时遍历全部逻辑卡片会拖慢滚动高亮切换。
+  for(const entry of mountedEntries){
     if(entry.path===path||!entry.editor)continue;
     try{entry.editor.getOriginalEditor().blur();entry.editor.getModifiedEditor().blur()}catch(_){ }
   }
-  if(changed){activeChangeIndex=-1;activeChangePage=0;for(const entry of mountedCardEntries)entry.card.classList.toggle('selected',entry.path===path)}
-  if(changed&&notify){try{window.gitkVscode.postMessage({type:'selectFile',path:path})}catch(_){}}
+  activeChangeIndex=-1;activeChangePage=0;
+  for(const entry of mountedCardEntries)entry.card.classList.toggle('selected',entry.path===path);
+  if(notify){try{window.gitkVscode.postMessage({type:'selectFile',path:path,selectionEpoch:selectionEpoch})}catch(_){}}
   updateGlobalHScroll();
 }
-// 固定 SCROLL_DURATION 完成滚动：距离越远速度越快，不用浏览器 smooth 的按距离计时。
-function animateScrollTo(top){
+// 固定 SCROLL_DURATION 完成短距离滚动；跨越很多卡片时直接定位，避免沿途虚拟窗口快速换页。
+function animateScrollTo(top,onComplete){
   if(scrollAnimationFrame){cancelAnimationFrame(scrollAnimationFrame);scrollAnimationFrame=0}
   const start=window.scrollY,distance=top-start;
-  if(Math.abs(distance)<1){window.scrollTo({top:top,behavior:'auto'});return}
+  if(Math.abs(distance)<1){window.scrollTo({top:top,behavior:'auto'});if(onComplete)onComplete();return}
   const startTime=performance.now();
   const step=function(now){
     const progress=Math.min(1,(now-startTime)/SCROLL_DURATION);
     const eased=progress<.5?2*progress*progress:1-Math.pow(-2*progress+2,2)/2;
     window.scrollTo({top:start+distance*eased,behavior:'auto'});
-    scrollAnimationFrame=progress<1?requestAnimationFrame(step):0;
+    if(progress<1)scrollAnimationFrame=requestAnimationFrame(step);
+    else{scrollAnimationFrame=0;if(onComplete)onComplete()}
   };
   scrollAnimationFrame=requestAnimationFrame(step);
 }
-function reveal(path,smooth){
-  const entry=path&&cardByPath.get(path);
-  if(!entry)return;
-  if(entry.collapsed){entry.collapsed=false;layoutDirty=true}
-  pinnedAnchor=null;
-  suppressSyncUntil=performance.now()+SCROLL_DURATION+120;
+function revealScrollTop(entry){
   if(layoutDirty)rebuildLayoutMetrics();
   const listTop=list.getBoundingClientRect().top+window.scrollY;
-  const top=Math.max(0,listTop+8+layoutPrefix[entry.index]-(entry.pinnedGroup?parseFloat(getComputedStyle(entry.pinnedGroup).top)||0:0));
-  if(smooth)animateScrollTo(top);
-  else{if(scrollAnimationFrame){cancelAnimationFrame(scrollAnimationFrame);scrollAnimationFrame=0}window.scrollTo({top:top,behavior:'auto'})}
-  setActive(path,false);scheduleVirtualization();
+  const stickyTop=entry.pinnedGroup?parseFloat(getComputedStyle(entry.pinnedGroup).top)||0:0;
+  return Math.max(0,listTop+8+layoutPrefix[entry.index]-stickyTop)
 }
+function revealTailHeight(){
+  const entry=revealTailPath&&cardByPath.get(revealTailPath);
+  if(!entry)return 0;
+  if(layoutDirty)rebuildLayoutMetrics();
+  // 最后几张卡片后方也要保留一个视口的可滚动余量，否则浏览器最大 scrollY 会让目标只能停在面板中部。
+  return Math.max(0,window.innerHeight-(layoutTotal-layoutPrefix[entry.index]))
+}
+function revealAlignmentDelta(entry){
+  // 卡片外壳挂载后以真实 DOM 顶部为准；overscan 中前置卡片的真实高度可能与逻辑估值不同。
+  if(entry.card&&mountedCardEntries.has(entry)){
+    const stickyTop=entry.pinnedGroup?parseFloat(getComputedStyle(entry.pinnedGroup).top)||0:0;
+    return entry.card.getBoundingClientRect().top-stickyTop
+  }
+  return revealScrollTop(entry)-window.scrollY
+}
+function clearVirtualJumpAnchor(){
+  if(virtualJumpAnchorFrame){cancelAnimationFrame(virtualJumpAnchorFrame);virtualJumpAnchorFrame=0}
+  document.documentElement.classList.remove('programmatic-reveal')
+}
+function beginVirtualJumpAnchor(){
+  clearVirtualJumpAnchor();document.documentElement.classList.add('programmatic-reveal');
+  // 只在替换虚拟窗口的当前帧关闭原生锚定；下一帧恢复，后续高度变化由 settled reveal anchor 精确补偿。
+  virtualJumpAnchorFrame=requestAnimationFrame(function(){virtualJumpAnchorFrame=0;document.documentElement.classList.remove('programmatic-reveal')})
+}
+function clearSettledRevealAnchor(){
+  if(settledRevealAlignFrame){cancelAnimationFrame(settledRevealAlignFrame);settledRevealAlignFrame=0}
+  if(settledRevealObserver){settledRevealObserver.disconnect();settledRevealObserver=null}
+  settledRevealAnchorPath='';document.documentElement.classList.remove('settled-reveal-anchor')
+}
+function alignSettledRevealAnchor(){
+  settledRevealAlignFrame=0;
+  const anchor=settledRevealAnchorPath&&cardByPath.get(settledRevealAnchorPath);
+  if(!anchor||!anchor.card||!mountedCardEntries.has(anchor))return;
+  const stickyTop=anchor.pinnedGroup?parseFloat(getComputedStyle(anchor.pinnedGroup).top)||0:0;
+  const delta=anchor.card.getBoundingClientRect().top-stickyTop;
+  if(Math.abs(delta)>.5){window.scrollTo({top:Math.max(0,window.scrollY+delta),behavior:'auto'});suppressSyncUntil=performance.now()+120}
+}
+function scheduleSettledRevealAlignment(){
+  if(!settledRevealAnchorPath||settledRevealAlignFrame)return;
+  settledRevealAlignFrame=requestAnimationFrame(alignSettledRevealAnchor)
+}
+function setSettledRevealAnchor(path){
+  clearSettledRevealAnchor();settledRevealAnchorPath=path||'';
+  if(!settledRevealAnchorPath)return;
+  document.documentElement.classList.add('settled-reveal-anchor');
+  // ResizeObserver 在绘制前收到前置缓存卡片/顶部 spacer 的高度变化，直接维持目标卡片的视觉顶部。
+  if('ResizeObserver' in window){
+    settledRevealObserver=new ResizeObserver(function(){alignSettledRevealAnchor()});
+    if(virtualTop)settledRevealObserver.observe(virtualTop);
+    if(virtualCardsHost)settledRevealObserver.observe(virtualCardsHost);
+    settledRevealObserver.observe(parentCommitNavigation)
+  }
+  alignSettledRevealAnchor()
+}
+
+function cancelProgrammaticReveal(){
+  clearVirtualJumpAnchor();clearSettledRevealAnchor();
+  if(programmaticRevealFrame){cancelAnimationFrame(programmaticRevealFrame);programmaticRevealFrame=0}
+  if(programmaticRevealTimer){clearTimeout(programmaticRevealTimer);programmaticRevealTimer=0}
+  programmaticRevealPath='';programmaticRevealStableFrames=0;programmaticRevealTargetReady=false;clickedPath='';
+  if(scrollAnimationFrame){cancelAnimationFrame(scrollAnimationFrame);scrollAnimationFrame=0}
+}
+function enforceRevealTarget(entry){
+  if(!entry)return;
+  setActive(entry.path,false);
+  // 大跨度虚拟窗口替换后强制保证只有目标卡片带 selected，不能只依赖挂载瞬间的 activePath 快照。
+  for(const mounted of mountedCardEntries)mounted.card.classList.toggle('selected',mounted===entry);
+  if(entry.card)entry.card.classList.add('selected')
+}
+function alignRevealTarget(entry){
+  if(!entry)return;
+  enforceRevealTarget(entry);
+  const delta=revealAlignmentDelta(entry);
+  if(Math.abs(delta)>.5)window.scrollTo({top:Math.max(0,window.scrollY+delta),behavior:'auto'});
+}
+function finishProgrammaticReveal(entry){
+  if(programmaticRevealFrame){cancelAnimationFrame(programmaticRevealFrame);programmaticRevealFrame=0}
+  if(programmaticRevealTimer){clearTimeout(programmaticRevealTimer);programmaticRevealTimer=0}
+  if(externalRevealFrame){cancelAnimationFrame(externalRevealFrame);externalRevealFrame=0}
+  if(entry){alignRevealTarget(entry);clickedPath=entry.path}
+  programmaticRevealPath='';programmaticRevealStableFrames=0;programmaticRevealTargetReady=false;externalRevealPath='';
+  if(entry)setSettledRevealAnchor(entry.path);else clearSettledRevealAnchor();
+  suppressSyncUntil=performance.now()+120;
+  // 目标置顶后补齐可视区与前后缓存；后续高度变化由稳定锚点原位补偿。
+  if(entry)updateVirtualizationAtIndex(entry.index,false,false);else scheduleVirtualization()
+}
+function scheduleExternalRevealAlignment(){
+  if(!externalRevealPath||programmaticRevealPath||externalRevealFrame)return;
+  externalRevealFrame=requestAnimationFrame(function(){
+    externalRevealFrame=0;
+    if(!externalRevealPath||programmaticRevealPath)return;
+    const entry=cardByPath.get(externalRevealPath);if(!entry)return;
+    updateVirtualizationAtIndex(entry.index,true,true);alignRevealTarget(entry);suppressSyncUntil=performance.now()+120
+  })
+}
+function scheduleProgrammaticReveal(){
+  if(!programmaticRevealPath||programmaticRevealFrame)return;
+  programmaticRevealFrame=requestAnimationFrame(settleProgrammaticReveal)
+}
+function settleProgrammaticReveal(){
+  programmaticRevealFrame=0;
+  const entry=programmaticRevealPath&&cardByPath.get(programmaticRevealPath);
+  if(!entry){cancelProgrammaticReveal();return}
+  let targetReady=entry.diff.loaded===true&&(entry.staticContent||hasMountedEditorContent(entry));
+  if(targetReady&&!programmaticRevealTargetReady){programmaticRevealTargetReady=true;programmaticRevealStableFrames=0}
+  // 跳转阶段只允许目标卡片参与挂载和定位；前后缓存等目标置顶后再补齐，避免高度变化反复拉扯 scrollY。
+  updateVirtualizationAtIndex(entry.index,true,true);
+  enforceRevealTarget(entry);
+  targetReady=entry.diff.loaded===true&&(entry.staticContent||hasMountedEditorContent(entry));
+  const delta=revealAlignmentDelta(entry);
+  if(Math.abs(delta)>.5){window.scrollTo({top:Math.max(0,window.scrollY+delta),behavior:'auto'});programmaticRevealStableFrames=0}
+  else if(targetReady)programmaticRevealStableFrames++;
+  if(targetReady&&programmaticRevealStableFrames>=2){finishProgrammaticReveal(entry);return}
+  // 等待目标 Diff 数据或 Monaco 首次布局；不再等待前后 overscan 卡片。
+  if(!targetReady||programmaticRevealStableFrames<2)scheduleProgrammaticReveal();
+}
+function resolveRevealEntry(path){
+  if(!path)return undefined;
+  return cardByPath.get(path)||cards.find(function(entry){return entry.filePath===path})
+}
+function reveal(path,smooth){
+  const entry=resolveRevealEntry(path);
+  if(!entry){pendingRevealPath=path||'';return false}
+  if(externalRevealFrame){cancelAnimationFrame(externalRevealFrame);externalRevealFrame=0}
+  clearSettledRevealAnchor();pendingRevealPath='';
+  if(entry.collapsed){entry.collapsed=false;layoutDirty=true}
+  const targetPath=entry.path;
+  // 外部选择保持为唯一高亮目标，直到用户主动在 MultiDiff 中进行滚动、点击或差异导航。
+  externalRevealPath=targetPath;
+  pinnedAnchor=null;clickedPath=targetPath;programmaticRevealPath=targetPath;programmaticRevealStableFrames=0;programmaticRevealTargetReady=false;revealTailPath=targetPath;
+  if(programmaticRevealTimer)clearTimeout(programmaticRevealTimer);
+  programmaticRevealTimer=setTimeout(function(){const target=programmaticRevealPath&&cardByPath.get(programmaticRevealPath);finishProgrammaticReveal(target)},5000);
+  suppressSyncUntil=performance.now()+SCROLL_DURATION+120;
+  const targetWasVisible=isCardVisible(entry);
+  let top=revealScrollTop(entry),distance=Math.abs(top-window.scrollY);
+  // 目标只要超出当前可视范围就直接定位；仅对已经可见的局部对齐使用短动画。
+  const useAnimation=smooth&&targetWasVisible&&distance<=Math.max(1200,window.innerHeight*2);
+  setActive(targetPath,false);
+  if(useAnimation)animateScrollTo(top,function(){scheduleVirtualization();scheduleProgrammaticReveal()});
+  else{
+    if(scrollAnimationFrame){cancelAnimationFrame(scrollAnimationFrame);scrollAnimationFrame=0}
+    // 远距离定位先直接把目标附近的虚拟窗口挂载出来，再按真实标题栏位置计算滚动目标。
+    // 仅在替换 DOM 的这一帧关闭浏览器锚定，防止旧窗口把 scrollY 拉回；后续异步高度变化继续使用原生锚定。
+    beginVirtualJumpAnchor();updateVirtualizationAtIndex(entry.index,true,true);
+    enforceRevealTarget(entry);
+    top=revealScrollTop(entry);
+    window.scrollTo({top:top,behavior:'auto'});
+    scheduleProgrammaticReveal();
+  }
+  if(useAnimation)scheduleVirtualization();return true;
+}
+function viewportContentTop(){return parentCommitNavigation.hidden?0:parentCommitNavigation.getBoundingClientRect().height}
 function isCardVisible(entry){
   if(layoutDirty)rebuildLayoutMetrics();
   const listTop=list.getBoundingClientRect().top+window.scrollY+8;
   const top=listTop+layoutPrefix[entry.index]-window.scrollY;
-  return top+entryHeight(entry)>36&&top<window.innerHeight;
+  const viewportTop=viewportContentTop();
+  return top+entryHeight(entry)>viewportTop&&top<window.innerHeight;
 }
 function currentViewportOffset(){
   const listTop=list.getBoundingClientRect().top+window.scrollY+8;
-  return Math.max(0,window.scrollY-listTop);
+  return Math.max(0,window.scrollY+viewportContentTop()-listTop);
 }
 function topVisibleCard(){
   if(!cards.length)return undefined;
@@ -664,56 +963,166 @@ function topVisibleCard(){
   return cards[lowerBoundOffset(currentViewportOffset())];
 }
 function syncActiveFromViewport(){
-  if(performance.now()<suppressSyncUntil)return;
+  if(programmaticRevealPath||scrollAnimationFrame||performance.now()<suppressSyncUntil)return;
   const clickedEntry=clickedPath&&cardByPath.get(clickedPath);
   if(clickedEntry&&isCardVisible(clickedEntry))return;
   clickedPath='';
   const entry=topVisibleCard();
-  if(entry)setActive(entry.path,true)
+  if(entry&&entry.path!==activePath)setActive(entry.path,true)
 }
-function updateVirtualLayout(start,end){
+function captureViewportAnchor(){
+  if(programmaticRevealPath||settledRevealAnchorPath||scrollAnimationFrame||!virtualCardsHost)return null;
+  const viewportTop=viewportContentTop();
+  for(const card of virtualCardsHost.children){
+    const rect=card.getBoundingClientRect();
+    if(rect.bottom>viewportTop){return {key:card.dataset.diffKey,top:rect.top}}
+  }
+  return null
+}
+function captureViewportAnchorForEntry(entry){
+  if(!entry||!entry.card||entry.card.getBoundingClientRect().bottom>viewportContentTop())return null;
+  return captureViewportAnchor()
+}
+function restoreViewportAnchor(anchor){
+  if(!anchor)return;
+  const entry=anchor.key&&cardByPath.get(anchor.key);
+  if(!entry||!entry.card||!mountedCardEntries.has(entry))return;
+  const delta=entry.card.getBoundingClientRect().top-anchor.top;
+  if(Math.abs(delta)>.5){window.scrollTo({top:Math.max(0,window.scrollY+delta),behavior:'auto'});suppressSyncUntil=performance.now()+80}
+}
+function updateVirtualLayout(start,end,rebuildCards){
   ensureVirtualRoot();
   if(layoutDirty)rebuildLayoutMetrics();
-  virtualTop.style.height=Math.max(0,layoutPrefix[start]||0)+'px';
-  virtualBottom.style.height=Math.max(0,layoutTotal-(layoutPrefix[end+1]||0))+'px';
+  const topHeight=Math.max(0,layoutPrefix[start]||0)+'px';
+  const bottomHeight=(Math.max(0,layoutTotal-(layoutPrefix[end+1]||0))+revealTailHeight())+'px';
+  const viewportAnchor=(rebuildCards||virtualTop.style.height!==topHeight||virtualBottom.style.height!==bottomHeight)?captureViewportAnchor():null;
+  virtualTop.style.height=topHeight;
+  virtualBottom.style.height=bottomHeight;
+  // 视口仍位于同一个虚拟窗口时只更新占位高度，不再 replaceChildren；后者会让全部卡片反复脱离/进入 DOM。
+  if(!rebuildCards){restoreViewportAnchor(viewportAnchor);return}
   const fragment=document.createDocumentFragment();
   for(let index=start;index<=end;index++){
     const entry=cards[index];
-    if(!entry.card)mountCardShell(entry,virtualCardsHost);
-    fragment.appendChild(entry.card);
+    // 新卡片先在离屏 Fragment 中批量构造，避免每张卡片 append 后立刻读取布局造成强制回流。
+    if(!entry.card)mountCardShell(entry,fragment);
+    else fragment.appendChild(entry.card);
   }
   virtualCardsHost.replaceChildren(fragment);
+  // DOM 写入全部完成后再统一测量；连续读取共享同一次布局计算。
+  for(let index=start;index<=end;index++)measureMountedCardShell(cards[index]);
+  restoreViewportAnchor(viewportAnchor);
+}
+function resetEditorMountQueue(){
+  if(editorMountFrame){cancelAnimationFrame(editorMountFrame);editorMountFrame=0}
+  editorMountQueue=[];queuedEditorMounts.clear();
+}
+function flushEditorMountQueue(){
+  editorMountFrame=0;
+  let mounted=0;
+  while(editorMountQueue.length&&mounted<MAX_EDITOR_MOUNTS_PER_FRAME){
+    const task=editorMountQueue.shift(),entry=task.entry;
+    if(!queuedEditorMounts.delete(entry)||!mountedCardEntries.has(entry)||!entry.card||entry.collapsed||entry.staticContent||hasMountedEditorContent(entry)||entry.mounting)continue;
+    mounted++;
+    mountEntry(entry,task.fromScroll).catch(function(error){markCardFailed(entry,error)});
+  }
+  if(editorMountQueue.length)editorMountFrame=requestAnimationFrame(flushEditorMountQueue);
+}
+function queueEditorMount(entry,fromScroll){
+  if(queuedEditorMounts.has(entry)||entry.staticContent||hasMountedEditorContent(entry)||entry.mounting)return;
+  queuedEditorMounts.add(entry);editorMountQueue.push({entry:entry,fromScroll:fromScroll});
+  if(!editorMountFrame)editorMountFrame=requestAnimationFrame(flushEditorMountQueue);
+}
+function applyVirtualWindow(first,last,fromScroll,priorityIndex=-1,priorityOnly=false){
+  const mountFirst=Math.max(0,first-EDITOR_OVERSCAN_CARDS);
+  const mountLast=Math.min(cards.length-1,last+EDITOR_OVERSCAN_CARDS);
+  const firstMounted=virtualCardsHost&&virtualCardsHost.firstElementChild;
+  const lastMounted=virtualCardsHost&&virtualCardsHost.lastElementChild;
+  const rebuildCards=mountFirst!==virtualWindowStart||mountLast!==virtualWindowEnd
+    ||!firstMounted||!lastMounted
+    ||firstMounted.dataset.diffKey!==cards[mountFirst].path
+    ||lastMounted.dataset.diffKey!==cards[mountLast].path;
+  virtualWindowStart=mountFirst;virtualWindowEnd=mountLast;
+  if(rebuildCards){
+    // 只保留最新视口的待挂载任务；快速跨文件滚动时旧队列不能挡在新卡片前面。
+    resetEditorMountQueue();
+    Array.from(mountedCardEntries).forEach(function(entry){
+      if(entry.index<mountFirst||entry.index>mountLast)unmountCardShell(entry);
+    });
+  }
+  updateVirtualLayout(mountFirst,mountLast,rebuildCards);
+  const mounts=[];
+  const bind=function(index,priority,visible){
+    const entry=cards[index];
+    if(entry.collapsed)return;
+    if(entry.diff.loaded!==true)ensureDiffRequested(entry,priority);
+    else if(!entry.staticContent&&!hasMountedEditorContent(entry)&&!entry.mounting){
+      // 只有点击目标立即绑定；其余可视卡片和 overscan 都分帧创建，避免首次打开或滚动时一帧创建十几个 Monaco。
+      if(priority)mounts.push(mountEntry(entry,fromScroll).catch(function(error){markCardFailed(entry,error)}));
+      else queueEditorMount(entry,fromScroll);
+    }
+  };
+  const hasPriority=priorityIndex>=mountFirst&&priorityIndex<=mountLast;
+  if(hasPriority)bind(priorityIndex,true,priorityIndex>=first&&priorityIndex<=last);
+  if(!priorityOnly){
+    // 可视卡片优先，其次按距离加入前后缓存，避免 overscan 抢在屏幕内容之前创建编辑器。
+    for(let index=first;index<=last;index++)if(!hasPriority||index!==priorityIndex)bind(index,false,true);
+    for(let index=first-1;index>=mountFirst;index--)if(!hasPriority||index!==priorityIndex)bind(index,false,false);
+    for(let index=last+1;index<=mountLast;index++)if(!hasPriority||index!==priorityIndex)bind(index,false,false);
+  }
+  if(mounts.length)Promise.all(mounts);
+  if(layoutDirty)scheduleVirtualization();
+}
+function updateVirtualizationAtIndex(index,fromScroll=false,priorityOnly=false){
+  if(!cards.length)return;
+  if(layoutDirty)rebuildLayoutMetrics();
+  const first=Math.max(0,Math.min(index,cards.length-1));
+  const lastExclusive=Math.max(first+1,upperBoundOffset(layoutPrefix[first]+window.innerHeight));
+  const last=Math.min(cards.length-1,Math.max(first,lastExclusive-1));
+  applyVirtualWindow(first,last,fromScroll,first,priorityOnly);
 }
 function updateVirtualization(fromScroll=false){
   if(!cards.length)return;
   if(layoutDirty)rebuildLayoutMetrics();
   const offset=currentViewportOffset();
   const first=lowerBoundOffset(offset);
-  const lastExclusive=Math.max(first,upperBoundOffset(offset+window.innerHeight));
+  const lastExclusive=Math.max(first+1,upperBoundOffset(offset+window.innerHeight));
   const last=Math.min(cards.length-1,Math.max(first,lastExclusive-1));
-  const mountFirst=Math.max(0,first-EDITOR_OVERSCAN_CARDS);
-  const mountLast=Math.min(cards.length-1,last+EDITOR_OVERSCAN_CARDS);
-  virtualWindowStart=mountFirst;virtualWindowEnd=mountLast;
-  Array.from(mountedCardEntries).forEach(function(entry){
-    if(entry.index<mountFirst||entry.index>mountLast)unmountCardShell(entry);
-  });
-  updateVirtualLayout(mountFirst,mountLast);
-  const mounts=[];
-  for(let index=mountFirst;index<=mountLast;index++){
-    const entry=cards[index];
-    if(entry.collapsed)continue;
-    if(entry.diff.loaded!==true)ensureDiffRequested(entry);
-    if(!entry.staticContent)mounts.push(mountEntry(entry,fromScroll).catch(function(error){markCardFailed(entry,error)}));
-  }
-  Promise.all(mounts);
-  if(layoutDirty)scheduleVirtualization();
+  const priority=programmaticRevealPath&&cardByPath.get(programmaticRevealPath);
+  applyVirtualWindow(first,last,fromScroll,priority?priority.index:-1,false);
 }
-function scheduleVirtualization(){if(virtualFrame)return;virtualFrame=requestAnimationFrame(function(){virtualFrame=0;updateVirtualization()})}
+function scheduleVirtualization(){if(virtualFrame)return;virtualFrame=requestAnimationFrame(function(){
+  virtualFrame=0;
+  const target=programmaticRevealPath&&cardByPath.get(programmaticRevealPath);
+  const settled=settledRevealAnchorPath&&cardByPath.get(settledRevealAnchorPath);
+  if(target)updateVirtualizationAtIndex(target.index,false,!programmaticRevealTargetReady||programmaticRevealStableFrames<1);
+  else if(settled)updateVirtualizationAtIndex(settled.index,false,false);
+  else updateVirtualization();
+})}
 let scrollFrame=0;
+// 用户主动操作时立即接管，避免程序化定位锁与滚轮/触控/滚动条操作相互争抢。
+function beginUserMultiDiffInteraction(){
+  externalRevealPath='';
+  if(externalRevealFrame){cancelAnimationFrame(externalRevealFrame);externalRevealFrame=0}
+  cancelProgrammaticReveal()
+}
+window.addEventListener('pointerdown',beginUserMultiDiffInteraction,{passive:true,capture:true});
+window.addEventListener('wheel',beginUserMultiDiffInteraction,{passive:true});
+window.addEventListener('touchstart',beginUserMultiDiffInteraction,{passive:true});
+window.addEventListener('keydown',function(event){if(['ArrowUp','ArrowDown','PageUp','PageDown','Home','End',' '].includes(event.key))beginUserMultiDiffInteraction()});
 window.addEventListener('scroll',function(){
   // 用户主动滚动即放弃刷新锚点；锚点自身的对齐写入不算用户滚动。
   if(pinnedAnchor){if(pinnedAnchor.selfScroll)pinnedAnchor.selfScroll=false;else pinnedAnchor=null}
-  if(scrollFrame)return;scrollFrame=requestAnimationFrame(function(){scrollFrame=0;syncActiveFromViewport();updateVirtualization(true)})
+  if(scrollFrame)return;scrollFrame=requestAnimationFrame(function(){
+    scrollFrame=0;
+    // 程序化动画结束后不再长期锁住原点击卡片；用户继续滚动时立即按横栏下方的顶部卡片切换高亮。
+    if(!programmaticRevealPath&&!scrollAnimationFrame&&performance.now()>=suppressSyncUntil)clickedPath='';
+    syncActiveFromViewport();
+    const target=programmaticRevealPath&&cardByPath.get(programmaticRevealPath);
+    const settled=settledRevealAnchorPath&&cardByPath.get(settledRevealAnchorPath);
+    if(target)updateVirtualizationAtIndex(target.index,true,true);
+    else if(settled)updateVirtualizationAtIndex(settled.index,true,false);
+    else updateVirtualization(true)
+  })
 },{passive:true});
 globalHScroll.addEventListener('scroll',function(){
   if(syncingGlobalHScroll)return;
@@ -739,46 +1148,55 @@ function applyPinnedAnchor(){
   window.scrollTo({top:Math.max(0,window.scrollY+delta),behavior:'auto'});
 }
 function restoreRefreshState(state,revealPath){
+  const requested=resolveRevealEntry(revealPath);
   const kept=state&&(cardByPath.get(state.key)||cards.find(function(item){return item.filePath===state.filePath}));
-  const entry=kept||(revealPath&&cardByPath.get(revealPath))||(state&&cards[Math.min(state.index,cards.length-1)]);
+  // 快照中的有效选择是权威目标；只有它不存在时才回退到刷新前活动卡片。
+  const entry=requested||kept||(state&&cards[Math.min(state.index,cards.length-1)]);
   if(!entry)return false;
-  if(kept&&typeof state.offset==='number'){pinnedAnchor={key:entry.path,offset:state.offset};applyPinnedAnchor()}
+  if(kept&&entry===kept&&typeof state.offset==='number'){pinnedAnchor={key:entry.path,offset:state.offset};applyPinnedAnchor()}
   clickedPath=entry.path;
-  setActive(entry.path,entry.path!==revealPath);
+  setActive(entry.path,!requested&&entry.path!==revealPath);
   return true
 }
 function updateEntryFromSnapshot(entry,diff){
-  const old=entry.diff;
-  const wasLoaded=entry.diff.loaded===true,isLoaded=diff.loaded===true;
-  entry.diff=diff;entry.filePath=diff.path;entry.modifiedValue=diff.modified||entry.modifiedValue;
-  if(isLoaded)requestedDiffPaths.delete(entry.path);
-  if(!isLoaded)entry.bodyHeight=80;
-  if(!wasLoaded&&isLoaded&&!diff.isGitlink&&!diff.error&&!diff.isBinary)entry.bodyHeight=estimateBodyHeight(diff);
-  const wasStatic=old.isGitlink||old.error||old.isBinary;
-  const isStatic=diff.isGitlink||diff.error||diff.isBinary;
-  entry.staticContent=!isLoaded||isStatic;
-  layoutDirty=true;
-  if(!entry.card)return;
-  entry.card.dataset.path=diff.path;entry.card.dataset.diffKey=entry.path;
-  entry.header.className='file-header'+(diff.status==='R'&&diff.oldPath&&diff.oldPath!==diff.path?' rename-header':'');
-  entry.header.innerHTML=headerHtml(diff);
-  entry.meta.innerHTML=metaHtml(diff);
-  if(isStatic){
-    entry.body.className='diff-body';entry.body.innerHTML=diff.isGitlink?gitlinkBodyHtml(diff):(diff.error?'无法读取此文件：'+diff.error:'二进制文件不同，无法显示文本差异。');
-    const measuredBodyHeight=entry.body.getBoundingClientRect().height;
-    if(measuredBodyHeight>0)entry.bodyHeight=Math.max(80,measuredBodyHeight);
-    return
-  }
-  if(!wasLoaded&&isLoaded){entry.body.className='diff-body';entry.body.replaceChildren();entry.body.style.height=Math.max(80,entry.bodyHeight)+'px'}
-  else if(wasStatic){entry.body.className='diff-body';entry.body.replaceChildren();entry.body.style.height=Math.max(80,entry.bodyHeight)+'px'}
-  if(!diff.isGitlink&&!diff.error&&!diff.isBinary&&entry.editor){
-    const original=entry.editor.getOriginalEditor(),modified=entry.editor.getModifiedEditor();
-    entry.syncingModel=true;
-    try{
-      if(original.getValue()!==String(diff.original||''))original.setValue(String(diff.original||''));
-      if(modified.getValue()!==String(diff.modified||'')){modified.setValue(String(diff.modified||''));entry.modifiedValue=String(diff.modified||'')}
-    }finally{entry.syncingModel=false}
-    entry.fit();
+  const viewportAnchor=captureViewportAnchorForEntry(entry);
+  try{
+    const old=entry.diff;
+    const wasLoaded=entry.diff.loaded===true,isLoaded=diff.loaded===true;
+    entry.diff=diff;entry.filePath=diff.path;entry.modifiedValue=diff.modified||entry.modifiedValue;
+    if(isLoaded){requestedDiffPaths.delete(entry.path);prioritizedDiffPaths.delete(entry.path)}
+    if(!isLoaded)entry.bodyHeight=80;
+    if(!wasLoaded&&isLoaded&&!diff.isGitlink&&!diff.error&&!diff.isBinary)entry.bodyHeight=estimateBodyHeight(diff);
+    const wasStatic=old.isGitlink||old.error||old.isBinary;
+    const isStatic=diff.isGitlink||diff.error||diff.isBinary;
+    entry.staticContent=!isLoaded||isStatic;
+    layoutDirty=true;
+    if(!entry.card)return;
+    entry.card.dataset.path=diff.path;entry.card.dataset.diffKey=entry.path;
+    entry.header.className='file-header'+(diff.status==='R'&&diff.oldPath&&diff.oldPath!==diff.path?' rename-header':'');
+    entry.header.innerHTML=headerHtml(diff);
+    entry.meta.innerHTML=metaHtml(diff);
+    if(isStatic){
+      // 加载占位会写入 80px 内联高度；渲染 Gitlink 列表前必须清除，否则 overflow:hidden 会裁掉后续提交行。
+      entry.body.className='diff-body';entry.body.style.height='';entry.body.innerHTML=diff.isGitlink?gitlinkBodyHtml(diff):(diff.error?'<div class="empty">无法读取此文件：'+escapeHtml(diff.error)+'</div>':binaryBodyHtml(diff));
+      const measuredBodyHeight=Math.max(entry.body.scrollHeight,entry.body.getBoundingClientRect().height);
+      if(measuredBodyHeight>0)entry.bodyHeight=Math.max(80,Math.ceil(measuredBodyHeight));
+      return
+    }
+    if(!wasLoaded&&isLoaded){entry.body.className='diff-body';entry.body.replaceChildren();entry.body.style.height=Math.max(80,entry.bodyHeight)+'px'}
+    else if(wasStatic){entry.body.className='diff-body';entry.body.replaceChildren();entry.body.style.height=Math.max(80,entry.bodyHeight)+'px'}
+    if(!diff.isGitlink&&!diff.error&&!diff.isBinary&&entry.editor){
+      const original=entry.editor.getOriginalEditor(),modified=entry.editor.getModifiedEditor();
+      entry.syncingModel=true;
+      try{
+        if(original.getValue()!==String(diff.original||''))original.setValue(String(diff.original||''));
+        if(modified.getValue()!==String(diff.modified||'')){modified.setValue(String(diff.modified||''));entry.modifiedValue=String(diff.modified||'')}
+      }finally{entry.syncingModel=false}
+      entry.fit();
+    }
+  }finally{
+    if(settledRevealAnchorPath)alignSettledRevealAnchor();
+    else restoreViewportAnchor(viewportAnchor)
   }
 }
 function reconcileSnapshot(snapshot){
@@ -807,7 +1225,9 @@ function render(snapshot){
     list.hidden=false;
     if(!sameIdentity){
       requestedDiffPaths.clear();
+      prioritizedDiffPaths.clear();
       pendingDiffRequestPaths.clear();
+      pendingPriorityDiffRequestPaths.clear();
       dispose();
       token=renderToken;
       list.classList.add('rendering');loading.textContent='正在创建 Diff 列表...';loading.hidden=false;
@@ -822,9 +1242,16 @@ function render(snapshot){
     if(token!==renderToken)return;
     // 先建立完整逻辑滚动高度，再执行定位；否则首次定位远处文件时文档仍无可滚动高度。
     updateVirtualization();
-    const target=snapshot.revealPath&&cardByPath.has(snapshot.revealPath)?snapshot.revealPath:diffKey(snapshot.diffs[0]);
-    if(!sameIdentity||!restoreRefreshState(state,snapshot.revealPath))reveal(target,false);
-    updateVirtualization();
+    const hasPendingReveal=Boolean(pendingRevealPath);
+    const requestedRevealPath=pendingRevealPath||snapshot.revealPath;
+    const requestedEntry=resolveRevealEntry(requestedRevealPath);
+    const target=requestedEntry?requestedEntry.path:diffKey(snapshot.diffs[0]);
+    const selectedTargetChanged=Boolean(requestedEntry&&requestedEntry.path!==activePath);
+    if(requestedEntry)pendingRevealPath='';
+    // 快照选择与当前活动卡片不同时必须执行真实定位，不能只恢复旧刷新锚点或仅切换高亮。
+    if(hasPendingReveal||selectedTargetChanged||!sameIdentity||!restoreRefreshState(state,requestedRevealPath))reveal(target,false);
+    const activeReveal=programmaticRevealPath&&cardByPath.get(programmaticRevealPath);
+    if(activeReveal)updateVirtualizationAtIndex(activeReveal.index,true,true);else updateVirtualization();
     list.classList.remove('rendering');loading.hidden=true;lastIdentity=snapshot.identity;
     log('render #'+snapshot.revision+': cards='+total+', mounted='+mountedCardEntries.size+', reveal='+(sameIdentity?'anchor':target));
     // 外壳和首屏 Monaco 已开始挂载即可放行 Changed Files；后续由滚动虚拟化管理。
@@ -834,7 +1261,9 @@ function render(snapshot){
 function handleDiffError(message){
   // 本批读取失败时允许当前可视范围再次触发请求，避免卡片永久停留在“正在读取 Diff”。
   requestedDiffPaths.clear();
+  prioritizedDiffPaths.clear();
   pendingDiffRequestPaths.clear();
+  pendingPriorityDiffRequestPaths.clear();
   if(cards.length){
     loading.textContent='部分 Diff 读取失败，滚动、调整窗口大小或重新进入后将重试';
     loading.hidden=false;
@@ -848,7 +1277,14 @@ function applyDiffUpdates(message){
     const entry=cardByPath.get(diffKey(diff));
     if(entry)updateEntryFromSnapshot(entry,diff);
   });
-  if(message.diffs&&message.diffs.length)updateVirtualization();
+  if(message.diffs&&message.diffs.length){
+    const target=programmaticRevealPath&&cardByPath.get(programmaticRevealPath);
+    const settled=settledRevealAnchorPath&&cardByPath.get(settledRevealAnchorPath);
+    if(target)updateVirtualizationAtIndex(target.index,true,!(target.diff.loaded===true&&(target.staticContent||hasMountedEditorContent(target))));
+    else if(settled)updateVirtualizationAtIndex(settled.index,true,false);
+    else updateVirtualization();
+  }
+  if(programmaticRevealPath)scheduleProgrammaticReveal();else if(externalRevealPath)scheduleExternalRevealAlignment();
 }
 function flushPendingDiffUpdates(){
   if(!monacoReady||!pendingDiffUpdates.length)return;
@@ -857,7 +1293,21 @@ function flushPendingDiffUpdates(){
 }
 function receive(message){
   if(!message)return;
-  if(message.type==='reveal'){reveal(message.path,true);return}
+  if(message.type==='releaseDiffRequests'){
+    const released=new Set(Array.isArray(message.paths)?message.paths.filter(function(path){return typeof path==='string'}):[]);
+    released.forEach(function(path){requestedDiffPaths.delete(path);prioritizedDiffPaths.delete(path);pendingDiffRequestPaths.delete(path);pendingPriorityDiffRequestPaths.delete(path)});
+    const targetPath=programmaticRevealPath||externalRevealPath;
+    const target=targetPath&&cardByPath.get(targetPath);
+    if(target&&released.has(target.path)&&target.diff.loaded!==true)ensureDiffRequested(target,true);
+    else if(released.size)scheduleVirtualization();
+    return
+  }
+  if(message.type==='reveal'){
+    activeChangeIndex=-1;activeChangePage=0;
+    if(typeof message.selectionEpoch==='number')selectionEpoch=message.selectionEpoch;
+    reveal(message.path,true);return
+  }
+  if(message.type==='setParentCommitNavigation'){setParentCommitNavigation(message.parentCommit);return}
   if(message.type==='navigateChange'){navigateChange(message.direction===-1?-1:1).catch(fail);return}
   if(message.type==='setRenderSideBySide'){setRenderSideBySide(message.renderSideBySide===true);return}
   if(typeof message.revision!=='number'||message.revision<=lastRevision)return;
@@ -867,7 +1317,9 @@ function receive(message){
     if(monacoReady)applyDiffUpdates(message);else pendingDiffUpdates.push(message);
     return;
   }
+  if(typeof message.selectionEpoch==='number')selectionEpoch=message.selectionEpoch;
   log('receive #'+message.revision+': loading='+message.loading+', progress='+message.completed+'/'+message.total+', diffs='+message.diffs.length);
+  setParentCommitNavigation(message.parentCommit);
   pending=message;
   if(message.error){handleDiffError(message);return}
   if(message.loading){

@@ -57,6 +57,8 @@ export class GitCommitController implements vscode.Disposable {
     private pageAbortController?: AbortController;
     private pageGeneration = 0;
     private selectedCommitIdentity?: { hash: string; repositoryPath: string };
+    // Gitlink 卡片可能跳转到尚未进入当前分页列表的子模块提交；保留显式选择对象作为回退。
+    private selectedCommitFallback?: CommitMetadata;
     private commitReadAbortController?: AbortController;
     private commitReadGeneration = 0;
     private repositorySelectionGeneration = 0;
@@ -133,7 +135,11 @@ export class GitCommitController implements vscode.Disposable {
             return branch ? new CommitMetadata({ hash: identity.hash, gitBranchOption: branch }) : undefined;
         }
         return this.total.find(commit => commit.hash === identity.hash && commit.gitBranchOption?.repoOption.path === identity.repositoryPath)
-            ?? this.searched.find(commit => commit.hash === identity.hash && commit.gitBranchOption?.repoOption.path === identity.repositoryPath);
+            ?? this.searched.find(commit => commit.hash === identity.hash && commit.gitBranchOption?.repoOption.path === identity.repositoryPath)
+            ?? (this.selectedCommitFallback?.hash === identity.hash
+                && this.selectedCommitFallback.gitBranchOption?.repoOption.path === identity.repositoryPath
+                ? this.selectedCommitFallback
+                : undefined);
     }
 
     findCommit(hash: string, repositoryPath: string): CommitMetadata | undefined {
@@ -209,6 +215,7 @@ export class GitCommitController implements vscode.Disposable {
         this.appliedSearchKeywords = [];
         this.total = [];
         this.selectedCommitIdentity = undefined;
+        this.selectedCommitFallback = undefined;
         this._isLoading = true;
         this.reloadKind = 'rebuild';
         this.loadingEmitter.fire(true);
@@ -293,9 +300,11 @@ export class GitCommitController implements vscode.Disposable {
         const repositoryPath = commit.gitBranchOption?.repoOption.path;
         if (!repositoryPath) { return false; }
         if (this.selectedCommitIdentity?.hash === commit.hash && this.selectedCommitIdentity.repositoryPath === repositoryPath) {
+            this.selectedCommitFallback = commit;
             return false;
         }
         this.selectedCommitIdentity = { hash: commit.hash, repositoryPath };
+        this.selectedCommitFallback = commit;
         this.selectedEmitter.fire(this.selectedCommit);
         return true;
     }

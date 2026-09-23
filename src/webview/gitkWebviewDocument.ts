@@ -78,6 +78,17 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP}
 
   window.addEventListener('message', function(event) {
     const msg = event.data;
+    if (msg.type === 'selectedPathChanged') {
+      const previousSelectedPath = selectedPath;
+      const nextSelectedPath = typeof msg.selectedPath === 'string' ? msg.selectedPath : '';
+      const localFileSelectionEcho = Boolean(pendingLocalFileSelectionPath && nextSelectedPath === pendingLocalFileSelectionPath);
+      if (localFileSelectionEcho || (pendingLocalFileSelectionPath && nextSelectedPath !== previousSelectedPath)) pendingLocalFileSelectionPath = '';
+      selectedPath = nextSelectedPath;
+      const filesList = document.getElementById('filesList');
+      syncWorkingTreeSelectionClasses(filesList);
+      if (!localFileSelectionEcho) revealSelectedFile();
+      return;
+    }
     if (msg.type === 'stateUpdate') {
       // 每次都以完整 Store 快照替换业务模型；局部变量仅保存 DOM 交互细节。
       var state = msg.state;
@@ -111,7 +122,12 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP}
       filesLoading = Boolean(state.filesLoading);
       var diffProgress = state.diffProgress || { completed: 0, total: 0 };
       var diffLoading = Boolean(state.diffLoading);
-      selectedPath = state.selectedPath || '';
+      var previousSelectedPath = selectedPath;
+      var nextSelectedPath = state.selectedPath || '';
+      var selectedPathChanged = nextSelectedPath !== previousSelectedPath;
+      var localFileSelectionEcho = Boolean(pendingLocalFileSelectionPath && nextSelectedPath === pendingLocalFileSelectionPath);
+      if (localFileSelectionEcho || (pendingLocalFileSelectionPath && nextSelectedPath !== previousSelectedPath)) pendingLocalFileSelectionPath = '';
+      selectedPath = nextSelectedPath;
       selectedCommitHash = state.selectedCommit ? state.selectedCommit.hash : '';
       selectedCommitRepositoryPath = state.selectedCommit ? state.selectedCommit.repositoryPath : '';
       workingTreeCommitMessage = typeof state.commitMessage === 'string' ? state.commitMessage : '';
@@ -146,7 +162,6 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP}
             file.workingTreeKind, file.oldObjectId, file.newObjectId];
         }),
         filesMode,
-        selectedPath,
         selectedCommitHash,
         selectedCommitRepositoryPath,
       ]);
@@ -158,6 +173,11 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP}
         document.getElementById('filesList').innerHTML = '<div id="filesEmpty"><span class="files-loading-spinner"></span><span>正在加载变更文件' + progressText + '...</span></div>';
       } else if (shouldRenderFiles) {
         renderFiles();
+      } else if (selectedPathChanged) {
+        // MultiDiff 的滚动回写只更新当前虚拟窗口的高亮；不再为一次选择重建整个文件列表。
+        var filesList = document.getElementById('filesList');
+        syncWorkingTreeSelectionClasses(filesList);
+        if (!localFileSelectionEcho) revealSelectedFile();
       }
       if (isCommitLoading) {
         showLoadingProgress('start', state.loadingMessage || '加载中...', 0, 0);

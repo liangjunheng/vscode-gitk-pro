@@ -5,6 +5,11 @@ import { renderMultiDiffHtml } from './multiDiffPanelDocument';
 
 type DiffEntry = Omit<ChangedFile, 'equals'> & Partial<Pick<DiffPayload, 'original' | 'modified'>> & { loaded: boolean; editable?: boolean };
 
+type ParentCommitNavigation = {
+    hash: string;
+    title?: string;
+};
+
 type DiffSnapshot = {
     type: 'snapshot';
     revision: number;
@@ -14,6 +19,8 @@ type DiffSnapshot = {
     total: number;
     error?: string;
     revealPath?: string;
+    selectionEpoch: number;
+    parentCommit?: ParentCommitNavigation;
     // changes 虚拟提交对比的是工作区文件, 右侧允许编辑并回写。
     editable: boolean;
     diffs: DiffEntry[];
@@ -37,6 +44,8 @@ export class MultiDiffPanel implements vscode.Disposable {
     private revision = 0;
     private publishScheduled = false;
     private renderSideBySide = true;
+    private selectionEpoch = 0;
+    private parentCommitNavigation?: ParentCommitNavigation;
     private publishedIdentity?: string;
     private publishedEditable?: boolean;
     private publishedKeys: string[] = [];
@@ -45,10 +54,12 @@ export class MultiDiffPanel implements vscode.Disposable {
     private readonly unsubscribers: (() => void)[];
 
     constructor(
-        private readonly onSelectFile?: (path: string, generation: number) => void,
-        private readonly onRequestDiffs?: (paths: string[], generation: number) => void,
+        private readonly onSelectFile?: (path: string, generation: number, selectionEpoch: number) => void,
+        private readonly onRequestDiffs?: (paths: string[], generation: number, priority: boolean) => void,
         private readonly onRendered?: (identity?: string) => void,
         private readonly onOpenFileAtLine?: (path: string, line?: number, column?: number, side?: 'original' | 'modified') => void,
+        private readonly onSelectGitlinkCommit?: (path: string, hash: string) => void,
+        private readonly onBackToParentCommit?: () => void,
         private readonly onSaveFile?: (path: string, content: string) => void,
         private readonly onWorkingTreeAction?: (action: 'stage' | 'unstage' | 'discard', section: 'conflict' | 'staged' | 'unstaged', path: string) => void,
     ) {
@@ -61,7 +72,8 @@ export class MultiDiffPanel implements vscode.Disposable {
     }
 
     // 打开(必要时创建)面板并定位; 新建或未就绪时发完整快照, 否则只做定位。
-    show(hash: string, commitTitle: string, revealPath?: string): void {
+    show(hash: string, commitTitle: string, revealPath: string | undefined, selectionEpoch: number): void {
+        this.selectionEpoch = selectionEpoch;
         const isNewPanel = !this.panel;
         this.ensurePanel();
         // 标题仅在提交变化时更新, 避免重复写入面板属性。
@@ -70,15 +82,21 @@ export class MultiDiffPanel implements vscode.Disposable {
         this.panel!.reveal(this.panel!.viewColumn ?? vscode.ViewColumn.Active, false);
         // 已渲染的面板只做定位，避免重建全部 Monaco 编辑器；卡片重建仅由 Store 快照驱动。
         if (isNewPanel || !this.webviewReady) { this.publish(); return; }
-        this.post({ type: 'reveal', path: revealPath });
+        this.post({ type: 'reveal', path: revealPath, selectionEpoch: this.selectionEpoch });
     }
 
     // 已渲染面板的轻量定位: 只发 reveal, 不 ensurePanel / 不改标题 / 不抢焦点。
     // 仅当面板已是活动标签时可用; 返回 false 表示需回退到 show() 先激活标签。
-    revealFile(revealPath?: string): boolean {
+    revealFile(revealPath: string | undefined, selectionEpoch: number): boolean {
         if (!this.panel?.active || !this.webviewReady) { return false; }
-        this.post({ type: 'reveal', path: revealPath });
+        this.selectionEpoch = selectionEpoch;
+        this.post({ type: 'reveal', path: revealPath, selectionEpoch: this.selectionEpoch });
         return true;
+    }
+
+    setParentCommitNavigation(parentCommit?: ParentCommitNavigation): void {
+        this.parentCommitNavigation = parentCommit;
+        this.post({ type: 'setParentCommitNavigation', parentCommit });
     }
 
     navigateChange(direction: -1 | 1): void {
@@ -88,6 +106,12 @@ export class MultiDiffPanel implements vscode.Disposable {
     setRenderSideBySide(renderSideBySide: boolean): void {
         this.renderSideBySide = renderSideBySide;
         this.post({ type: 'setRenderSideBySide', renderSideBySide });
+    }
+
+    /** Host 取消了尚未返回的按需 Diff 时，释放 Webview 的请求去重标记，使该卡片后续可以重新读取。 */
+    releaseDiffRequests(paths: readonly string[]): void {
+        if (paths.length === 0) { return; }
+        this.post({ type: 'releaseDiffRequests', paths: [...new Set(paths)] });
     }
 
     // 推进 generation 使在途 DiffReader 失效；新 Store 快照由订阅自动发布。
@@ -121,13 +145,21 @@ export class MultiDiffPanel implements vscode.Disposable {
             if (message?.type === 'ready') {
                 this.webviewReady = true;
                 this.post({ type: 'setRenderSideBySide', renderSideBySide: this.renderSideBySide });
+                this.post({ type: 'setParentCommitNavigation', parentCommit: this.parentCommitNavigation });
                 this.publish();
             } else if (message?.type === 'selectFile' && typeof message.path === 'string') {
                 // 顶部卡片变化时同步 Changed Files 高亮。
-                this.onSelectFile?.(message.path, store.getState().diffGeneration);
+                const selectionEpoch = typeof message.selectionEpoch === 'number' ? message.selectionEpoch : -1;
+                this.onSelectFile?.(message.path, store.getState().diffGeneration, selectionEpoch);
             } else if (message?.type === 'ensureDiffs' && Array.isArray(message.paths)) {
                 const paths = (message.paths as unknown[]).filter((path): path is string => typeof path === 'string');
-                if (paths.length > 0) { this.onRequestDiffs?.([...new Set(paths)], store.getState().diffGeneration); }
+                if (paths.length > 0) { this.onRequestDiffs?.([...new Set(paths)], store.getState().diffGeneration, message.priority === true); }
+            } else if (message?.type === 'selectGitlinkCommit'
+                && typeof message.path === 'string'
+                && typeof message.hash === 'string') {
+                this.onSelectGitlinkCommit?.(message.path, message.hash);
+            } else if (message?.type === 'backToParentCommit') {
+                this.onBackToParentCommit?.();
             } else if (message?.type === 'saveFile' && typeof message.path === 'string' && typeof message.content === 'string') {
                 this.onSaveFile?.(message.path, message.content);
             } else if (message?.type === 'openFileAtLine' && typeof message.path === 'string') {
@@ -243,6 +275,8 @@ export class MultiDiffPanel implements vscode.Disposable {
             total: state.diffProgress.total,
             error: state.diffError,
             revealPath: state.selectedPath,
+            selectionEpoch: this.selectionEpoch,
+            parentCommit: this.parentCommitNavigation,
             // uncommitted 行里至少含 unstaged/untracked 文件时右侧可编辑；逐文件的真实可写性以上方 diffs 里的 editable 为准。
             editable,
             diffs,

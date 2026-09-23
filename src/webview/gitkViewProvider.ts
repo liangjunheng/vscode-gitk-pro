@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { type AppState, type ChangeSetMode, type ChangedFile, type GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
+import { type AppState, type ChangeSetMode, type ChangedFile, GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
 import { getCommitFiles, getGitAheadCount, getGitlinkPathsInCommit, getPushBranches, type PushBranchOption, readCurrentCommitMessage } from '../git/gitLogProvider';
 import { checkoutBranch, commitDetails, hasConflicts, indexGitlink, pull, push, rangeCommits, resolveRevision, restoreAll, restoreSubmodule, trackedPaths, type NativePushResult } from '../git/gitNativeOperations';
 import { MultiDiffPanel } from './multiDiffPanel';
@@ -32,6 +32,13 @@ function normalizeEol(text: string): string {
 const GITLINK_METADATA_READ_CONCURRENCY = 16;
 
 type PushBranchQuickPickItem = vscode.QuickPickItem & { readonly branch: PushBranchOption };
+
+type GitlinkParentNavigation = {
+    readonly commit: CommitMetadata;
+    readonly revealPath?: string;
+    readonly childHash: string;
+    readonly childRepositoryPath: string;
+};
 
 async function pickPushBranch(
     branches: readonly PushBranchOption[],
@@ -92,9 +99,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private lastLoadingProgress?: { phase: string; message: string; current: number; total: number };
     private storeUnsubscribe?: () => void;
     private pushStatePending = false;
+    private observedStoreState?: Readonly<AppState>;
+    private readonly changedFileSummaryCache = new WeakMap<object, CommitFile>();
     private gitWatchDisposables: vscode.Disposable[] = [];
     private readonly multiDiffPanel: MultiDiffPanel;
-    private requestedDiffReveal?: { readonly hash: string; readonly repositoryPath?: string };
+    private requestedDiffReveal?: { readonly hash: string; readonly repositoryPath?: string; readonly path?: string };
+    private readonly gitlinkParentNavigationStack: GitlinkParentNavigation[] = [];
     private restoreDiffPanelOnViewVisible = false;
     private openDiffOnInitialVisible = false;
     private readonly commitPanel: CommitPanel;
@@ -118,6 +128,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private readonly lastPushedBranchByRepository = new Map<string, Awaited<ReturnType<typeof getPushBranches>>[number]>();
     private readonly gitBackend = new LibGit2Backend();
     private readonly diffReader: DiffReader;
+    // 用户点击跳转使用独立读取器，不排队等待可视缓存批次；新点击会使上一次优先读取结果失效。
+    private readonly priorityDiffReader: DiffReader;
+    private priorityDiffLoadGeneration = 0;
+    private activePriorityDiffRequest?: { readonly generation: number; readonly paths: readonly string[] };
+    // Changed Files 发起的新定位会推进版本；MultiDiff 旧滚动消息只有携带当前版本才允许回写高亮。
+    private multiDiffSelectionEpoch = 0;
     private readonly workingTreeDiffCache = new Map<string, readonly DiffPayload[]>();
     private readonly pendingDiffPaths = new Set<string>();
     private diffLoadScheduled = false;
@@ -205,6 +221,78 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         store.setState({ isViewVisible: this.view?.visible === true });
     }
 
+    private sameChangedFileMetadata(left: ChangedFile, right: ChangedFile): boolean {
+        if (left === right) { return true; }
+        return new CommitFile(left).equals(new CommitFile(right));
+    }
+
+    private sameChangedFilesMetadata(left: readonly ChangedFile[], right: readonly ChangedFile[]): boolean {
+        return left.length === right.length
+            && left.every((file, index) => this.sameChangedFileMetadata(file, right[index]));
+    }
+
+    /** Diff 正文和进度只由 MultiDiff 消费；Changed Files 只在文件元信息变化时接收完整快照。 */
+    private isDiffContentOnlyStoreChange(previous: Readonly<AppState>, current: Readonly<AppState>): boolean {
+        if (previous.filesLoading || current.filesLoading) { return false; }
+        const ignored = new Set<keyof AppState>(['files', 'diffLoading', 'diffError', 'diffProgress', 'selectedPath']);
+        const unchangedOutsideDiff = (Object.keys(current) as (keyof AppState)[])
+            .every(key => ignored.has(key) || previous[key] === current[key]);
+        return unchangedOutsideDiff && this.sameChangedFilesMetadata(previous.files, current.files);
+    }
+
+    private postSelectedPathToWebview(selectedPath: string | undefined): void {
+        void this.view?.webview.postMessage({ type: 'selectedPathChanged', selectedPath });
+    }
+
+    /** Store 选择变化走轻量消息，避免每次点击都克隆并发送一万条文件。 */
+    private onStoreStateChanged(state: Readonly<AppState>): void {
+        const previous = this.observedStoreState;
+        this.observedStoreState = state;
+        if (!previous) {
+            this.schedulePushState();
+            return;
+        }
+        const selectedPathChanged = previous.selectedPath !== state.selectedPath;
+        const changedKeys = (Object.keys(state) as (keyof AppState)[])
+            .filter(key => previous[key] !== state[key]);
+        if (changedKeys.length === 1 && changedKeys[0] === 'selectedPath') {
+            this.postSelectedPathToWebview(state.selectedPath);
+            return;
+        }
+        if (this.isDiffContentOnlyStoreChange(previous, state)) {
+            if (selectedPathChanged) { this.postSelectedPathToWebview(state.selectedPath); }
+            return;
+        }
+        this.schedulePushState();
+    }
+
+    private changedFileSummary(file: ChangedFile): CommitFile {
+        if (!('original' in file) && !('modified' in file)) { return file; }
+        const cached = this.changedFileSummaryCache.get(file);
+        if (cached) { return cached; }
+        const summary = new CommitFile({
+            path: file.path,
+            status: file.status,
+            oldPath: file.oldPath,
+            oldObjectId: file.oldObjectId,
+            newObjectId: file.newObjectId,
+            oldMode: file.oldMode,
+            newMode: file.newMode,
+            isGitlink: file.isGitlink,
+            oldGitlinkCommit: file.oldGitlinkCommit,
+            newGitlinkCommit: file.newGitlinkCommit,
+            gitlinkRangeCommits: file.gitlinkRangeCommits,
+            gitlinkScanPending: file.gitlinkScanPending,
+            isBinary: file.isBinary,
+            isUntracked: file.isUntracked,
+            isConflict: file.isConflict,
+            workingTreeKind: file.workingTreeKind,
+            diffKey: file.diffKey,
+        });
+        this.changedFileSummaryCache.set(file, summary);
+        return summary;
+    }
+
     // 数据驱动: Store 变更 → 推送状态快照到 Webview
     private schedulePushState(): void {
         if (this.pushStatePending) { return; }
@@ -218,7 +306,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private pushStateToWebview(): void {
         if (!this.view) { return; }
         const s = store.getState();
-        const files = s.files;
+        // Changed Files 只需要文件元信息，绝不能把 Monaco 使用的 original/modified 大文本复制到主 Webview。
+        const files = s.files.map(file => this.changedFileSummary(file));
         this.commitPanelViewTitleController.update(s.commitRepositories);
         // 提交列表 loading 只由 GitCommitController 的加载事件驱动。
         const commitListLoading = this.commitController.isLoading;
@@ -323,10 +412,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         );
         // Diff 面板顶部卡片变化时回写 selectedPath，驱动 Changed Files 高亮。
         this.multiDiffPanel = new MultiDiffPanel(
-            (path, generation) => this.syncFileHighlightFromDiffPanel(path, generation),
-            (paths, generation) => this.requestCurrentDiffs(paths, generation),
+            (path, generation, selectionEpoch) => this.syncFileHighlightFromDiffPanel(path, generation, selectionEpoch),
+            (paths, generation, priority) => this.requestCurrentDiffs(paths, generation, priority),
             identity => this.handleDiffRendered(identity),
             (path, line, column, side) => void this.openWorkspaceFileAtLine(path, line, column, side),
+            (path, hash) => this.selectGitlinkCommit(path, hash),
+            () => this.backToParentCommit(),
             (path, content) => void this.saveWorkspaceFile(path, content),
             (action, section, path) => void this.runWorkingTreeAction(action, section, path),
         );
@@ -349,6 +440,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.commitPanel.show(this.buildCommitSnapshot());
         });
         this.diffReader = new DiffReader(this.gitBackend);
+        this.priorityDiffReader = new DiffReader(this.gitBackend);
         this.gitActions = new GitActionRunner(
             repositoryPath => this.getRepoRootUri(repositoryPath),
             (_rootUri, reloadSelectors = true, refreshOnlyWhenCurrentBranchSelected?: boolean) => {
@@ -450,6 +542,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.storeUnsubscribe = undefined;
                 this.cancelActiveRequests();
                 this.diffReader.dispose();
+                this.priorityDiffReader.dispose();
                 this.gitBackend.dispose();
                 this.viewDisposables.forEach(disposable => disposable.dispose());
                 this.viewDisposables = [];
@@ -501,13 +594,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         };
     }
 
-    async selectCommit(hash: string, repositoryPath?: string, revealDiff = false): Promise<void> {
+    async selectCommit(hash: string, repositoryPath?: string, revealDiff = false, revealPath?: string): Promise<void> {
         const generation = ++this.commitFilesGeneration;
         this.pendingDiffPaths.clear();
         this.pendingFilesRevealGeneration = undefined;
         // 先废弃在途请求的数据: 推进各 generation 使回程结果被丢弃; abort 只做通知不阻塞。
         this.commitFilesAbortController?.abort();
         this.diffReader.stop();
+        this.cancelPriorityDiffLoad();
         this.multiDiffPanel.cancelPending();
         store.setState({
             diffLoading: true,
@@ -518,7 +612,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const abortController = new AbortController();
         this.commitFilesAbortController = abortController;
         try {
-            await this.setCommitFiles(hash, repositoryPath, generation, abortController.signal, revealDiff);
+            await this.setCommitFiles(hash, repositoryPath, generation, abortController.signal, revealDiff, revealPath);
         } catch (error: any) {
             if (!this.isAbortError(error)) { throw error; }
         } finally {
@@ -577,12 +671,90 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             && diff.diffKey === file.diffKey;
     }
 
-    private requestCurrentDiffs(paths: readonly string[], generation: number): void {
+    private requestCurrentDiffs(paths: readonly string[], generation: number, priority = false): void {
         if (generation !== store.getState().diffGeneration) { return; }
+        if (priority) {
+            void this.loadPriorityDiffs(paths, generation);
+            return;
+        }
         paths.forEach(path => this.pendingDiffPaths.add(path));
         if (this.diffLoadScheduled || this.diffLoadRunning) { return; }
         this.diffLoadScheduled = true;
         queueMicrotask(() => void this.flushRequestedDiffs());
+    }
+
+    private cancelPriorityDiffLoad(): void {
+        this.priorityDiffLoadGeneration++;
+        this.priorityDiffReader.stop();
+        const active = this.activePriorityDiffRequest;
+        this.activePriorityDiffRequest = undefined;
+        if (active) { this.multiDiffPanel.releaseDiffRequests(active.paths); }
+    }
+
+    private async loadPriorityDiffs(paths: readonly string[], generation: number): Promise<void> {
+        const requestedPaths = [...new Set(paths)];
+        this.cancelPriorityDiffLoad();
+        // 最新点击立即使上一条优先读取失效；后台可视缓存读取使用另一 DiffReader，不会阻塞本次目标。
+        const state = store.getState();
+        const repositoryPath = state.currentRepositoryPath;
+        const hash = state.currentHash;
+        if (generation !== state.diffGeneration || !repositoryPath || !hash) {
+            this.multiDiffPanel.releaseDiffRequests(requestedPaths);
+            return;
+        }
+        const filesByKey = new Map(state.files.map(file => [file.diffKey || file.path, file]));
+        const filesToRead = requestedPaths
+            .map(path => filesByKey.get(path))
+            .filter((file): file is ChangedFile => !!file && !('original' in file && 'modified' in file))
+            .map(file => new CommitFile({ ...file }));
+        if (filesToRead.length === 0) {
+            this.multiDiffPanel.releaseDiffRequests(requestedPaths);
+            return;
+        }
+        const priorityGeneration = ++this.priorityDiffLoadGeneration;
+        this.activePriorityDiffRequest = { generation: priorityGeneration, paths: requestedPaths };
+        let settledByStore = false;
+        const rootUri = vscode.Uri.parse(repositoryPath);
+        const requestGeneration = this.commitFilesGeneration;
+        try {
+            const diffs = await this.priorityDiffReader.readDiffs(
+                rootUri,
+                hash,
+                filesToRead,
+                isWorkingTreeHash(hash) ? 'uncommitted' : 'commit',
+            );
+            const current = store.getState();
+            if (priorityGeneration !== this.priorityDiffLoadGeneration
+                || current.diffGeneration !== generation
+                || current.currentHash !== hash
+                || current.currentRepositoryPath !== repositoryPath
+                || requestGeneration !== this.commitFilesGeneration
+                || diffs.length !== filesToRead.length) { return; }
+            const loadedByKey = new Map(diffs.map(file => [file.diffKey || file.path, file]));
+            const merged = current.files.map(file => loadedByKey.get(file.diffKey || file.path) ?? file);
+            const loadedCount = merged.filter(file => 'original' in file && 'modified' in file).length;
+            store.setState({
+                files: merged,
+                diffLoading: false,
+                diffError: undefined,
+                diffProgress: { completed: loadedCount, total: merged.length },
+            });
+            settledByStore = true;
+            void this.refreshGitlinkDiffs(rootUri, filesToRead, requestGeneration);
+        } catch (error) {
+            const current = store.getState();
+            if (priorityGeneration !== this.priorityDiffLoadGeneration
+                || current.diffGeneration !== generation
+                || current.currentHash !== hash
+                || current.currentRepositoryPath !== repositoryPath) { return; }
+            store.setState({ diffLoading: false, diffError: error instanceof Error ? error.message : String(error) });
+            settledByStore = true;
+        } finally {
+            if (this.activePriorityDiffRequest?.generation === priorityGeneration) {
+                this.activePriorityDiffRequest = undefined;
+                if (!settledByStore) { this.multiDiffPanel.releaseDiffRequests(requestedPaths); }
+            }
+        }
     }
 
     private async flushRequestedDiffs(): Promise<void> {
@@ -648,6 +820,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         affectedPaths?: ReadonlySet<string>,
         updateWorkingTreeState = true,
         publishedWorkingTreeRows?: AppState['workingTreeRows'],
+        preferredPath?: string,
     ): Promise<void> {
         const selectedBranch = this.commitController.selectedCommit?.gitBranchOption;
         const selectedHash = this.commitController.selectedCommit?.hash;
@@ -738,11 +911,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             return loaded ? new DiffPayload({ ...loaded, ...file, index }) : new CommitFile({ ...file });
         });
         const loadedCount = interimFiles.filter((file): file is DiffPayload => file instanceof DiffPayload).length;
-        const interimSelectedFile = interimFiles.find(file => (file.diffKey || file.path) === this.selectedPath)
+        const interimSelectedFile = interimFiles.find(file => (file.diffKey || file.path) === preferredPath)
+            ?? interimFiles.find(file => file.path === preferredPath)
+            ?? interimFiles.find(file => (file.diffKey || file.path) === this.selectedPath)
             ?? interimFiles.find(file => file.path === previousSelectedFile?.path)
             ?? interimFiles[0];
         const rootUri = vscode.Uri.parse(selectedBranch.repoOption.path);
         this.diffReader.stop();
+        this.cancelPriorityDiffLoad();
         publishWorkingTreeFiles({
             files: interimFiles,
             selectedPath: interimSelectedFile?.diffKey || interimSelectedFile?.path,
@@ -787,6 +963,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.commitFilesAbortController?.abort();
         this.commitPanelDiffAbortController?.abort();
         this.diffReader.stop();
+        this.cancelPriorityDiffLoad();
         if (repository) { void this.diffReader.warmup(vscode.Uri.parse(repository.path)).catch(() => undefined); }
         this.multiDiffPanel.cancelPending();
         this.pendingFilesRevealGeneration = undefined;
@@ -980,6 +1157,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (files.length === 0) { return; }
         const generation = ++this.commitFilesGeneration;
         this.diffReader.stop();
+        this.cancelPriorityDiffLoad();
         // 当前提交身份未变化，仅替换受影响文件的 Diff，不能进入全量加载态。
         store.setState({
             diffLoading: false,
@@ -1067,15 +1245,20 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private onSelectedCommitChanged(commit: CommitMetadata | undefined): void {
         const hash = commit?.hash;
         const repositoryPath = commit?.gitBranchOption?.repoOption.path;
+        this.reconcileGitlinkParentNavigation(hash, repositoryPath);
         // 提交内容身份由仓库和 commit id 共同组成；虚拟提交固定使用 uncommitted。
         if (hash === this.currentHash && repositoryPath === this.currentRepositoryPath) {
             this.schedulePushState();
             return;
         }
         const isVirtual = isWorkingTreeHash(hash);
-        const revealDiff = this.requestedDiffReveal?.hash === hash
-            && this.requestedDiffReveal.repositoryPath === repositoryPath;
-        if (revealDiff) { this.requestedDiffReveal = undefined; }
+        const requestedReveal = this.requestedDiffReveal?.hash === hash
+            && this.requestedDiffReveal.repositoryPath === repositoryPath
+            ? this.requestedDiffReveal
+            : undefined;
+        const revealDiff = Boolean(requestedReveal);
+        const revealPath = requestedReveal?.path;
+        if (requestedReveal) { this.requestedDiffReveal = undefined; }
         store.setState({
             currentHash: hash,
             currentRepositoryPath: repositoryPath,
@@ -1098,9 +1281,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
         if (!commit || !hash) { return; }
         if (isVirtual) {
-            void this.selectWorkingTreeChanges(undefined, true, revealDiff);
+            void this.selectWorkingTreeChanges(undefined, true, revealDiff, undefined, true, undefined, revealPath);
         } else {
-            void this.selectCommit(hash, repositoryPath, revealDiff);
+            void this.selectCommit(hash, repositoryPath, revealDiff, revealPath);
         }
     }
 
@@ -1183,7 +1366,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         view.webview.html = this.getHtml();
         // Store 订阅: 数据驱动推送到 Webview
         this.storeUnsubscribe?.();
-        this.storeUnsubscribe = store.subscribe(() => this.schedulePushState());
+        this.observedStoreState = store.getState();
+        this.storeUnsubscribe = store.subscribe(state => this.onStoreStateChanged(state));
         this.schedulePushState();
         // 视图级订阅单独管理, onDidDispose 时一并释放, 避免反复创建累积泄漏
         this.viewDisposables.forEach(d => d.dispose());
@@ -1200,6 +1384,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     this.updateViewVisible();
                     this.storeUnsubscribe?.();
                     this.storeUnsubscribe = undefined;
+                    this.observedStoreState = undefined;
                     ++this.viewGeneration;
                     this.cancelActiveRequests();
                     this.viewDisposables.forEach(d => d.dispose());
@@ -2521,6 +2706,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         generation: number,
         signal?: AbortSignal,
         revealDiff = false,
+        revealPath?: string,
     ): Promise<void> {
         const rootUri = this.getRepoRootUri(repositoryPath);
         if (!rootUri) {
@@ -2550,7 +2736,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const files = await getCommitFiles(rootUri, hash, signal, reportProgress);
             if (signal?.aborted || generation !== this.commitFilesGeneration) { return; }
             const metadata = files.map(file => new CommitFile({ ...file }));
-            const selectedPath = metadata[0]?.diffKey || metadata[0]?.path;
+            const selectedFile = metadata.find(file => (file.diffKey || file.path) === revealPath)
+                ?? metadata.find(file => file.path === revealPath)
+                ?? metadata[0];
+            const selectedPath = selectedFile?.diffKey || selectedFile?.path;
             this.pendingFilesRevealGeneration = undefined;
             store.setState({
                 files: metadata,
@@ -2592,6 +2781,75 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.filesLoading = false;
     }
 
+    /** 从父仓库的 gitlink Diff 跳转到对应子模块提交，并继续复用统一提交选择流程。 */
+    private selectGitlinkCommit(filePath: string, hash: string): void {
+        const parentRepositoryPath = this.currentRepositoryPath;
+        const parentCommit = this.commitController.selectedCommit;
+        if (!parentRepositoryPath || !parentCommit || !hash || isWorkingTreeHash(hash)) { return; }
+        const submodule = this.repoSubmoduleWatcher.findSubmoduleRepository(parentRepositoryPath, filePath);
+        if (!submodule) {
+            void vscode.window.showWarningMessage(`无法跳转子模块提交：${filePath} 尚未初始化或仓库扫描尚未完成。`);
+            return;
+        }
+        const repositoryPath = submodule.path;
+        const branch = this.branchesController.getCurrentBranch(submodule) ?? new GitBranchOption({
+            repoOption: submodule,
+            name: hash,
+            label: hash.slice(0, 7),
+            hash,
+            kind: 'local',
+        });
+        const commit = this.findCommit(hash, repositoryPath) ?? new CommitMetadata({ hash, gitBranchOption: branch });
+        const selectedParentFile = this.files.find(file => (file.diffKey || file.path) === this.selectedPath && file.path === filePath)
+            ?? this.files.find(file => file.path === filePath);
+        this.gitlinkParentNavigationStack.push({
+            commit: parentCommit,
+            revealPath: selectedParentFile?.diffKey || selectedParentFile?.path || filePath,
+            childHash: hash,
+            childRepositoryPath: repositoryPath,
+        });
+        this.syncGitlinkParentNavigation();
+        this.requestedDiffReveal = { hash, repositoryPath };
+        const changed = this.commitController.selectCommit(commit);
+        if (!changed && this.currentHash === hash && this.currentRepositoryPath === repositoryPath) {
+            this.requestedDiffReveal = undefined;
+            this.openDiff(this.selectedPath);
+        }
+    }
+    private syncGitlinkParentNavigation(): void {
+        const navigation = this.gitlinkParentNavigationStack[this.gitlinkParentNavigationStack.length - 1];
+        this.multiDiffPanel.setParentCommitNavigation(navigation ? {
+            hash: navigation.commit.hash,
+            title: navigation.commit.message,
+        } : undefined);
+    }
+
+    private reconcileGitlinkParentNavigation(hash?: string, repositoryPath?: string): void {
+        const navigation = this.gitlinkParentNavigationStack[this.gitlinkParentNavigationStack.length - 1];
+        if (!navigation || (navigation.childHash === hash && navigation.childRepositoryPath === repositoryPath)) { return; }
+        this.gitlinkParentNavigationStack.length = 0;
+        this.syncGitlinkParentNavigation();
+    }
+
+    private backToParentCommit(): void {
+        const navigation = this.gitlinkParentNavigationStack.pop();
+        if (!navigation) { return; }
+        this.syncGitlinkParentNavigation();
+        const repositoryPath = navigation.commit.gitBranchOption?.repoOption.path;
+        if (!repositoryPath) { return; }
+        this.requestedDiffReveal = {
+            hash: navigation.commit.hash,
+            repositoryPath,
+            path: navigation.revealPath,
+        };
+        const changed = this.commitController.selectCommit(navigation.commit);
+        if (!changed && this.currentHash === navigation.commit.hash && this.currentRepositoryPath === repositoryPath) {
+            this.requestedDiffReveal = undefined;
+            const revealPath = this.resolveSelectedChangedFile(navigation.revealPath);
+            this.openDiff(revealPath);
+        }
+    }
+
     private resolveSelectedChangedFile(preferredPath?: string): string | undefined {
         const selectedPath = preferredPath ?? this.selectedPath;
         const resolvedPath = selectedPath && this.files.some(file => (file.diffKey || file.path) === selectedPath)
@@ -2604,8 +2862,16 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     // 面板已是活动标签时只做轻量定位; 未激活/未创建则由 openDiff 先激活标签再定位。
     private selectChangedFile(filePath: string): void {
         if (!this.canShowMultiDiff() || !this.view?.visible) { return; }
-        if (this.multiDiffPanel.revealFile(filePath)) { return; }
-        this.openDiff(filePath);
+        const selectedFile = this.files.find(file => (file.diffKey || file.path) === filePath)
+            ?? this.files.find(file => file.path === filePath);
+        if (!selectedFile) { return; }
+        const selectedPath = selectedFile.diffKey || selectedFile.path;
+        const selectionEpoch = ++this.multiDiffSelectionEpoch;
+        // Changed Files 点击本身就是权威选择，必须先写入 Store。
+        // 否则定位期间任意 Diff 加载快照仍携带旧 selectedPath，会把列表高亮和 MultiDiff 又拉回旧文件。
+        if (this.selectedPath !== selectedPath) { this.selectedPath = selectedPath; }
+        if (this.multiDiffPanel.revealFile(selectedPath, selectionEpoch)) { return; }
+        this.openDiff(selectedPath, selectionEpoch);
     }
 
     navigateMultiDiffChange(direction: -1 | 1): void {
@@ -2616,7 +2882,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.multiDiffPanel.setRenderSideBySide(renderSideBySide);
     }
 
-    private openDiff(filePath?: string): void {
+    private openDiff(filePath?: string, selectionEpoch?: number): void {
         if (!this.view?.visible) {
             this.multiDiffPanel.hide();
             return;
@@ -2627,7 +2893,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
         if (!this.getRepoRootUri()) { return; }
         // 完整 Diff 数据已原子写入 Store，此处只显示面板并定位文件。
-        this.multiDiffPanel.show(this.currentHash, this.commitController.selectedCommit?.message ?? '', filePath);
+        const resolvedSelectionEpoch = selectionEpoch ?? ++this.multiDiffSelectionEpoch;
+        this.multiDiffPanel.show(this.currentHash, this.commitController.selectedCommit?.message ?? '', filePath, resolvedSelectionEpoch);
     }
 
     // 工作区 Diff 右侧编辑后回写文件。
@@ -2698,9 +2965,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private syncFileHighlightFromDiffPanel(filePath: string, generation: number): void {
+    private syncFileHighlightFromDiffPanel(filePath: string, generation: number, selectionEpoch: number): void {
         const state = store.getState();
-        if (generation !== state.diffGeneration || state.selectedPath === filePath || !this.files.some(file => (file.diffKey || file.path) === filePath)) { return; }
+        // 已在途的旧滚动高亮不能覆盖 Changed Files 刚发起的新选择。
+        if (selectionEpoch !== this.multiDiffSelectionEpoch
+            || generation !== state.diffGeneration
+            || state.selectedPath === filePath
+            || !this.files.some(file => (file.diffKey || file.path) === filePath)) { return; }
         this.selectedPath = filePath;
     }
 
