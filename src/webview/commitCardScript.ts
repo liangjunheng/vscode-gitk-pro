@@ -94,8 +94,8 @@ export const COMMIT_CARD_SCRIPT = `
         event.stopPropagation();
         const section=button.dataset.section;
         const files=cardSectionFiles(el._card,section);
-        const selectedPaths=selectedCommitWorkingTreePaths(el,section,'');
-        const paths=selectedPaths||files.map(function(file){return file.path});
+        // 分组标题按钮始终操作该分组全部文件，不受卡片中的当前行选择影响。
+        const paths=files.map(function(file){return file.path});
         const pathSet=new Set(paths);
         vscode.postMessage({
           type:'workingTreeAction',

@@ -330,7 +330,10 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
   function workingTreeActionPaths(button) {
     const section = button.getAttribute('data-section');
     if (!section) return undefined;
-    return selectedWorkingTreePaths(section, button.getAttribute('data-path') || '');
+    const path = button.getAttribute('data-path');
+    // 分组标题按钮没有 data-path，语义是操作整个分组；不能被当前单文件/多文件选择集缩小范围。
+    if (!path) return undefined;
+    return selectedWorkingTreePaths(section, path);
   }
 
   function syncWorkingTreeSelectionClasses(list) {

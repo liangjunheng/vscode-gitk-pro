@@ -52,6 +52,9 @@ export class MultiDiffPanel implements vscode.Disposable {
     private publishedEditable?: boolean;
     private publishedKeys: string[] = [];
     private publishedFiles?: readonly ChangedFile[];
+    // 增量更新只能建立在 Webview 已确认渲染的完整快照上；postMessage 成功不等于卡片基座已落地。
+    private publishedSnapshotRevision?: number;
+    private renderedSnapshotRevision?: number;
     private readonly publishedEntries = new Map<string, { source: ChangedFile; value: DiffEntry }>();
     private readonly unsubscribers: (() => void)[];
 
@@ -194,8 +197,13 @@ export class MultiDiffPanel implements vscode.Disposable {
                 && typeof message.path === 'string') {
                 this.onWorkingTreeAction?.(message.action, message.section, message.path);
             } else if (message?.type === 'rendered') {
+                const identity = typeof message.identity === 'string' ? message.identity : undefined;
+                const revision = typeof message.revision === 'number' ? message.revision : undefined;
+                if (identity === this.publishedIdentity && revision === this.publishedSnapshotRevision) {
+                    this.renderedSnapshotRevision = revision;
+                }
                 // Diff 卡片与行号渲染完成, 通知 Provider 放行 Changed Files 列表。
-                this.onRendered?.(typeof message.identity === 'string' ? message.identity : undefined);
+                this.onRendered?.(identity);
             } else if (message?.type === 'error') {
                 console.error('[gitk-multi-diff]', message.message);
             } else if (message?.type === 'log') {
@@ -210,6 +218,8 @@ export class MultiDiffPanel implements vscode.Disposable {
             this.publishedEditable = undefined;
             this.publishedKeys = [];
             this.publishedFiles = undefined;
+            this.publishedSnapshotRevision = undefined;
+            this.renderedSnapshotRevision = undefined;
             this.publishedEntries.clear();
             this.setNavigationState(false, false);
             this.onRendered?.();
@@ -237,7 +247,9 @@ export class MultiDiffPanel implements vscode.Disposable {
                 && keys.every((key, index) => key === this.publishedKeys[index]));
         const canPatch = this.publishedIdentity === identity
             && this.publishedEditable === editable
-            && sameKeys;
+            && sameKeys
+            && this.publishedSnapshotRevision !== undefined
+            && this.renderedSnapshotRevision === this.publishedSnapshotRevision;
         const revision = ++this.revision;
         const toEntry = (file: ChangedFile): DiffEntry => {
             const key = file.diffKey || file.path;
@@ -285,6 +297,7 @@ export class MultiDiffPanel implements vscode.Disposable {
         this.publishedEditable = editable;
         this.publishedKeys = keys;
         this.publishedFiles = state.files;
+        this.publishedSnapshotRevision = revision;
         const snapshot: DiffSnapshot = {
             type: 'snapshot',
             revision,
