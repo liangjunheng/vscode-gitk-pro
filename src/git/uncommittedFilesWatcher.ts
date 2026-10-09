@@ -212,6 +212,11 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             return;
         }
         this.ensureRepositoryWatchers(branch);
+        // 子仓库 HEAD 移动不会改写父仓库工作区中的普通文件，父仓库目录监听收不到事件。
+        // 主动刷新父仓库对应的 gitlink 路径，避免 Uncommitted Changes 一直保留旧状态。
+        if (previous && previous.hash !== branch.hash) {
+            this.queueParentGitlinkRefresh(branch);
+        }
         void this.requestRefresh(repositoryPath);
     }
 
@@ -317,6 +322,29 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         slot.pendingWorkspaceContentPaths = pendingWorkspaceContentPaths;
         if (slot.mutationDepth > 0) { return; }
         await this.requestRefresh(repositoryPath);
+    }
+
+    /**
+     * 子仓库状态变化时，父仓库只需重读该子仓库对应的 gitlink 路径。
+     * 嵌套子模块会在父仓库状态真正变化后继续逐层向上传播，避免每次事件全量扫描所有祖先仓库。
+     */
+    private queueParentGitlinkRefresh(branch: GitBranchOption): void {
+        const parent = branch.repoOption.ancestry.at(-1);
+        if (!parent) { return; }
+        const parentSlot = this.slots.get(parent.path);
+        if (!parentSlot?.branch) { return; }
+        const parentRoot = vscode.Uri.parse(parent.path).fsPath;
+        const childRoot = vscode.Uri.parse(branch.repoOption.path).fsPath;
+        const relativePath = path.relative(parentRoot, childRoot);
+        if (!relativePath || relativePath === '..' || path.isAbsolute(relativePath) || relativePath.startsWith(`..${path.sep}`)) { return; }
+        const gitlinkPath = relativePath.split(path.sep).join('/');
+        const pendingPaths = parentSlot.pendingPaths ?? new Set<string>();
+        pendingPaths.add(gitlinkPath);
+        parentSlot.pendingPaths = pendingPaths;
+        const pendingWorkspaceContentPaths = parentSlot.pendingWorkspaceContentPaths ?? new Set<string>();
+        pendingWorkspaceContentPaths.add(gitlinkPath);
+        parentSlot.pendingWorkspaceContentPaths = pendingWorkspaceContentPaths;
+        if (parentSlot.mutationDepth === 0) { void this.requestRefresh(parent.path); }
     }
 
     private requestRefresh(repositoryPath: string): Promise<void> {
@@ -432,6 +460,9 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             changesByHash.set(branch.hash, changes);
             this.changesByRepository.set(repositoryPath, changesByHash);
             this.changesEmitter.fire({ branch, changes: copyChanges(changes), affectedPaths });
+            // 子仓库由“脏”变“净”或反向变化时，父仓库的 gitlink 状态也随之改变。
+            // 初次读取没有旧快照，父仓库自身的初次全量读取已覆盖，无需重复刷新。
+            if (previousChanges) { this.queueParentGitlinkRefresh(branch); }
         } catch (error: any) {
             if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') {
                 if (slot.generation === generation && slot.branch?.hash === branch.hash) {
