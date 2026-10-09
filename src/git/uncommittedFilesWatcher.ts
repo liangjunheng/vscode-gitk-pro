@@ -18,12 +18,6 @@ type HeadBranchUncommittedFileContentChangedEvent = {
     affectedPaths: readonly string[];
 };
 
-type HeadBranchUncommittedPresenceChangedEvent = {
-    repositoryPath: string;
-    branch: GitBranchOption;
-    hasChanges: boolean;
-};
-
 type RepositoryRefreshSlot = {
     branch?: GitBranchOption;
     generation: number;
@@ -56,12 +50,9 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
     private readonly branchSubscription: vscode.Disposable;
     private readonly changesEmitter = new vscode.EventEmitter<HeadBranchUncommittedFilesChangedEvent>();
     private readonly contentChangesEmitter = new vscode.EventEmitter<HeadBranchUncommittedFileContentChangedEvent>();
-    private readonly presenceEmitter = new vscode.EventEmitter<HeadBranchUncommittedPresenceChangedEvent>();
 
     readonly onEachHeadBranchUncommittedFileChanged = this.changesEmitter.event;
     readonly onEachHeadBranchUncommittedFileContentChanged = this.contentChangesEmitter.event;
-    /** 轻量存在性事件：不等完整清单，只为每个仓库尽快给出“是否有未提交文件”。 */
-    readonly onRepositoryUncommittedPresenceChanged = this.presenceEmitter.event;
 
     constructor(
         private readonly repoHeadBranchWatcher: RepoHeadBranchWatcher,
@@ -192,7 +183,6 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         this.changesByRepository.clear();
         this.changesEmitter.dispose();
         this.contentChangesEmitter.dispose();
-        this.presenceEmitter.dispose();
     }
 
     private applyCurrentHeadBranch(repositoryPath: string, branch: GitBranchOption | undefined): void {
@@ -222,21 +212,7 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             return;
         }
         this.ensureRepositoryWatchers(branch);
-        // 存在性探测与完整清单读取并行：徽标不必等 --untracked-files=all 递归展开。
-        void this.probePresence(repositoryPath, branch);
         void this.requestRefresh(repositoryPath);
-    }
-
-    /** 以轻量命令尽快给出“是否有未提交文件”，结果只用于徽标，不写入清单缓存。 */
-    private async probePresence(repositoryPath: string, branch: GitBranchOption): Promise<void> {
-        try {
-            const hasChanges = await this.gitBackend.hasWorkingTreeChanges(vscode.Uri.parse(repositoryPath));
-            const slot = this.slots.get(repositoryPath);
-            if (!slot || slot.branch?.hash !== branch.hash) { return; }
-            this.presenceEmitter.fire({ repositoryPath, branch, hasChanges });
-        } catch (error) {
-            console.warn(`无法探测未提交文件存在性: ${repositoryPath}`, error);
-        }
     }
 
     private ensureRepositoryWatchers(branch: GitBranchOption): void {
@@ -455,12 +431,6 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             }
             changesByHash.set(branch.hash, changes);
             this.changesByRepository.set(repositoryPath, changesByHash);
-            // 完整清单就绪后用精确值校正存在性，保证徽标最终与清单一致。
-            this.presenceEmitter.fire({
-                repositoryPath,
-                branch,
-                hasChanges: changes.staged.length > 0 || changes.changes.length > 0,
-            });
             this.changesEmitter.fire({ branch, changes: copyChanges(changes), affectedPaths });
         } catch (error: any) {
             if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') {
