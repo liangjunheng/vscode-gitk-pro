@@ -820,12 +820,12 @@ function prepareSearchTarget(entry){
 function selectionMatchesSearchResult(selection,result){
   return Boolean(selection&&result&&selection.startLineNumber===result.lineNumber&&selection.startColumn===result.column&&selection.endLineNumber===result.lineNumber&&selection.endColumn===result.column+Math.max(1,result.length))
 }
-function rememberSearchCursor(entry,side,selection){
+function rememberSearchCursor(entry,side,selection,position){
   if(!entry||!selection)return;
   lastSearchCursorAnchor={key:entry.path,side:side,selection:{
     startLineNumber:selection.startLineNumber,startColumn:selection.startColumn,
     endLineNumber:selection.endLineNumber,endColumn:selection.endColumn
-  }}
+  },position:{lineNumber:(position&&position.lineNumber)||selection.positionLineNumber||selection.endLineNumber,column:(position&&position.column)||selection.positionColumn||selection.endColumn}}
 }
 function searchCursorAnchor(){
   return lastSearchCursorAnchor;
@@ -834,31 +834,36 @@ function compareSearchResultToPosition(result,lineNumber,column){
   if(result.lineNumber!==lineNumber)return result.lineNumber-lineNumber;
   return result.column-column
 }
-function compareSearchResultToCursor(result,anchor){
-  const anchorEntry=cardByPath.get(anchor.key),resultEntry=cardByPath.get(result.key);
-  if(!anchorEntry||!resultEntry)return 0;
-  if(resultEntry.index!==anchorEntry.index)return resultEntry.index-anchorEntry.index;
+function searchCursorDistance(entry,result,anchor){
   const cursor={side:anchor.side,lineNumber:anchor.position.lineNumber,column:anchor.position.column};
-  if(renderSideBySide)return compareSearchResultsInEntry(anchorEntry,result,cursor);
-  if(result.side!==anchor.side)return (result.side==='original'?-1:1)-(anchor.side==='original'?-1:1);
-  return compareSearchResultToPosition(result,cursor.lineNumber,cursor.column)
+  const rowDistance=Math.abs(resultVisualRow(entry,result)-resultVisualRow(entry,cursor));
+  const sideDistance=renderSideBySide?(result.side===cursor.side?0:1):0;
+  return rowDistance*1000000+sideDistance*100000+Math.abs(result.column-cursor.column)
 }
 function searchIndexFromCursor(direction){
-  let anchor=searchCursorAnchor();
+  const anchor=searchCursorAnchor();
   if(!anchor)return -1;
   const exact=searchResults.findIndex(function(result){return result.key===anchor.key&&result.side===anchor.side&&selectionMatchesSearchResult(anchor.selection,result)});
   if(exact>=0)return (exact+direction+searchResults.length)%searchResults.length;
-  anchor={key:anchor.key,side:anchor.side,selection:anchor.selection,position:direction>0
-    ? {lineNumber:anchor.selection.endLineNumber,column:anchor.selection.endColumn}
-    : {lineNumber:anchor.selection.startLineNumber,column:anchor.selection.startColumn}};
-  let lastBefore=-1;
+  const anchorEntry=cardByPath.get(anchor.key);if(!anchorEntry)return -1;
+  let nearest=-1,nearestCardDistance=Infinity,nearestDistance=Infinity;
   for(let index=0;index<searchResults.length;index++){
     const result=searchResults[index];
-    const comparison=compareSearchResultToCursor(result,anchor);
-    if(direction>0&&comparison>0)return index;
-    if(direction<0&&comparison<0)lastBefore=index;
+    const entry=cardByPath.get(result.key);if(!entry)continue;
+    const cardDistance=Math.abs(entry.index-anchorEntry.index);
+    const distance=cardDistance===0?searchCursorDistance(entry,result,anchor):0;
+    if(cardDistance<nearestCardDistance||(cardDistance===nearestCardDistance&&distance<nearestDistance)){
+      nearest=index;nearestCardDistance=cardDistance;nearestDistance=distance;continue
+    }
+    if(cardDistance!==nearestCardDistance||distance!==nearestDistance)continue;
+    const candidateEntry=cardByPath.get(searchResults[nearest].key);
+    if(entry.index===anchorEntry.index&&candidateEntry.index===anchorEntry.index){
+      const candidateOrder=compareSearchResultsInEntry(entry,result,{side:anchor.side,lineNumber:anchor.position.lineNumber,column:anchor.position.column});
+      const nearestOrder=compareSearchResultsInEntry(entry,searchResults[nearest],{side:anchor.side,lineNumber:anchor.position.lineNumber,column:anchor.position.column});
+      if((direction>0&&candidateOrder>nearestOrder)||(direction<0&&candidateOrder<nearestOrder))nearest=index
+    }else if((direction>0&&entry.index>candidateEntry.index)||(direction<0&&entry.index<candidateEntry.index))nearest=index
   }
-  return direction>0?0:(lastBefore>=0?lastBefore:searchResults.length-1)
+  return nearest
 }
 function focusSearchResult(smooth,focusEditor){
   const result=searchResults[activeSearchIndex],entry=result&&cardByPath.get(result.key);if(!entry)return;
@@ -956,8 +961,8 @@ function mountEntry(entry,fromScroll=false){
       entry.disposables.push(sideEditor.addCommand(monaco.KeyCode.F3,function(){navigateSearch(1)}));
       entry.disposables.push(sideEditor.addCommand(monaco.KeyMod.Shift|monaco.KeyCode.F3,function(){navigateSearch(-1)}));
     });
-    entry.disposables.push(originalEditor.onDidChangeCursorPosition(function(event){rememberSearchCursor(entry,'original',event.selection)}));
-    entry.disposables.push(modifiedEditor.onDidChangeCursorPosition(function(event){rememberSearchCursor(entry,'modified',event.selection)}));
+    entry.disposables.push(originalEditor.onDidChangeCursorPosition(function(event){rememberSearchCursor(entry,'original',event.selection,event.position)}));
+    entry.disposables.push(modifiedEditor.onDidChangeCursorPosition(function(event){rememberSearchCursor(entry,'modified',event.selection,event.position)}));
     entry.disposables.push(modifiedEditor.onDidChangeCursorPosition(function(event){
       if(entry.path!==activePath)return;
       const navigationMove=updatingNavigationCursor||(entry.path===navigationCursorPath&&event.position.lineNumber===navigationCursorLine);
