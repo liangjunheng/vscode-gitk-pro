@@ -179,7 +179,7 @@ function setRenderSideBySide(nextValue){
 }
 function diffKey(diff){return diff.diffKey||diff.path}
 let activeChangeIndex=-1,activeChangePage=0,updatingNavigationCursor=false,navigationCursorPath='',navigationCursorLine=0,navigationCursorFrame=0;const requestedDiffPaths=new Set(),prioritizedDiffPaths=new Set(),pendingDiffRequestPaths=new Set(),pendingPriorityDiffRequestPaths=new Set();let diffRequestScheduled=false,mountedEntries=new Set(),pendingDiffUpdates=[],editorMountQueue=[],queuedEditorMounts=new Set(),editorMountFrame=0;
-let searchQuery='',searchResults=[],activeSearchIndex=-1,searchPendingLoadCount=0,searchRefreshFrame=0,searchNavigationEpoch=0;
+let searchQuery='',searchResults=[],activeSearchIndex=-1,searchPendingLoadCount=0,searchRefreshFrame=0,searchNavigationEpoch=0,lastSearchCursorAnchor;
 function activeEntry(){return activePath&&cardByPath.get(activePath)}
 function navigableChanges(entry){
   const changes=entry.editor&&entry.editor.getLineChanges()||[];
@@ -773,6 +773,13 @@ function scheduleSearchRefresh(){
   searchRefreshFrame=requestAnimationFrame(function(){searchRefreshFrame=0;if(searchQuery)refreshSearchResults(true,false)})
 }
 function showSearchWidget(selectText){
+  // The search input takes focus immediately, so capture the editor cursor first.
+  for(const entry of cards){
+    if(!entry.editor||!hasMountedEditorContent(entry))continue;
+    const editors=[['original',entry.editor.getOriginalEditor()],['modified',entry.editor.getModifiedEditor()]];
+    const focused=editors.find(function(pair){return pair[1].hasTextFocus&&pair[1].hasTextFocus()});
+    if(focused){rememberSearchCursor(entry,focused[0],focused[1].getSelection());break}
+  }
   searchWidget.hidden=false;
   searchInput.focus();
   if(selectText!==false)searchInput.select();
@@ -813,46 +820,45 @@ function prepareSearchTarget(entry){
 function selectionMatchesSearchResult(selection,result){
   return Boolean(selection&&result&&selection.startLineNumber===result.lineNumber&&selection.startColumn===result.column&&selection.endLineNumber===result.lineNumber&&selection.endColumn===result.column+Math.max(1,result.length))
 }
+function rememberSearchCursor(entry,side,selection){
+  if(!entry||!selection)return;
+  lastSearchCursorAnchor={key:entry.path,side:side,selection:{
+    startLineNumber:selection.startLineNumber,startColumn:selection.startColumn,
+    endLineNumber:selection.endLineNumber,endColumn:selection.endColumn
+  }}
+}
 function searchCursorAnchor(){
-  const current=searchResults[activeSearchIndex];
-  if(current&&current.side!=='path'){
-    const entry=cardByPath.get(current.key),editor=entry&&entry.editor&&(current.side==='original'?entry.editor.getOriginalEditor():entry.editor.getModifiedEditor());
-    const selection=editor&&editor.getSelection();
-    if(selection)return {key:current.key,side:current.side,selection:selection}
-  }
-  for(const entry of cards){
-    if(!entry.editor||!hasMountedEditorContent(entry))continue;
-    for(const pair of [['original',entry.editor.getOriginalEditor()],['modified',entry.editor.getModifiedEditor()]]){
-      const selection=pair[1].getSelection();
-      if(selection)return {key:entry.path,side:pair[0],selection:selection}
-    }
-  }
-  return undefined
+  return lastSearchCursorAnchor;
 }
 function compareSearchResultToPosition(result,lineNumber,column){
   if(result.lineNumber!==lineNumber)return result.lineNumber-lineNumber;
   return result.column-column
 }
+function compareSearchResultToCursor(result,anchor){
+  const anchorEntry=cardByPath.get(anchor.key),resultEntry=cardByPath.get(result.key);
+  if(!anchorEntry||!resultEntry)return 0;
+  if(resultEntry.index!==anchorEntry.index)return resultEntry.index-anchorEntry.index;
+  const cursor={side:anchor.side,lineNumber:anchor.position.lineNumber,column:anchor.position.column};
+  if(renderSideBySide)return compareSearchResultsInEntry(anchorEntry,result,cursor);
+  if(result.side!==anchor.side)return (result.side==='original'?-1:1)-(anchor.side==='original'?-1:1);
+  return compareSearchResultToPosition(result,cursor.lineNumber,cursor.column)
+}
 function searchIndexFromCursor(direction){
-  const anchor=searchCursorAnchor();
+  let anchor=searchCursorAnchor();
   if(!anchor)return -1;
   const exact=searchResults.findIndex(function(result){return result.key===anchor.key&&result.side===anchor.side&&selectionMatchesSearchResult(anchor.selection,result)});
-  if(exact>=0)return exact;
-  const position=direction>0
+  if(exact>=0)return (exact+direction+searchResults.length)%searchResults.length;
+  anchor={key:anchor.key,side:anchor.side,selection:anchor.selection,position:direction>0
     ? {lineNumber:anchor.selection.endLineNumber,column:anchor.selection.endColumn}
-    : {lineNumber:anchor.selection.startLineNumber,column:anchor.selection.startColumn};
-  let candidate=-1;
+    : {lineNumber:anchor.selection.startLineNumber,column:anchor.selection.startColumn}};
+  let lastBefore=-1;
   for(let index=0;index<searchResults.length;index++){
     const result=searchResults[index];
-    if(result.key!==anchor.key||result.side!==anchor.side)continue;
-    const comparison=compareSearchResultToPosition(result,position.lineNumber,position.column);
-    if(direction>0){
-      if(comparison<=0)candidate=index;
-      else break
-    }else if(comparison>=0)return index;
-    else candidate=index+1;
+    const comparison=compareSearchResultToCursor(result,anchor);
+    if(direction>0&&comparison>0)return index;
+    if(direction<0&&comparison<0)lastBefore=index;
   }
-  return candidate
+  return direction>0?0:(lastBefore>=0?lastBefore:searchResults.length-1)
 }
 function focusSearchResult(smooth,focusEditor){
   const result=searchResults[activeSearchIndex],entry=result&&cardByPath.get(result.key);if(!entry)return;
@@ -879,7 +885,7 @@ function focusSearchResult(smooth,focusEditor){
     }
     const editor=result.side==='original'?latest.editor.getOriginalEditor():latest.editor.getModifiedEditor();
     const range=new monaco.Range(result.lineNumber,result.column,result.lineNumber,result.column+Math.max(1,result.length));
-    editor.setSelection(range);editor.revealRangeInCenterIfOutsideViewport(range);if(focusEditor)editor.focus();updateAllSearchDecorations();
+    editor.setSelection(range);rememberSearchCursor(latest,result.side,range);editor.revealRangeInCenterIfOutsideViewport(range);if(focusEditor)editor.focus();updateAllSearchDecorations();
     requestAnimationFrame(function(){
       if(!isCurrentNavigation()||!latest.editor||!hasMountedEditorContent(latest))return;
       const currentEditor=result.side==='original'?latest.editor.getOriginalEditor():latest.editor.getModifiedEditor();
@@ -894,13 +900,13 @@ function navigateSearch(direction){
   if(typed!==searchQuery){
     searchQuery=typed;refreshSearchResults(false,false);
     if(!searchResults.length)return;
-    activeSearchIndex=direction<0?searchResults.length-1:0;
+    const cursorIndex=searchIndexFromCursor(direction);
+    activeSearchIndex=cursorIndex>=0?cursorIndex:(direction<0?searchResults.length-1:0);
     updateSearchStatus();focusSearchResult(true);return
   }
   if(!searchResults.length){refreshSearchResults(true,false);return}
   const cursorIndex=searchIndexFromCursor(direction);
-  const baseIndex=cursorIndex>=0?cursorIndex:activeSearchIndex;
-  activeSearchIndex=(baseIndex+direction+searchResults.length)%searchResults.length;
+  activeSearchIndex=cursorIndex>=0?cursorIndex:(activeSearchIndex+direction+searchResults.length)%searchResults.length;
   updateSearchStatus();focusSearchResult(true)
 }
 searchInput.addEventListener('input',function(){if(searchInput.value!==searchQuery)clearSearchResultsForPendingInput();else updateSearchStatus()});
@@ -950,6 +956,8 @@ function mountEntry(entry,fromScroll=false){
       entry.disposables.push(sideEditor.addCommand(monaco.KeyCode.F3,function(){navigateSearch(1)}));
       entry.disposables.push(sideEditor.addCommand(monaco.KeyMod.Shift|monaco.KeyCode.F3,function(){navigateSearch(-1)}));
     });
+    entry.disposables.push(originalEditor.onDidChangeCursorPosition(function(event){rememberSearchCursor(entry,'original',event.selection)}));
+    entry.disposables.push(modifiedEditor.onDidChangeCursorPosition(function(event){rememberSearchCursor(entry,'modified',event.selection)}));
     entry.disposables.push(modifiedEditor.onDidChangeCursorPosition(function(event){
       if(entry.path!==activePath)return;
       const navigationMove=updatingNavigationCursor||(entry.path===navigationCursorPath&&event.position.lineNumber===navigationCursorLine);
