@@ -961,8 +961,8 @@ function mountEntry(entry,fromScroll=false){
       entry.disposables.push(sideEditor.addCommand(monaco.KeyCode.F3,function(){navigateSearch(1)}));
       entry.disposables.push(sideEditor.addCommand(monaco.KeyMod.Shift|monaco.KeyCode.F3,function(){navigateSearch(-1)}));
     });
-    entry.disposables.push(originalEditor.onDidChangeCursorPosition(function(event){rememberSearchCursor(entry,'original',event.selection,event.position)}));
-    entry.disposables.push(modifiedEditor.onDidChangeCursorPosition(function(event){rememberSearchCursor(entry,'modified',event.selection,event.position)}));
+    entry.disposables.push(originalEditor.onDidChangeCursorSelection(function(event){rememberSearchCursor(entry,'original',event.selection,{lineNumber:event.selection.positionLineNumber,column:event.selection.positionColumn})}));
+    entry.disposables.push(modifiedEditor.onDidChangeCursorSelection(function(event){rememberSearchCursor(entry,'modified',event.selection,{lineNumber:event.selection.positionLineNumber,column:event.selection.positionColumn})}));
     entry.disposables.push(modifiedEditor.onDidChangeCursorPosition(function(event){
       if(entry.path!==activePath)return;
       const navigationMove=updatingNavigationCursor||(entry.path===navigationCursorPath&&event.position.lineNumber===navigationCursorLine);
