@@ -729,7 +729,8 @@ function updateSearchStatus(){
   const typed=searchInput.value,dirty=typed!==searchQuery;
   const hasQuery=Boolean(searchQuery),hasResults=searchResults.length>0,canTrigger=typed.length>0;
   searchStatus.textContent=dirty&&canTrigger?'回车搜索':(!hasQuery?'0/0':(hasResults?(activeSearchIndex+1)+'/'+searchResults.length:'0/0')+(searchPendingLoadCount?' · 读取中 '+searchPendingLoadCount:''));
-  searchPrev.disabled=!hasResults&&!canTrigger;searchNext.disabled=!hasResults&&!canTrigger;
+  searchPrev.disabled=dirty?!canTrigger:(!hasResults||searchNavigationTarget(-1)<0);
+  searchNext.disabled=dirty?!canTrigger:(!hasResults||searchNavigationTarget(1)<0);
 }
 function updateEntrySearchDecorations(entry){
   if(!entry.editor){entry.searchOriginalDecorations=[];entry.searchModifiedDecorations=[];return}
@@ -847,14 +848,21 @@ function searchIndexFromCursor(direction){
   const anchor=searchCursorAnchor();
   if(!anchor)return -1;
   const exact=searchResults.findIndex(function(result){return result.key===anchor.key&&result.side===anchor.side&&selectionMatchesSearchResult(anchor.selection,result)});
-  if(exact>=0)return (exact+direction+searchResults.length)%searchResults.length;
+  if(exact>=0){const adjacent=exact+direction;return adjacent>=0&&adjacent<searchResults.length?adjacent:-1}
   let previous=-1;
   for(let index=0;index<searchResults.length;index++){
     const comparison=compareSearchResultToCursor(searchResults[index],anchor);
     if(direction>0&&comparison>0)return index;
     if(direction<0&&comparison<0)previous=index;
   }
-  return direction>0?0:(previous>=0?previous:searchResults.length-1)
+  return direction<0?previous:-1
+}
+function searchNavigationTarget(direction){
+  const cursorIndex=searchIndexFromCursor(direction);
+  if(cursorIndex>=0)return cursorIndex;
+  if(searchCursorAnchor())return -1;
+  const adjacent=activeSearchIndex+direction;
+  return adjacent>=0&&adjacent<searchResults.length?adjacent:-1
 }
 function focusSearchResult(smooth,focusEditor){
   const result=searchResults[activeSearchIndex],entry=result&&cardByPath.get(result.key);if(!entry)return;
@@ -896,13 +904,14 @@ function navigateSearch(direction){
   if(typed!==searchQuery){
     searchQuery=typed;refreshSearchResults(false,false);
     if(!searchResults.length)return;
-    const cursorIndex=searchIndexFromCursor(direction);
-    activeSearchIndex=cursorIndex>=0?cursorIndex:(direction<0?searchResults.length-1:0);
-    updateSearchStatus();focusSearchResult(true);return
+    const cursorIndex=searchNavigationTarget(direction);
+    if(cursorIndex<0){activeSearchIndex=-1;updateSearchStatus();return}
+    activeSearchIndex=cursorIndex;updateSearchStatus();focusSearchResult(true);return
   }
   if(!searchResults.length){refreshSearchResults(true,false);return}
-  const cursorIndex=searchIndexFromCursor(direction);
-  activeSearchIndex=cursorIndex>=0?cursorIndex:(activeSearchIndex+direction+searchResults.length)%searchResults.length;
+  const cursorIndex=searchNavigationTarget(direction);
+  if(cursorIndex<0){updateSearchStatus();return}
+  activeSearchIndex=cursorIndex;
   updateSearchStatus();focusSearchResult(true)
 }
 searchInput.addEventListener('input',function(){if(searchInput.value!==searchQuery)clearSearchResultsForPendingInput();else updateSearchStatus()});
