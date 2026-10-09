@@ -52,6 +52,7 @@ export class MultiDiffPanel implements vscode.Disposable {
     private publishedEditable?: boolean;
     private publishedKeys: string[] = [];
     private publishedFiles?: readonly ChangedFile[];
+    private pendingShowSearch = false;
     // 增量更新只能建立在 Webview 已确认渲染的完整快照上；postMessage 成功不等于卡片基座已落地。
     private publishedSnapshotRevision?: number;
     private renderedSnapshotRevision?: number;
@@ -125,6 +126,16 @@ export class MultiDiffPanel implements vscode.Disposable {
         this.post({ type: 'setRenderSideBySide', renderSideBySide });
     }
 
+    showSearch(): void {
+        if (!this.panel) { return; }
+        this.panel.reveal(this.panel.viewColumn ?? vscode.ViewColumn.Active, false);
+        if (!this.webviewReady) {
+            this.pendingShowSearch = true;
+            return;
+        }
+        this.post({ type: 'showSearch' });
+    }
+
     /** Host 取消了尚未返回的按需 Diff 时，释放 Webview 的请求去重标记，使该卡片后续可以重新读取。 */
     releaseDiffRequests(paths: readonly string[]): void {
         if (paths.length === 0) { return; }
@@ -165,6 +176,10 @@ export class MultiDiffPanel implements vscode.Disposable {
                 this.post({ type: 'setRenderSideBySide', renderSideBySide: this.renderSideBySide });
                 this.post({ type: 'setParentCommitNavigation', parentCommit: this.parentCommitNavigation });
                 this.publish();
+                if (this.pendingShowSearch) {
+                    this.pendingShowSearch = false;
+                    this.post({ type: 'showSearch' });
+                }
             } else if (message?.type === 'navigationState'
                 && typeof message.canPrevious === 'boolean'
                 && typeof message.canNext === 'boolean') {
@@ -218,6 +233,7 @@ export class MultiDiffPanel implements vscode.Disposable {
             this.publishedEditable = undefined;
             this.publishedKeys = [];
             this.publishedFiles = undefined;
+            this.pendingShowSearch = false;
             this.publishedSnapshotRevision = undefined;
             this.renderedSnapshotRevision = undefined;
             this.publishedEntries.clear();

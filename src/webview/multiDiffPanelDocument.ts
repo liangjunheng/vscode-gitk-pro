@@ -137,9 +137,21 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 #global-hscroll{position:fixed;z-index:20;right:0;bottom:0;left:0;height:14px;overflow-x:auto;overflow-y:hidden;background:var(--vscode-scrollbar-shadow,rgba(0,0,0,.18));scrollbar-color:var(--vscode-scrollbarSlider-background) transparent;scrollbar-width:auto}
 #global-hscroll[hidden]{display:none}
 #global-hscroll-content{height:1px;pointer-events:none}
-</style></head><body><div id="parent-commit-navigation" hidden><button id="back-to-parent-commit" type="button" title="回到父提交"><span>回到父提交</span></button><div id="parent-commit-info"><span id="parent-commit-title"></span><span id="parent-commit-hash"></span></div></div><div id="loading">正在准备 Diff...</div><main id="list" hidden></main><div id="global-hscroll" role="scrollbar" aria-label="当前 Diff 水平滚动" aria-orientation="horizontal" hidden><div id="global-hscroll-content"></div></div><script nonce="${nonce}">window.gitkQueue=[];window.addEventListener('message',event=>window.gitkQueue.push(event.data));window.gitkVscode=acquireVsCodeApi();</script><script nonce="${nonce}" src="${monacoUri}/loader.js"></script><script nonce="${nonce}">
+#multi-diff-search{position:fixed;z-index:40;top:calc(var(--parent-navigation-height) + 8px);right:12px;display:flex;align-items:center;gap:4px;max-width:min(560px,calc(100vw - 24px));height:32px;padding:3px 5px;border:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:6px;background:var(--vscode-editorWidget-background,var(--vscode-editor-background));box-shadow:0 3px 10px rgba(0,0,0,.28);font-family:var(--vscode-font-family);font-size:12px}
+#multi-diff-search[hidden]{display:none}
+#multi-diff-search-input{width:220px;min-width:80px;height:24px;padding:2px 7px;border:1px solid var(--vscode-input-border,transparent);border-radius:3px;color:var(--vscode-input-foreground);background:var(--vscode-input-background);font:inherit;outline:none}
+#multi-diff-search-input:focus{border-color:var(--vscode-focusBorder)}
+#multi-diff-search-status{min-width:56px;color:var(--vscode-descriptionForeground);text-align:center;white-space:nowrap}
+.multi-diff-search-button{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;border-radius:4px;color:var(--vscode-icon-foreground,currentColor);background:transparent;cursor:pointer}
+.multi-diff-search-button:hover{background:var(--vscode-toolbar-hoverBackground,var(--vscode-list-hoverBackground))}
+.multi-diff-search-button:focus,.multi-diff-search-button:focus-visible{outline:none!important;box-shadow:none!important}
+.multi-diff-search-button:disabled{opacity:.45;cursor:default;background:transparent}
+.gitk-search-match{background-color:color-mix(in srgb,var(--vscode-focusBorder,#3794ff) 10%,transparent);box-shadow:inset 0 0 0 1px var(--vscode-focusBorder,#3794ff);border-radius:2px}
+.gitk-search-current{background-color:color-mix(in srgb,var(--vscode-focusBorder,#3794ff) 42%,transparent);outline:2px solid var(--vscode-focusBorder,#3794ff);outline-offset:1px;border-radius:3px;box-shadow:inset 0 0 0 2px var(--vscode-focusBorder,#3794ff),0 0 0 1px color-mix(in srgb,var(--vscode-editor-background,#1e1e1e) 70%,transparent),0 0 7px color-mix(in srgb,var(--vscode-focusBorder,#3794ff) 60%,transparent);font-weight:600}
+.diff.search-current>.pinned-group,.diff.search-current>.pinned-group::after{border-color:var(--vscode-focusBorder,#3794ff)}
+</style></head><body><div id="parent-commit-navigation" hidden><button id="back-to-parent-commit" type="button" title="回到父提交"><span>回到父提交</span></button><div id="parent-commit-info"><span id="parent-commit-title"></span><span id="parent-commit-hash"></span></div></div><div id="multi-diff-search" role="search" aria-label="搜索整个 MultiDiff" hidden><input id="multi-diff-search-input" type="text" spellcheck="false" placeholder="搜索整个 MultiDiff" aria-label="搜索整个 MultiDiff"><span id="multi-diff-search-status">0/0</span><button id="multi-diff-search-prev" class="multi-diff-search-button" type="button" title="上一个匹配 (Shift+Enter)"><span class="codicon codicon-arrow-up" aria-hidden="true"></span></button><button id="multi-diff-search-next" class="multi-diff-search-button" type="button" title="下一个匹配 (Enter)"><span class="codicon codicon-arrow-down" aria-hidden="true"></span></button><button id="multi-diff-search-close" class="multi-diff-search-button" type="button" title="关闭搜索 (Esc)"><span class="codicon codicon-close" aria-hidden="true"></span></button></div><div id="loading">正在准备 Diff...</div><main id="list" hidden></main><div id="global-hscroll" role="scrollbar" aria-label="当前 Diff 水平滚动" aria-orientation="horizontal" hidden><div id="global-hscroll-content"></div></div><script nonce="${nonce}">window.gitkQueue=[];window.addEventListener('message',event=>window.gitkQueue.push(event.data));window.gitkVscode=acquireVsCodeApi();</script><script nonce="${nonce}" src="${monacoUri}/loader.js"></script><script nonce="${nonce}">
 self.MonacoEnvironment={getWorker:()=>new Worker('${monacoUri}/base/worker/workerMain.js')};
-const parentCommitNavigation=document.getElementById('parent-commit-navigation'),backToParentCommit=document.getElementById('back-to-parent-commit'),parentCommitTitle=document.getElementById('parent-commit-title'),parentCommitHash=document.getElementById('parent-commit-hash'),loading=document.getElementById('loading'),list=document.getElementById('list'),globalHScroll=document.getElementById('global-hscroll'),globalHScrollContent=document.getElementById('global-hscroll-content'),languages=${JSON.stringify(MONACO_DIFF_LANGUAGES)},diffOptions=${JSON.stringify(MONACO_DIFF_OPTIONS)};
+const parentCommitNavigation=document.getElementById('parent-commit-navigation'),backToParentCommit=document.getElementById('back-to-parent-commit'),parentCommitTitle=document.getElementById('parent-commit-title'),parentCommitHash=document.getElementById('parent-commit-hash'),searchWidget=document.getElementById('multi-diff-search'),searchInput=document.getElementById('multi-diff-search-input'),searchStatus=document.getElementById('multi-diff-search-status'),searchPrev=document.getElementById('multi-diff-search-prev'),searchNext=document.getElementById('multi-diff-search-next'),searchClose=document.getElementById('multi-diff-search-close'),loading=document.getElementById('loading'),list=document.getElementById('list'),globalHScroll=document.getElementById('global-hscroll'),globalHScrollContent=document.getElementById('global-hscroll-content'),languages=${JSON.stringify(MONACO_DIFF_LANGUAGES)},diffOptions=${JSON.stringify(MONACO_DIFF_OPTIONS)};
 const report=message=>{try{window.gitkVscode.postMessage({type:'error',message})}catch(_){}};
 const log=message=>{try{window.gitkVscode.postMessage({type:'log',message})}catch(_){}};
 const notifyRendered=(revision,identity)=>{try{window.gitkVscode.postMessage({type:'rendered',revision,identity})}catch(_){}};
@@ -163,9 +175,11 @@ function setRenderSideBySide(nextValue){
   }
   for(const slot of editorPool)slot.editor.updateOptions({renderSideBySide:renderSideBySide});
   updateGlobalHScroll();
+  if(searchQuery)refreshSearchResults(true,false);
 }
 function diffKey(diff){return diff.diffKey||diff.path}
 let activeChangeIndex=-1,activeChangePage=0,updatingNavigationCursor=false,navigationCursorPath='',navigationCursorLine=0,navigationCursorFrame=0;const requestedDiffPaths=new Set(),prioritizedDiffPaths=new Set(),pendingDiffRequestPaths=new Set(),pendingPriorityDiffRequestPaths=new Set();let diffRequestScheduled=false,mountedEntries=new Set(),pendingDiffUpdates=[],editorMountQueue=[],queuedEditorMounts=new Set(),editorMountFrame=0;
+let searchQuery='',searchResults=[],activeSearchIndex=-1,searchPendingLoadCount=0,searchRefreshFrame=0,searchNavigationEpoch=0;
 function activeEntry(){return activePath&&cardByPath.get(activePath)}
 function navigableChanges(entry){
   const changes=entry.editor&&entry.editor.getLineChanges()||[];
@@ -399,6 +413,7 @@ function disposeEntry(entry){
   clearChangeFlash(entry);
   entry.mountVersion++;
   if(entry.path===activePath)globalHScroll.hidden=true;
+  entry.searchOriginalDecorations=[];entry.searchModifiedDecorations=[];
   if(entry.saveTimer){clearTimeout(entry.saveTimer);entry.saveTimer=0}
   if(entry.modified){
     entry.modifiedValue=entry.modified.getValue();
@@ -432,7 +447,8 @@ function dispose(){
   // 去重键必须随卡片集合一起归零：卡片全部销毁后旧的可视路径不再成立，
   // 否则重建出相同路径时会被误判为"未变化"而永不重新上报，使 Host 集合停留在空态。
   lastVisibleDiffPaths='';
-  cards=[];cardByPath=new Map();activePath='';clickedPath='';activeChangeIndex=-1;activeChangePage=0;pinnedAnchor=null;list.replaceChildren();globalHScroll.hidden=true;globalHScroll.scrollLeft=0;updateNavigationState()
+  cards=[];cardByPath=new Map();activePath='';clickedPath='';activeChangeIndex=-1;activeChangePage=0;pinnedAnchor=null;list.replaceChildren();globalHScroll.hidden=true;globalHScroll.scrollLeft=0;
+  searchResults=[];activeSearchIndex=-1;searchPendingLoadCount=0;updateSearchStatus();updateNavigationState()
 }
 function language(path){const ext=path.slice(path.lastIndexOf('.')+1).toLowerCase();return languages[ext]||'plaintext'}
 function escapeHtml(value){return String(value==null?'':value).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
@@ -490,7 +506,9 @@ function updateLineStats(entry){
   if(!entry.editor)return;
   const changes=entry.editor.getLineChanges();
   if(!changes)return;
+  entry.searchLineChanges=changes;
   entry.navigationChangeCount=navigableChanges(entry).length;
+  if(searchQuery)scheduleSearchRefresh();
   if(entry.path===activePath)updateNavigationState();
   let added=0,removed=0;
   for(const change of changes){
@@ -510,7 +528,7 @@ function estimateBodyHeight(diff){
 // 先创建轻量逻辑项外壳，Monaco 模板只绑定可视范围，离屏后归还对象池。
 function createEntry(diff,order){
   const key=diffKey(diff),loaded=diff.loaded===true;
-  return {diff:diff,index:order,path:key,filePath:diff.path,card:null,header:null,meta:null,pinnedGroup:null,body:null,slot:null,editor:null,original:null,modified:null,modifiedValue:diff.modified||'',syncingModel:false,originalSelections:null,modifiedSelections:null,navigationChangeCount:null,bodyHeight:loaded?estimateBodyHeight(diff):80,pinnedHeight:62,horizontalLeft:0,flashOverlay:null,flashTimer:0,collapsed:false,staticContent:!loaded,mounted:false,mounting:false,mountVersion:0,saveTimer:0,disposables:[],fit:function(){}};
+  return {diff:diff,index:order,path:key,filePath:diff.path,card:null,header:null,meta:null,pinnedGroup:null,body:null,slot:null,editor:null,original:null,modified:null,modifiedValue:diff.modified||'',syncingModel:false,originalSelections:null,modifiedSelections:null,navigationChangeCount:null,bodyHeight:loaded?estimateBodyHeight(diff):80,pinnedHeight:62,horizontalLeft:0,flashOverlay:null,flashTimer:0,collapsed:false,staticContent:!loaded,mounted:false,mounting:false,mountVersion:0,saveTimer:0,searchOriginalDecorations:[],searchModifiedDecorations:[],disposables:[],fit:function(){}};
 }
 function ensureVirtualRoot(){
   if(virtualRoot)return;
@@ -571,7 +589,7 @@ function mountCardShell(entry,parent){
   pinnedGroup.append(headerLayer,meta);
   card.append(pinnedGroup,body);parent.append(card);
   entry.card=card;entry.header=header;entry.meta=meta;entry.pinnedGroup=pinnedGroup;entry.body=body;entry.staticContent=!loaded;
-  card.classList.toggle('collapsed',entry.collapsed);card.classList.toggle('selected',entry.path===activePath);
+  card.classList.toggle('collapsed',entry.collapsed);card.classList.toggle('selected',entry.path===activePath);applyEntrySearchCardState(entry);
   header.addEventListener('click',function(){toggle(entry)});
   card.addEventListener('pointerdown',function(){externalRevealPath='';cancelProgrammaticReveal();clickedPath=entry.path;setActive(entry.path,true)});
   actions.querySelectorAll('.diff-action').forEach(function(button){
@@ -648,6 +666,254 @@ function ensureDiffRequested(entry,priority=false){
 function hasMountedEditorContent(entry){
   return Boolean(entry.mounted&&entry.editor&&entry.slot&&entry.slot.owner===entry&&entry.body&&entry.body.contains(entry.slot.host))
 }
+function normalizedSearchText(value){return String(value==null?'':value).toLocaleLowerCase()}
+function searchResultId(result){return result?result.key+'\\u0000'+result.side+'\\u0000'+result.lineNumber+'\\u0000'+result.column+'\\u0000'+result.length:''}
+function addLineSearchResults(results,entry,side,text,query,queryLength){
+  const lines=String(text==null?'':text).split('\\n');
+  for(let lineIndex=0;lineIndex<lines.length;lineIndex++){
+    const lower=lines[lineIndex].toLocaleLowerCase();let column=lower.indexOf(query);
+    while(column>=0){
+      results.push({key:entry.path,side:side,lineNumber:lineIndex+1,column:column+1,length:queryLength});
+      column=lower.indexOf(query,column+Math.max(1,query.length))
+    }
+  }
+}
+function changeLength(change,side){
+  const end=side==='original'?change.originalEndLineNumber:change.modifiedEndLineNumber;
+  const start=side==='original'?change.originalStartLineNumber:change.modifiedStartLineNumber;
+  return end>0?end-start+1:0
+}
+function resultVisualRow(entry,result){
+  if(result.side==='path')return -1;
+  const changes=entry.searchLineChanges||(entry.editor&&entry.editor.getLineChanges&&entry.editor.getLineChanges())||[];
+  if(!renderSideBySide||!changes.length)return result.lineNumber;
+  let originalCursor=1,modifiedCursor=1,row=1;
+  for(const change of changes){
+    const originalLength=changeLength(change,'original'),modifiedLength=changeLength(change,'modified');
+    const originalBefore=originalLength?Math.max(0,change.originalStartLineNumber-originalCursor):undefined;
+    const modifiedBefore=modifiedLength?Math.max(0,change.modifiedStartLineNumber-modifiedCursor):undefined;
+    const before=originalBefore===undefined?(modifiedBefore||0):(modifiedBefore===undefined?originalBefore:Math.min(originalBefore,modifiedBefore));
+    if(result.side==='original'&&result.lineNumber<originalCursor+before)return row+(result.lineNumber-originalCursor);
+    if(result.side==='modified'&&result.lineNumber<modifiedCursor+before)return row+(result.lineNumber-modifiedCursor);
+    row+=before;originalCursor+=before;modifiedCursor+=before;
+    if(result.side==='original'&&originalLength&&result.lineNumber>=change.originalStartLineNumber&&result.lineNumber<=change.originalEndLineNumber)return row+(result.lineNumber-change.originalStartLineNumber);
+    if(result.side==='modified'&&modifiedLength&&result.lineNumber>=change.modifiedStartLineNumber&&result.lineNumber<=change.modifiedEndLineNumber)return row+(result.lineNumber-change.modifiedStartLineNumber);
+    row+=Math.max(originalLength,modifiedLength);
+    if(originalLength)originalCursor=change.originalEndLineNumber+1;
+    if(modifiedLength)modifiedCursor=change.modifiedEndLineNumber+1;
+  }
+  return row+(result.lineNumber-(result.side==='original'?originalCursor:modifiedCursor))
+}
+function compareSearchResultsInEntry(entry,a,b){
+  const topDelta=resultVisualRow(entry,a)-resultVisualRow(entry,b);
+  if(topDelta)return topDelta;
+  const sideDelta=(a.side==='original'?0:(a.side==='modified'?1:2))-(b.side==='original'?0:(b.side==='modified'?1:2));
+  if(sideDelta)return sideDelta;
+  return a.column-b.column
+}
+function collectSearchResults(query){
+  const lower=normalizedSearchText(query),results=[];searchPendingLoadCount=0;
+  if(!lower)return results;
+  for(const entry of cards){
+    if(entry.diff.loaded!==true){searchPendingLoadCount++;ensureDiffRequested(entry,false);continue}
+    if(entry.diff.isGitlink||entry.diff.error||entry.diff.isBinary)continue;
+    const originalResults=[],modifiedResults=[];
+    addLineSearchResults(originalResults,entry,'original',entry.diff.original||'',lower,query.length);
+    addLineSearchResults(modifiedResults,entry,'modified',entry.modified&&entry.editor?entry.modified.getValue():(entry.modifiedValue||entry.diff.modified||''),lower,query.length);
+    if(renderSideBySide)results.push.apply(results,originalResults.concat(modifiedResults).sort(function(a,b){return compareSearchResultsInEntry(entry,a,b)}));
+    else results.push.apply(results,originalResults.concat(modifiedResults));
+  }
+  return results;
+}
+function updateSearchStatus(){
+  const typed=searchInput.value,dirty=typed!==searchQuery;
+  const hasQuery=Boolean(searchQuery),hasResults=searchResults.length>0,canTrigger=typed.length>0;
+  searchStatus.textContent=dirty&&canTrigger?'回车搜索':(!hasQuery?'0/0':(hasResults?(activeSearchIndex+1)+'/'+searchResults.length:'0/0')+(searchPendingLoadCount?' · 读取中 '+searchPendingLoadCount:''));
+  searchPrev.disabled=!hasResults&&!canTrigger;searchNext.disabled=!hasResults&&!canTrigger;
+}
+function updateEntrySearchDecorations(entry){
+  if(!entry.editor){entry.searchOriginalDecorations=[];entry.searchModifiedDecorations=[];return}
+  const current=searchResults[activeSearchIndex];
+  function update(side,editor,existing){
+    const decorations=searchQuery?searchResults.filter(function(result){return result.key===entry.path&&result.side===side}).map(function(result){
+      const isCurrent=searchResultId(result)===searchResultId(current);
+      const currentClass=isCurrent?' gitk-search-current':'';
+      const options={inlineClassName:'gitk-search-match'+currentClass,stickiness:monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges};
+      return {range:new monaco.Range(result.lineNumber,result.column,result.lineNumber,result.column+Math.max(1,result.length)),options:options}
+    }):[];
+    return editor.deltaDecorations(existing||[],decorations)
+  }
+  entry.searchOriginalDecorations=update('original',entry.editor.getOriginalEditor(),entry.searchOriginalDecorations);
+  entry.searchModifiedDecorations=update('modified',entry.editor.getModifiedEditor(),entry.searchModifiedDecorations)
+}
+function applyEntrySearchCardState(entry){
+  if(!entry.card)return;
+  const current=searchResults[activeSearchIndex];
+  entry.card.classList.toggle('search-hit',searchResults.some(function(result){return result.key===entry.path}));
+  entry.card.classList.toggle('search-current',Boolean(current&&current.key===entry.path))
+}
+function updateAllSearchDecorations(){
+  for(const entry of cards){
+    applyEntrySearchCardState(entry);
+    updateEntrySearchDecorations(entry)
+  }
+}
+function refreshSearchResults(preserve,navigate){
+  const previous=preserve?searchResultId(searchResults[activeSearchIndex]):'';
+  searchResults=collectSearchResults(searchQuery);
+  if(searchResults.length){
+    const kept=previous?searchResults.findIndex(function(result){return searchResultId(result)===previous}):-1;
+    activeSearchIndex=kept>=0?kept:Math.max(0,Math.min(activeSearchIndex,searchResults.length-1));
+  }else activeSearchIndex=-1;
+  updateSearchStatus();updateAllSearchDecorations();
+  if(navigate&&activeSearchIndex>=0)focusSearchResult(false)
+}
+function scheduleSearchRefresh(){
+  if(searchRefreshFrame)return;
+  searchRefreshFrame=requestAnimationFrame(function(){searchRefreshFrame=0;if(searchQuery)refreshSearchResults(true,false)})
+}
+function showSearchWidget(selectText){
+  searchWidget.hidden=false;
+  searchInput.focus();
+  if(selectText!==false)searchInput.select();
+  updateSearchStatus()
+}
+function hideSearchWidget(){searchNavigationEpoch++;searchWidget.hidden=true}
+function clearSearchResultsForPendingInput(){
+  searchNavigationEpoch++;
+  if(searchRefreshFrame){cancelAnimationFrame(searchRefreshFrame);searchRefreshFrame=0}
+  searchQuery='';searchResults=[];activeSearchIndex=-1;searchPendingLoadCount=0;
+  updateSearchStatus();updateAllSearchDecorations()
+}
+function scrollWindowRectIntoView(rect,smooth){
+  if(!rect)return false;
+  const visibleTop=viewportContentTop()+8,visibleBottom=window.innerHeight-18;
+  if(rect.top>=visibleTop&&rect.bottom<=visibleBottom)return false;
+  const visibleHeight=Math.max(1,visibleBottom-visibleTop);
+  const targetTop=window.scrollY+rect.top-(visibleTop+Math.max(0,(visibleHeight-Math.min(rect.height,visibleHeight))/2));
+  const top=Math.max(0,targetTop),distance=Math.abs(top-window.scrollY);
+  const useAnimation=smooth&&distance<=Math.max(240,window.innerHeight*.75);
+  suppressSyncUntil=performance.now()+(useAnimation?SCROLL_DURATION+200:160);
+  if(useAnimation)animateScrollTo(top,function(){scheduleVirtualization()});
+  else{if(scrollAnimationFrame){cancelAnimationFrame(scrollAnimationFrame);scrollAnimationFrame=0}window.scrollTo({top:top,behavior:'auto'});scheduleVirtualization()}
+  return true
+}
+function scrollEditorLineIntoView(editor,lineNumber,smooth){
+  const dom=editor&&editor.getDomNode&&editor.getDomNode();if(!dom)return false;
+  const lineHeight=editor.getOption(monaco.editor.EditorOption.lineHeight)||18;
+  const lineTop=dom.getBoundingClientRect().top+editor.getTopForLineNumber(lineNumber)-editor.getScrollTop();
+  return scrollWindowRectIntoView({top:lineTop,bottom:lineTop+lineHeight,height:lineHeight},smooth)
+}
+function prepareSearchTarget(entry){
+  cancelProgrammaticReveal();clearSettledRevealAnchor();externalRevealPath='';pinnedAnchor=null;clickedPath=entry.path;revealTailPath=entry.path;
+  if(entry.collapsed){entry.collapsed=false;layoutDirty=true}
+  updateVirtualizationAtIndex(entry.index,true,true);
+  updateAllSearchDecorations()
+}
+function selectionMatchesSearchResult(selection,result){
+  return Boolean(selection&&result&&selection.startLineNumber===result.lineNumber&&selection.startColumn===result.column&&selection.endLineNumber===result.lineNumber&&selection.endColumn===result.column+Math.max(1,result.length))
+}
+function searchCursorAnchor(){
+  const current=searchResults[activeSearchIndex];
+  if(current&&current.side!=='path'){
+    const entry=cardByPath.get(current.key),editor=entry&&entry.editor&&(current.side==='original'?entry.editor.getOriginalEditor():entry.editor.getModifiedEditor());
+    const selection=editor&&editor.getSelection();
+    if(selection)return {key:current.key,side:current.side,selection:selection}
+  }
+  for(const entry of cards){
+    if(!entry.editor||!hasMountedEditorContent(entry))continue;
+    for(const pair of [['original',entry.editor.getOriginalEditor()],['modified',entry.editor.getModifiedEditor()]]){
+      const selection=pair[1].getSelection();
+      if(selection)return {key:entry.path,side:pair[0],selection:selection}
+    }
+  }
+  return undefined
+}
+function compareSearchResultToPosition(result,lineNumber,column){
+  if(result.lineNumber!==lineNumber)return result.lineNumber-lineNumber;
+  return result.column-column
+}
+function searchIndexFromCursor(direction){
+  const anchor=searchCursorAnchor();
+  if(!anchor)return -1;
+  const exact=searchResults.findIndex(function(result){return result.key===anchor.key&&result.side===anchor.side&&selectionMatchesSearchResult(anchor.selection,result)});
+  if(exact>=0)return exact;
+  const position=direction>0
+    ? {lineNumber:anchor.selection.endLineNumber,column:anchor.selection.endColumn}
+    : {lineNumber:anchor.selection.startLineNumber,column:anchor.selection.startColumn};
+  let candidate=-1;
+  for(let index=0;index<searchResults.length;index++){
+    const result=searchResults[index];
+    if(result.key!==anchor.key||result.side!==anchor.side)continue;
+    const comparison=compareSearchResultToPosition(result,position.lineNumber,position.column);
+    if(direction>0){
+      if(comparison<=0)candidate=index;
+      else break
+    }else if(comparison>=0)return index;
+    else candidate=index+1;
+  }
+  return candidate
+}
+function focusSearchResult(smooth,focusEditor){
+  const result=searchResults[activeSearchIndex],entry=result&&cardByPath.get(result.key);if(!entry)return;
+  const navigationEpoch=++searchNavigationEpoch,resultId=searchResultId(result);
+  const isCurrentNavigation=function(){return navigationEpoch===searchNavigationEpoch&&searchResultId(searchResults[activeSearchIndex])===resultId};
+  prepareSearchTarget(entry);
+  if(result.side==='path'){
+    requestAnimationFrame(function(){
+      if(!isCurrentNavigation())return;
+      const latest=cardByPath.get(result.key);if(!latest)return;
+      updateVirtualizationAtIndex(latest.index,true,true);
+      if(latest.header||latest.card)scrollWindowRectIntoView((latest.header||latest.card).getBoundingClientRect(),smooth!==false);
+      if(isCurrentNavigation())updateAllSearchDecorations()
+    });return
+  }
+  const run=function(attempt){
+    if(!isCurrentNavigation())return;
+    const latest=cardByPath.get(result.key);if(!latest)return;
+    if(latest.diff.loaded!==true){ensureDiffRequested(latest,true)}
+    if(!latest.editor||!hasMountedEditorContent(latest)){
+      updateVirtualizationAtIndex(latest.index,true,true);
+      if(attempt<90)requestAnimationFrame(function(){run(attempt+1)});
+      return
+    }
+    const editor=result.side==='original'?latest.editor.getOriginalEditor():latest.editor.getModifiedEditor();
+    const range=new monaco.Range(result.lineNumber,result.column,result.lineNumber,result.column+Math.max(1,result.length));
+    editor.setSelection(range);editor.revealRangeInCenterIfOutsideViewport(range);if(focusEditor)editor.focus();updateAllSearchDecorations();
+    requestAnimationFrame(function(){
+      if(!isCurrentNavigation()||!latest.editor||!hasMountedEditorContent(latest))return;
+      const currentEditor=result.side==='original'?latest.editor.getOriginalEditor():latest.editor.getModifiedEditor();
+      currentEditor.revealRangeInCenterIfOutsideViewport(range);scrollEditorLineIntoView(currentEditor,result.lineNumber,smooth!==false);updateEntrySearchDecorations(latest)
+    })
+  };
+  requestAnimationFrame(function(){run(0)})
+}
+function navigateSearch(direction){
+  const typed=searchInput.value;
+  if(!typed){clearSearchResultsForPendingInput();showSearchWidget(true);return}
+  if(typed!==searchQuery){
+    searchQuery=typed;refreshSearchResults(false,false);
+    if(!searchResults.length)return;
+    activeSearchIndex=direction<0?searchResults.length-1:0;
+    updateSearchStatus();focusSearchResult(true);return
+  }
+  if(!searchResults.length){refreshSearchResults(true,false);return}
+  const cursorIndex=searchIndexFromCursor(direction);
+  const baseIndex=cursorIndex>=0?cursorIndex:activeSearchIndex;
+  activeSearchIndex=(baseIndex+direction+searchResults.length)%searchResults.length;
+  updateSearchStatus();focusSearchResult(true)
+}
+searchInput.addEventListener('input',function(){if(searchInput.value!==searchQuery)clearSearchResultsForPendingInput();else updateSearchStatus()});
+searchInput.addEventListener('keydown',function(event){
+  if(event.key==='Enter'){event.preventDefault();navigateSearch(event.shiftKey?-1:1)}
+  else if(event.key==='ArrowDown'){event.preventDefault();navigateSearch(1)}
+  else if(event.key==='ArrowUp'){event.preventDefault();navigateSearch(-1)}
+  else if(event.key==='Escape'){event.preventDefault();hideSearchWidget()}
+});
+[searchPrev,searchNext,searchClose].forEach(function(button){button.addEventListener('pointerdown',function(event){event.preventDefault()})});
+searchPrev.addEventListener('click',function(){navigateSearch(-1);searchInput.focus()});
+searchNext.addEventListener('click',function(){navigateSearch(1);searchInput.focus()});
+searchClose.addEventListener('click',function(){hideSearchWidget();searchInput.focus()});
 // 为可视逻辑项借用 Monaco 模板；离屏后归还对象池并保留等高占位。
 function mountEntry(entry,fromScroll=false){
   if(entry.staticContent||entry.collapsed)return Promise.resolve();
@@ -679,6 +945,11 @@ function mountEntry(entry,fromScroll=false){
     }
     entry.disposables.push(originalEditor.onDidScrollChange(function(event){if(event.scrollLeftChanged)syncHorizontalFromEditor(originalEditor)}));
     entry.disposables.push(modifiedEditor.onDidScrollChange(function(event){if(event.scrollLeftChanged)syncHorizontalFromEditor(modifiedEditor)}));
+    [originalEditor,modifiedEditor].forEach(function(sideEditor){
+      entry.disposables.push(sideEditor.addCommand(monaco.KeyMod.CtrlCmd|monaco.KeyCode.KeyF,function(){showSearchWidget(true)}));
+      entry.disposables.push(sideEditor.addCommand(monaco.KeyCode.F3,function(){navigateSearch(1)}));
+      entry.disposables.push(sideEditor.addCommand(monaco.KeyMod.Shift|monaco.KeyCode.F3,function(){navigateSearch(-1)}));
+    });
     entry.disposables.push(modifiedEditor.onDidChangeCursorPosition(function(event){
       if(entry.path!==activePath)return;
       const navigationMove=updatingNavigationCursor||(entry.path===navigationCursorPath&&event.position.lineNumber===navigationCursorLine);
@@ -695,6 +966,7 @@ function mountEntry(entry,fromScroll=false){
           entry.saveTimer=0;
           try{window.gitkVscode.postMessage({type:'saveFile',path:diff.path,content:entry.modifiedValue})}catch(_){}
         },400);
+        scheduleSearchRefresh();
       }));
     }
     // 折叠未改动区域的图标用 glyphMarginClassName 渲染, DiffEditor 默认只给左侧开 glyphMargin,
@@ -781,6 +1053,8 @@ function mountEntry(entry,fromScroll=false){
   entry.disposables.push(editor.getOriginalEditor().onDidContentSizeChange(fit));
   entry.disposables.push(editor.getModifiedEditor().onDidContentSizeChange(fit));
   entry.slot=slot;entry.editor=editor;entry.original=original;entry.modified=modified;entry.fit=fit;entry.mounted=true;entry.mounting=false;
+  updateEntrySearchDecorations(entry);applyEntrySearchCardState(entry);
+  if(searchQuery)scheduleSearchRefresh();
   // 不依赖 Monaco 事件是否恰好在监听器注册前触发；挂载后的连续两帧主动校准真实内容高度。
   scheduleFit();requestAnimationFrame(scheduleFit);
   if(entry.path===activePath)updateGlobalHScroll();
@@ -1192,7 +1466,12 @@ function beginUserMultiDiffInteraction(){
 window.addEventListener('pointerdown',beginUserMultiDiffInteraction,{passive:true,capture:true});
 window.addEventListener('wheel',beginUserMultiDiffInteraction,{passive:true});
 window.addEventListener('touchstart',beginUserMultiDiffInteraction,{passive:true});
-window.addEventListener('keydown',function(event){if(['ArrowUp','ArrowDown','PageUp','PageDown','Home','End',' '].includes(event.key))beginUserMultiDiffInteraction()});
+window.addEventListener('keydown',function(event){
+  if((event.ctrlKey||event.metaKey)&&!event.altKey&&event.key.toLowerCase()==='f'){event.preventDefault();event.stopPropagation();if(typeof event.stopImmediatePropagation==='function')event.stopImmediatePropagation();showSearchWidget(true);return}
+  if(event.key==='F3'&&searchWidget.hidden===false){event.preventDefault();event.stopPropagation();if(typeof event.stopImmediatePropagation==='function')event.stopImmediatePropagation();navigateSearch(event.shiftKey?-1:1);return}
+  const eventTarget=event.target instanceof Node?event.target:null;
+  if(['ArrowUp','ArrowDown','PageUp','PageDown','Home','End',' '].includes(event.key)&&!(eventTarget&&searchWidget.contains(eventTarget)))beginUserMultiDiffInteraction()
+},{capture:true});
 window.addEventListener('scroll',function(){
   // 用户主动滚动即放弃刷新锚点；锚点自身的对齐写入不算用户滚动。
   if(pinnedAnchor){if(pinnedAnchor.selfScroll)pinnedAnchor.selfScroll=false;else pinnedAnchor=null}
@@ -1279,6 +1558,7 @@ function updateEntryFromSnapshot(entry,diff){
         if(modified.getValue()!==String(diff.modified||'')){modified.setValue(String(diff.modified||''));entry.modifiedValue=String(diff.modified||'')}
       }finally{entry.syncingModel=false}
       entry.fit();
+      scheduleSearchRefresh();
     }
   }finally{
     if(settledRevealAnchorPath)alignSettledRevealAnchor();
@@ -1325,6 +1605,7 @@ function render(snapshot){
       if(!cards.length)list.replaceChildren();
       reconcileSnapshot(snapshot);
     }
+    if(searchQuery)refreshSearchResults(true,false);
     if(token!==renderToken)return;
     // 先建立完整逻辑滚动高度，再执行定位；否则首次定位远处文件时文档仍无可滚动高度。
     updateVirtualization();
@@ -1370,6 +1651,7 @@ function applyDiffUpdates(message){
     else if(settled)updateVirtualizationAtIndex(settled.index,true,false);
     else updateVirtualization();
   }
+  if(searchQuery)refreshSearchResults(true,false);
   if(programmaticRevealPath)scheduleProgrammaticReveal();else if(externalRevealPath)scheduleExternalRevealAlignment();
 }
 function flushPendingDiffUpdates(){
@@ -1396,6 +1678,7 @@ function receive(message){
   if(message.type==='setParentCommitNavigation'){setParentCommitNavigation(message.parentCommit);return}
   if(message.type==='navigateChange'){navigateChange(message.direction===-1?-1:1).catch(fail);return}
   if(message.type==='setRenderSideBySide'){setRenderSideBySide(message.renderSideBySide===true);return}
+  if(message.type==='showSearch'){showSearchWidget(true);return}
   if(typeof message.revision!=='number'||message.revision<=lastRevision)return;
   lastRevision=message.revision;
   if(message.type==='diffUpdates'){

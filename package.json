@@ -103,6 +103,13 @@
         "enablement": "activeWebviewPanelId == vscode-gitk.multiDiff && gitk:multiDiffCanNavigateNext"
       },
       {
+        "command": "vscode-gitk.multiDiff.search",
+        "title": "搜索整个 MultiDiff",
+        "category": "Gitk",
+        "icon": "$(search)",
+        "enablement": "activeWebviewPanelId == vscode-gitk.multiDiff"
+      },
+      {
         "command": "vscode-gitk.multiDiff.useInlineView",
         "title": "当前：双栏模式（切换到单栏）",
         "category": "Gitk",
@@ -163,6 +170,11 @@
       ],
       "editor/title": [
         {
+          "command": "vscode-gitk.multiDiff.search",
+          "when": "activeWebviewPanelId == vscode-gitk.multiDiff",
+          "group": "navigation@9"
+        },
+        {
           "command": "vscode-gitk.multiDiff.previousChange",
           "when": "activeWebviewPanelId == vscode-gitk.multiDiff",
           "group": "navigation@10"
@@ -210,6 +222,12 @@
         "command": "vscode-gitk.commitEditMsg.cancel",
         "key": "escape",
         "when": "gitk:commitEditMsgActive"
+      },
+      {
+        "command": "vscode-gitk.multiDiff.search",
+        "key": "ctrl+f",
+        "mac": "cmd+f",
+        "when": "activeWebviewPanelId == vscode-gitk.multiDiff"
       },
       {
         "command": "vscode-gitk.multiDiff.nextChange",

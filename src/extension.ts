@@ -45,6 +45,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         vscode.commands.registerCommand('vscode-gitk.selectCommit', (hash: string) => provider.selectCommit(hash)),
         vscode.commands.registerCommand('vscode-gitk.multiDiff.previousChange', () => provider.navigateMultiDiffChange(-1)),
         vscode.commands.registerCommand('vscode-gitk.multiDiff.nextChange', () => provider.navigateMultiDiffChange(1)),
+        vscode.commands.registerCommand('vscode-gitk.multiDiff.search', () => provider.showMultiDiffSearch()),
         vscode.commands.registerCommand('vscode-gitk.multiDiff.useInlineView', () => setMultiDiffRenderSideBySide(false)),
         vscode.commands.registerCommand('vscode-gitk.multiDiff.useSideBySideView', () => setMultiDiffRenderSideBySide(true)),
         vscode.workspace.onDidChangeConfiguration(async event => {

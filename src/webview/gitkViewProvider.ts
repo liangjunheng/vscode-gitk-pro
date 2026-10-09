@@ -2882,6 +2882,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.multiDiffPanel.setRenderSideBySide(renderSideBySide);
     }
 
+    showMultiDiffSearch(): void {
+        this.multiDiffPanel.showSearch();
+    }
+
     private openDiff(filePath?: string, selectionEpoch?: number): void {
         if (!this.view?.visible) {
             this.multiDiffPanel.hide();
