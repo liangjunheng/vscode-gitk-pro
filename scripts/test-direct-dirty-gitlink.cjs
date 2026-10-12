@@ -19,6 +19,10 @@ assert.ok(source.includes('gitlinkWorktreeChangeCount = new Set'), 'dirty Gitlin
 assert.ok(document.includes('if(diff.gitlinkWorktreeDirty){const count='), 'dirty Gitlink cards must have a dedicated worktree state');
 assert.ok(document.includes("'子模块有 '+count+' 个未提交变更文件'"), 'dirty Gitlink cards must show the direct child worktree file count');
 assert.ok(!document.includes("targetHash=diff.gitlinkWorktreeDirty"), 'dirty Gitlink cards must not render a commit target');
+assert.ok(source.includes('retain the previously published Uncommitted Changes row'), 'commit-list Uncommitted Changes row must remain visible while child status loads');
+assert.ok(source.includes('pendingGitlinkWorktreeSnapshot'), 'Gitlink navigation must retain a prepared child worktree snapshot');
+assert.ok(source.includes('getUncommittedFilesByHeadBranch(branch)'), 'Gitlink navigation must read the direct child worktree before changing selection');
+assert.ok(source.includes('preparedWorktree?.changes'), 'selected child worktree must consume the prepared snapshot atomically');
 
 const renderRoot = 'D:\\project\\inkengine\\ink-engine-core\\core\\ink-render';
 if (fs.existsSync(renderRoot)) {

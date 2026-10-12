@@ -104,6 +104,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private gitWatchDisposables: vscode.Disposable[] = [];
     private readonly multiDiffPanel: MultiDiffPanel;
     private requestedDiffReveal?: { readonly hash: string; readonly repositoryPath?: string; readonly path?: string };
+    private pendingGitlinkWorktreeSnapshot?: {
+        readonly repositoryPath: string;
+        readonly branch: GitBranchOption;
+        readonly changes: WorkingTreeChanges;
+    };
     private readonly gitlinkParentNavigationStack: GitlinkParentNavigation[] = [];
     private restoreDiffPanelOnViewVisible = false;
     private openDiffOnInitialVisible = false;
@@ -316,25 +321,37 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         // Commit 列表与 Changed Files 必须消费同一份已发布的 Store 快照。
         // watcher 缓存可能在工作区事务收尾前先更新；若在这里直接读取，会让虚拟行先置灰、文件列表仍显示旧数据。
         // 搜索非空时, 虚拟行不是真实 commit 不经 searchCommits 过滤, 按 label 是否命中关键词决定是否产出; 未命中则不出现。
-        const currentBranch = [...this.selectedBranchesMap.values()].flat().find(branch => branch.kind === 'current');
+        const selectedCommitMetadata = this.commitController.selectedCommit;
+        const selectedWorktreeBranch = isWorkingTreeHash(selectedCommitMetadata?.hash)
+            ? selectedCommitMetadata.gitBranchOption
+            : undefined;
+        const currentBranch = selectedWorktreeBranch
+            ?? [...this.selectedBranchesMap.values()].flat().find(branch => branch.kind === 'current');
         const workingTreeRepositoryPath = currentBranch?.repoOption.path;
         const searchKeywords = this.commitController.displayedSearchKeywords;
         const matchesSearch = (label: string): boolean =>
             searchKeywords.length === 0
             || searchKeywords.some(keyword => label.toLowerCase().includes(keyword.toLowerCase()));
-        const workingTreeRows = currentBranch
+        const matchingWorkingTreeRows = currentBranch
             ? s.workingTreeRows.filter(row =>
                 row.repositoryPath === currentBranch.repoOption.path
                 && row.headHash === currentBranch.hash
                 && matchesSearch(row.label))
             : [];
+        // A direct Gitlink jump prepares the child status asynchronously. Until that new virtual
+        // row is ready, retain the previously published Uncommitted Changes row instead of
+        // removing it from the commit list for one render pass.
+        const workingTreeRows = matchingWorkingTreeRows.length > 0
+            ? matchingWorkingTreeRows
+            : (s.filesLoading && selectedWorktreeBranch
+                ? s.workingTreeRows.filter(row => matchesSearch(row.label))
+                : []);
         const workingTreeRow = workingTreeRows[0];
         const selectedRepositoryPaths = this.selectedRepositoryPaths;
         const commits = this.commitController.searchedCommitList.map(commit => ({
             ...commit,
             key: `${commit.gitBranchOption?.repoOption.path ?? ''}:${commit.hash}`,
         }));
-        const selectedCommitMetadata = this.commitController.selectedCommit;
         const selectedCommit = selectedCommitMetadata ? {
             key: `${selectedCommitMetadata.gitBranchOption?.repoOption.path ?? ''}:${selectedCommitMetadata.hash}`,
             hash: selectedCommitMetadata.hash,
@@ -1236,6 +1253,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             return;
         }
         const isVirtual = isWorkingTreeHash(hash);
+        const preparedWorktree = isVirtual
+            && this.pendingGitlinkWorktreeSnapshot?.repositoryPath === repositoryPath
+            && this.pendingGitlinkWorktreeSnapshot.branch.hash === commit?.gitBranchOption?.hash
+            ? this.pendingGitlinkWorktreeSnapshot
+            : undefined;
+        if (this.pendingGitlinkWorktreeSnapshot && !preparedWorktree) {
+            this.pendingGitlinkWorktreeSnapshot = undefined;
+        }
+        if (preparedWorktree) { this.pendingGitlinkWorktreeSnapshot = undefined; }
         const requestedReveal = this.requestedDiffReveal?.hash === hash
             && this.requestedDiffReveal.repositoryPath === repositoryPath
             ? this.requestedDiffReveal
@@ -1265,7 +1291,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
         if (!commit || !hash) { return; }
         if (isVirtual) {
-            void this.selectWorkingTreeChanges(undefined, true, revealDiff, undefined, true, undefined, revealPath);
+            void this.selectWorkingTreeChanges(
+                preparedWorktree?.changes,
+                true,
+                revealDiff,
+                undefined,
+                true,
+                preparedWorktree ? this.buildWorkingTreeRows(preparedWorktree.branch, preparedWorktree.changes) : undefined,
+                revealPath,
+            );
         } else {
             void this.selectCommit(hash, repositoryPath, revealDiff, revealPath);
         }
@@ -2817,6 +2851,19 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 hash: targetHash,
                 kind: 'local',
             });
+        if (isDirtyWorktreeGitlink) {
+            try {
+                // Read the direct child before changing Store identity. The selection callback consumes
+                // this prepared snapshot synchronously, so Uncommitted Changes never publishes empty.
+                const changes = await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(branch);
+                this.pendingGitlinkWorktreeSnapshot = { repositoryPath, branch, changes };
+            } catch (error) {
+                void vscode.window.showWarningMessage(
+                    `无法读取子模块未提交状态：${submodule.label}（${error instanceof Error ? error.message : String(error)}）。`,
+                );
+                return;
+            }
+        }
         const commit = this.findCommit(targetHash, repositoryPath) ?? new CommitMetadata({ hash: targetHash, gitBranchOption: branch });
         const selectedParentFile = this.files.find(file => (file.diffKey || file.path) === this.selectedPath && file.path === filePath)
             ?? this.files.find(file => file.path === filePath);
