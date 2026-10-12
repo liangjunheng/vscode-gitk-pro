@@ -370,7 +370,9 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
     return '<span class="working-tree-kind working-tree-kind-unstaged" title="Unstaged：未暂存" aria-label="Unstaged：未暂存"><svg viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="9" r="6.25"/><path d="M9 5.25v4.5M9 12.4v.1" stroke-width="2"/></svg></span>';
   }
 
-  function workingTreeFileActions(section, path) {
+  function workingTreeFileActions(section, file) {
+    if (file.gitlinkWorktreeDirty) return '';
+    const path = file.path;
     if (section === 'conflict') return workingTreeActionButton('stage', section, path, 'add', '暂存当前文件并标记冲突已解决');
     if (section === 'staged') return workingTreeActionButton('unstage', section, path, 'remove', '取消暂存当前文件（移回 Unstaged Changes）');
     return workingTreeActionButton('discard', section, path, 'discard', '放弃当前文件的未暂存更改（不可撤销）') + workingTreeActionButton('stage', section, path, 'add', '暂存当前文件（移入 Staged Changes）');
@@ -380,7 +382,7 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
     const lastSlash = file.path.lastIndexOf('/');
     const folder = lastSlash >= 0 ? file.path.slice(0, lastSlash + 1) : '';
     const name = lastSlash >= 0 ? file.path.slice(lastSlash + 1) : file.path;
-    const actions = workingTreeFileActions(section, file.path);
+    const actions = workingTreeFileActions(section, file);
     const untracked = section === 'unstaged' && file.isUntracked ? ' untracked' : '';
     const diffKey = section + ':' + file.path;
     const selectionKey = workingTreeSelectionKey(section, file.path);

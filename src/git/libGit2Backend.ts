@@ -12,6 +12,7 @@ interface NativeCommitFile {
     oldMode?: string;
     newMode?: string;
     isGitlink?: boolean;
+    gitlinkWorktreeDirty?: boolean;
     isConflict?: boolean;
     isUntracked?: boolean;
 }
@@ -25,6 +26,9 @@ function toCommitFile(file: NativeCommitFile): CommitFile {
     return new CommitFile({
         ...file,
         oldPath: file.oldPath ?? undefined,
+        // libgit2 reports a dirty submodule worktree as equal old/new Gitlink OIDs.
+        gitlinkWorktreeDirty: file.gitlinkWorktreeDirty === true
+            || (file.isGitlink === true && file.status === 'M' && file.oldObjectId === file.newObjectId),
     });
 }
 

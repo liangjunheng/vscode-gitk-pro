@@ -463,6 +463,7 @@ function workingTreeKindHtml(kind){
 }
 function gitlinkLabelHtml(){return '<span class="gitlink-label" title="Submodule repository">Repo</span>'}
 function gitlinkBodyHtml(diff){
+  if(diff.gitlinkWorktreeDirty){const count=Number.isInteger(diff.gitlinkWorktreeChangeCount)?diff.gitlinkWorktreeChangeCount:null;const message=count===null?'子模块存在未提交变更':'子模块有 '+count+' 个未提交变更文件';return '<div class="gitlink-commits"><button type="button" class="gitlink-commit gitlink-worktree" data-hash="uncommitted" title="查看子模块未提交变更"><span class="gitlink-commit-hash">Uncommitted Changes</span><span class="gitlink-commit-message">'+message+'</span></button></div>';}
   if(diff.gitlinkScanPending)return '<div class="empty gitlink-loading"><span class="gitlink-loading-spinner" aria-hidden="true"></span><span>正在扫描子模块提交…</span></div>';
   const commits=diff.gitlinkRangeCommits&&diff.gitlinkRangeCommits.length?diff.gitlinkRangeCommits:[diff.status==='A'?undefined:diff.oldGitlinkCommit,diff.status==='D'?undefined:diff.newGitlinkCommit].filter(function(commit,index,values){return commit&&values.findIndex(function(item){return item&&item.hash===commit.hash})===index});
   if(!commits.length)return '<div class="empty">没有可显示的子模块提交。</div>';
@@ -486,6 +487,7 @@ function metaHtml(diff){
   }
   const oldId=shortObjectId(diff.oldObjectId),newId=shortObjectId(diff.newObjectId);
   if(diff.isGitlink){
+    if(diff.gitlinkWorktreeDirty){const count=Number.isInteger(diff.gitlinkWorktreeChangeCount)?diff.gitlinkWorktreeChangeCount:null;return '<span class="meta-line meta-gitlink">'+(count===null?'子模块未提交变更':'子模块有 '+count+' 个未提交变更文件')+'</span>';}
     const oldCommit=diff.oldGitlinkCommit,newCommit=diff.newGitlinkCommit;
     if(diff.status!=='A')lines.push('<span class="meta-line meta-gitlink" title="'+escapeHtml(oldCommit?.hash||diff.oldObjectId||'')+'">Submodule commit '+escapeHtml(oldCommit?.shortHash||oldId)+(oldCommit?.subject?': '+escapeHtml(oldCommit.subject):'')+'</span>');
     if(diff.status!=='D')lines.push('<span class="meta-line meta-gitlink" title="'+escapeHtml(newCommit?.hash||diff.newObjectId||'')+'">Submodule commit '+escapeHtml(newCommit?.shortHash||newId)+(newCommit?.subject?': '+escapeHtml(newCommit.subject):'')+'</span>');

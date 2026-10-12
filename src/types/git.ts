@@ -177,6 +177,10 @@ export class CommitFile {
     newGitlinkCommit?: GitlinkCommit;
     gitlinkRangeCommits?: GitlinkCommit[];
     gitlinkScanPending?: boolean;
+    // A dirty child worktree whose Gitlink commit itself did not move.
+    gitlinkWorktreeDirty?: boolean;
+    // De-duplicated staged + unstaged path count in the direct child worktree.
+    gitlinkWorktreeChangeCount?: number;
     isBinary?: boolean;
     isUntracked?: boolean;
     isConflict?: boolean;
@@ -206,6 +210,8 @@ export class CommitFile {
             && this.newGitlinkCommit?.message === other.newGitlinkCommit?.message
             && this.gitlinkRangeCommits?.length === other.gitlinkRangeCommits?.length
             && this.gitlinkScanPending === other.gitlinkScanPending
+            && this.gitlinkWorktreeDirty === other.gitlinkWorktreeDirty
+            && this.gitlinkWorktreeChangeCount === other.gitlinkWorktreeChangeCount
             && this.gitlinkRangeCommits?.every((commit, index) => commit.hash === other.gitlinkRangeCommits?.[index]?.hash
                 && commit.shortHash === other.gitlinkRangeCommits[index]?.shortHash
                 && commit.subject === other.gitlinkRangeCommits[index]?.subject

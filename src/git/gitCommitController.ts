@@ -132,7 +132,14 @@ export class GitCommitController implements vscode.Disposable {
         if (!identity) { return undefined; }
         if (isWorkingTreeHash(identity.hash)) {
             const branch = this.branches.find(candidate => candidate.kind === 'current' && candidate.repoOption.path === identity.repositoryPath);
-            return branch ? new CommitMetadata({ hash: identity.hash, gitBranchOption: branch }) : undefined;
+            if (branch) { return new CommitMetadata({ hash: identity.hash, gitBranchOption: branch }); }
+            // Gitlink navigation can target an initialized descendant that is not part of the main
+            // repository selection. Preserve selectCommit's explicit branch fallback so its
+            // Uncommitted Changes snapshot can load instead of becoming an empty MultiDiff.
+            return this.selectedCommitFallback?.hash === identity.hash
+                && this.selectedCommitFallback.gitBranchOption?.repoOption.path === identity.repositoryPath
+                ? this.selectedCommitFallback
+                : undefined;
         }
         return this.total.find(commit => commit.hash === identity.hash && commit.gitBranchOption?.repoOption.path === identity.repositoryPath)
             ?? this.searched.find(commit => commit.hash === identity.hash && commit.gitBranchOption?.repoOption.path === identity.repositoryPath)
