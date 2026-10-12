@@ -1,8 +1,8 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { type AppState, type ChangeSetMode, type ChangedFile, GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
-import { getCommitFiles, getGitAheadCount, getGitlinkPathsInCommit, getPushBranches, type PushBranchOption, readCurrentCommitMessage } from '../git/gitLogProvider';
-import { checkoutBranch, commitDetails, hasConflicts, indexGitlink, pull, push, rangeCommits, resolveRevision, restoreAll, restoreSubmodule, trackedPaths, type NativePushResult } from '../git/gitNativeOperations';
+import { getCommitFiles, getGitAheadCount, getGitBranches, getGitlinkPathsInCommit, getPushBranches, type PushBranchOption, readCurrentCommitMessage } from '../git/gitLogProvider';
+import { checkoutBranch, checkoutRemoteBranch, commitDetails, hasConflicts, indexGitlink, pull, push, rangeCommits, resolveRevision, restoreAll, restoreSubmodule, trackedPaths, type NativePushResult } from '../git/gitNativeOperations';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { CommitPanel, type CommitPanelSnapshot, type CommitCard, type CommitCardStatePatch } from './commitPanel';
 import { CommitPanelViewTitleController } from './commitPanelViewTitleController';
@@ -82,6 +82,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private refreshAbortController?: AbortController;
     private commitFilesAbortController?: AbortController;
     private commitPanelDiffAbortController?: AbortController;
+    private repositoryChangesSelectionAbortController?: AbortController;
     private commitFilesGeneration = 0;
     // 等待 Diff 渲染完成后再显示 Changed Files 列表的代次标记。
     private pendingFilesRevealGeneration?: number;
@@ -110,6 +111,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         readonly changes: WorkingTreeChanges;
     };
     private readonly gitlinkParentNavigationStack: GitlinkParentNavigation[] = [];
+    private gitlinkNavigationAbortController?: AbortController;
     private restoreDiffPanelOnViewVisible = false;
     private openDiffOnInitialVisible = false;
     private readonly commitPanel: CommitPanel;
@@ -356,6 +358,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             key: `${selectedCommitMetadata.gitBranchOption?.repoOption.path ?? ''}:${selectedCommitMetadata.hash}`,
             hash: selectedCommitMetadata.hash,
             repositoryPath: selectedCommitMetadata.gitBranchOption?.repoOption.path ?? '',
+            message: selectedCommitMetadata.message,
+            body: selectedCommitMetadata.body ?? '',
+            rawMessage: selectedCommitMetadata.rawMessage,
             kind: (isWorkingTreeHash(selectedCommitMetadata.hash) ? selectedCommitMetadata.hash : 'commit') as ChangeSetMode,
         } : null;
         this.view.webview.postMessage({
@@ -365,6 +370,23 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 showCommitLanes: searchKeywords.length === 0,
                 workingTreeRows,
                 uncommittedRepositoryCount: this.countUncommittedRepositories(s.commitRepositories),
+                repositoryChanges: this.repositories.map(repository => {
+                    const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+                        .find(candidate => candidate.repoOption.path === repository.path);
+                    const snapshot = s.commitRepositories.find(candidate => candidate.repositoryPath === repository.path);
+                    return {
+                        repositoryPath: repository.path,
+                        repositoryLabel: repository.label,
+                        hasSubmodules: Boolean(repository.hasSubmodules),
+                        isSubmodule: (repository.ancestry?.length ?? 0) > 0,
+                        isMainRepository: repository.path === this.repositories.find(candidate => (candidate.ancestry?.length ?? 0) === 0)?.path,
+                        headLabel: branch?.label ?? '',
+                        message: this.commitMessageByRepo.get(repository.path) ?? '',
+                        committing: this.commitCommittingByRepo.has(repository.path),
+                        staged: (snapshot?.staged ?? []).map(file => this.changedFileSummary(file)),
+                        unstaged: (snapshot?.unstaged ?? []).map(file => this.changedFileSummary(file)),
+                    };
+                }),
                 stagedCount: workingTreeRow?.stagedCount ?? 0,
                 changesCount: workingTreeRow?.changesCount ?? 0,
                 hasMoreCommits: this.commitController.canLoadMoreCommits,
@@ -434,7 +456,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             identity => this.handleDiffRendered(identity),
             (path, line, column, side) => void this.openWorkspaceFileAtLine(path, line, column, side),
             (path, hash) => void this.selectGitlinkCommit(path, hash),
-            () => this.backToParentCommit(),
+            () => void this.backToParentCommit(),
             (path, content) => void this.saveWorkspaceFile(path, content),
             (action, section, path) => void this.runWorkingTreeAction(action, section, path),
         );
@@ -495,8 +517,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 // 但快照是选中时一次性写入的；增量扫描期间 hasSubmodules 会由 false 变 true，
                 // 这里同步重新发布，保证下拉按钮图标与列表项一致。
                 this.refreshSelectedRepoDisplaySnapshot();
+                this.syncCommitRepositories();
                 if (this.commitPanel.isVisible()) {
-                    this.syncCommitRepositories();
                     this.commitPanel.update(this.buildCommitSnapshot());
                 }
             }),
@@ -950,6 +972,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     private cancelActiveRequests(): void {
+        this.gitlinkNavigationAbortController?.abort();
         this.refreshAbortController?.abort();
         this.commitFilesAbortController?.abort();
         this.refreshAbortController = undefined;
@@ -986,8 +1009,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             currentHash: undefined,
             currentRepositoryPath: undefined,
             currentChangeSet: 'commit',
-            filesLoading: true,
-            diffLoading: true,
+            filesLoading: selected.length > 0,
+            diffLoading: selected.length > 0,
             diffError: undefined,
             diffProgress: { completed: 0, total: 0 },
             diffGeneration: store.getState().diffGeneration + 1,
@@ -1533,8 +1556,197 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     private onMessage(message: unknown): void {
+        const input = message as GitkIntent;
+        if (input?.type === 'repositoryChangesFile' || input?.type === 'repositoryChangesAction') {
+            void this.handleRepositoryChangesIntent(input);
+            return;
+        }
         if (!this.isGitkIntent(message)) { return; }
         this.dispatchIntent(message);
+    }
+
+    private async handleRepositoryChangesIntent(input: Extract<GitkIntent, { type: 'repositoryChangesFile' | 'repositoryChangesAction' }>): Promise<void> {
+        if (typeof input.repositoryPath !== 'string'
+            || !this.repositories.some(repository => repository.path === input.repositoryPath)) { return; }
+        try {
+            if (input.type === 'repositoryChangesAction' && input.action === 'terminal') {
+                const rootUri = vscode.Uri.parse(input.repositoryPath);
+                const terminalName = path.basename(rootUri.fsPath) || 'Gitk';
+                vscode.window.createTerminal({ name: `Gitk: ${terminalName}`, cwd: rootUri }).show();
+                return;
+            }
+            if (input.type === 'repositoryChangesAction' && input.action === 'blur') {
+                this.repositoryChangesSelectionAbortController?.abort();
+                this.gitlinkNavigationAbortController?.abort();
+                const selected = this.repoController.selectedRepoList;
+                if (selected.length === 1 && selected[0].path === input.repositoryPath) {
+                    this.repoController.selectRepositories([]);
+                }
+                return;
+            }
+            if (input.type === 'repositoryChangesAction' && input.action === 'focus') {
+                this.repositoryChangesSelectionAbortController?.abort();
+                const repository = this.repositories.find(candidate => candidate.path === input.repositoryPath)!;
+                const selected = this.repoController.selectedRepoList;
+                if (selected.length !== 1 || selected[0].path !== repository.path) {
+                    this.gitlinkNavigationAbortController?.abort();
+                    this.repoController.selectRepositories([repository]);
+                }
+                return;
+            }
+            if (input.type === 'repositoryChangesFile') {
+                if (typeof input.path !== 'string' || !['conflict', 'staged', 'unstaged'].includes(input.section)) { return; }
+                await this.openCommitPanelWorkingTreeDiff(input.repositoryPath, input.section, input.path);
+                return;
+            }
+            if (input.action === 'worktree') {
+                await this.selectRepositoryChangesWorktree(input.repositoryPath);
+                return;
+            }
+            if (input.action === 'branch') { await this.pickRepositoryChangesBranch(input.repositoryPath); return; }
+            const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+                .find(candidate => candidate.repoOption.path === input.repositoryPath);
+            if (!branch) { return; }
+            if (input.action === 'syncRefresh') {
+                try {
+                    // Existing sync flow confirms the push targets and performs pull followed by push.
+                    await this.runCommitPanelPush([input.repositoryPath], true, false);
+                } finally {
+                    await this.uncommittedFilesWatcher.refreshHeadBranch(input.repositoryPath);
+                    const current = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+                        .find(candidate => candidate.repoOption.path === input.repositoryPath);
+                    if (current) { await this.uncommittedFilesWatcher.refreshUncommittedFilesByHeadBranch(current); }
+                    this.selectedRepoTotalBranchWatcher.refreshSelectedRepositories();
+                    if (this.selectedRepositoryPaths.includes(input.repositoryPath)) {
+                        await this.commitController.forceRefreshCurrentSelection();
+                    }
+                    this.schedulePushState();
+                }
+                return;
+            }
+            if (!['stage', 'unstage', 'discard'].includes(input.action)
+                || !['conflict', 'staged', 'unstaged'].includes(input.section)
+                || !Array.isArray(input.paths) || !input.paths.every(file => typeof file === 'string')) { return; }
+            const snapshot = await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(branch);
+            const candidates = input.section === 'staged' ? snapshot.staged : snapshot.changes;
+            const available = candidates.filter(file => input.section === 'conflict' ? file.isConflict : !file.isConflict);
+            const paths = [...new Set(input.paths)].filter(file => available.some(candidate => candidate.path === file));
+            await this.runCommitPanelWorkingTreeAction(input.repositoryPath,
+                input.action as 'stage' | 'unstage' | 'discard', input.section, paths,
+                available.filter(file => file.isUntracked).map(file => file.path));
+        } catch (error) {
+            void vscode.window.showErrorMessage('仓库变更操作失败：' + (error instanceof Error ? error.message : String(error)));
+        }
+    }
+
+    private async selectRepositoryChangesWorktree(repositoryPath: string): Promise<void> {
+        this.repositoryChangesSelectionAbortController?.abort();
+        const abortController = new AbortController();
+        this.repositoryChangesSelectionAbortController = abortController;
+        try {
+            const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+                .find(candidate => candidate.repoOption.path === repositoryPath);
+            if (!branch) { throw new Error('目标仓库 HEAD 尚未就绪'); }
+            const selectedBranch = await this.selectCommitPanelRepository(branch, abortController.signal);
+            if (!selectedBranch || abortController.signal.aborted) { return; }
+            const changes = await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(selectedBranch);
+            if (abortController.signal.aborted) { return; }
+            this.pendingGitlinkWorktreeSnapshot = { repositoryPath, branch: selectedBranch, changes };
+            const changed = this.commitController.selectCommit(new CommitMetadata({ hash: 'uncommitted', gitBranchOption: selectedBranch }));
+            if (!changed) {
+                this.pendingGitlinkWorktreeSnapshot = undefined;
+                await this.selectWorkingTreeChanges(changes, false, false);
+            }
+        } finally {
+            if (this.repositoryChangesSelectionAbortController === abortController) { this.repositoryChangesSelectionAbortController = undefined; }
+        }
+    }
+
+    private async pickRepositoryChangesBranch(repositoryPath: string): Promise<void> {
+        const repository = this.repositories.find(candidate => candidate.path === repositoryPath);
+        if (!repository || this.commitCommittingByRepo.has(repositoryPath)) { return; }
+        const rootUri = vscode.Uri.parse(repositoryPath);
+        const branches = await getGitBranches(rootUri);
+        // Current/local can name the same ref. Detached HEAD is a SHA, not a local checkout target.
+        const local = new Map<string, GitBranchOption>();
+        const remote = new Map<string, GitBranchOption>();
+        for (const branch of branches) {
+            if (branch.name.startsWith('refs/heads/')
+                && (!local.has(branch.name) || branch.kind === 'current')) { local.set(branch.name, branch); }
+            if (branch.name.startsWith('refs/remotes/') && !branch.name.endsWith('/HEAD')) { remote.set(branch.name, branch); }
+        }
+        if (local.size === 0 && remote.size === 0) {
+            void vscode.window.showInformationMessage('该仓库没有可切换的分支。');
+            return;
+        }
+        const items: Array<vscode.QuickPickItem & { branch?: GitBranchOption }> = [];
+        const byName = (left: GitBranchOption, right: GitBranchOption) => left.label.localeCompare(right.label);
+        if (local.size > 0) {
+            items.push({ label: '本地分支 · ' + local.size, kind: vscode.QuickPickItemKind.Separator });
+            items.push(...[...local.values()].sort((left, right) =>
+                Number(right.kind === 'current') - Number(left.kind === 'current') || byName(left, right)).map(branch => ({
+                label: (branch.kind === 'current' ? '$(target) ' : '$(git-branch) ') + branch.label,
+                description: branch.kind === 'current' ? '当前分支' : '',
+                detail: (branch.upstreamName ? '跟踪 ' + branch.upstreamName + '  ·  ' : '') + branch.hash.slice(0, 8),
+                branch,
+            })));
+        }
+        const byRemote = new Map<string, GitBranchOption[]>();
+        for (const branch of remote.values()) {
+            const remoteName = branch.name.slice('refs/remotes/'.length).split('/')[0];
+            const group = byRemote.get(remoteName) ?? [];
+            group.push(branch);
+            byRemote.set(remoteName, group);
+        }
+        for (const [remoteName, remoteBranches] of [...byRemote].sort(([left], [right]) => left.localeCompare(right))) {
+            items.push({ label: '远程分支 · ' + remoteName + ' · ' + remoteBranches.length, kind: vscode.QuickPickItemKind.Separator });
+            items.push(...remoteBranches.sort(byName).map(branch => ({
+                label: '$(cloud) ' + branch.name.slice(('refs/remotes/' + remoteName + '/').length),
+                description: remoteName,
+                detail: branch.name.slice('refs/remotes/'.length) + '  ·  ' + branch.hash.slice(0, 8),
+                branch,
+            })));
+        }
+        const picked = await vscode.window.showQuickPick(items, {
+            title: repository.label + '：切换分支',
+            placeHolder: '搜索分支名称或远程仓库，选择后切换',
+            matchOnDescription: true,
+            matchOnDetail: true,
+        });
+        if (!picked?.branch || picked.branch.kind === 'current') { return; }
+        // checkoutBranch uses libgit2 safe checkout: conflicting local edits cause an error, not a discard.
+        if (picked.branch.name.startsWith('refs/remotes/')) {
+            const remoteName = picked.branch.name.slice('refs/remotes/'.length);
+            const tracked = [...local.values()].find(branch => branch.upstreamName === remoteName
+                || branch.upstreamName === picked.branch.name);
+            if (tracked) {
+                if (tracked.kind === 'current') { return; }
+                await checkoutBranch(rootUri, tracked.name.slice('refs/heads/'.length));
+            } else {
+                const suggested = remoteName.slice(remoteName.indexOf('/') + 1);
+                const localName = await vscode.window.showInputBox({
+                    title: repository.label + '：创建本地跟踪分支',
+                    prompt: '从 ' + remoteName + ' 创建并切换到本地分支',
+                    value: suggested,
+                    validateInput: value => !value.trim() || value.startsWith('-')
+                        ? '请输入有效的本地分支名称'
+                        : local.has('refs/heads/' + value) ? '本地分支已存在，请使用其他名称' : undefined,
+                });
+                if (localName === undefined) { return; }
+                if (!localName.trim() || localName.startsWith('-') || local.has('refs/heads/' + localName)) {
+                    throw new Error('本地跟踪分支名称为空、无效或已存在');
+                }
+                await checkoutRemoteBranch(rootUri, picked.branch.name, localName);
+            }
+        } else {
+            await checkoutBranch(rootUri, picked.branch.name.slice('refs/heads/'.length));
+        }
+        await this.uncommittedFilesWatcher.refreshHeadBranch(repositoryPath);
+        const current = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+            .find(branch => branch.repoOption.path === repositoryPath);
+        if (current) { await this.uncommittedFilesWatcher.refreshUncommittedFilesByHeadBranch(current); }
+        this.selectedRepoTotalBranchWatcher.refreshSelectedRepositories();
+        this.schedulePushState();
     }
 
     private isGitkIntent(message: unknown): message is GitkIntent {
@@ -1746,6 +1958,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const targetHash = 'uncommitted' as const;
             const isCurrentWorkingTree = this.currentHash === targetHash
                 && this.currentRepositoryPath === repositoryPath;
+            if (isCurrentWorkingTree) {
+                this.selectChangedFile(revealPath);
+                return;
+            }
             if (!isCurrentWorkingTree) {
                 const selectedBranch = await this.selectCommitPanelRepository(branch, abortController.signal);
                 if (!selectedBranch || abortController.signal.aborted) { return; }
@@ -1764,8 +1980,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 || this.currentRepositoryPath !== repositoryPath
                 || store.getState().diffLoading
                 || !this.files.some(file => (file.diffKey || file.path) === revealPath)) { return; }
-            store.setState({ selectedPath: revealPath });
-            this.openDiff(revealPath);
+            this.selectChangedFile(revealPath);
         } finally {
             if (this.commitPanelDiffAbortController === abortController) {
                 this.commitPanelDiffAbortController = undefined;
@@ -1774,8 +1989,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     private selectCommitPanelRepository(branch: GitBranchOption, signal: AbortSignal): Promise<GitBranchOption | undefined> {
+        if (signal.aborted) { return Promise.resolve(undefined); }
         const selected = this.branchesController.getSelectedCurrentBranch();
-        if (selected?.repoOption.path === branch.repoOption.path) { return Promise.resolve(selected); }
+        const selectedRepositories = this.repoController.selectedRepoList;
+        if (selectedRepositories.length === 1 && selectedRepositories[0].path === branch.repoOption.path
+            && selected?.repoOption.path === branch.repoOption.path) { return Promise.resolve(selected); }
         return new Promise(resolve => {
             const finish = (result?: GitBranchOption): void => {
                 subscription.dispose();
@@ -1786,7 +2004,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const subscription = this.branchesController.onSelectedBranchesChanged(branchesByRepository => {
                 const current = [...branchesByRepository.values()].flat()
                     .find(candidate => candidate.kind === 'current' && candidate.repoOption.path === branch.repoOption.path);
-                if (current) { finish(current); }
+                const selectedRepositories = this.repoController.selectedRepoList;
+                if (current && selectedRepositories.length === 1 && selectedRepositories[0].path === branch.repoOption.path) { finish(current); }
             });
             signal.addEventListener('abort', cancel, { once: true });
             this.repoController.selectRepositories([branch.repoOption]);
@@ -2018,7 +2237,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             message: entry.message,
         }));
         const picked = await vscode.window.showQuickPick(items, { placeHolder: '选择当前项目的历史提交信息填入' });
-        if (picked) { this.updateCommitCardState(repositoryPath, { message: picked.message }); }
+        if (picked) {
+            this.updateWorkingTreeCommitMessage(repositoryPath, picked.message);
+            this.view?.webview.postMessage({ type: 'repositoryCommitMessage', repositoryPath, message: picked.message });
+        }
     }
 
     private async loadDefaultPushBranch(repositoryPath: string): Promise<void> {
@@ -2851,34 +3073,58 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 hash: targetHash,
                 kind: 'local',
             });
-        if (isDirtyWorktreeGitlink) {
-            try {
-                // Read the direct child before changing Store identity. The selection callback consumes
-                // this prepared snapshot synchronously, so Uncommitted Changes never publishes empty.
-                const changes = await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(branch);
-                this.pendingGitlinkWorktreeSnapshot = { repositoryPath, branch, changes };
-            } catch (error) {
-                void vscode.window.showWarningMessage(
-                    `无法读取子模块未提交状态：${submodule.label}（${error instanceof Error ? error.message : String(error)}）。`,
-                );
-                return;
-            }
-        }
         const commit = this.findCommit(targetHash, repositoryPath) ?? new CommitMetadata({ hash: targetHash, gitBranchOption: branch });
         const selectedParentFile = this.files.find(file => (file.diffKey || file.path) === this.selectedPath && file.path === filePath)
             ?? this.files.find(file => file.path === filePath);
-        this.gitlinkParentNavigationStack.push({
-            commit: parentCommit,
-            revealPath: selectedParentFile?.diffKey || selectedParentFile?.path || filePath,
-            childHash: targetHash,
-            childRepositoryPath: repositoryPath,
+        await this.selectGitlinkRepositoryCommit(commit, undefined, () => {
+            this.gitlinkParentNavigationStack.push({
+                commit: parentCommit,
+                revealPath: selectedParentFile?.diffKey || selectedParentFile?.path || filePath,
+                childHash: targetHash,
+                childRepositoryPath: repositoryPath,
+            });
         });
-        this.syncGitlinkParentNavigation();
-        this.requestedDiffReveal = { hash: targetHash, repositoryPath };
-        const changed = this.commitController.selectCommit(commit);
-        if (!changed && this.currentHash === targetHash && this.currentRepositoryPath === repositoryPath) {
-            this.requestedDiffReveal = undefined;
-            this.openDiff(this.selectedPath);
+    }
+
+    private async selectGitlinkRepositoryCommit(commit: CommitMetadata, revealPath: string | undefined, updateStack: () => void): Promise<void> {
+        const targetBranch = commit.gitBranchOption;
+        if (!targetBranch) { return; }
+        this.gitlinkNavigationAbortController?.abort();
+        const controller = new AbortController();
+        this.gitlinkNavigationAbortController = controller;
+        const repositoryPath = targetBranch.repoOption.path;
+        try {
+            const branch = await this.selectCommitPanelRepository(targetBranch, controller.signal);
+            if (!branch || controller.signal.aborted) { return; }
+            if (isWorkingTreeHash(commit.hash)) {
+                const changes = await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(branch);
+                if (controller.signal.aborted) { return; }
+                this.pendingGitlinkWorktreeSnapshot = { repositoryPath, branch, changes };
+            }
+            updateStack();
+            this.syncGitlinkParentNavigation();
+            this.requestedDiffReveal = { hash: commit.hash, repositoryPath, path: revealPath };
+            const target = this.findCommit(commit.hash, repositoryPath) ?? new CommitMetadata({ ...commit, gitBranchOption: branch });
+            const changed = this.commitController.selectCommit(target);
+            if (!changed && this.currentHash === commit.hash && this.currentRepositoryPath === repositoryPath) {
+                this.requestedDiffReveal = undefined;
+                if (isWorkingTreeHash(commit.hash) && this.pendingGitlinkWorktreeSnapshot) {
+                    const prepared = this.pendingGitlinkWorktreeSnapshot;
+                    this.pendingGitlinkWorktreeSnapshot = undefined;
+                    await this.selectWorkingTreeChanges(prepared.changes, false, false, undefined, true, undefined, revealPath);
+                }
+                this.openDiff(this.resolveSelectedChangedFile(revealPath));
+            }
+            if (!controller.signal.aborted) {
+                this.view?.webview.postMessage({ type: 'revealRepositoryChanges', repositoryPath });
+                this.schedulePushState();
+            }
+        } catch (error) {
+            if (!controller.signal.aborted) {
+                void vscode.window.showErrorMessage('Gitlink 跳转失败：' + (error instanceof Error ? error.message : String(error)));
+            }
+        } finally {
+            if (this.gitlinkNavigationAbortController === controller) { this.gitlinkNavigationAbortController = undefined; }
         }
     }
     private syncGitlinkParentNavigation(): void {
@@ -2890,29 +3136,20 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     private reconcileGitlinkParentNavigation(hash?: string, repositoryPath?: string): void {
+        // Repository selection briefly emits undefined/default commits before the exact target.
+        if (this.gitlinkNavigationAbortController && !this.gitlinkNavigationAbortController.signal.aborted) { return; }
         const navigation = this.gitlinkParentNavigationStack[this.gitlinkParentNavigationStack.length - 1];
         if (!navigation || (navigation.childHash === hash && navigation.childRepositoryPath === repositoryPath)) { return; }
         this.gitlinkParentNavigationStack.length = 0;
         this.syncGitlinkParentNavigation();
     }
 
-    private backToParentCommit(): void {
-        const navigation = this.gitlinkParentNavigationStack.pop();
+    private async backToParentCommit(): Promise<void> {
+        const navigation = this.gitlinkParentNavigationStack.at(-1);
         if (!navigation) { return; }
-        this.syncGitlinkParentNavigation();
-        const repositoryPath = navigation.commit.gitBranchOption?.repoOption.path;
-        if (!repositoryPath) { return; }
-        this.requestedDiffReveal = {
-            hash: navigation.commit.hash,
-            repositoryPath,
-            path: navigation.revealPath,
-        };
-        const changed = this.commitController.selectCommit(navigation.commit);
-        if (!changed && this.currentHash === navigation.commit.hash && this.currentRepositoryPath === repositoryPath) {
-            this.requestedDiffReveal = undefined;
-            const revealPath = this.resolveSelectedChangedFile(navigation.revealPath);
-            this.openDiff(revealPath);
-        }
+        await this.selectGitlinkRepositoryCommit(navigation.commit, navigation.revealPath, () => {
+            if (this.gitlinkParentNavigationStack.at(-1) === navigation) { this.gitlinkParentNavigationStack.pop(); }
+        });
     }
 
     private resolveSelectedChangedFile(preferredPath?: string): string | undefined {

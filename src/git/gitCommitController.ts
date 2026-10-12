@@ -17,6 +17,7 @@ import { UncommittedFilesWatcher } from './uncommittedFilesWatcher';
 import {
     getCommitFiles,
     getGitCommits,
+    getCurrentGitHeadHash,
     searchCommits,
 } from './gitLogProvider';
 
@@ -51,6 +52,12 @@ export class GitCommitController implements vscode.Disposable {
     private total: CommitMetadata[] = [];
     private commitPageByRepository = new Map<string, CommitMetadata[]>();
     private commitPageOffsetByRepository = new Map<string, number>();
+    // Independent of the selected repositories and pagination. Promises provide single-flight reads.
+    private readonly firstCommitPages = new Map<string, { headHash: string; commits: Promise<CommitMetadata[]> }>();
+    private readonly pendingFirstPages = new Map<string, GitRepositoryOption>();
+    private readonly firstPageRepositoryPaths = new Set<string>();
+    private firstPageWorkers = 0;
+    private readonly firstPageAbortController = new AbortController();
     private hasMoreCommits = false;
     private isLoadingMore = false;
     private commitPageError = '';
@@ -92,6 +99,7 @@ export class GitCommitController implements vscode.Disposable {
     private readonly repositorySelectionSubscription: vscode.Disposable;
     private readonly branchSelectionSubscription: vscode.Disposable;
     private readonly uncommittedFilesSubscription: vscode.Disposable;
+    private readonly allRepositoriesSubscription: vscode.Disposable;
 
     readonly onSearchedCommitsChanged = this.searchedEmitter.event;
     readonly onTotalCommitsChanged = this.totalEmitter.event;
@@ -114,12 +122,79 @@ export class GitCommitController implements vscode.Disposable {
             this.selectBranches([...branchesMap.values()].flat());
         });
         this.uncommittedFilesSubscription = uncommittedFilesWatcher.onEachHeadBranchUncommittedFileChanged(event => {
+            this.prefetchFirstCommitPages([event.branch.repoOption]);
             const current = this.branches.find(branch => branch.kind === 'current');
             if (current?.repoOption.path !== event.branch.repoOption.path || current.hash !== event.branch.hash) {
                 return;
             }
             this.applyWorkingTreeSnapshot(event.branch.repoOption.path, event.changes, event.affectedPaths);
         });
+        this.allRepositoriesSubscription = repoController.ontotalRepoListChanged(repositories => {
+            this.firstPageRepositoryPaths.clear();
+            repositories.forEach(repository => this.firstPageRepositoryPaths.add(repository.path));
+            const paths = this.firstPageRepositoryPaths;
+            for (const repositoryPath of this.firstCommitPages.keys()) {
+                if (!paths.has(repositoryPath)) { this.firstCommitPages.delete(repositoryPath); }
+            }
+            for (const repositoryPath of this.pendingFirstPages.keys()) {
+                if (!paths.has(repositoryPath)) { this.pendingFirstPages.delete(repositoryPath); }
+            }
+            this.prefetchFirstCommitPages(repositories);
+        });
+        repoController.totalRepoList.forEach(repository => this.firstPageRepositoryPaths.add(repository.path));
+        this.prefetchFirstCommitPages(repoController.totalRepoList);
+    }
+
+    private prefetchFirstCommitPages(repositories: readonly GitRepositoryOption[]): void {
+        if (this.firstPageAbortController.signal.aborted) { return; }
+        for (const repository of repositories) {
+            if (this.firstPageRepositoryPaths.has(repository.path)) { this.pendingFirstPages.set(repository.path, repository); }
+        }
+        // Start every queued repository immediately; the page cache deduplicates in-flight reads.
+        while (this.pendingFirstPages.size > 0) {
+            this.firstPageWorkers++;
+            void this.drainFirstCommitPages();
+        }
+    }
+
+    private async drainFirstCommitPages(): Promise<void> {
+        const signal = this.firstPageAbortController.signal;
+        try {
+            while (!signal.aborted && this.pendingFirstPages.size > 0) {
+                const repository = this.pendingFirstPages.values().next().value as GitRepositoryOption;
+                this.pendingFirstPages.delete(repository.path);
+                try {
+                    const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+                        .find(candidate => candidate.repoOption.path === repository.path);
+                    const headHash = branch?.hash ?? await getCurrentGitHeadHash(vscode.Uri.parse(repository.path), signal);
+                    if (headHash && !signal.aborted && this.firstPageRepositoryPaths.has(repository.path)) {
+                        await this.readFirstCommitPage(repository, headHash);
+                    }
+                } catch (error) {
+                    if (!signal.aborted) { console.warn('无法预读仓库首批提交:', repository.path, error); }
+                }
+            }
+        } finally { this.firstPageWorkers--; }
+    }
+
+    private async readFirstCommitPage(repository: GitRepositoryOption, headHash: string): Promise<CommitMetadata[]> {
+        let entry = this.firstCommitPages.get(repository.path);
+        if (!entry || entry.headHash !== headHash) {
+            entry = {
+                headHash,
+                commits: getGitCommits(vscode.Uri.parse(repository.path), COMMIT_PAGE_SIZE,
+                    [headHash], 0, undefined, this.firstPageAbortController.signal),
+            };
+            this.firstCommitPages.set(repository.path, entry);
+        }
+        try {
+            const commits = await entry.commits;
+            // Graph layout and repository ownership are attached only to fresh foreground copies.
+            return commits.map(commit => new CommitMetadata({ ...commit, parents: [...commit.parents], refs: [...commit.refs] }));
+        } catch (error) {
+            if (this.firstCommitPages.get(repository.path) === entry) { this.firstCommitPages.delete(repository.path); }
+            throw error;
+        }
     }
 
     get selectedBranches(): readonly GitBranchOption[] { return this.branches; }
@@ -229,6 +304,19 @@ export class GitCommitController implements vscode.Disposable {
         this.searchedEmitter.fire([]);
         this.totalEmitter.fire([]);
         this.repositorySelectionGeneration++;
+        if (repositories.length === 0) {
+            // Invalidate foreground history, but keep background first-page caches.
+            this.commitReadGeneration++;
+            this.pageGeneration++;
+            this.branches = [];
+            this.branchesByRepository.clear();
+            this.isLoadingMore = false;
+            this._isLoading = false;
+            this.applyWorkingTreeSnapshot(undefined, new WorkingTreeChanges());
+            this.selectedEmitter.fire(undefined);
+            this.loadingEmitter.fire(false);
+            return;
+        }
         // 仓库事件监听器的注册顺序不应决定提交读取；已有 HEAD 快照时主动消费，否则等待权威分支事件。
         const selectedBranches = [...this.branchesController.getSelectedBranchesByRepository().values()].flat();
         if (selectedBranches.length > 0) { this.selectBranches(selectedBranches); }
@@ -269,6 +357,7 @@ export class GitCommitController implements vscode.Disposable {
         if (this.branches.length === 0) { return; }
         // 同一选择的刷新已在途, 复用它避免重复 git log。
         if (this._isLoading) { return; }
+        for (const repository of this.repositories) { this.firstCommitPages.delete(repository.path); }
         this.pageAbortController?.abort();
         this.isLoadingMore = false;
         this._isLoading = true;
@@ -353,6 +442,11 @@ export class GitCommitController implements vscode.Disposable {
     }
 
     dispose(): void {
+        this.allRepositoriesSubscription.dispose();
+        this.firstPageAbortController.abort();
+        this.pendingFirstPages.clear();
+        this.firstPageRepositoryPaths.clear();
+        this.firstCommitPages.clear();
         this.repositorySelectionSubscription.dispose();
         this.branchSelectionSubscription.dispose();
         this.uncommittedFilesSubscription.dispose();
@@ -425,9 +519,15 @@ export class GitCommitController implements vscode.Disposable {
             const refs = refsByRepository.get(repository.path) ?? [];
             if (refs.length === 0) { return []; }
             const rootUri = vscode.Uri.parse(repository.path);
+            const repositoryBranches = this.branchesByRepository.get(repository.path) ?? [];
+            const currentBranch = repositoryBranches.length === 1 && repositoryBranches[0].kind === 'current'
+                ? repositoryBranches[0] : undefined;
             const commits = keywords.length > 0
                 ? await searchCommits(rootUri, [...keywords], refs, signal)
-                : await getGitCommits(rootUri, COMMIT_PAGE_SIZE, refs, 0, undefined, signal);
+                : currentBranch
+                    ? await this.readFirstCommitPage(repository, currentBranch.hash)
+                    : await getGitCommits(rootUri, COMMIT_PAGE_SIZE, refs, 0, undefined, signal);
+            if (signal.aborted) { return []; }
             // 每个列表各自建图: buildGraph 原地改图形字段, 共享对象会互相污染。
             return this.buildGraph(commits).map(commit => new CommitMetadata({
                 ...commit,

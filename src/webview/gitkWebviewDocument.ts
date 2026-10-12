@@ -1,6 +1,7 @@
 import { CHANGED_FILES_SUB_PANEL_MARKUP, CHANGED_FILES_SUB_PANEL_SCRIPT, CHANGED_FILES_SUB_PANEL_STYLES } from './changedFilesSubPanel';
 import { COMMIT_LIST_SUB_PANEL_MARKUP, COMMIT_LIST_SUB_PANEL_SCRIPT, COMMIT_LIST_SUB_PANEL_STYLES } from './commitListSubPanel';
 import { SELECTOR_BAR_SUB_PANEL_MARKUP, SELECTOR_BAR_SUB_PANEL_SCRIPT, SELECTOR_BAR_SUB_PANEL_STYLES } from './selectorBarSubPanel';
+import { REPOSITORY_CHANGES_SCRIPT, REPOSITORY_CHANGES_STYLES } from './repositoryChangesSubPanel';
 
 /**
  * gitk webview 页面骨架: 把外壳(全局样式、布局容器、消息分发、拖拽与工具函数)
@@ -35,6 +36,7 @@ export function renderGitkWebviewHtml(codiconCssUri: string): string {
 ${SELECTOR_BAR_SUB_PANEL_STYLES}
 ${CHANGED_FILES_SUB_PANEL_STYLES}
 ${COMMIT_LIST_SUB_PANEL_STYLES}
+${REPOSITORY_CHANGES_STYLES}
 </style>
 </head>
 <body>
@@ -84,9 +86,25 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP}
       const localFileSelectionEcho = Boolean(pendingLocalFileSelectionPath && nextSelectedPath === pendingLocalFileSelectionPath);
       if (localFileSelectionEcho || (pendingLocalFileSelectionPath && nextSelectedPath !== previousSelectedPath)) pendingLocalFileSelectionPath = '';
       selectedPath = nextSelectedPath;
+      const repositorySelectionEcho = Boolean(pendingRepositoryFileSelection
+        && pendingRepositoryFileSelection.repositoryPath === selectedCommitRepositoryPath
+        && pendingRepositoryFileSelection.diffKey === nextSelectedPath);
+      pendingRepositoryFileSelection = null;
+      syncRepositoryFileSelection(!repositorySelectionEcho);
       const filesList = document.getElementById('filesList');
       syncWorkingTreeSelectionClasses(filesList);
       if (!localFileSelectionEcho) revealSelectedFile();
+      return;
+    }
+    if (msg.type === 'revealRepositoryChanges') {
+      revealRepositoryChanges(msg.repositoryPath);
+      return;
+    }
+    if (msg.type === 'repositoryCommitMessage') {
+      repositoryDrafts.set(msg.repositoryPath, msg.message || '');
+      const node = repositoryChangesNodes.get(msg.repositoryPath);
+      if (node) node.input.value = msg.message || '';
+      renderRepositoryChanges();
       return;
     }
     if (msg.type === 'stateUpdate') {
@@ -111,6 +129,7 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP}
       uncommittedRepoBadge.title = '打开 Commit 面板（' + uncommittedRepositoryCount + ' 个仓库有未提交文件）';
       stagedCount = Number(state.stagedCount) || 0;
       changesCount = Number(state.changesCount) || 0;
+      repositoryChanges = state.repositoryChanges || [];
       hasMoreCommits = Boolean(state.hasMoreCommits);
       isLoadingMoreCommits = Boolean(state.isLoadingMoreCommits);
       commitPageError = state.commitPageError || '';
@@ -129,9 +148,17 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP}
       if (localFileSelectionEcho || (pendingLocalFileSelectionPath && nextSelectedPath !== previousSelectedPath)) pendingLocalFileSelectionPath = '';
       selectedPath = nextSelectedPath;
       selectedCommitHash = state.selectedCommit ? state.selectedCommit.hash : '';
+      const previousFileRepositoryPath = selectedCommitRepositoryPath;
       selectedCommitRepositoryPath = state.selectedCommit ? state.selectedCommit.repositoryPath : '';
-      workingTreeCommitMessage = typeof state.commitMessage === 'string' ? state.commitMessage : '';
-      updateWorkingTreeCommitEditor();
+      selectedRepositoryCommitDetails = state.selectedCommit || null;
+      selectedRepositoryPaths = state.selectedRepositoryPaths || [];
+      const repositorySelectionEcho = Boolean(pendingRepositoryFileSelection
+        && pendingRepositoryFileSelection.repositoryPath === selectedCommitRepositoryPath
+        && pendingRepositoryFileSelection.diffKey === selectedPath);
+      if (repositorySelectionEcho) pendingRepositoryFileSelection = null;
+      renderRepositoryChanges();
+      if (selectedPathChanged || previousFileRepositoryPath !== selectedCommitRepositoryPath || repositorySelectionEcho) syncRepositoryFileSelection(!repositorySelectionEcho);
+      document.getElementById('filesList').hidden = !selectedCommitHash || isWorkingTreeHash(selectedCommitHash);
       var nextCommitListModelKey = JSON.stringify([
         commits.map(function(commit) { return commit.key || ((commit.repositoryPath || '') + ':' + commit.hash); }),
         selectedRepositoryPaths,
@@ -221,6 +248,7 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP}
 ${SELECTOR_BAR_SUB_PANEL_SCRIPT}
 ${COMMIT_LIST_SUB_PANEL_SCRIPT}
 ${CHANGED_FILES_SUB_PANEL_SCRIPT}
+${REPOSITORY_CHANGES_SCRIPT}
 
   document.addEventListener('mousedown', function(event) {
     const target = event.target;

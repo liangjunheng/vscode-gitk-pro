@@ -825,6 +825,15 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
   }
 
   function render() {
+    if (selectedRepositoryPaths.length === 0) {
+      const list = document.getElementById('commitList');
+      list.style.display = 'block';
+      list.innerHTML = '<div id="commitEmpty">暂未选中仓库</div>';
+      commitVirtualStart = -1; commitVirtualEnd = -1;
+      document.getElementById('commitFooter').hidden = true;
+      document.getElementById('countLabel').hidden = true;
+      return;
+    }
     // 蒙版模式下旧列表已经没有参考价值, 直接让位给蒙版; 进度条模式下列表必须继续渲染。
     if (isCommitLoading && commitLoadingMode === 'overlay') {
       document.getElementById('commitList').style.display = 'none';

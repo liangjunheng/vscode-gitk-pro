@@ -21,6 +21,8 @@ export type GitkIntent =
     | { type: 'workingTreeAction'; action: unknown; section: unknown; path?: unknown; paths?: unknown }
     | { type: 'workingTreeCommit'; action: unknown; repositoryPath: unknown; message: unknown }
     | { type: 'updateCommitMessage'; repositoryPath: unknown; message: unknown }
+    | { type: 'repositoryChangesFile'; repositoryPath: string; section: 'conflict' | 'staged' | 'unstaged'; path: string }
+    | { type: 'repositoryChangesAction'; repositoryPath: string; action: string; section?: 'conflict' | 'staged' | 'unstaged'; paths?: string[]; untrackedPaths?: string[] }
     | { type: 'rendered'; target: unknown; fileCount: unknown }
     | { type: 'openCommitEditor'; amend: unknown; repositoryPath: unknown }
     | { type: 'openCommitPanel' }

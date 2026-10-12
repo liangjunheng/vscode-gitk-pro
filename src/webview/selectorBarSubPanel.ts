@@ -29,7 +29,9 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   #commitSelectors .uncommitted-repo-group:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
   .uncommitted-repo-group .codicon { display: flex; align-items: center; font-size: 11px; line-height: 1; }
   .dropdown { position: relative; flex: 0 1 auto; min-width: 0; }
-  #repositoryDropdown, #branchDropdown { width: 20ch; }
+  #branchDropdown { width: 20ch; }
+  #repositoryDisplay { display: flex; align-items: center; gap: 4px; flex: 0 1 20ch; min-width: 0; height: 26px; color: var(--vscode-descriptionForeground); font-size: 11px; cursor: default; }
+  #repositoryDisplay .dropdown-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dropdown-current { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 26px; padding: 0 7px; color: var(--vscode-dropdown-foreground, var(--vscode-foreground)); background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent); border: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent); border-radius: 4px; box-shadow: none; font: inherit; font-size: 11px; text-align: left; cursor: pointer; }
   .dropdown-current:has(.dropdown-spinner) { gap: 2px; }
   .dropdown-label:has(.dropdown-spinner) { display: inline-flex; align-items: center; flex: 1 1 auto; gap: 4px; }
@@ -65,12 +67,8 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   .dropdown-option { color: inherit; background: transparent; cursor: pointer; }
   .dropdown-option:hover, .dropdown-option:focus-visible { color: var(--vscode-menu-selectionForeground); background: var(--vscode-menu-selectionBackground); outline: none; }
   .dropdown-option.selected::before { content: '✓'; display: inline-block; width: 14px; color: var(--vscode-menu-selectionForeground, var(--vscode-textLink-foreground)); }
-  #repositoryDropdown .dropdown-option, #branchDropdown .dropdown-option { display: flex; align-items: center; gap: 6px; }
-  #repositoryDropdown .dropdown-option.selected::before, #branchDropdown .dropdown-option.selected::before { display: none; }
-  /* 仓库选项的 radio 被隐藏, 必须显式补回选中态(✓ + 菜单选中底色), 否则切换仓库后看不出当前是哪个仓库。 */
-  #repositoryDropdown .dropdown-option.selected::before { display: inline-block; }
-  #repositoryDropdown .dropdown-option.selected { background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-menu-selectionForeground, var(--vscode-foreground)); }
-  #repositoryDropdown .dropdown-option input { display: none; }
+  #branchDropdown .dropdown-option { display: flex; align-items: center; gap: 6px; }
+  #branchDropdown .dropdown-option.selected::before { display: none; }
   #branchDropdown .dropdown-option input { flex: 0 0 auto; margin: 0; accent-color: var(--vscode-checkbox-selectBackground, var(--vscode-focusBorder)); }
   .dropdown-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 2px 1px; border-top: 1px solid var(--vscode-menu-separatorBackground, var(--vscode-panel-border)); }
   .dropdown-actions-right { display: flex; align-items: center; gap: 6px; }
@@ -84,6 +82,14 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   .dropdown-actions .confirm-selection { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
   .dropdown-actions .confirm-selection:hover { background: var(--vscode-button-hoverBackground); }
   .dropdown-group { padding-bottom: 1px; color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 600; cursor: default; }
+  #branchDropdown .dropdown-group { display: flex; align-items: center; gap: 6px; position: sticky; top: 0; z-index: 1; min-height: 28px; margin-top: 5px; padding: 5px 7px; border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 0; background: var(--vscode-menu-background, var(--vscode-editor-background)); font-size: 11px; }
+  #branchDropdown .dropdown-group:first-child { margin-top: 0; }
+  #branchDropdown .dropdown-group[hidden], #branchDropdown .dropdown-option[hidden] { display: none; }
+  .branch-group-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .branch-group-count { flex: 0 0 auto; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); font-size: 10px; text-align: center; }
+  #branchDropdown .dropdown-option { min-height: 28px; padding: 4px 8px; }
+  .branch-option-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .branch-current-marker { flex: 0 0 auto; padding: 1px 5px; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 3px; color: var(--vscode-descriptionForeground); font-size: 10px; }
   .dropdown-empty { padding: 8px 7px; color: var(--vscode-descriptionForeground); font-size: 11px; }
 `;
 
@@ -96,10 +102,7 @@ export const SELECTOR_BAR_SUB_PANEL_MARKUP = `
         <div class="dropdown-menu" role="menu"><input class="dropdown-filter" type="text" placeholder="筛选分支" aria-label="筛选分支"><div class="dropdown-options"></div><div class="dropdown-actions"><button type="button" class="toggle-all" aria-pressed="false"><input type="checkbox" tabindex="-1" aria-hidden="true"><span>全选</span></button><div class="dropdown-actions-right"><button type="button" class="confirm-selection">确定</button><button type="button" class="cancel-selection">取消</button></div></div></div>
       </div></div>
       <span class="selector-separator" aria-hidden="true">@</span>
-      <div class="selector-group repo-group"><div class="dropdown" id="repositoryDropdown">
-        <button class="dropdown-current" type="button" title="切换仓库或子仓库" aria-expanded="false" disabled><span class="dropdown-label"><span class="dropdown-spinner" hidden aria-hidden="true"></span>未选择仓库</span><span class="dropdown-chevron" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></span></button>
-        <div class="dropdown-menu" role="menu"><input class="dropdown-filter" type="text" placeholder="筛选仓库" aria-label="筛选仓库"><div class="dropdown-options"></div></div>
-      </div></div>
+      <div id="repositoryDisplay" title="未选择仓库"><span class="dropdown-label">未选择仓库</span></div>
       <button class="selector-icon-button" id="repositoryTerminalBtn" type="button" title="在终端中打开当前仓库" aria-label="在终端中打开当前仓库" disabled><span class="codicon codicon-terminal" aria-hidden="true"></span></button>
       <button class="uncommitted-repo-group" id="uncommittedRepoBadge" title="打开 Commit 面板" aria-label="打开存在未提交文件的仓库"><span class="codicon codicon-source-control" aria-hidden="true"></span><span class="uncommitted-repo-count">0</span></button>
     </div>
@@ -114,7 +117,6 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
   let uncommittedEnabled = false;
   let stagedCount = 0;
   let changesCount = 0;
-  let repositoryEntries = [];
   let selectedRepositoryPaths = [];
   function updateDropdownLoading(dropdown, loading, ariaLabel) {
     const progress = dropdown.options.querySelector('.dropdown-progress');
@@ -139,7 +141,11 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
     }
   }
   function updateRepositoryLoading(loading) {
-    updateDropdownLoading(repositoryDropdown, loading, '正在加载仓库');
+    repositoryDisplay.dataset.loading = loading ? 'true' : 'false';
+    const label = repositoryDisplay.querySelector('.dropdown-label');
+    let spinner = label.querySelector('.dropdown-spinner');
+    if (!spinner) { spinner = document.createElement('span'); spinner.className = 'dropdown-spinner'; spinner.setAttribute('aria-hidden', 'true'); label.appendChild(spinner); }
+    spinner.hidden = !loading;
   }
   function updateBranchLoading(loading) {
     updateDropdownLoading(branchDropdown, loading, '正在加载分支');
@@ -163,7 +169,8 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
       const opening = !root.classList.contains('open');
       closeDropdowns();
       if (opening) {
-        if (root === branchDropdown) {
+        if (id === 'branchDropdown') {
+          branchDropdown.openSelection = true;
           // 每次打开都以已确认选择重置弹窗草稿。
           const applied = branchDropdown.appliedSelection || new Set();
           branchDropdown.selected.clear();
@@ -181,9 +188,18 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
       const query = filter.value.trim().toLocaleLowerCase();
       let visibleOptions = 0;
       options.querySelectorAll('.dropdown-option').forEach(function(option) {
-        const visible = !query || option.textContent.toLocaleLowerCase().includes(query);
+        const visible = !query || (option.dataset.searchText || option.textContent).toLocaleLowerCase().includes(query);
         option.hidden = !visible;
         if (visible) visibleOptions++;
+      });
+      options.querySelectorAll('.dropdown-group').forEach(function(group) {
+        let count = 0;
+        for (let sibling = group.nextElementSibling; sibling && !sibling.classList.contains('dropdown-group'); sibling = sibling.nextElementSibling) {
+          if (sibling.classList.contains('dropdown-option') && !sibling.hidden) count++;
+        }
+        group.hidden = count === 0;
+        const badge = group.querySelector('.branch-group-count');
+        if (badge) badge.textContent = String(count);
       });
       let empty = options.querySelector('.dropdown-empty');
       if (!visibleOptions) {
@@ -201,24 +217,10 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
       ? commitSection.getBoundingClientRect().height
       : Math.max(document.documentElement.clientHeight, document.body.clientHeight);
     dropdown.menu.style.maxHeight = Math.floor(commitHeight * 2 / 3) + 'px';
-    updateRepositoryDropdownPosition(dropdown);
-  }
-
-  function updateRepositoryDropdownPosition(dropdown) {
-    if (dropdown !== repositoryDropdown) return;
-    dropdown.menu.style.left = '0px';
-    const commitSection = document.getElementById('commitSection');
-    if (!commitSection) return;
-    const menuRect = dropdown.menu.getBoundingClientRect();
-    const buttonRect = dropdown.current.getBoundingClientRect();
-    const overflow = Math.max(0, Math.ceil(menuRect.right - commitSection.getBoundingClientRect().right));
-    const maxOffset = Math.max(0, Math.floor(menuRect.right - buttonRect.right));
-    const offset = Math.min(overflow, maxOffset);
-    if (offset > 0) dropdown.menu.style.left = -offset + 'px';
   }
 
   function updateOpenDropdownHeights() {
-    [repositoryDropdown, branchDropdown].forEach(function(dropdown) {
+    [branchDropdown].forEach(function(dropdown) {
       if (dropdown && dropdown.root.classList.contains('open')) updateDropdownHeight(dropdown);
     });
   }
@@ -227,16 +229,16 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
     const wasOpen = dropdown.root.classList.contains('open');
     if (wasOpen && !dropdown.skipRestore && dropdown.restoreSelection) dropdown.restoreSelection();
     dropdown.skipRestore = false;
+    dropdown.openSelection = false;
     dropdown.root.classList.remove('open');
     dropdown.current.setAttribute('aria-expanded', 'false');
   }
 
   function closeDropdowns() {
-    if (repositoryDropdown) closeDropdown(repositoryDropdown);
     if (branchDropdown) closeDropdown(branchDropdown);
   }
 
-  const repositoryDropdown = createDropdown('repositoryDropdown', function() {});
+  const repositoryDisplay = document.getElementById('repositoryDisplay');
   const branchDropdown = createDropdown('branchDropdown', function() {});
   const commitSectionResizeTarget = document.getElementById('commitSection');
   if (commitSectionResizeTarget && typeof ResizeObserver !== 'undefined') {
@@ -286,12 +288,11 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
     return '<span class="branch-icon codicon codicon-' + icon + '" aria-hidden="true"></span>';
   }
   function updateSelectedRepoDisplay(repository) {
-    const loading = repositoryDropdown.current.dataset.loading === 'true';
-    repositoryDropdown.current.disabled = !repository;
-    repositoryDropdown.label.innerHTML = (repository
+    const loading = repositoryDisplay.dataset.loading === 'true';
+    repositoryDisplay.querySelector('.dropdown-label').innerHTML = (repository
       ? repositoryIcon(repository.hasSubmodules, repository.isSubmodule) + '<span class="dropdown-value">' + escapeHtml(repository.label) + '</span>'
       : '<span class="dropdown-value">未选择仓库</span>') + '<span class="dropdown-spinner"' + (loading ? '' : ' hidden') + ' aria-hidden="true"></span>';
-    repositoryDropdown.current.title = repository ? repository.path : '未选择仓库';
+    repositoryDisplay.title = repository ? repository.path : '未选择仓库';
     document.getElementById('repositoryTerminalBtn').disabled = !repository;
   }
   function updateSelectedBranchDisplay(display) {
@@ -303,51 +304,18 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
       + '<span class="dropdown-spinner"' + (loading ? '' : ' hidden') + ' aria-hidden="true"></span>';
     branchDropdown.current.title = display ? display.title : '未选择分支';
   }
-  function renderRepositoryOptions(entries, selectedValues) {
-    const selectedValue = (selectedValues || []).find(function(value) {
-      return entries.some(function(entry) { return entry.value === value; });
-    }) || '';
-    repositoryDropdown.options.innerHTML = '';
-    entries.forEach(function(entry) {
-      const option = document.createElement('label');
-      const checked = entry.value === selectedValue;
-      option.className = 'dropdown-option' + (checked ? ' selected' : '');
-      option.title = entry.title || entry.label;
-      const radio = document.createElement('input');
-      radio.type = 'radio';
-      radio.name = 'repository';
-      radio.value = entry.value;
-      radio.checked = checked;
-      option.addEventListener('click', function(event) {
-        event.preventDefault();
-        radio.checked = true;
-        repositoryDropdown.options.querySelectorAll('.dropdown-option').forEach(function(item) {
-          item.classList.toggle('selected', item === option);
-        });
-        closeDropdown(repositoryDropdown);
-        // 先让浏览器提交仓库阶段这一帧，再通知扩展端；否则同步代码会在首次绘制前切到分支阶段。
-        requestAnimationFrame(function() {
-          updateBranchLoading(true);
-          vscode.postMessage({ type: 'selectRepositories', paths: [entry.value] });
-        });
-      });
-      option.appendChild(radio);
-      option.insertAdjacentHTML('beforeend', repositoryIcon(entry.hasSubmodules, entry.isSubmodule));
-      option.appendChild(document.createTextNode(entry.label));
-      repositoryDropdown.options.appendChild(option);
-    });
-  }
 
   function renderBranchOptions(entries, selectedValues) {
     const options = entries.filter(function(entry) { return !entry.group; });
-    // 当前分支会同时出现在本地分支分组；全选状态和动作均按唯一引用计算。
+    // 当前分支归入本地分组；全选状态和动作仍按唯一引用计算。
     const uniqueOptionValues = Array.from(new Set(options.map(function(entry) { return entry.value; })));
     // 持久化 selected Set, 避免 stateUpdate 重建时旧 change handler 引用过期 Set
     if (!branchDropdown.selected) branchDropdown.selected = new Set();
     const selected = branchDropdown.selected;
     // 分支列表未变时只更新 checkbox 状态, 不销毁 DOM (避免 stateUpdate 导致点击丢失)
     var existingInputs = branchDropdown.options.querySelectorAll('input[type="checkbox"]');
-    var canUpdateInPlace = existingInputs.length === options.length &&
+    const entriesKey = JSON.stringify(entries);
+    var canUpdateInPlace = branchDropdown.entriesKey === entriesKey && existingInputs.length === options.length &&
       Array.from(existingInputs).every(function(input, i) { return input.value === options[i].value; });
     const serverSelection = (selectedValues || []).slice().sort().join('\0');
     // 弹窗打开期间，无论选项 DOM 是否因状态刷新重建，都保留打开前快照及未确认的选择。
@@ -404,26 +372,29 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
     if (canUpdateInPlace) {
       updateSelectionUi();
       bindBranchActions();
+      branchDropdown.filter.dispatchEvent(new Event('input'));
       return;
     }
+    branchDropdown.entriesKey = entriesKey;
     branchDropdown.options.innerHTML = '';
     entries.forEach(function(entry) {
       if (entry.group) {
         const group = document.createElement('div');
         group.className = 'dropdown-group';
-        group.textContent = entry.group;
+        group.innerHTML = '<span class="codicon codicon-' + (entry.remoteName ? 'cloud' : 'git-branch') + '" aria-hidden="true"></span><span class="branch-group-label">' + escapeHtml(entry.group) + '</span><span class="branch-group-count">' + entry.count + '</span>';
         branchDropdown.options.appendChild(group);
         return;
       }
       const option = document.createElement('label');
       option.className = 'dropdown-option' + (selected.has(entry.value) ? ' selected' : '');
       option.title = entry.title || entry.label;
+      option.dataset.searchText = [entry.label, entry.title || '', entry.remoteName || ''].join(' ');
       const checkbox = document.createElement('input');
       checkbox.type = 'checkbox';
       checkbox.value = entry.value;
       checkbox.checked = selected.has(entry.value);
       option.addEventListener('click', function(event) {
-        event.preventDefault();
+        if (event.target !== checkbox) event.preventDefault();
         if (selected.has(entry.value)) selected.delete(entry.value); else selected.add(entry.value);
         updateSelectionUi();
       });
@@ -431,23 +402,20 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
       if (entry.kind) {
         option.insertAdjacentHTML('beforeend', branchIcon(entry.kind));
       }
-      option.appendChild(document.createTextNode(entry.label));
+      const name = document.createElement('span'); name.className = 'branch-option-label'; name.textContent = entry.label;
+      option.appendChild(name);
+      if (entry.kind === 'current') {
+        const marker = document.createElement('span'); marker.className = 'branch-current-marker'; marker.textContent = '当前'; option.appendChild(marker);
+      }
       branchDropdown.options.appendChild(option);
     });
     updateSelectionUi();
     bindBranchActions();
+    branchDropdown.filter.dispatchEvent(new Event('input'));
   }
 
   function updateTotalRepositoryList(repositories, nextSelectedRepositoryPaths) {
     selectedRepositoryPaths = nextSelectedRepositoryPaths;
-    repositoryEntries = repositories.map(function(repo) {
-      return {
-        value: repo.path, label: repo.label, title: repo.path, path: repo.path,
-        hasSubmodules: Boolean(repo.hasSubmodules),
-        isSubmodule: Array.isArray(repo.ancestry) && repo.ancestry.length > 0,
-      };
-    });
-    renderRepositoryOptions(repositoryEntries, selectedRepositoryPaths);
   }
 
   function updateTotalBranchesList(nextBranches) {
@@ -457,29 +425,40 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
 
   function renderTotalBranchOptions() {
     branchDropdown.root.hidden = false;
-    const currentBranches = totalBranches.filter(function(branch) { return branch.kind === 'current'; });
-    const localBranches = totalBranches.filter(function(branch) { return branch.kind === 'local'; });
-    const remoteBranches = totalBranches.filter(function(branch) { return branch.kind === 'remote'; });
+    const local = new Map();
+    const remotes = new Map();
+    totalBranches.forEach(function(branch) {
+      if (branch.kind !== 'remote') {
+        if (!local.has(branch.name) || branch.kind === 'current') local.set(branch.name, branch);
+        return;
+      }
+      if (branch.name.endsWith('/HEAD')) return;
+      const remoteRef = (branch.name.startsWith('refs/remotes/') ? branch.name.slice('refs/remotes/'.length) : branch.name);
+      const remoteName = remoteRef.split('/')[0];
+      if (!remotes.has(remoteName)) remotes.set(remoteName, new Map());
+      remotes.get(remoteName).set(branch.name, branch);
+    });
     const branchEntries = [];
-    if (currentBranches.length) {
-      branchEntries.push({ group: '当前分支' });
-      currentBranches.forEach(function(branch) { branchEntries.push({ value: branch.name, label: branch.label, title: branch.name, kind: 'current' }); });
+    if (local.size) {
+      branchEntries.push({ group: '本地分支', count: local.size });
+      Array.from(local.values()).sort(function(left, right) {
+        return Number(right.kind === 'current') - Number(left.kind === 'current') || left.label.localeCompare(right.label);
+      }).forEach(function(branch) { branchEntries.push({ value: branch.name, label: branch.label, title: branch.name, kind: branch.kind }); });
     }
-    if (localBranches.length) {
-      branchEntries.push({ group: '本地分支' });
-      localBranches.forEach(function(branch) { branchEntries.push({ value: branch.name, label: branch.label, title: branch.name, kind: 'local' }); });
-    }
-    if (remoteBranches.length) {
-      branchEntries.push({ group: '远程分支' });
-      remoteBranches.forEach(function(branch) { branchEntries.push({ value: branch.name, label: branch.label, title: branch.name, kind: 'remote' }); });
-    }
+    Array.from(remotes.keys()).sort().forEach(function(remoteName) {
+      const remoteBranches = Array.from(remotes.get(remoteName).values()).sort(function(left, right) { return left.label.localeCompare(right.label); });
+      branchEntries.push({ group: '远程分支 · ' + remoteName, remoteName: remoteName, count: remoteBranches.length });
+      remoteBranches.forEach(function(branch) {
+        const label = (branch.name.startsWith('refs/remotes/') ? branch.name.slice('refs/remotes/'.length) : branch.name).slice(remoteName.length + 1);
+        branchEntries.push({ value: branch.name, label: label, title: branch.name, kind: 'remote', remoteName: remoteName });
+      });
+    });
     renderBranchOptions(branchEntries, selectedBranches);
   }
 
   function renderSelectorState(msg) {
     selectedRepositoryPaths = msg.selectedRepositoryPaths || [];
     selectedBranches = msg.selectedBranches || [];
-    renderRepositoryOptions(repositoryEntries, selectedRepositoryPaths);
     renderTotalBranchOptions();
   }
 

@@ -73,6 +73,15 @@ export const checkout = (rootUri: vscode.Uri, revision: string, detach = false):
     invokeNativeGit<void>('checkout', { rootPath: rootUri.fsPath, revision, detach });
 export const checkoutBranch = (rootUri: vscode.Uri, branch: string): Promise<void> =>
     invokeNativeGit<void>('checkoutBranch', { rootPath: rootUri.fsPath, branch });
+
+/** Git CLI provides safe checkout + upstream setup for a new remote-tracking local branch. */
+export async function checkoutRemoteBranch(rootUri: vscode.Uri, remoteRef: string, localName: string): Promise<void> {
+    if (!remoteRef.startsWith('refs/remotes/') || remoteRef.endsWith('/HEAD') || localName.startsWith('-')) {
+        throw new Error('远程分支或本地分支名称无效');
+    }
+    await runGitCli(rootUri, ['check-ref-format', '--branch', localName]);
+    await runGitCli(rootUri, ['checkout', '--track', '-b', localName, remoteRef]);
+}
 export const cherryPick = (rootUri: vscode.Uri, revision: string): Promise<string> =>
     invokeNativeGit<string>('cherryPick', { rootPath: rootUri.fsPath, revision });
 export const revertCommit = (rootUri: vscode.Uri, revision: string): Promise<string> =>
