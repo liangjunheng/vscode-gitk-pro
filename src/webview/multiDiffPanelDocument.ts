@@ -1163,11 +1163,12 @@ function revealScrollTop(entry){
   return Math.max(0,listTop+8+layoutPrefix[entry.index]-stickyTop)
 }
 function revealTailHeight(){
-  const entry=revealTailPath&&cardByPath.get(revealTailPath);
-  if(!entry)return 0;
+  if(!cards.length)return 0;
   if(layoutDirty)rebuildLayoutMetrics();
-  // 最后几张卡片后方也要保留一个视口的可滚动余量，否则浏览器最大 scrollY 会让目标只能停在面板中部。
-  return Math.max(0,window.innerHeight-(layoutTotal-layoutPrefix[entry.index]))
+  // 列表末尾始终保留足够的视口余量，让最后一张卡片也能滚到顶部。
+  // 不能依赖 revealTailPath: 用户开始滚动后程序化定位会清掉它，但普通滚动仍需要这个边界。
+  const lastIndex=cards.length-1;
+  return Math.max(0,window.innerHeight-(layoutTotal-layoutPrefix[lastIndex]))
 }
 function revealAlignmentDelta(entry){
   // 卡片外壳挂载后以真实 DOM 顶部为准；overscan 中前置卡片的真实高度可能与逻辑估值不同。
