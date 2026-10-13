@@ -999,8 +999,18 @@ async function verifyProvider() {
     changedFileSummaryCache: new WeakMap(), selectedBranchesMap: new Map(),
     commitMessageByRepo: new Map([[repositories[1].path, 'child draft']]), commitCommittingByRepo: new Set(),
     commitPanelViewTitleController: { update() {} },
-    commitController: { isLoading: false, searchedCommitList: [], displayedSearchKeywords: [] },
-    uncommittedFilesWatcher: { listCurrentHeadBranches: () => repositories.map(repoOption => ({ repoOption, label: 'deadbeef', kind: 'current', hash: 'd'.repeat(40) })) },
+    commitController: { isLoading: false, searchedCommitList: [], displayedSearchKeywords: [], totalCommitList: [],
+      selectCommit: commit => { provider.commitController.selectedCommit = commit; return true; } },
+    uncommittedFilesWatcher: {
+      listCurrentHeadBranches: () => repositories.map(repoOption => ({ repoOption, label: 'deadbeef', kind: 'current', hash: 'd'.repeat(40) })),
+      getUncommittedFilesByHeadBranch: async branch => branch.repoOption.path === repositories[1].path
+        ? { staged: [], changes: [{ path: 'same.cpp', status: 'M' }] } : { staged: [], changes: [] },
+    },
+    selectCommitPanelRepository: async branch => {
+      if (repoSelection.length !== 1 || repoSelection[0].path !== branch.repoOption.path) provider.repoController.selectRepositories([branch.repoOption]);
+      return branch;
+    },
+    selectWorkingTreeChanges: async () => {},
   });
   store.setState({ commitRepositories: [{ repository: repositories[1], repositoryPath: repositories[1].path, repositoryLabel: 'child', staged: [], unstaged: [{ path: 'same.cpp', status: 'M' }] }] });
   provider.pushStateToWebview();
@@ -1028,6 +1038,7 @@ async function verifyProvider() {
     get selectedRepoList() { return repoSelection; },
     selectRepositories: value => { repoSelection = value; selections.push(value); },
   };
+  provider.commitController.totalCommitList = [{ hash: 'clean-latest', message: 'latest clean commit', gitBranchOption: { repoOption: repositories[2] } }];
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', action: 'terminal', repositoryPath: repositories[1].path });
   assert.equal(terminals[0].cwd.toString(), repositories[1].path, 'child terminal cwd is independent of selected parent');
   assert.equal(terminals[0].name, 'Gitk: child'); assert.equal(terminalShows, 1);
@@ -1044,12 +1055,16 @@ async function verifyProvider() {
   assert.deepEqual(selections, [[repositories[1]]], 'focus uses authoritative selection pipeline that drives commit history');
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', repositoryPath: repositories[1].path, action: 'focus' });
   assert.equal(selections.length, 1, 'repeated focus must not restart commit reads');
+  await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', repositoryPath: repositories[2].path, action: 'focus' });
+  assert.equal(provider.commitController.selectedCommit.hash, 'clean-latest', 'clean repository opens on its latest commit');
+  const selectionsBeforeUnknownFocus = selections.length;
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', repositoryPath: 'file:///outside', action: 'focus' });
-  assert.equal(selections.length, 1, 'unknown focus target rejected');
+  assert.equal(selections.length, selectionsBeforeUnknownFocus, 'unknown focus target rejected');
+  const selectionsBeforeUnfocusedCollapse = selections.length;
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', repositoryPath: repositories[0].path, action: 'blur' });
-  assert.equal(selections.length, 1, 'collapse of an unfocused repository does not clear selection');
-  await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', repositoryPath: repositories[1].path, action: 'blur' });
-  assert.deepEqual(selections[1], [], 'collapse of the focused repository cancels authoritative selection');
+  assert.equal(selections.length, selectionsBeforeUnfocusedCollapse, 'collapse of an unfocused repository does not clear selection');
+  await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', repositoryPath: repositories[2].path, action: 'blur' });
+  assert.deepEqual(selections.at(-1), [], 'collapse of the focused repository cancels authoritative selection');
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', repositoryPath: repositories[1].path, action: 'focus' });
   provider.openCommitPanelWorkingTreeDiff = async (...args) => { operation = args; };
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesFile', repositoryPath: repositories[1].path, section: 'unstaged', path: 'same.cpp' });
@@ -1110,6 +1125,9 @@ async function verifyProvider() {
   provider.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch = () => new Promise(resolve => { releaseWorktree = resolve; });
   const pendingWorktree = provider.selectRepositoryChangesWorktree(repositories[1].path);
   await new Promise(resolve => setImmediate(resolve));
+  provider.selectRepositoryChangesDefault = async repositoryPath => {
+    provider.repoController.selectRepositories([repositories.find(repository => repository.path === repositoryPath)]);
+  };
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', action: 'focus', repositoryPath: repositories[0].path });
   releaseWorktree({ staged: [], changes: [] });
   await pendingWorktree;
@@ -1245,6 +1263,13 @@ async function verifyGitlinkNavigation(GitkViewProvider, store) {
       getUncommittedFilesByHeadBranch: async branch => snapshots.get(branch.repoOption.path),
     },
     findCommit: () => undefined,
+    selectRepositoryChangesDefault: async repositoryPath => {
+      provider.gitlinkNavigationAbortController?.abort();
+      const repository = repositories.find(candidate => candidate.path === repositoryPath);
+      if (repository && (selectedRepositories.length !== 1 || selectedRepositories[0].path !== repositoryPath)) {
+        provider.repoController.selectRepositories([repository]);
+      }
+    },
     multiDiffPanel: { setParentCommitNavigation() {} },
     schedulePushState() {},
     commitController: {
@@ -1283,14 +1308,18 @@ async function verifyGitlinkNavigation(GitkViewProvider, store) {
   assert.equal(listeners.size, 0, 'repository selection subscriptions are cleaned up');
   // A newer manual focus supersedes a slow navigation, without selecting its stale target.
   let release;
-  provider.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch = () => new Promise(resolve => { release = resolve; });
+  let slowReads = 0;
+  provider.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch = () => {
+    if (slowReads++ === 0) return new Promise(resolve => { release = resolve; });
+    return Promise.resolve({ staged: [], changes: [] });
+  };
   const pending = provider.selectGitlinkCommit('render', branches[1].hash);
   await new Promise(resolve => setImmediate(resolve));
   Object.defineProperty(provider, 'repositories', { value: repositories });
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', action: 'focus', repositoryPath: repositories[2].path });
   release(snapshots.get(repositories[1].path));
   const count = messages.length;
-  await pending;
+  await Promise.race([pending, new Promise((_, reject) => setTimeout(() => reject(new Error('Gitlink navigation test timed out')), 5000))]);
   assert.equal(messages.length, count, 'cancelled navigation cannot reveal the stale repository');
   assert.equal(provider.gitlinkParentNavigationStack.length, 0, 'cancelled navigation cannot add a Back entry');
 }
