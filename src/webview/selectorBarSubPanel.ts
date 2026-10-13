@@ -7,7 +7,7 @@
 /** 选择器栏子面板的样式片段。 */
 export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   /* 仓库/分支选择器与提交列表标题合成一块, 合并为单行, 统一使用标题栏底色。 */
-  #commitSelectors { display: flex; flex-direction: column; flex: 0 0 auto; min-width: 0; background: var(--commit-title-background); }
+  #commitSelectors { display: flex; flex-direction: column; flex: 0 0 auto; position: sticky; top: 30px; left: 0; z-index: 2; min-width: 0; background: var(--commit-title-background); }
   .selector-row { display: flex; align-items: center; gap: 2px; min-width: 0; padding: 3px 10px; background: var(--commit-title-background); }
   #commitSelectors { border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); }
   #commitSelectors button { border: none; cursor: pointer; border-radius: 2px; }
@@ -15,23 +15,19 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   .selector-group { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0; }
   #branchSelector { flex: 0 1 auto; min-width: 0; }
   .repo-group { flex: 0 1 auto; min-width: 0; }
-  #commitSelectors .selector-icon-button { display: inline-grid; place-items: center; flex: 0 0 26px; width: 26px; height: 26px; padding: 0; background: transparent; color: var(--vscode-icon-foreground); }
-  #commitSelectors .selector-icon-button:hover:not(:disabled) { background: var(--vscode-toolbar-hoverBackground); }
-  #commitSelectors .selector-icon-button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
-  #commitSelectors .selector-icon-button:disabled { cursor: default; opacity: .45; }
-  #commitSelectors .selector-icon-button .codicon { font-size: 14px; line-height: 1; }
-  /* 分支@仓库之间保留 2px 间距, 分隔符使用不透明的加粗前景色。 */
-  .selector-separator { flex: 0 0 auto; color: var(--vscode-foreground); font-size: 11px; font-weight: 700; }
-  /* 打开 Commit 面板 与 未提交仓库计数 合成一个可点击组: 整块都可点, 不再只有数字徽标。常驻 repo 行末尾, 无未提交时显示 0。 */
+  /* @ 与两侧控件各留 6px（行间距 2px + 4px 外边距）。 */
+  .selector-separator { flex: 0 0 auto; margin: 0 4px; color: var(--vscode-foreground); font-size: 11px; font-weight: 700; }
+  /* Commit 面板入口位于变更列表标题栏的显示方式之前；无未提交仓库时隐藏。 */
   /* 徽标尺寸: 高 18、圆角 10、图标 11, 字号 11px, 左右内边距 4px。 */
-  #commitSelectors .uncommitted-repo-group { display: flex; align-items: center; align-self: center; gap: 3.75px; flex: 0 0 auto; height: 18px; margin-left: 0; padding: 0 4px; border: 1px solid var(--vscode-button-border, transparent); border-radius: 10px; background: var(--vscode-button-background, #007acc); color: var(--vscode-button-foreground, #fff); font: inherit; font-size: 11px; font-weight: 600; line-height: 1; cursor: pointer; white-space: nowrap; }
-  #commitSelectors .uncommitted-repo-group:hover { background: var(--vscode-button-hoverBackground, #0062a3); }
-  #commitSelectors .uncommitted-repo-group:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+  #filesActions .uncommitted-repo-group { display: flex; align-items: center; align-self: center; gap: 3.75px; flex: 0 0 auto; height: 18px; margin-left: 0; padding: 0 4px; border: 1px solid var(--vscode-button-border, transparent); border-radius: 10px; background: var(--vscode-button-background, #007acc); color: var(--vscode-button-foreground, #fff); font: inherit; font-size: 11px; font-weight: 600; line-height: 1; cursor: pointer; white-space: nowrap; }
+  #filesActions .uncommitted-repo-group:hover { background: var(--vscode-button-hoverBackground, #0062a3); }
+  #filesActions .uncommitted-repo-group:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
   .uncommitted-repo-group .codicon { display: flex; align-items: center; font-size: 11px; line-height: 1; }
   .dropdown { position: relative; flex: 0 1 auto; min-width: 0; }
   #branchDropdown { width: 20ch; }
-  #repositoryDisplay { display: flex; align-items: center; gap: 4px; flex: 0 1 20ch; min-width: 0; height: 26px; color: var(--vscode-descriptionForeground); font-size: 11px; cursor: default; }
-  #repositoryDisplay .dropdown-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #repositoryDisplay { display: flex; align-items: center; gap: 0; flex: 0 1 20ch; min-width: 0; height: 26px; color: var(--vscode-descriptionForeground); font-size: 11px; cursor: default; }
+  #repositoryDisplay .dropdown-label { gap: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #repositoryDisplay .repository-icon { margin-right: 0; }
   .dropdown-current { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 26px; padding: 0 7px; color: var(--vscode-dropdown-foreground, var(--vscode-foreground)); background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent); border: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent); border-radius: 4px; box-shadow: none; font: inherit; font-size: 11px; text-align: left; cursor: pointer; }
   .dropdown-current:has(.dropdown-spinner) { gap: 2px; }
   .dropdown-label:has(.dropdown-spinner) { display: inline-flex; align-items: center; flex: 1 1 auto; gap: 4px; }
@@ -103,8 +99,6 @@ export const SELECTOR_BAR_SUB_PANEL_MARKUP = `
       </div></div>
       <span class="selector-separator" aria-hidden="true">@</span>
       <div id="repositoryDisplay" title="未选择仓库"><span class="dropdown-label">未选择仓库</span></div>
-      <button class="selector-icon-button" id="repositoryTerminalBtn" type="button" title="在终端中打开当前仓库" aria-label="在终端中打开当前仓库" disabled><span class="codicon codicon-terminal" aria-hidden="true"></span></button>
-      <button class="uncommitted-repo-group" id="uncommittedRepoBadge" title="打开 Commit 面板" aria-label="打开存在未提交文件的仓库"><span class="codicon codicon-source-control" aria-hidden="true"></span><span class="uncommitted-repo-count">0</span></button>
     </div>
   </div>
 `;
@@ -150,9 +144,6 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
   function updateBranchLoading(loading) {
     updateDropdownLoading(branchDropdown, loading, '正在加载分支');
   }
-  document.getElementById('repositoryTerminalBtn').addEventListener('click', function() {
-    vscode.postMessage({ type: 'openRepositoryTerminal' });
-  });
   document.getElementById('uncommittedRepoBadge').addEventListener('click', function() {
     vscode.postMessage({ type: 'openCommitPanel' });
   });
@@ -293,7 +284,6 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
       ? repositoryIcon(repository.hasSubmodules, repository.isSubmodule) + '<span class="dropdown-value">' + escapeHtml(repository.label) + '</span>'
       : '<span class="dropdown-value">未选择仓库</span>') + '<span class="dropdown-spinner"' + (loading ? '' : ' hidden') + ' aria-hidden="true"></span>';
     repositoryDisplay.title = repository ? repository.path : '未选择仓库';
-    document.getElementById('repositoryTerminalBtn').disabled = !repository;
   }
   function updateSelectedBranchDisplay(display) {
     // 是否置灰只由完整分支列表是否为空决定，不能由当前选中分支决定。

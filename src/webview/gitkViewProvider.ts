@@ -1542,10 +1542,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
      * 选中仓库的提交列表与工作区状态由 GitCommitController 负责并吸收异常;
      * 其余 current-head 仓库经 watcher 强制刷新, 结果通过 onEachHeadBranchUncommittedFileChanged 回流多仓库 Store。
      */
-    private refreshCurrentViewData(): void {
+    private refreshCurrentViewData(refreshedRepositoryPath?: string): Promise<void> {
         void this.requestRepositoryScan();
         this.selectedRepoTotalBranchWatcher.refreshSelectedRepositories();
-        void this.commitController.forceRefreshCurrentSelection();
+        const historyRefresh = !refreshedRepositoryPath || this.selectedRepositoryPaths.includes(refreshedRepositoryPath)
+            ? this.commitController.forceRefreshCurrentSelection()
+            : Promise.resolve();
+        // Card refresh already read its own HEAD/status. Toolbar refresh retains the full sweep.
+        if (refreshedRepositoryPath) { return historyRefresh; }
         const selectedRepositoryPath = this.commitController.uncommittedRepositoryPath;
         for (const branch of this.uncommittedFilesWatcher.listCurrentHeadBranches()) {
             // 选中仓库已由 commit controller 刷新, 避免重复 status。
@@ -1553,6 +1557,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             void this.uncommittedFilesWatcher.refreshUncommittedFilesByHeadBranch(branch)
                 .catch(error => console.warn(`无法刷新未提交文件: ${branch.repoOption.path}`, error));
         }
+        return historyRefresh;
     }
 
     private onMessage(message: unknown): void {
@@ -1616,10 +1621,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     const current = this.uncommittedFilesWatcher.listCurrentHeadBranches()
                         .find(candidate => candidate.repoOption.path === input.repositoryPath);
                     if (current) { await this.uncommittedFilesWatcher.refreshUncommittedFilesByHeadBranch(current); }
-                    this.selectedRepoTotalBranchWatcher.refreshSelectedRepositories();
-                    if (this.selectedRepositoryPaths.includes(input.repositoryPath)) {
-                        await this.commitController.forceRefreshCurrentSelection();
-                    }
+                    await this.refreshCurrentViewData(input.repositoryPath);
                     this.schedulePushState();
                 }
                 return;

@@ -41,6 +41,25 @@ async function main() {
     const publish = async () => page.evaluate(state => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state } })), state);
     await publish();
     await assertCount(page.locator('.repo-changes'), 6);
+    const selectorPosition = await page.evaluate(() => {
+      const header = document.getElementById('commitHeader').getBoundingClientRect();
+      const selectors = document.getElementById('commitSelectors').getBoundingClientRect();
+      const search = document.getElementById('commitSearchRow').getBoundingClientRect();
+      return { headerBottom: header.bottom, selectorTop: selectors.top, selectorBottom: selectors.bottom, searchTop: search.top };
+    });
+    assert.ok(Math.abs(selectorPosition.selectorTop - selectorPosition.headerBottom) < 1, 'branch and repository selector follows the commit header');
+    assert.ok(Math.abs(selectorPosition.searchTop - selectorPosition.selectorBottom) < 1, 'selector sits directly above commit search');
+    const iconTextGaps = await page.locator('.repo-changes').first().evaluate(card => {
+      const repoIcon = card.querySelector('.repo-changes-icon .codicon').getBoundingClientRect();
+      const repoLabel = card.querySelector('.repo-changes-label').getBoundingClientRect();
+      const branchIcon = card.querySelector('.repo-changes-branch .codicon').getBoundingClientRect();
+      const branchLabel = card.querySelector('.repo-changes-head').getBoundingClientRect();
+      return { repo: repoLabel.left - repoIcon.right, branch: branchLabel.left - branchIcon.right };
+    });
+    assert.equal(iconTextGaps.repo, 0, 'repository icon touches its label');
+    assert.equal(iconTextGaps.branch, 0, 'branch icon touches its label');
+    await assertCount(page.locator('#refreshBtn'), 0);
+    await assertCount(page.locator('#repositoryTerminalBtn'), 0);
     await assertCount(page.locator('.repo-changes-icon .has-submodules'), 2);
     await assertCount(page.locator('.repo-submodules-marker'), 0);
     for (const icon of await page.locator('.repo-changes-icon').all()) await assertCount(icon.locator('.codicon'), 1);
@@ -86,10 +105,22 @@ async function main() {
       };
     });
     const expandedLayout = await gutterLayout();
-    assert.equal(expandedLayout.gutter, 'stable', 'reserve scrollbar space before content overflows');
+    await page.locator('.repo-changes-label').first().click();
+    await assertCount(page.locator('.repo-changes.focused'), 1);
+    assert.equal(expandedLayout.gutter, 'auto', 'overlay scrollbar does not reserve a gutter');
     assert.equal(expandedLayout.paddingLeft, '0px');
-    assert.equal(expandedLayout.paddingRight, '0px');
-    assert.ok(expandedLayout.headerWidths.every(width => Math.abs(width + 2 - expandedLayout.clientWidth) < 1), 'repository cards fit the available width, including their borders');
+    assert.equal(expandedLayout.paddingRight, '1px');
+    assert.ok(expandedLayout.headerWidths.every(width => Math.abs(width + 3 - expandedLayout.clientWidth) < 1), 'repository cards retain a 1px right focus-border boundary');
+    const focusBorder = await page.locator('.repo-changes').filter({ has: page.locator('.repo-changes-header') }).nth(0).evaluate(card => {
+      const cardRect = card.getBoundingClientRect();
+      const listRect = document.getElementById('repositoryChangesList').getBoundingClientRect();
+      const scrollbarRect = document.getElementById('repositoryChangesScrollbar').getBoundingClientRect();
+      return { cardRight: cardRect.right, listRight: listRect.right, scrollbarLeft: scrollbarRect.left };
+    });
+    assert.ok(focusBorder.cardRight <= focusBorder.listRight - 1 + 1);
+    assert.ok(focusBorder.scrollbarLeft < focusBorder.listRight, 'vertical overlay remains inside its clipped viewport');
+    assert.equal(await page.locator('.repo-changes.focused').count(), 1, 'one focused card owns the right focus border');
+    assert.equal(await page.locator('.repo-changes.focused').evaluate(card => getComputedStyle(card).borderRightColor), 'rgb(0, 127, 212)', 'focused card retains its visible right focus border');
     assert.equal(expandedLayout.overflowing, true, 'expanded fixture requires a scrollbar');
     for (const toggle of await page.locator('.repo-changes-toggle').all()) await toggle.click();
     const collapsedLayout = await gutterLayout();
@@ -148,6 +179,20 @@ async function main() {
     await page.locator('#repositoryDisplay').click();
     assert.equal(await page.evaluate(() => window.messages.length), beforeDisplayClick, 'history repository name is display-only');
     assert.match(await page.locator('#repositoryDisplay').textContent(), /inkengine/);
+    const repositoryLabelGap = await page.locator('#repositoryDisplay').evaluate(display => {
+      const icon = display.querySelector('.repository-icon').getBoundingClientRect();
+      const label = display.querySelector('.dropdown-value').getBoundingClientRect();
+      return label.left - icon.right;
+    });
+    assert.equal(repositoryLabelGap, 0, 'repository icon touches its name in the selector');
+    const selectorGaps = await page.evaluate(() => {
+      const branch = document.getElementById('branchSelector').getBoundingClientRect();
+      const separator = document.querySelector('.selector-separator').getBoundingClientRect();
+      const repository = document.getElementById('repositoryDisplay').getBoundingClientRect();
+      return { left: separator.left - branch.right, right: repository.left - separator.right };
+    });
+    assert.equal(selectorGaps.left, 6, '@ keeps the same gap after the branch selector');
+    assert.equal(selectorGaps.right, 6, '@ keeps the same gap before the repository name');
     await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'repoLoadingChanged', loading: true } })));
     assert.equal(await page.locator('#repositoryDisplay .dropdown-spinner').isVisible(), true);
     await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'repoLoadingChanged', loading: false } })));
@@ -419,7 +464,7 @@ async function verifyHistoricalMessage(page, state, publish, repositories) {
   await page.setViewportSize({ width: 400, height: 1000 });
   await details.click();
   assert.equal(await root.locator('.repo-changes-body').isVisible(), true, 'selecting description text must not fold the card');
-  await details.focus(); await details.press('End');
+  await details.focus(); await details.press('Control+End');
   await page.waitForFunction(() => document.querySelector('.repo-changes .repo-commit-details').scrollTop > 0);
   assert.ok(await details.evaluate(node => node.scrollTop) > 0, 'keyboard can scroll to remaining description');
   if (process.env.GITK_HISTORY_SCREENSHOT) {
@@ -549,6 +594,7 @@ async function verifyProvider() {
       showQuickPick: async (items, opts) => { options = opts; branchItems = items; return pickedIndex === null ? undefined : items.filter(item => item.branch)[pickedIndex]; },
       showInputBox: async opts => { assert.equal(opts.value, 'remote'); assert.equal(opts.validateInput('main'), '本地分支已存在，请使用其他名称'); return opts.value; },
       showInformationMessage() {},
+      showErrorMessage() {},
       createTerminal: options => { terminals.push(options); return { show: () => terminalShows++ }; },
     },
   };

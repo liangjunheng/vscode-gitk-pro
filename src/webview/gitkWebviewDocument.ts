@@ -2,6 +2,7 @@ import { CHANGED_FILES_SUB_PANEL_MARKUP, CHANGED_FILES_SUB_PANEL_SCRIPT, CHANGED
 import { COMMIT_LIST_SUB_PANEL_MARKUP, COMMIT_LIST_SUB_PANEL_SCRIPT, COMMIT_LIST_SUB_PANEL_STYLES } from './commitListSubPanel';
 import { SELECTOR_BAR_SUB_PANEL_MARKUP, SELECTOR_BAR_SUB_PANEL_SCRIPT, SELECTOR_BAR_SUB_PANEL_STYLES } from './selectorBarSubPanel';
 import { REPOSITORY_CHANGES_SCRIPT, REPOSITORY_CHANGES_STYLES } from './repositoryChangesSubPanel';
+import { OVERLAY_SCROLLBAR_SCRIPT, OVERLAY_SCROLLBAR_STYLES } from './overlayScrollbar';
 
 /**
  * gitk webview 页面骨架: 把外壳(全局样式、布局容器、消息分发、拖拽与工具函数)
@@ -37,6 +38,7 @@ ${SELECTOR_BAR_SUB_PANEL_STYLES}
 ${CHANGED_FILES_SUB_PANEL_STYLES}
 ${COMMIT_LIST_SUB_PANEL_STYLES}
 ${REPOSITORY_CHANGES_STYLES}
+${OVERLAY_SCROLLBAR_STYLES}
 </style>
 </head>
 <body>
@@ -44,8 +46,7 @@ ${REPOSITORY_CHANGES_STYLES}
 ${CHANGED_FILES_SUB_PANEL_MARKUP}
     <div id="panelResizeHandle" role="separator" aria-label="调整变更文件列表与提交图高度" aria-orientation="horizontal"></div>
     <div id="commitSection">
-${SELECTOR_BAR_SUB_PANEL_MARKUP}
-${COMMIT_LIST_SUB_PANEL_MARKUP}
+${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR_SUB_PANEL_MARKUP)}
     </div>
   </main>
 <script>
@@ -126,6 +127,7 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP}
       var uncommittedRepoBadge = document.getElementById('uncommittedRepoBadge');
       // 按钮内还有图标与文案, 只能改计数节点; 对按钮整体赋值 textContent 会抹掉子节点。
       uncommittedRepoBadge.querySelector('.uncommitted-repo-count').textContent = String(uncommittedRepositoryCount);
+      uncommittedRepoBadge.hidden = uncommittedRepositoryCount <= 0;
       uncommittedRepoBadge.title = '打开 Commit 面板（' + uncommittedRepositoryCount + ' 个仓库有未提交文件）';
       stagedCount = Number(state.stagedCount) || 0;
       changesCount = Number(state.changesCount) || 0;
@@ -246,6 +248,7 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP}
   vscode.postMessage({ type: 'webviewReady' });
 
 ${SELECTOR_BAR_SUB_PANEL_SCRIPT}
+${OVERLAY_SCROLLBAR_SCRIPT}
 ${COMMIT_LIST_SUB_PANEL_SCRIPT}
 ${CHANGED_FILES_SUB_PANEL_SCRIPT}
 ${REPOSITORY_CHANGES_SCRIPT}

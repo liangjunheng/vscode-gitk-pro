@@ -1,7 +1,8 @@
 // Repository worktrees have independent expansion, drafts and repository-scoped actions.
 export const REPOSITORY_CHANGES_STYLES = `
   #filesList { display: none; }
-  #repositoryChangesList { flex: 1 1 auto; width: 100%; min-width: 0; min-height: 0; overflow: auto; scrollbar-gutter: stable; padding: 4px 0 8px; }
+  #repositoryChangesViewport { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; }
+  #repositoryChangesList { width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: auto; padding: 4px 1px 8px 0; }
   #repositoryChangesList[hidden] { display: none; }
   .repo-changes { width: 100%; min-width: 0; margin-bottom: 8px; border: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); border-radius: 6px; background: var(--vscode-sideBar-background, var(--vscode-editor-background)); cursor: pointer; }
   .repo-changes.focused { border-color: var(--vscode-focusBorder); }
@@ -9,8 +10,8 @@ export const REPOSITORY_CHANGES_STYLES = `
   .repo-changes.focused > .repo-changes-header, .repo-changes-header:hover { background: var(--vscode-list-hoverBackground); }
   .repo-changes-header { display: flex; width: 100%; align-items: center; height: 30px; min-width: 0; gap: 3px; padding: 0 6px; }
   .repo-changes-toggle { display: flex; justify-content: center; align-items: center; flex: 0 0 18px; width: 18px; height: 24px; padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer; }
-  .repo-changes-title { display: flex; align-items: center; flex: 1; min-width: 0; gap: 5px; cursor: pointer; }
-  .repo-changes-icon { position: relative; display: inline-flex; align-items: center; flex: 0 0 20px; width: 20px; height: 20px; }
+  .repo-changes-title { display: flex; align-items: center; flex: 1; min-width: 0; gap: 0; cursor: pointer; }
+  .repo-changes-icon { position: relative; display: inline-flex; align-items: center; flex: 0 0 16px; width: 16px; height: 20px; }
   .repo-changes-icon .repository-icon { margin: 0; }
   .repo-changes-badge { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 20px; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: #007acc; color: #ffffff; font: inherit; font-size: 10px; cursor: pointer; }
   .repo-changes-badge[hidden] { display: none; }
@@ -18,7 +19,7 @@ export const REPOSITORY_CHANGES_STYLES = `
   .repo-changes-badge:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
   .repo-changes-label, .repo-changes-head { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .repo-changes-label { flex: 0 1 auto; }
-  .repo-changes-branch { display: flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; max-width: 45%; height: 24px; padding: 0 4px; border: 0; border-radius: 3px; color: var(--vscode-descriptionForeground); background: transparent; font: inherit; font-size: 11px; cursor: pointer; }
+  .repo-changes-branch { display: flex; align-items: center; gap: 0; flex: 0 1 auto; min-width: 0; max-width: 45%; height: 24px; padding: 0 4px; border: 0; border-radius: 3px; color: var(--vscode-descriptionForeground); background: transparent; font: inherit; font-size: 11px; cursor: pointer; }
   .repo-changes-branch:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); }
   .repo-changes-branch:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .repo-changes-head { min-width: 0; }
@@ -291,6 +292,9 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     }
   }
   const repositoryChangesList = document.getElementById('repositoryChangesList');
+  const repositoryChangesViewport = document.getElementById('repositoryChangesViewport');
+  const repositoryChangesScrollbar = document.getElementById('repositoryChangesScrollbar');
+  installOverlayScrollbars(repositoryChangesViewport, repositoryChangesList, [repositoryChangesScrollbar]);
   window.addEventListener('resize', function() {
     repositoryChangesNodes.forEach(function(node) { resizeRepositoryMessage(node.input); resizeRepositoryCommitDetails(node.card.querySelector('.repo-commit-details')); });
   });

@@ -6,6 +6,8 @@
 
 /** Commit 列表子面板的样式片段。 */
 export const COMMIT_LIST_SUB_PANEL_STYLES = `
+  #commitGraphViewport { flex: 1 1 auto; min-width: 0; min-height: 0; }
+  #commitSection #commitGraphViewport > #graph { height: 100%; }
   #graph { --graph-lane-width: 22px; --main-width: calc(var(--graph-lane-width) + 60ch); --hash-width: max-content; --author-width: max-content; --date-width: max-content; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: auto; overflow-anchor: none; display: flex; flex-direction: column; }
   /* 竖向铺满: 列表吃掉表头以外的剩余高度。flex-shrink 必须为 0, 否则内容超高时会被压扁而无法滚动。 */
   #commitList { flex: 1 0 auto; min-width: 0; }
@@ -59,13 +61,11 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   .working-tree-label--changes { color: #ffffff; }
   .working-tree-count { color: var(--vscode-descriptionForeground); }
   #commitHeaderColumns > div { position: relative; min-width: 0; padding: 5px 14px 5px 0; overflow: hidden; white-space: nowrap; text-align: left; }
-  /* 扁平化图标按钮(fetch/pull/push/刷新): 只有图标, 无描边无圆角无底色, 悬停才给浅底。 */
+  /* 扁平化图标按钮(fetch/pull/push): 只有图标, 无描边无圆角无底色, 悬停才给浅底。 */
   #commitHeader .toolbar-icon { display: inline-grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--vscode-icon-foreground); font: inherit; cursor: pointer; vertical-align: middle; }
   #commitHeader .toolbar-icon:hover { background: var(--vscode-toolbar-hoverBackground); }
   #commitHeader .toolbar-icon .codicon { font-size: 14px; line-height: 1; }
   #commitHeader .toolbar-icon svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-  /* 刷新按钮在列头首列内, 与 "Commit列表" 文本拉开一点距离。 */
-  #commitHeaderColumns .toolbar-icon { margin-left: 6px; }
   .commit-header .resize-handle { position: absolute; top: 0; right: 0; width: 7px; height: 100%; cursor: col-resize; }
   .commit-header .resize-handle:hover { background: var(--vscode-focusBorder); }
   .col-main, .col-hash, .col-author, .col-date { min-width: 0; overflow: hidden; white-space: nowrap; text-align: left; }
@@ -110,7 +110,7 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
      同模板的 grid, 而四列宽变量由 setColumnWidth 同时写到 #graph 上(max-content 因此等于整行宽);
      搜索行没有这些列, 搜索框又是 flex: 1 1 auto + min-width: 0, 整行 max-content 远小于列表, 撑不出滚动宽。
      所以这里用横向 sticky 吸附, 任何滚动位置都可见, 且搜索框不会被拉宽到滚动宽。 */
-  #commitSearchRow { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; padding: 5px 10px; position: sticky; top: 30px; left: 0; z-index: 1; background: var(--commit-title-background); border-bottom: 1px solid var(--vscode-panel-border); }
+  #commitSearchRow { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; padding: 5px 10px; position: sticky; top: 60px; left: 0; z-index: 1; background: var(--commit-title-background); border-bottom: 1px solid var(--vscode-panel-border); }
   #commitSearchRow #searchBox { flex: 1 1 auto; min-width: 0; }
   #commitSearchRow .count { flex: 0 0 auto; }
   #commitSearchRow #searchInput { width: 100%; }
@@ -118,8 +118,10 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
 
 /** Commit 列表子面板的结构片段。 */
 export const COMMIT_LIST_SUB_PANEL_MARKUP = `
+    <div id="commitGraphViewport" class="overlay-scroll-viewport">
     <div id="graph">
-      <div id="commitHeader" class="commit-header"><div id="commitHeaderColumns"><div>Commit列表<button class="toolbar-icon" id="refreshBtn" title="刷新提交" aria-label="刷新提交"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 6A5 5 0 1 0 13 10M13 2v4H9"/></svg></button></div><div>作者</div><div>Commit ID</div><div>时间</div></div><div id="commitHeaderSearch"><button class="toolbar-icon" id="fetchBtn" title="Fetch" aria-label="Fetch"><span class="codicon codicon-repo-fetch" aria-hidden="true"></span></button><button class="toolbar-icon" id="pullBtn" title="Pull" aria-label="Pull"><span class="codicon codicon-repo-pull" aria-hidden="true"></span></button><button class="toolbar-icon" id="pushBtn" title="Push" aria-label="Push"><span class="codicon codicon-repo-push" aria-hidden="true"></span></button></div></div>
+      <div id="commitHeader" class="commit-header"><div id="commitHeaderColumns"><div>Commit列表</div><div>作者</div><div>Commit ID</div><div>时间</div></div><div id="commitHeaderSearch"><button class="toolbar-icon" id="fetchBtn" title="Fetch" aria-label="Fetch"><span class="codicon codicon-repo-fetch" aria-hidden="true"></span></button><button class="toolbar-icon" id="pullBtn" title="Pull" aria-label="Pull"><span class="codicon codicon-repo-pull" aria-hidden="true"></span></button><button class="toolbar-icon" id="pushBtn" title="Push" aria-label="Push"><span class="codicon codicon-repo-push" aria-hidden="true"></span></button></div></div>
+      <!-- commit-selectors -->
       <div id="commitSearchRow"><div class="selector" id="searchBox"><svg id="searchIcon" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 .96-.96l3.04 3.03-1.06 1.06-2.94-3.13z"/></svg><input type="text" id="searchInput" placeholder="搜索提交..." title="输入关键词搜索, 支持作者/邮箱/消息/Hash/日期, 多个关键词用空格隔开, 回车开始搜索"><button id="searchClear" title="清除搜索">&times;</button></div><span class="count" id="countLabel"></span><div id="commitProgress" hidden><div id="commitProgressFill"></div></div></div>
       <div id="loading">
         <div id="loadingText">加载中...</div>
@@ -129,27 +131,18 @@ export const COMMIT_LIST_SUB_PANEL_MARKUP = `
       <div id="commitList"><div id="commitEmpty">提交记录将在此显示</div></div>
       <div id="commitFooter" hidden></div>
     </div>
+    <div id="commitVerticalScrollbar" class="overlay-scroll-track vertical" role="scrollbar" aria-label="纵向滚动提交列表" aria-controls="graph" aria-orientation="vertical" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" tabindex="0" hidden><div class="overlay-scroll-thumb"></div></div>
+    <div id="commitHorizontalScrollbar" class="overlay-scroll-track horizontal" role="scrollbar" aria-label="横向滚动提交列表" aria-controls="graph" aria-orientation="horizontal" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" tabindex="0" hidden><div class="overlay-scroll-thumb"></div></div>
+    </div>
 `;
 
 /** Commit 列表子面板的交互脚本片段。 */
 export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
+  installOverlayScrollbars(document.getElementById('commitGraphViewport'), document.getElementById('graph'), [document.getElementById('commitVerticalScrollbar'), document.getElementById('commitHorizontalScrollbar')]);
   ['fetch', 'pull', 'push'].forEach(function(action) {
     document.getElementById(action + 'Btn').addEventListener('click', function() {
       vscode.postMessage({ type: 'gitSync', action: action });
     });
-  });
-  // 刷新按钮由 headerCell 随每次 render 重建, 只能委托到容器上, 直接绑定会在首次渲染后失效。
-  document.getElementById('commitHeaderColumns').addEventListener('click', function(event) {
-    if (!event.target.closest('#refreshBtn')) return;
-    vscode.postMessage({ type: 'refresh' });
-  });
-  document.addEventListener('animationend', function(event) {
-    var target = event.target;
-    if (target && target.id === 'refreshBtn') target.classList.remove('refresh-unchanged');
-  });
-  document.addEventListener('animationcancel', function(event) {
-    var target = event.target;
-    if (target && target.id === 'refreshBtn') target.classList.remove('refresh-unchanged');
   });
   var searchDebounceTimer = null;
   function triggerSearch() {
@@ -724,7 +717,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     if (!topSpacer || !commits.length) return { start: 0, end: 0 };
     const graphRect = graph.getBoundingClientRect();
     const regionTop = topSpacer.getBoundingClientRect().top - graphRect.top + graph.scrollTop;
-    const stickyHeight = document.getElementById('commitHeader').offsetHeight + document.getElementById('commitSearchRow').offsetHeight;
+    const stickyHeight = document.getElementById('commitHeader').offsetHeight + document.getElementById('commitSelectors').offsetHeight + document.getElementById('commitSearchRow').offsetHeight;
     const viewportTop = Math.max(0, graph.scrollTop + stickyHeight - regionTop);
     const viewportBottom = Math.max(viewportTop, graph.scrollTop + graph.clientHeight - regionTop);
     const first = commitLowerBound(viewportTop);
@@ -1001,11 +994,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
   }
 
   function headerCell(label, key) {
-    // 刷新按钮随表头一起重建, 每次都是新节点, 因此点击只能靠 #commitHeaderColumns 上的事件委托。
-    var refresh = key === 'main'
-      ? '<button class="toolbar-icon" id="refreshBtn" title="刷新提交" aria-label="刷新提交"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 6A5 5 0 1 0 13 10M13 2v4H9"/></svg></button>'
-      : '';
-    return '<div data-column="' + key + '">' + label + refresh + '<span class="resize-handle" data-column="' + key + '"></span></div>';
+    return '<div data-column="' + key + '">' + label + '<span class="resize-handle" data-column="' + key + '"></span></div>';
   }
 
   function updateColumnWidths(items, startIndex) {
