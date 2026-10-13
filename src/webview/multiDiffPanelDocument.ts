@@ -440,6 +440,7 @@ function disposeEntry(entry){
 }
 function dispose(){
   renderToken++;clearVirtualJumpAnchor();clearSettledRevealAnchor();
+  if(viewportSyncTimer){clearTimeout(viewportSyncTimer);viewportSyncTimer=0}
   if(virtualFrame){cancelAnimationFrame(virtualFrame);virtualFrame=0}
   if(externalRevealFrame){cancelAnimationFrame(externalRevealFrame);externalRevealFrame=0}
   if(editorMountFrame){cancelAnimationFrame(editorMountFrame);editorMountFrame=0}
@@ -552,7 +553,7 @@ function ensureVirtualRoot(){
   virtualRoot.append(virtualTop,virtualCardsHost,virtualBottom);
   list.replaceChildren(virtualRoot);
 }
-function entryHeight(entry){return (entry.collapsed?entry.pinnedHeight:entry.pinnedHeight+entry.bodyHeight)+14}
+function entryHeight(entry){return (entry.collapsed?entry.pinnedHeight:entry.pinnedHeight+entry.bodyHeight)+(entry.chromeHeight||0)}
 function rebuildLayoutMetrics(){
   layoutPrefix=new Array(cards.length+1);layoutPrefix[0]=0;
   for(let index=0;index<cards.length;index++)layoutPrefix[index+1]=layoutPrefix[index]+entryHeight(cards[index]);
@@ -642,10 +643,13 @@ function mountCardShell(entry,parent){
 function measureMountedCardShell(entry){
   if(!entry.card||!entry.pinnedGroup||!entry.body)return;
   const measuredPinnedHeight=entry.pinnedGroup.getBoundingClientRect().height;
+  const measuredBodyHeight=entry.body.getBoundingClientRect().height;
+  // Include exact borders and the final-card margin rule, not a guessed fixed card gap.
+  const chromeHeight=entry.card.getBoundingClientRect().height-measuredPinnedHeight-measuredBodyHeight+(parseFloat(getComputedStyle(entry.card).marginBottom)||0);
+  if(Math.abs((entry.chromeHeight||0)-chromeHeight)>.5){entry.chromeHeight=chromeHeight;layoutDirty=true}
   if(measuredPinnedHeight>0&&Math.abs(entry.pinnedHeight-measuredPinnedHeight)>.5){entry.pinnedHeight=measuredPinnedHeight;layoutDirty=true;if(externalRevealPath)scheduleExternalRevealAlignment()}
   if(entry.diff.loaded===true&&entry.staticContent){
-    const measuredBodyHeight=Math.max(entry.body.scrollHeight,entry.body.getBoundingClientRect().height);
-    if(measuredBodyHeight>0&&Math.abs(entry.bodyHeight-measuredBodyHeight)>.5){entry.bodyHeight=Math.max(80,Math.ceil(measuredBodyHeight));layoutDirty=true;if(externalRevealPath)scheduleExternalRevealAlignment()}
+    if(!entry.collapsed&&Math.abs(entry.bodyHeight-measuredBodyHeight)>.5){entry.bodyHeight=measuredBodyHeight;layoutDirty=true;if(externalRevealPath)scheduleExternalRevealAlignment()}
   }
   if(settledRevealAnchorPath)alignSettledRevealAnchor()
 }
@@ -1130,6 +1134,7 @@ function toggle(entry){
   externalRevealPath='';
   entry.collapsed=!entry.collapsed;
   entry.card.classList.toggle('collapsed',entry.collapsed);
+  measureMountedCardShell(entry);layoutDirty=true;
   if(entry.collapsed&&entry.diff.workingTreeKind!=='conflict')disposeEntry(entry);else scheduleVirtualization();
   setActive(entry.path,true);updateGlobalHScroll();
 }
@@ -1346,10 +1351,23 @@ function currentViewportOffset(){
 function topVisibleCard(){
   if(!cards.length)return undefined;
   if(layoutDirty)rebuildLayoutMetrics();
+  // Mounted geometry is authoritative; estimates can lag behind asynchronous editor layout.
+  const viewportTop=viewportContentTop();
+  if(virtualCardsHost){
+    for(const card of virtualCardsHost.children){
+      const rect=card.getBoundingClientRect();
+      if(rect.bottom>viewportTop+.5&&rect.top<window.innerHeight)return cardByPath.get(card.dataset.diffKey);
+    }
+  }
   return cards[lowerBoundOffset(currentViewportOffset())];
 }
+let viewportSyncTimer=0;
 function syncActiveFromViewport(){
-  if(programmaticRevealPath||scrollAnimationFrame||performance.now()<suppressSyncUntil)return;
+  if(programmaticRevealPath||scrollAnimationFrame)return;
+  if(performance.now()<suppressSyncUntil){
+    if(!viewportSyncTimer)viewportSyncTimer=setTimeout(function(){viewportSyncTimer=0;syncActiveFromViewport()},Math.ceil(suppressSyncUntil-performance.now())+1);
+    return;
+  }
   const clickedEntry=clickedPath&&cardByPath.get(clickedPath);
   if(clickedEntry&&isCardVisible(clickedEntry))return;
   clickedPath='';
@@ -1378,6 +1396,8 @@ function restoreViewportAnchor(anchor){
 }
 function updateVirtualLayout(start,end,rebuildCards){
   ensureVirtualRoot();
+  // Collapse and metadata updates can resize shells without changing the mounted window.
+  if(!rebuildCards)for(let index=start;index<=end;index++)measureMountedCardShell(cards[index]);
   if(layoutDirty)rebuildLayoutMetrics();
   const topHeight=Math.max(0,layoutPrefix[start]||0)+'px';
   const bottomHeight=(Math.max(0,layoutTotal-(layoutPrefix[end+1]||0))+revealTailHeight())+'px';
@@ -1491,6 +1511,7 @@ function scheduleVirtualization(){if(virtualFrame)return;virtualFrame=requestAni
   if(target)updateVirtualizationAtIndex(target.index,false,!programmaticRevealTargetReady||programmaticRevealStableFrames<1);
   else if(settled)updateVirtualizationAtIndex(settled.index,false,false);
   else updateVirtualization();
+  syncActiveFromViewport();
 })}
 let scrollFrame=0;
 // 用户主动操作时立即接管，避免程序化定位锁与滚轮/触控/滚动条操作相互争抢。
@@ -1515,12 +1536,12 @@ window.addEventListener('scroll',function(){
     scrollFrame=0;
     // 程序化差异定位结束后仍保留目标卡片锁；真正的滚轮、触控、键盘或指针操作会在 beginUserMultiDiffInteraction 中解除。
     // 不能在最后一个 scroll 事件里提前清除，否则顶部仍露出的上一张卡片会重置差异游标，形成前后循环。
-    syncActiveFromViewport();
     const target=programmaticRevealPath&&cardByPath.get(programmaticRevealPath);
     const settled=settledRevealAnchorPath&&cardByPath.get(settledRevealAnchorPath);
     if(target)updateVirtualizationAtIndex(target.index,true,true);
     else if(settled)updateVirtualizationAtIndex(settled.index,true,false);
-    else updateVirtualization(true)
+    else updateVirtualization(true);
+    syncActiveFromViewport();
   })
 },{passive:true});
 globalHScroll.addEventListener('scroll',function(){
@@ -1586,8 +1607,8 @@ function updateEntryFromSnapshot(entry,diff){
     if(isStatic){
       // 加载占位会写入 80px 内联高度；渲染 Gitlink 列表前必须清除，否则 overflow:hidden 会裁掉后续提交行。
       entry.body.className='diff-body';entry.body.style.height='';entry.body.innerHTML=diff.isGitlink?gitlinkBodyHtml(diff):(diff.error?'<div class="empty">无法读取此文件：'+escapeHtml(diff.error)+'</div>':binaryBodyHtml(diff));
-      const measuredBodyHeight=Math.max(entry.body.scrollHeight,entry.body.getBoundingClientRect().height);
-      if(measuredBodyHeight>0)entry.bodyHeight=Math.max(80,Math.ceil(measuredBodyHeight));
+      const measuredBodyHeight=entry.body.getBoundingClientRect().height;
+      if(!entry.collapsed)entry.bodyHeight=measuredBodyHeight;
       return
     }
     if(!wasLoaded&&isLoaded){entry.body.className='diff-body';entry.body.replaceChildren();entry.body.style.height=Math.max(80,entry.bodyHeight)+'px'}
