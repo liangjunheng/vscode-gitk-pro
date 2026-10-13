@@ -3,7 +3,7 @@ import type { AppState } from '../types';
 
 type CommitRepositories = AppState['commitRepositories'];
 
-/** CommitPanel 的视图标题命令与未提交仓库徽标。 */
+/** CommitPanel 的视图标题命令与未提交变更文件徽标。 */
 export class CommitPanelViewTitleController implements vscode.Disposable {
     private view?: vscode.WebviewView;
     private readonly command: vscode.Disposable;
@@ -25,9 +25,10 @@ export class CommitPanelViewTitleController implements vscode.Disposable {
 
     update(repositories: CommitRepositories): void {
         if (!this.view) { return; }
-        const count = repositories.filter(repository => repository.staged.length > 0 || repository.unstaged.length > 0).length;
+        const count = repositories.reduce((total, repository) => total
+            + new Set([...repository.staged, ...repository.unstaged].map(file => file.path)).size, 0);
         this.view.badge = count > 0
-            ? { value: count, tooltip: `${count} 个仓库有未提交文件` }
+            ? { value: count, tooltip: `${count} 个未提交变更文件` }
             : undefined;
     }
 
