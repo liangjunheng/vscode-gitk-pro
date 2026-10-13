@@ -66,11 +66,10 @@ export const REPOSITORY_CHANGES_STYLES = `
   .repo-file-folder { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); font-size: 11px; }
   .repo-file-status { flex: 0 0 13px; text-align: center; margin-left: auto; }
   .repo-file-row .toolbar-icon { width: 22px; height: 22px; flex: 0 0 22px; border: 0; cursor: pointer; }
-  .repo-file-actions { display: flex; visibility: hidden; }
+  .repo-file-actions { display: flex; }
   .repo-file-row:hover { background: var(--vscode-list-hoverBackground); border-radius: 3px; }
   .repo-file-row.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); border-radius: 3px; }
   .repo-file-row.selected .repo-file-folder { color: inherit; opacity: .8; }
-  .repo-file-row:hover .repo-file-actions, .repo-file-row:has(:focus-visible) .repo-file-actions { visibility: visible; }
   .repo-file.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
 `;
 export const REPOSITORY_CHANGES_SCRIPT = String.raw`

@@ -848,7 +848,7 @@ async function verifyMultiDiffLinkage(page, state, publish, repositories) {
   assert.equal(await oldRow.locator('.repo-file').evaluate(node => node === document.activeElement), true, 'scroll feedback must not forcibly blur the clicked control');
   assert.equal(await oldRow.evaluate(row => row.classList.contains('selected')), false);
   assert.equal(await oldRow.evaluate(row => getComputedStyle(row).backgroundColor), 'rgba(0, 0, 0, 0)', 'pointer focus must not leave a faint selection background on the old file');
-  assert.equal(await oldRow.locator('.repo-file-actions').evaluate(node => getComputedStyle(node).visibility), 'hidden', 'old pointer-focused row does not retain action affordances');
+  assert.equal(await oldRow.locator('.repo-file-actions').evaluate(node => getComputedStyle(node).visibility), 'visible', 'file action affordances remain visible after pointer focus moves');
   await assertCount(root.locator('.repo-file-row.selected'), 1);
   await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'selectedPathChanged', selectedPath: 'unstaged:folder/file-33.cpp' } })));
   state.selectedPath = 'unstaged:folder/file-33.cpp';
