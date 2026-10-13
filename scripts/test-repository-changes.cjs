@@ -17,6 +17,7 @@ async function main() {
     const iconCss = fs.readFileSync(path.resolve(__dirname, '../media/codicons/codicon.css'), 'utf8').replaceAll('./codicon.ttf', 'https://gitk.test/codicon.ttf');
     const html = renderGitkWebviewHtml('codicon.css').replace('<link rel="stylesheet" href="codicon.css">', () => '<style>' + theme + iconCss + '</style>');
     await verifyPinnedHeaderPixels(browser, html);
+    await verifyRepositoryDisplayModes(browser, html);
     await verifyRepositoryHeaderBorderTransitions(browser, html);
     await verifyRepositorySnapshotTransitions(browser, html);
     for (const width of [320, 400, 800]) await verifyBottomRepositoryExpansion(browser, html, width);
@@ -496,6 +497,54 @@ async function verifyBranchDropdown(page, state, publish) {
   state.selectedBranches = []; await publish();
 }
 async function assertCount(locator, expected) { assert.equal(await locator.count(), expected); }
+async function verifyRepositoryDisplayModes(browser, html) {
+  const page = await browser.newPage({ viewport: { width: 400, height: 1000 } });
+  try {
+    await page.evaluate(() => {
+      window.messages = [];
+      window.acquireVsCodeApi = () => ({ postMessage: message => window.messages.push(message), getState: () => ({}), setState() {} });
+    });
+    await page.setContent(html);
+    const repositories = ['one', 'two'].map((name, index) => ({ repositoryPath: 'file:///mode/' + name,
+      repositoryLabel: name, isMainRepository: index === 0, staged: [{ path: 'src/a.cpp', status: 'M' }],
+      unstaged: [{ path: 'src/a.cpp', status: 'M' }, { path: 'src/deep/b.cpp', status: 'M' }, { path: 'root.cpp', status: 'M' }] }));
+    const state = { repositoryChanges: repositories, filesMode: 'flat', files: [], commits: [], selectedRepositoryPaths: [],
+      selectedCommit: { hash: 'uncommitted', repositoryPath: repositories[0].repositoryPath }, filesLoading: false };
+    const publish = () => page.evaluate(state => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state } })), state);
+    await publish();
+    assert.match(await page.locator('#filesModeBtn').getAttribute('title'), /平铺/);
+    const flatIcon = await page.locator('#filesModeIcon').getAttribute('d');
+    await page.locator('#filesModeBtn').click();
+    assert.deepEqual(await lastMessage(page), { type: 'toggleFilesMode' }, 'button posts its mode intent');
+    state.filesMode = 'tree'; await publish();
+    assert.match(await page.locator('#filesModeBtn').getAttribute('title'), /树状/);
+    assert.notEqual(await page.locator('#filesModeIcon').getAttribute('d'), flatIcon);
+    const card = page.locator('.repo-changes').first();
+    const group = card.locator('.repo-group[data-section="unstaged"]');
+    assert.deepEqual(await group.locator('.repo-folder-name').allTextContents(), ['src', 'src/deep']);
+    const folder = group.locator('.repo-folder').first();
+    await folder.locator('.repo-folder-toggle').click();
+    assert.equal(await folder.locator('.repo-folder-files').isVisible(), false);
+    assert.equal(await card.locator('.repo-group[data-section="staged"] .repo-folder-files').isVisible(), true, 'folder folds are scoped to section');
+    await publish();
+    assert.equal(await folder.locator('.repo-folder-files').isVisible(), false, 'unrelated snapshots preserve folds');
+    await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'selectedPathChanged', selectedPath: 'unstaged:src/a.cpp' } })));
+    assert.equal(await folder.locator('.repo-folder-files').isVisible(), true, 'MultiDiff reveals a folded folder');
+    await group.locator('.repo-file').first().click();
+    assert.deepEqual(await lastMessage(page), { type: 'repositoryChangesFile', repositoryPath: repositories[0].repositoryPath, section: 'unstaged', path: 'src/a.cpp' });
+    await page.locator('#filesModeBtn').click();
+    state.filesMode = 'flat'; await publish();
+    await assertCount(page.locator('.repo-folder'), 0);
+    assert.equal(await page.locator('#filesModeIcon').getAttribute('d'), flatIcon);
+    state.selectedCommit = { hash: 'mode-history', repositoryPath: repositories[0].repositoryPath, message: 'history' };
+    state.files = [{ path: 'history/file.cpp', status: 'M' }]; state.filesMode = 'tree'; await publish();
+    assert.equal(await card.locator('.repo-group[data-section="commit"] .repo-folder-name').textContent(), 'history');
+    for (const width of [320, 400, 800]) {
+      await page.setViewportSize({ width, height: 1000 });
+      assert.equal(await card.evaluate(node => node.scrollWidth > node.clientWidth), false, 'tree rows remain within card at ' + width);
+    }
+  } finally { await page.close(); }
+}
 async function verifyPinnedHeaderPixels(browser, html) {
   const { PNG } = require('pngjs');
   const page = await browser.newPage({ viewport: { width: 400, height: 1000 } });

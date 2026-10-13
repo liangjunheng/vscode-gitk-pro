@@ -60,6 +60,13 @@ export const REPOSITORY_CHANGES_STYLES = `
   .repo-group-toggle:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .repo-count { border-radius: 10px; min-width: 20px; height: 18px; padding: 0 5px; text-align: center; line-height: 18px; font-size: 11px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
   .repo-group-files { min-width: 0; }
+  .repo-folder-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 25px; padding: 0 5px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+  .repo-folder-toggle:hover { background: var(--vscode-list-hoverBackground); }
+  .repo-folder-toggle:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  .repo-folder-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .repo-folder-files { padding-left: 16px; }
+  .repo-folder-files[hidden] { display: none; }
+  .repo-folder-files .repo-file-folder { display: none; }
   .repo-file-row { display: flex; align-items: center; height: 25px; min-width: 0; }
   .repo-file { display: flex; flex: 1; align-items: center; height: 25px; gap: 6px; min-width: 0; padding: 0 5px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
   .repo-file-name { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -82,6 +89,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
   const repositoryChangesCollapsed = new Set();
   const repositoryChangesInitialized = new Set();
   const repositoryGroupsCollapsed = new Set();
+  const repositoryFoldersCollapsed = new Set();
   const repositoryDrafts = new Map();
   function resizeRepositoryTextArea(input, borderHeight) {
     const container = input.parentElement;
@@ -182,7 +190,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     let sections = snapshot.kind === 'commit'
       ? [{ key: 'commit', label: '提交变更 ' + snapshot.commit.hash.slice(0, 8), files: snapshot.files }]
       : repoChangesSections(displayRepository);
-    const key = JSON.stringify(sections.map(function(section) { return [section.key, section.label, section.files]; }));
+    const key = JSON.stringify([filesMode, sections.map(function(section) { return [section.key, section.label, section.files]; })]);
     if (key === node.groupsKey) return;
     node.groupsKey = key; node.groups.replaceChildren(); node.rowsByDiffKey.clear();
     sections.forEach(function(section) {
@@ -195,21 +203,45 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       header.append(toggle, badge);
       if (section.key !== 'conflict' && section.key !== 'commit') header.appendChild(repoChangesIcon(section.key === 'staged' ? 'unstage' : 'stage', section.key === 'staged' ? 'remove' : 'add', section.key === 'staged' ? '取消暂存全部' : '暂存全部'));
       const rows = document.createElement('div'); rows.className = 'repo-group-files';
+      const folderRows = new Map();
       section.files.forEach(function(file) {
+        const slash = file.path.lastIndexOf('/');
+        const folder = slash < 0 ? '' : file.path.slice(0, slash);
+        let container = rows;
+        if (filesMode === 'tree' && folder) {
+          container = folderRows.get(folder);
+          if (!container) {
+            const folderKey = JSON.stringify([repository.repositoryPath, section.key, folder]);
+            const expanded = !repositoryFoldersCollapsed.has(folderKey);
+            const wrapper = document.createElement('div'); wrapper.className = 'repo-folder'; wrapper.dataset.folderKey = folderKey;
+            const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'repo-folder-toggle'; toggle.dataset.repoAction = 'folder';
+            toggle.title = folder; toggle.setAttribute('aria-expanded', String(expanded));
+            toggle.innerHTML = '<span class="codicon codicon-chevron-' + (expanded ? 'down' : 'right') + '"></span><span class="codicon codicon-folder' + (expanded ? '-opened' : '') + '"></span><span class="repo-folder-name">' + escapeHtml(folder) + '</span>';
+            container = document.createElement('div'); container.className = 'repo-folder-files'; container.hidden = !expanded;
+            wrapper.append(toggle, container); rows.appendChild(wrapper); folderRows.set(folder, container);
+          }
+        }
         const row = document.createElement('div'); row.className = 'repo-file-row'; row.dataset.filePath = file.path;
         row.dataset.diffKey = section.key === 'commit' ? (file.diffKey || file.path) : section.key + ':' + file.path;
         node.rowsByDiffKey.set(row.dataset.diffKey, row);
         const button = document.createElement('button'); button.type = 'button'; button.className = 'repo-file'; button.dataset.repoAction = 'file'; button.title = file.path;
-        const slash = file.path.lastIndexOf('/');
         button.innerHTML = '<span class="codicon codicon-' + (file.isGitlink ? 'repo' : 'file-code') + '"></span><span class="repo-file-name">' + escapeHtml(file.path.slice(slash + 1)) + '</span><span class="repo-file-folder">' + escapeHtml(slash < 0 ? '' : file.path.slice(0, slash)) + '</span><span class="repo-file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span>';
         row.appendChild(button);
         const actions = document.createElement('span'); actions.className = 'repo-file-actions';
         if (section.key !== 'commit') actions.appendChild(repoChangesIcon(section.key === 'staged' ? 'unstage' : 'stage', section.key === 'staged' ? 'remove' : 'add', section.key === 'staged' ? '取消暂存' : '暂存'));
         if (section.key === 'unstaged') actions.appendChild(repoChangesIcon('discard', 'discard', '放弃此文件变更'));
-        row.appendChild(actions); rows.appendChild(row);
+        row.appendChild(actions); container.appendChild(row);
       });
       group.append(header, rows); node.groups.appendChild(group);
     });
+  }
+  function updateRepositoryFolderVisibility(folder) {
+    const expanded = !repositoryFoldersCollapsed.has(folder.dataset.folderKey);
+    const toggle = folder.querySelector('.repo-folder-toggle');
+    toggle.setAttribute('aria-expanded', String(expanded));
+    toggle.querySelector('.codicon').className = 'codicon codicon-chevron-' + (expanded ? 'down' : 'right');
+    toggle.querySelectorAll('.codicon')[1].className = 'codicon codicon-folder' + (expanded ? '-opened' : '');
+    folder.querySelector('.repo-folder-files').hidden = !expanded;
   }
   function updateRepositoryChangesVisibility(node, repository) {
     const expanded = !repositoryChangesCollapsed.has(repository.repositoryPath);
@@ -241,6 +273,11 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     repositoryChangesCollapsed.delete(repositoryPath);
     const group = row.closest('.repo-group');
     repositoryGroupsCollapsed.delete(repositoryPath + String.fromCharCode(0) + group.dataset.section);
+    const folder = row.closest('.repo-folder');
+    if (folder) {
+      repositoryFoldersCollapsed.delete(folder.dataset.folderKey);
+      updateRepositoryFolderVisibility(folder);
+    }
     const repository = repositoryChanges.find(function(item) { return item.repositoryPath === repositoryPath; });
     if (repository) updateRepositoryChangesVisibility(node, repository);
     // Scroll only the file-list viewport; MultiDiff feedback must not steal keyboard focus.
@@ -398,6 +435,11 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     const headerToggle = !button && event.target.closest('.repo-changes-header')
       && focusedRepositoryChangesPath === repositoryPath && !repositoryChangesCollapsed.has(repositoryPath);
     const action = button ? button.dataset.repoAction : headerToggle ? 'toggle' : 'select'; const node = repositoryChangesNodes.get(repositoryPath);
+    if (action === 'folder') {
+      const folder = button.closest('.repo-folder'); const key = folder.dataset.folderKey;
+      if (repositoryFoldersCollapsed.has(key)) repositoryFoldersCollapsed.delete(key); else repositoryFoldersCollapsed.add(key);
+      updateRepositoryFolderVisibility(folder); updateRepositoryPinnedHeaders(); return;
+    }
     if (action === 'select') {
       repositoryChangesCollapsed.delete(repositoryPath);
       focusRepositoryChanges(repositoryPath);

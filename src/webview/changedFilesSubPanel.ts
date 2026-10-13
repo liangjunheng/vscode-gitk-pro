@@ -533,15 +533,18 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
   document.getElementById('filesList').addEventListener('scroll', scheduleChangedVirtualLists, { passive: true });
   window.addEventListener('resize', scheduleChangedVirtualLists, { passive: true });
 
-  function renderFiles() {
-    const list = document.getElementById('filesList');
-    list.hidden = !selectedCommitHash || isWorkingTreeHash(selectedCommitHash);
-    if (list.hidden) return;
+  function updateFilesModeButton() {
     const modeButton = document.getElementById('filesModeBtn');
     const modeIcon = document.getElementById('filesModeIcon');
     const isTree = filesMode === 'tree';
     modeIcon.setAttribute('d', isTree ? 'M2.5 3h5M5 3v4M5 7h5M7.5 7v4M7.5 11h6' : 'M3 4h10M3 8h10M3 12h10');
     modeButton.title = '显示方式（当前：' + (isTree ? '树状' : '平铺') + '）';
+  }
+  function renderFiles() {
+    updateFilesModeButton();
+    const list = document.getElementById('filesList');
+    list.hidden = !selectedCommitHash || isWorkingTreeHash(selectedCommitHash);
+    if (list.hidden) return;
     bindFilesListInteractions(list);
     if (isWorkingTreeHash(selectedCommitHash)) {
       pruneWorkingTreeSelection();

@@ -141,6 +141,7 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR
       stagedFiles = state.stagedFiles || [];
       unstagedFiles = state.unstagedFiles || [];
       filesMode = state.filesMode || 'flat';
+      updateFilesModeButton();
       var previousFilesLoading = filesLoading;
       filesLoading = Boolean(state.filesLoading);
       var diffProgress = state.diffProgress || { completed: 0, total: 0 };
