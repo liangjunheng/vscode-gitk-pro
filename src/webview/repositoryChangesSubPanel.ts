@@ -2,13 +2,15 @@
 export const REPOSITORY_CHANGES_STYLES = `
   #filesList { display: none; }
   #repositoryChangesViewport { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; }
-  #repositoryChangesList { width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: auto; padding: 4px 1px 8px 0; }
+  #repositoryChangesList { width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: auto; padding: 0 1px 8px 0; }
   #repositoryChangesList[hidden] { display: none; }
   .repo-changes { width: 100%; min-width: 0; margin-bottom: 8px; border: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); border-radius: 6px; background: var(--vscode-sideBar-background, var(--vscode-editor-background)); cursor: pointer; }
   .repo-changes.focused { border-color: var(--vscode-focusBorder); }
   .repo-changes:focus { outline: none; }
-  .repo-changes.focused > .repo-changes-header, .repo-changes-header:hover { background: var(--vscode-list-hoverBackground); }
-  .repo-changes-header { display: flex; width: 100%; align-items: center; height: 30px; min-width: 0; gap: 3px; padding: 0 6px; }
+  .repo-changes-header { position: sticky; top: 0; z-index: 2; isolation: isolate; display: flex; width: 100%; align-items: center; height: 30px; min-width: 0; gap: 3px; padding: 0 6px; overflow: hidden; background-color: inherit; }
+  .repo-changes-header::after { content: none; }
+  .repo-changes-header.pinned::after { content: ''; position: absolute; top: 0; right: 0; left: 0; z-index: 3; height: 1px; background: var(--vscode-widget-border, var(--vscode-editorGroup-border)); pointer-events: none; }
+  .repo-changes.focused > .repo-changes-header.pinned::after { background: var(--vscode-focusBorder); }
   .repo-changes-toggle { display: flex; justify-content: center; align-items: center; flex: 0 0 18px; width: 18px; height: 24px; padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer; }
   .repo-changes-title { display: flex; align-items: center; flex: 1; min-width: 0; gap: 0; cursor: pointer; }
   .repo-changes-icon { position: relative; display: inline-flex; align-items: center; flex: 0 0 16px; width: 16px; height: 20px; }
@@ -28,6 +30,7 @@ export const REPOSITORY_CHANGES_STYLES = `
   .repo-changes-toggle:focus-visible, .repo-file:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .repo-changes-header { border-radius: 5px; }
   .repo-changes:has(.repo-changes-body:not([hidden])) > .repo-changes-header { border-radius: 5px 5px 0 0; border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); }
+  .repo-changes > .repo-changes-header.pinned { border-top-left-radius: 0; border-top-right-radius: 0; }
   .repo-changes-body { min-width: 0; padding: 8px 10px 10px; }
   .repo-message-box, .repo-file-groups, .repo-commit-actions { cursor: default; }
   .repo-commit-details { box-sizing: border-box; display: block; width: 100%; min-height: 36px; max-height: calc(7.5em + 18px); resize: none; overflow-y: auto; overflow-x: hidden; margin-bottom: 4px; padding: 8px 9px; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); border-radius: 5px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); font: inherit; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; }
@@ -76,19 +79,30 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
   let pendingRepositoryFileSelection = null;
   let highlightedRepositoryFileRow = null;
   const repositoryChangesNodes = new Map();
+  const repositoryDisplaySnapshots = new Map();
   const repositoryChangesCollapsed = new Set();
   const repositoryChangesInitialized = new Set();
   const repositoryGroupsCollapsed = new Set();
   const repositoryDrafts = new Map();
+  function resizeRepositoryTextArea(input, borderHeight) {
+    const container = input.parentElement;
+    const minHeight = container.style.minHeight;
+    // Keep the scroll extent stable while measuring an auto-height editor at the list bottom.
+    container.style.minHeight = container.offsetHeight + 'px';
+    try {
+      input.style.height = 'auto';
+      input.style.height = (input.scrollHeight + borderHeight) + 'px';
+    } finally {
+      container.style.minHeight = minHeight;
+    }
+  }
   function resizeRepositoryMessage(input) {
     if (!input.isConnected || input.closest('.repo-changes-body').hidden || input.closest('.repo-message-box').hidden) return;
-    input.style.height = 'auto';
-    input.style.height = input.scrollHeight + 'px';
+    resizeRepositoryTextArea(input, 0);
   }
   function resizeRepositoryCommitDetails(input) {
     if (!input.isConnected || input.hidden || input.closest('.repo-changes-body').hidden) return;
-    input.style.height = 'auto';
-    input.style.height = (input.scrollHeight + 2) + 'px';
+    resizeRepositoryTextArea(input, 2);
   }
   let focusedRepositoryChangesPath = '';
   let repositoryChangesRevealPath = '';
@@ -138,11 +152,37 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     });
     return { card: card, input: card.querySelector('.repo-message'), groups: card.querySelector('.repo-file-groups'), groupsKey: '', rowsByDiffKey: new Map(), message: undefined };
   }
-  function renderRepositoryFileGroups(node, repository) {
-    let sections = repoChangesSections(repository);
-    if (selectedCommitHash && !isWorkingTreeHash(selectedCommitHash) && selectedCommitRepositoryPath === repository.repositoryPath) {
-      sections = [{ key: 'commit', label: '提交变更 ' + selectedCommitHash.slice(0, 8), files: files }];
+  function updateRepositoryDisplaySnapshot(state) {
+    const commit = state.selectedCommit;
+    if (!commit || !commit.repositoryPath || !commit.hash) return;
+    const repository = repositoryChanges.find(function(item) { return item.repositoryPath === commit.repositoryPath; });
+    if (!repository) return;
+    if (isWorkingTreeHash(commit.hash)) {
+      repositoryDisplaySnapshots.set(commit.repositoryPath, { kind: 'worktree' });
+      return;
     }
+    // Loading/failed reads are not empty commits. File ownership can lag controller selection.
+    if (state.filesLoading || state.diffError || !Array.isArray(state.files)) return;
+    const identity = state.filesIdentity;
+    if (identity && (identity.repositoryPath !== commit.repositoryPath || identity.hash !== commit.hash)) return;
+    repositoryDisplaySnapshots.set(commit.repositoryPath, {
+      kind: 'commit', commit: { ...commit }, files: state.files.map(function(file) { return { ...file }; })
+    });
+  }
+  function currentRepositorySnapshot(node, repository) {
+    // Rendering never mutates historical snapshots; worktrees use their own live repository data.
+    const snapshot = repositoryDisplaySnapshots.get(repository.repositoryPath);
+    return snapshot && snapshot.kind === 'commit' ? snapshot
+      : { kind: 'worktree', staged: repository.staged || [], unstaged: repository.unstaged || [] };
+  }
+  function renderRepositoryFileGroups(node, repository) {
+    const snapshot = currentRepositorySnapshot(node, repository);
+    const displayRepository = snapshot.kind === 'worktree'
+      ? { ...repository, staged: snapshot.staged || [], unstaged: snapshot.unstaged || [] }
+      : repository;
+    let sections = snapshot.kind === 'commit'
+      ? [{ key: 'commit', label: '提交变更 ' + snapshot.commit.hash.slice(0, 8), files: snapshot.files }]
+      : repoChangesSections(displayRepository);
     const key = JSON.stringify(sections.map(function(section) { return [section.key, section.label, section.files]; }));
     if (key === node.groupsKey) return;
     node.groupsKey = key; node.groups.replaceChildren(); node.rowsByDiffKey.clear();
@@ -184,6 +224,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       group.querySelector('.repo-group-files').hidden = collapsed;
       group.querySelector('.repo-group-toggle .codicon').className = 'codicon codicon-chevron-' + (collapsed ? 'right' : 'down');
     });
+    updateRepositoryPinnedHeaders();
   }
   function syncRepositoryFileSelection(reveal, repositoryPath, diffKey) {
     repositoryPath = repositoryPath === undefined ? selectedCommitRepositoryPath : repositoryPath;
@@ -247,15 +288,16 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       node.input.placeholder = '提交信息';
       node.input.setAttribute('aria-label', repository.repositoryLabel + '：提交信息');
       node.input.title = '提交到 ' + (repository.headLabel || repository.repositoryLabel);
-      const historical = selectedCommitHash && !isWorkingTreeHash(selectedCommitHash) && selectedCommitRepositoryPath === repository.repositoryPath;
+      const snapshot = currentRepositorySnapshot(node, repository);
+      const historical = snapshot.kind === 'commit';
       const messageBox = node.card.querySelector('.repo-message-box');
       const actions = node.card.querySelector('.repo-commit-actions');
       const details = node.card.querySelector('.repo-commit-details');
       messageBox.hidden = Boolean(historical); actions.hidden = Boolean(historical); details.hidden = !historical;
       if (historical) {
-        const metadata = selectedRepositoryCommitDetails || {};
-        if (details.dataset.commitHash !== selectedCommitHash) details.scrollTop = 0;
-        details.dataset.commitHash = selectedCommitHash;
+        const metadata = snapshot.commit || {};
+        if (details.dataset.commitHash !== metadata.hash) details.scrollTop = 0;
+        details.dataset.commitHash = metadata.hash;
         // Strip terminal line breaks for display only; preserve the Git message and commit draft.
         const raw = typeof metadata.rawMessage === 'string' ? metadata.rawMessage : undefined;
         let value = raw === undefined ? (metadata.message || '') + (metadata.body ? String.fromCharCode(10, 10) + metadata.body : '') : raw;
@@ -269,8 +311,10 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       }
       node.message = repository.message;
       if (document.activeElement !== node.input) node.input.value = repositoryDrafts.get(repository.repositoryPath);
-      const conflicts = repoChangesSections(repository)[0].files.length > 0;
-      const disabled = historical || conflicts || repository.committing || !node.input.value.trim() || (!(repository.staged || []).length && !(repository.unstaged || []).length);
+      const displayRepository = snapshot.kind === 'worktree' ? { ...repository, staged: snapshot.staged || [], unstaged: snapshot.unstaged || [] } : repository;
+      const conflicts = repoChangesSections(displayRepository)[0].files.length > 0;
+      const displayHasChanges = (displayRepository.staged || []).length > 0 || (displayRepository.unstaged || []).length > 0;
+      const disabled = historical || conflicts || repository.committing || !node.input.value.trim() || !displayHasChanges;
       node.card.querySelectorAll('.repo-commit-main, .repo-commit-menu button').forEach(function(button) { button.disabled = Boolean(disabled); });
       const commitButton = node.card.querySelector('.repo-commit-main');
       commitButton.title = conflicts ? '请先解决合并冲突' : 'Commit (Ctrl / ⌘ + Enter)';
@@ -290,13 +334,26 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       revealed.card.focus({ preventScroll: true });
       repositoryChangesRevealPath = '';
     }
+    updateRepositoryPinnedHeaders();
+  }
+  function updateRepositoryPinnedHeaders() {
+    const list = document.getElementById('repositoryChangesList');
+    const top = list.getBoundingClientRect().top + list.clientTop;
+    repositoryChangesNodes.forEach(function(node) {
+      // Only replace the card top border once it has scrolled completely out of view.
+      node.card.querySelector('.repo-changes-header').classList.toggle('pinned', node.card.getBoundingClientRect().top + node.card.clientTop <= top);
+    });
   }
   const repositoryChangesList = document.getElementById('repositoryChangesList');
   const repositoryChangesViewport = document.getElementById('repositoryChangesViewport');
   const repositoryChangesScrollbar = document.getElementById('repositoryChangesScrollbar');
   installOverlayScrollbars(repositoryChangesViewport, repositoryChangesList, [repositoryChangesScrollbar]);
+  repositoryChangesList.addEventListener('scroll', updateRepositoryPinnedHeaders, { passive: true });
+  const repositoryHeaderResizeObserver = new ResizeObserver(updateRepositoryPinnedHeaders);
+  repositoryHeaderResizeObserver.observe(repositoryChangesList);
   window.addEventListener('resize', function() {
     repositoryChangesNodes.forEach(function(node) { resizeRepositoryMessage(node.input); resizeRepositoryCommitDetails(node.card.querySelector('.repo-commit-details')); });
+    updateRepositoryPinnedHeaders();
   });
   repositoryChangesList.addEventListener('focusin', function(event) {
     const card = event.target.closest('.repo-changes');

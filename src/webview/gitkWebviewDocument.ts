@@ -132,6 +132,7 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR
       stagedCount = Number(state.stagedCount) || 0;
       changesCount = Number(state.changesCount) || 0;
       repositoryChanges = state.repositoryChanges || [];
+      updateRepositoryDisplaySnapshot(state);
       hasMoreCommits = Boolean(state.hasMoreCommits);
       isLoadingMoreCommits = Boolean(state.isLoadingMoreCommits);
       commitPageError = state.commitPageError || '';

@@ -64,6 +64,8 @@ export class GitCommitController implements vscode.Disposable {
     private pageAbortController?: AbortController;
     private pageGeneration = 0;
     private selectedCommitIdentity?: { hash: string; repositoryPath: string };
+    // Keep the user's last commit selection per repository when the foreground repository changes.
+    private readonly selectedCommitIdentityByRepository = new Map<string, { hash: string; repositoryPath: string; commit?: CommitMetadata }>();
     // Gitlink 卡片可能跳转到尚未进入当前分页列表的子模块提交；保留显式选择对象作为回退。
     private selectedCommitFallback?: CommitMetadata;
     private commitReadAbortController?: AbortController;
@@ -286,6 +288,12 @@ export class GitCommitController implements vscode.Disposable {
     /** 仓库选择唯一内部入口：仅由 GitRepoController.onSelectedRepoListChanged 调用。 */
     private async selectRepositories(repositories: readonly GitRepositoryOption[]): Promise<void> {
         if (this.sameRepositories(this.repositories, repositories)) { return; }
+        if (this.selectedCommitIdentity) {
+            this.selectedCommitIdentityByRepository.set(this.selectedCommitIdentity.repositoryPath, {
+                ...this.selectedCommitIdentity,
+                commit: this.selectedCommitFallback,
+            });
+        }
         this.commitReadAbortController?.abort();
         this.pageAbortController?.abort();
         this.repositories = [...repositories];
@@ -296,8 +304,10 @@ export class GitCommitController implements vscode.Disposable {
         this.searched = [];
         this.appliedSearchKeywords = [];
         this.total = [];
-        this.selectedCommitIdentity = undefined;
-        this.selectedCommitFallback = undefined;
+        const restorePath = repositories.length === 1 ? repositories[0].path : undefined;
+        const restore = restorePath ? this.selectedCommitIdentityByRepository.get(restorePath) : undefined;
+        this.selectedCommitIdentity = restore ? { hash: restore.hash, repositoryPath: restore.repositoryPath } : undefined;
+        this.selectedCommitFallback = restore?.commit;
         this._isLoading = true;
         this.reloadKind = 'rebuild';
         this.loadingEmitter.fire(true);
@@ -401,6 +411,11 @@ export class GitCommitController implements vscode.Disposable {
         }
         this.selectedCommitIdentity = { hash: commit.hash, repositoryPath };
         this.selectedCommitFallback = commit;
+        this.selectedCommitIdentityByRepository.set(repositoryPath, {
+            hash: commit.hash,
+            repositoryPath,
+            commit,
+        });
         this.selectedEmitter.fire(this.selectedCommit);
         return true;
     }
@@ -493,6 +508,10 @@ export class GitCommitController implements vscode.Disposable {
             // 仅首次赋值; 已有选中项一律不动, 即使已不在新列表中。
             if (!this.selectedCommitIdentity && this.searched.length > 0) {
                 this.selectCommit(this.searched[0]);
+            } else if (this.selectedCommitIdentity) {
+                const restored = this.searched.find(commit => commit.hash === this.selectedCommitIdentity?.hash
+                    && commit.gitBranchOption?.repoOption.path === this.selectedCommitIdentity?.repositoryPath);
+                if (restored) this.selectedCommitFallback = restored;
             }
         } catch (error) {
             if (!abortController.signal.aborted) {

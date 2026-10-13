@@ -16,6 +16,10 @@ async function main() {
     await page.route('https://gitk.test/codicon.ttf*', route => route.fulfill({ body: fs.readFileSync(path.resolve(__dirname, '../media/codicons/codicon.ttf')), contentType: 'font/ttf', headers: { 'Access-Control-Allow-Origin': '*' } }));
     const iconCss = fs.readFileSync(path.resolve(__dirname, '../media/codicons/codicon.css'), 'utf8').replaceAll('./codicon.ttf', 'https://gitk.test/codicon.ttf');
     const html = renderGitkWebviewHtml('codicon.css').replace('<link rel="stylesheet" href="codicon.css">', () => '<style>' + theme + iconCss + '</style>');
+    await verifyPinnedHeaderPixels(browser, html);
+    await verifyRepositoryHeaderBorderTransitions(browser, html);
+    await verifyRepositorySnapshotTransitions(browser, html);
+    for (const width of [320, 400, 800]) await verifyBottomRepositoryExpansion(browser, html, width);
     const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map(match => match[1]);
     scripts.forEach(script => new Function(script));
     await page.addInitScript(() => {
@@ -105,6 +109,7 @@ async function main() {
       };
     });
     const expandedLayout = await gutterLayout();
+    assert.equal(await page.locator('#repositoryChangesList').evaluate(node => getComputedStyle(node).paddingTop), '0px', 'first pinned header starts at the list top');
     await page.locator('.repo-changes-label').first().click();
     await assertCount(page.locator('.repo-changes.focused'), 1);
     assert.equal(expandedLayout.gutter, 'auto', 'overlay scrollbar does not reserve a gutter');
@@ -122,6 +127,15 @@ async function main() {
     assert.equal(await page.locator('.repo-changes.focused').count(), 1, 'one focused card owns the right focus border');
     assert.equal(await page.locator('.repo-changes.focused').evaluate(card => getComputedStyle(card).borderRightColor), 'rgb(0, 127, 212)', 'focused card retains its visible right focus border');
     assert.equal(expandedLayout.overflowing, true, 'expanded fixture requires a scrollbar');
+    const stickyHeader = page.locator('.repo-changes').first().locator('.repo-changes-header');
+    const listBounds = await page.locator('#repositoryChangesList').boundingBox();
+    await page.locator('#repositoryChangesList').evaluate(node => { node.scrollTop = 20; });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(await stickyHeader.evaluate(node => getComputedStyle(node).position), 'sticky');
+    assert.notEqual(await stickyHeader.evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(0, 0, 0, 0)', 'pinned header is opaque');
+    assert.equal(await stickyHeader.evaluate(node => getComputedStyle(node).zIndex), '2');
+    assert.equal(await stickyHeader.evaluate(node => getComputedStyle(node, '::after').backgroundColor), 'rgb(0, 127, 212)', 'focused pinned header keeps its top focus line inside the scroll viewport');
+    await page.locator('#repositoryChangesList').evaluate(node => { node.scrollTop = 0; });
     for (const toggle of await page.locator('.repo-changes-toggle').all()) await toggle.click();
     const collapsedLayout = await gutterLayout();
     assert.equal(collapsedLayout.overflowing, false, 'collapsed fixture has no scroll overflow');
@@ -134,22 +148,52 @@ async function main() {
     await publish();
     await assertCount(page.locator('.repo-changes').first().locator('.repo-group[data-section="commit"] .repo-file'), 1);
     await assertCount(page.locator('.repo-changes').nth(1).locator('.repo-group[data-section="commit"]'), 0);
+    state.files = [{ path: 'root-history.cpp', diffKey: 'root-history-key', status: 'M' }]; await publish();
+    state.selectedCommit = { hash: 'child-history', repositoryPath: repositories[1].repositoryPath, message: 'child title', body: 'child body', rawMessage: 'child title\n\nchild body' };
+    state.files = [{ path: 'child-history.cpp', diffKey: 'child-history-key', status: 'M' }]; await publish();
+    assert.equal(await page.locator('.repo-changes').first().locator('.repo-commit-details').isVisible(), true, 'root historical editor remains visible after child selection');
+    assert.equal(await page.locator('.repo-changes').first().locator('.repo-commit-main').isVisible(), false, 'root does not regain Commit button after child selection');
+    assert.equal(await page.locator('.repo-changes').first().locator('.repo-group[data-section="commit"] .repo-file-name').textContent(), 'root-history.cpp');
+    state.selectedCommit = null; state.files = []; state.filesLoading = true; await publish();
+    assert.equal(await page.locator('.repo-changes').first().locator('.repo-commit-details').isVisible(), true, 'repository reset loading does not clear root history card');
+    state.selectedCommit = { hash: 'child-history', repositoryPath: repositories[1].repositoryPath, message: 'child title', body: 'child body', rawMessage: 'child title\n\nchild body' }; state.files = [{ path: 'child-history.cpp', diffKey: 'child-history-key', status: 'M' }]; state.filesLoading = false; await publish();
+    assert.equal(await page.locator('.repo-changes').first().locator('.repo-commit-details').isVisible(), true, 'root history remains after repository reset transition');
+    state.selectedCommit = { hash: 'child-history', repositoryPath: repositories[1].repositoryPath, message: 'child title', body: 'child body', rawMessage: 'child title\n\nchild body' };
+    state.files = []; state.filesLoading = true; await publish();
+    assert.equal(await page.locator('.repo-changes').first().locator('.repo-commit-details').isVisible(), true, 'loading transition does not clear root commit editor');
+    assert.equal(await page.locator('.repo-changes').first().locator('.repo-group[data-section="commit"] .repo-file-name').textContent(), 'root-history.cpp', 'loading transition preserves root commit files');
+    state.files = [{ path: 'child-history.cpp', diffKey: 'child-history-key', status: 'M' }]; state.filesLoading = false; await publish();
+    state.files = [{ path: 'root-history.cpp', diffKey: 'root-history-key', status: 'M' }];
+    await publish();
+    state.selectedCommit = { hash: 'child-history', repositoryPath: repositories[1].repositoryPath, message: 'child title', body: 'child body', rawMessage: 'child title\n\nchild body' };
+    state.files = [{ path: 'child-history.cpp', diffKey: 'child-history-key', status: 'M' }];
+    await publish();
+    assert.equal(await page.locator('.repo-changes').first().locator('.repo-commit-details').inputValue(), '历史提交\n\n提交说明', 'root card retains its own historical message when focus moves to child');
+    await assertCount(page.locator('.repo-changes').first().locator('.repo-group[data-section="commit"] .repo-file'), 1);
+    assert.equal(await page.locator('.repo-changes').first().locator('.repo-group[data-section="commit"] .repo-file-name').textContent(), 'root-history.cpp');
+    assert.equal(await page.locator('.repo-changes').nth(1).locator('.repo-commit-details').inputValue(), 'child title\n\nchild body');
+    state.selectedCommit = { hash: 'uncommitted', repositoryPath: repositories[1].repositoryPath }; state.files = [];
+    await publish();
+    assert.equal(await page.locator('.repo-changes').first().locator('.repo-commit-details').inputValue(), '历史提交\n\n提交说明', 'root historical card does not fall back to Uncommitted Changes');
+    assert.equal(await page.locator('.repo-changes').first().locator('.repo-commit-main').isVisible(), false);
     for (const header of await page.locator('.repo-changes-header').all()) {
       assert.deepEqual(await header.locator('[data-repo-action]').evaluateAll(buttons => buttons.map(button => button.dataset.repoAction)), ['toggle', 'worktree', 'branch', 'syncRefresh', 'terminal'], 'terminal follows the repository sync control');
     }
     await page.locator('.repo-changes-label').first().click();
     await assertCount(page.locator('.repo-changes-body:visible'), 6);
-    assert.deepEqual(await lastMessage(page), { type: 'repositoryChangesAction', action: 'focus', repositoryPath: repositories[0].repositoryPath }, 'selecting an expanded repository refocuses rather than collapses');
+    assert.deepEqual(await lastMessage(page), { type: 'repositoryChangesAction', action: 'focus', repositoryPath: repositories[0].repositoryPath }, 'selecting the current repository keeps it expanded');
     await page.locator('.repo-changes-label').first().click();
     await assertCount(page.locator('.repo-changes-body:visible'), 5);
-    assert.deepEqual(await lastMessage(page), { type: 'repositoryChangesAction', action: 'blur', repositoryPath: repositories[0].repositoryPath }, 'second click on focused title collapses the repository');
+    assert.deepEqual(await lastMessage(page), { type: 'repositoryChangesAction', action: 'blur', repositoryPath: repositories[0].repositoryPath }, 'focused title toggles collapse');
     await page.locator('.repo-changes-label').first().click();
     await assertCount(page.locator('.repo-changes-body:visible'), 6);
-    assert.deepEqual(await lastMessage(page), { type: 'repositoryChangesAction', action: 'focus', repositoryPath: repositories[0].repositoryPath }, 'title expansion selects the owning repository');
+    assert.deepEqual(await lastMessage(page), { type: 'repositoryChangesAction', action: 'focus', repositoryPath: repositories[0].repositoryPath }, 'collapsed title expands and focuses');
     const mainCard = page.locator('.repo-changes').first();
+    await mainCard.locator('.repo-changes-label').click();
     await mainCard.locator('.repo-changes-header').click({ position: { x: 2, y: 15 } });
-    assert.equal(await mainCard.locator('.repo-changes-body').isVisible(), false, 'focused header blank area also collapses');
+    assert.equal(await mainCard.locator('.repo-changes-body').isVisible(), true, 'focused header blank area reselects without collapsing');
     await mainCard.locator('.repo-changes-header').click({ position: { x: 2, y: 15 } });
+    await mainCard.locator('.repo-changes-label').click();
     await mainCard.locator('.repo-changes-body').click({ position: { x: 2, y: 3 } });
     assert.equal(await mainCard.locator('.repo-changes-body').isVisible(), true, 'body padding keeps the repository expanded');
     await mainCard.locator('.repo-changes-toggle').click();
@@ -197,6 +241,9 @@ async function main() {
     assert.equal(await page.locator('#repositoryDisplay .dropdown-spinner').isVisible(), true);
     await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'repoLoadingChanged', loading: false } })));
     assert.equal(await page.locator('#repositoryDisplay .dropdown-spinner').isVisible(), false);
+    repositories[0].staged = [{ path: 'same.cpp', status: 'M' }];
+    repositories[0].unstaged = [{ path: 'same.cpp', status: 'M' }, { path: 'other.cpp', status: 'M' }];
+    state.repositoryChanges = repositories; await publish();
     assert.equal(await page.locator('.repo-changes-badge').first().textContent(), '2', 'badge deduplicates staged and unstaged paths');
     await assertCount(page.locator('.repo-changes-badge:visible'), 1);
     const badgeStyle = await page.locator('.repo-changes-badge').first().evaluate(node => ({ radius: getComputedStyle(node).borderRadius, color: getComputedStyle(node).backgroundColor, width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height }));
@@ -246,6 +293,7 @@ async function main() {
     assert.ok(await input.evaluate(node => node.getBoundingClientRect().height) < multiline.height, 'shortened message shrinks back');
     await input.focus();
     assert.ok(await page.evaluate(repositoryPath => window.messages.some(message => message.action === 'focus' && message.repositoryPath === repositoryPath), repositories[0].repositoryPath), 'input focus activates owning repository');
+    state.selectedCommit = { hash: 'uncommitted', repositoryPath: repositories[3].repositoryPath };
     repositories[3].unstaged = [{ path: 'same.cpp', status: 'M' }];
     await publish();
     assert.equal(await input.inputValue(), 'draft in root');
@@ -257,7 +305,9 @@ async function main() {
     assert.equal(message.repositoryPath, repositories[0].repositoryPath);
     assert.equal(message.path, 'other.cpp');
     assert.equal(await mainCard.locator('.repo-changes-body').isVisible(), true, 'file selection does not toggle its card');
-    await page.locator('.repo-changes').nth(3).locator('.repo-file').click();
+    const otherCard = page.locator('.repo-changes').nth(3);
+    if (!(await otherCard.locator('.repo-changes-body').isVisible())) await otherCard.locator('.repo-changes-label').click();
+    await otherCard.locator('.repo-file').click();
     message = await lastMessage(page);
     assert.equal(message.repositoryPath, repositories[3].repositoryPath, 'same names in different repositories must not share their owner');
     repositories[0].committing = true; await publish();
@@ -285,6 +335,7 @@ async function main() {
     await assertCount(page.locator('.repo-file').filter({ hasText: 'changed-without-new-count.cpp' }), 1);
     repositories[5].unstaged = [{ path: 'conflict.cpp', status: 'U', isConflict: true }];
     repositories[5].staged = [{ path: 'conflict.cpp', status: 'U', isConflict: true }];
+    state.selectedCommit = { hash: 'uncommitted', repositoryPath: repositories[5].repositoryPath };
     await publish();
     await assertCount(page.locator('.repo-changes').nth(5).locator('.repo-file'), 1);
     assert.equal(await page.locator('.repo-changes').nth(5).locator('.repo-commit-main').isDisabled(), true, 'conflict blocks commit');
@@ -433,7 +484,144 @@ async function verifyBranchDropdown(page, state, publish) {
   state.selectedBranches = []; await publish();
 }
 async function assertCount(locator, expected) { assert.equal(await locator.count(), expected); }
+async function verifyPinnedHeaderPixels(browser, html) {
+  const { PNG } = require('pngjs');
+  const page = await browser.newPage({ viewport: { width: 400, height: 1000 } });
+  try {
+    await page.evaluate(() => {
+      window.acquireVsCodeApi = () => ({ postMessage() {}, getState: () => ({}), setState() {} });
+    });
+    await page.setContent(html);
+    await page.evaluate(() => {
+      document.getElementById('workspace').style.gridTemplateRows = '500px 5px minmax(0, 1fr)';
+      document.documentElement.style.setProperty('--vscode-list-hoverBackground', 'rgba(255, 255, 255, .12)');
+      document.documentElement.style.setProperty('--vscode-editorWidget-background', 'rgba(0, 127, 212, .2)');
+      document.documentElement.style.setProperty('--vscode-sideBar-background', '#242424');
+      const repositoryPath = 'file:///pinned-fixture';
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state: {
+        repositoryChanges: [{ repositoryPath, repositoryLabel: 'fixture', isMainRepository: true, headLabel: 'main', staged: [],
+          unstaged: Array.from({ length: 50 }, (_, i) => ({ path: 'file-' + i + '.cpp', status: 'M' })) }],
+        selectedRepositoryPaths: [repositoryPath], selectedCommit: { hash: 'uncommitted', repositoryPath },
+        commits: [], branches: [], selectedBranches: [], files: [], filesLoading: false,
+      } } }));
+      const list = document.getElementById('repositoryChangesList');
+      const row = list.querySelector('.repo-file-row');
+      list.scrollTop += row.getBoundingClientRect().top - list.getBoundingClientRect().top - 2;
+    });
+    await page.mouse.move(10, 900);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const header = page.locator('.repo-changes-header');
+    const geometry = await header.evaluate(node => {
+      const header = node.getBoundingClientRect(), list = document.getElementById('repositoryChangesList').getBoundingClientRect();
+      return { top: header.top, left: header.left, right: header.right, listTop: list.top, lineTop: getComputedStyle(node, '::after').top };
+    });
+    assert.ok(Math.abs(geometry.top - geometry.listTop) < .5, 'real pinned header has no gap above it');
+    assert.equal(geometry.lineTop, '0px', 'focus line is inside the viewport rather than clipped at -1px');
+    const pixel = (png, x, y) => Array.from(png.data.subarray((y * png.width + x) * 4, (y * png.width + x) * 4 + 3));
+    async function screenshotWithUnderlay(color) {
+      await page.locator('.repo-file-row').evaluateAll((rows, color) => rows.forEach(row => { row.style.backgroundColor = color; }), color);
+      return PNG.sync.read(await page.screenshot());
+    }
+    async function assertSingleFocusLine(label) {
+      await page.locator('.repo-changes').evaluate(card => card.classList.add('focused'));
+      await page.mouse.move(10, 900);
+      const cardRect = await page.locator('.repo-changes').boundingBox();
+      const rect = await header.boundingBox();
+      assert.ok(rect.x >= cardRect.x && rect.x + rect.width <= cardRect.x + cardRect.width, label + ' stays within the card edges');
+      assert.equal(await header.evaluate(node => getComputedStyle(node).boxShadow), 'none', label + ' has no shadow extending outside the card');
+      const png = PNG.sync.read(await page.screenshot());
+      const x = Math.round(rect.x + 100);
+      const top = Math.round(Math.max(cardRect.y, geometry.listTop));
+      const blueRows = [];
+      for (let y = top; y < top + 4; y++) {
+        if (pixel(png, x, y).join(',') === '0,127,212') blueRows.push(y);
+      }
+      assert.deepEqual(blueRows, [top], label + ' paints exactly one focus line at the visible top');
+      assert.deepEqual(pixel(png, x, Math.round(rect.y + 15)), [36, 36, 36], label + ' uses the card background');
+    }
+    await page.locator('#repositoryChangesList').evaluate(list => { list.scrollTop = 0; });
+    await assertSingleFocusLine('unpinned header');
+    await page.locator('.repo-changes-toggle').click();
+    await assertSingleFocusLine('collapsed header');
+    await page.locator('.repo-changes-toggle').click();
+    await page.locator('#repositoryChangesList').evaluate(list => {
+      const row = list.querySelector('.repo-file-row');
+      list.scrollTop += row.getBoundingClientRect().top - list.getBoundingClientRect().top - 2;
+    });
+    await assertSingleFocusLine('pinned header');
+    for (const mode of ['focused', 'unfocused', 'hover']) {
+      await page.locator('.repo-changes').evaluate((card, mode) => card.classList.toggle('focused', mode === 'focused'), mode);
+      if (mode === 'hover') await page.mouse.move(geometry.left + 150, geometry.top + 15);
+      else await page.mouse.move(10, 900);
+      const style = await header.evaluate(node => ({ header: getComputedStyle(node).backgroundColor,
+        card: getComputedStyle(node.parentElement).backgroundColor, image: getComputedStyle(node).backgroundImage,
+        left: getComputedStyle(node, '::after').left, right: getComputedStyle(node, '::after').right,
+        before: getComputedStyle(node, '::before').content, overflow: getComputedStyle(node).overflow }));
+      assert.equal(style.header, style.card, mode + ' header matches the card color');
+      assert.equal(style.image, 'none', mode + ' does not tint the entire header');
+      assert.equal(style.left, '0px'); assert.equal(style.right, '0px');
+      assert.equal(style.before, 'none', 'no background extends across the card borders');
+      assert.equal(style.overflow, 'hidden', 'header painting is clipped to its rounded bounds');
+      const magenta = await screenshotWithUnderlay('#ff00ff');
+      const green = await screenshotWithUnderlay('#00ff00');
+      const x = Math.round(geometry.left + 100), y = Math.round(geometry.top);
+      assert.deepEqual(pixel(green, x, y), mode === 'focused' ? [0, 127, 212] : [52, 52, 52], mode + ' top line is actually painted');
+      assert.deepEqual(pixel(green, x, y + 15), [36, 36, 36], mode + ' paints the card background even when pinned');
+      for (const [px, py] of [[x, y + 2], [Math.floor(geometry.left), y + 2], [Math.ceil(geometry.right) - 1, y + 2]]) {
+        assert.deepEqual(pixel(magenta, px, py), pixel(green, px, py), mode + ' header and corner pixels never reveal underlying files');
+      }
+    }
+    if (process.env.GITK_PINNED_SCREENSHOT) await page.screenshot({ path: process.env.GITK_PINNED_SCREENSHOT });
+  } finally { await page.close(); }
+}
+async function verifyRepositoryHeaderBorderTransitions(browser, html) {
+  const { PNG } = require('pngjs');
+  for (const deviceScaleFactor of [1, 1.25, 1.5, 2]) {
+    const page = await browser.newPage({ viewport: { width: 400, height: 1000 }, deviceScaleFactor });
+    try {
+      await page.evaluate(() => { window.acquireVsCodeApi = () => ({ postMessage() {}, getState: () => ({}), setState() {} }); });
+      await page.setContent(html);
+      await page.evaluate(() => {
+        document.documentElement.style.setProperty('--vscode-sideBar-background', '#242424');
+        window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state: {
+          repositoryChanges: [{ repositoryPath: 'file:///border', repositoryLabel: 'border', isMainRepository: true,
+            staged: [], unstaged: Array.from({ length: 50 }, (_, i) => ({ path: 'file-' + i, status: 'M' })) }],
+          selectedRepositoryPaths: ['file:///border'], commits: [], files: [], filesLoading: false,
+        } } }));
+      });
+      for (const rowHeight of [500, 500.5]) {
+        await page.locator('#workspace').evaluate((node, height) => { node.style.gridTemplateRows = height + 'px 5px minmax(0, 1fr)'; }, rowHeight);
+        for (const scrollTop of [0, .5, 1, 1.5, 2, 10]) {
+          await page.locator('#repositoryChangesList').evaluate((node, top) => { node.scrollTop = top; }, scrollTop);
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          const geometry = await page.locator('.repo-changes-header').evaluate(header => {
+            const card = header.parentElement.getBoundingClientRect(), rect = header.getBoundingClientRect();
+            const list = document.getElementById('repositoryChangesList').getBoundingClientRect();
+            return { cardTop: card.top, headerTop: rect.top, listTop: list.top, x: rect.left + 100,
+              pinned: header.classList.contains('pinned'), content: getComputedStyle(header, '::after').content };
+          });
+          const label = JSON.stringify({ deviceScaleFactor, rowHeight, scrollTop, geometry });
+          assert.equal(geometry.pinned, geometry.cardTop + 1 <= geometry.listTop, 'pin only after the outer top border leaves the viewport: ' + label);
+          if (!geometry.pinned) {
+            assert.equal(geometry.content, 'none', 'unpinned header has no duplicate top line: ' + label);
+            assert.ok(geometry.headerTop >= geometry.cardTop + 1 - .01, 'header never covers the outer corner arcs: ' + label);
+          }
+          const png = PNG.sync.read(await page.screenshot());
+          const x = Math.round(geometry.x * deviceScaleFactor);
+          const top = Math.floor(Math.max(geometry.cardTop, geometry.listTop) * deviceScaleFactor);
+          let coverage = 0;
+          for (let y = top; y < top + Math.ceil(5 * deviceScaleFactor); y++) {
+            const offset = (y * png.width + x) * 4;
+            coverage += Math.max(0, (png.data[offset + 2] - 36) / (212 - 36));
+          }
+          assert.ok(coverage / deviceScaleFactor <= 1.1, 'top highlight never exceeds one CSS pixel: ' + label + ' coverage=' + coverage);
+        }
+      }
+    } finally { await page.close(); }
+  }
+}
 async function verifyHistoricalMessage(page, state, publish, repositories) {
+  // Worktree drafts are independent of each repository's historical display snapshot.
   const root = page.locator('.repo-changes').first();
   const details = root.locator('.repo-commit-details');
   const raw = ['  原始标题 <script>  ', '', ...Array.from({ length: 12 }, (_, i) => '描述 ' + i + ' ' + 'long-description '.repeat(8)), '  ', ''].join(String.fromCharCode(10));
@@ -495,6 +683,127 @@ async function verifyHistoricalMessage(page, state, publish, repositories) {
   await assertCount(root.locator('.repo-group[data-section="staged"]'), 1);
   await assertCount(root.locator('.repo-group[data-section="unstaged"]'), 1);
   await assertCount(root.locator('.repo-group[data-section="commit"]'), 0, 'switching back restores only worktree sections');
+}
+async function verifyRepositorySnapshotTransitions(browser, html) {
+  const page = await browser.newPage({ viewport: { width: 400, height: 1000 } });
+  try {
+    await page.evaluate(() => { window.acquireVsCodeApi = () => ({ postMessage() {}, getState: () => ({}), setState() {} }); });
+    await page.setContent(html);
+    const aPath = 'file:///fixture/a', bPath = 'file:///fixture/b';
+    const aCommit = { hash: 'older-a', repositoryPath: aPath, message: 'A historical commit' };
+    const bCommit = { hash: 'older-b', repositoryPath: bPath, message: 'B historical commit' };
+    const aFiles = [{ path: 'a.cpp', status: 'M' }], bFiles = [{ path: 'b.cpp', status: 'M' }];
+    const state = { repositoryChanges: [
+      { repositoryPath: aPath, repositoryLabel: 'a', isMainRepository: true, staged: [], unstaged: [{ path: 'a-worktree.cpp', status: 'M' }] },
+      { repositoryPath: bPath, repositoryLabel: 'b', staged: [], unstaged: [] },
+    ], commits: [], branches: [], selectedBranches: [], selectedRepositoryPaths: [aPath], selectedCommit: aCommit,
+      files: aFiles, filesLoading: false, filesIdentity: { hash: aCommit.hash, repositoryPath: aPath } };
+    const publish = async patch => { Object.assign(state, patch); await page.evaluate(state => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state } })), state); };
+    await publish({});
+    const a = page.locator('.repo-changes').nth(0), b = page.locator('.repo-changes').nth(1);
+    await b.locator('.repo-changes-label').click();
+    const assertA = async label => {
+      assert.equal(await a.locator('.repo-changes-body').isVisible(), true, label + ': A stays expanded');
+      assert.equal(await a.locator('.repo-commit-details').inputValue(), 'A historical commit', label + ': original A commit retained');
+      assert.equal(await a.locator('.repo-commit-actions').isVisible(), false, label + ': no worktree submit controls');
+      assert.deepEqual(await a.locator('.repo-group[data-section="commit"] .repo-file-name').allTextContents(), ['a.cpp'], label + ': A files retained');
+    };
+    await publish({ selectedRepositoryPaths: [bPath], selectedCommit: aCommit, files: [], filesLoading: true });
+    await assertA('outgoing A loading transition');
+    await publish({ selectedCommit: null, files: [], filesLoading: false });
+    await assertA('no selected commit transition');
+    await publish({ selectedCommit: bCommit, files: [], filesLoading: true, filesIdentity: { hash: bCommit.hash, repositoryPath: bPath } });
+    await assertA('incoming B loading');
+    await publish({ files: bFiles, filesLoading: false });
+    await assertA('B ready and focused');
+    assert.equal(await a.evaluate(card => card.classList.contains('focused')), false, 'A really has lost repository focus');
+    assert.equal(await b.evaluate(card => card.classList.contains('focused')), true, 'B owns repository focus');
+    assert.deepEqual(await b.locator('.repo-group[data-section="commit"] .repo-file-name').allTextContents(), ['b.cpp']);
+    await a.locator('.repo-changes-label').click();
+    await publish({ selectedRepositoryPaths: [aPath], selectedCommit: aCommit, files: bFiles, filesIdentity: { hash: bCommit.hash, repositoryPath: bPath } });
+    await assertA('restored A with stale B files');
+    assert.deepEqual(await b.locator('.repo-group[data-section="commit"] .repo-file-name').allTextContents(), ['b.cpp']);
+    await publish({ files: [], filesLoading: true, filesIdentity: { hash: aCommit.hash, repositoryPath: aPath } });
+    await assertA('restored A loading');
+    await publish({ files: aFiles, filesLoading: false });
+    await assertA('restored A ready');
+    await publish({ files: [], filesLoading: false, diffError: 'failed file read' });
+    await assertA('failed file read retains last complete A snapshot');
+    await publish({ files: aFiles, diffError: undefined });
+    await publish({ selectedCommit: { hash: 'empty-a', repositoryPath: aPath, message: 'empty commit' }, files: [], filesIdentity: { hash: 'empty-a', repositoryPath: aPath } });
+    await assertCount(a.locator('.repo-file'), 0);
+    assert.equal(await a.locator('.repo-commit-details').inputValue(), 'empty commit');
+    await publish({ selectedCommit: { hash: 'uncommitted', repositoryPath: aPath }, filesIdentity: { hash: 'uncommitted', repositoryPath: aPath } });
+    assert.equal(await a.locator('.repo-message-box').isVisible(), true);
+    assert.deepEqual(await a.locator('.repo-file-name').allTextContents(), ['a-worktree.cpp']);
+  } finally { await page.close(); }
+}
+async function verifyBottomRepositoryExpansion(browser, html, width) {
+  const page = await browser.newPage({ viewport: { width, height: 1000 } });
+  try {
+    await page.evaluate(() => { window.acquireVsCodeApi = () => ({ postMessage() {}, getState: () => ({}), setState() {} }); });
+    await page.setContent(html);
+    const repositories = Array.from({ length: 24 }, (_, i) => ({ repositoryPath: 'file:///bottom-' + i, repositoryLabel: 'repo-' + i,
+      isMainRepository: i === 0, staged: [], unstaged: [{ path: 'file.cpp', status: 'M' }], message: 'body '.repeat(200) }));
+    const state = { repositoryChanges: repositories, commits: [], selectedRepositoryPaths: [], selectedCommit: null, files: [], filesLoading: false };
+    const publish = () => page.evaluate(state => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state } })), state);
+    await publish();
+    const list = page.locator('#repositoryChangesList'), card = page.locator('.repo-changes').last();
+    await list.evaluate(node => { node.scrollTop = node.scrollHeight; });
+    const before = await card.evaluate(card => ({ y: card.getBoundingClientRect().top, scroll: document.getElementById('repositoryChangesList').scrollTop }));
+    await card.locator('.repo-changes-label').click();
+    const opened = await card.evaluate(card => ({ y: card.getBoundingClientRect().top, scroll: document.getElementById('repositoryChangesList').scrollTop }));
+    assert.ok(Math.abs(opened.y - before.y) < 1, 'opening bottom repository keeps its header in place: ' + JSON.stringify({ before, opened }));
+    // A host focus confirmation and repeated input measurements must not move the visible card.
+    await list.evaluate(node => { node.scrollTop = node.scrollHeight; });
+    state.selectedRepositoryPaths = [repositories.at(-1).repositoryPath];
+    const bottom = await list.evaluate(node => node.scrollTop);
+    await page.evaluate(value => { window.bottomScrollBaseline = value; }, bottom);
+    await page.evaluate(() => {
+      window.messageMeasurements = [];
+      const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
+      window.originalHeightDescriptor = descriptor;
+      Object.defineProperty(Element.prototype, 'scrollHeight', { ...descriptor, get() {
+        const list = document.getElementById('repositoryChangesList');
+        const value = descriptor.get.call(this);
+        if (this.matches('.repo-message, .repo-commit-details')) window.messageMeasurements.push({ value, before: window.bottomScrollBaseline, after: list.scrollTop });
+        return value;
+      } });
+    });
+    await publish(); await publish();
+    const after = await list.evaluate(node => node.scrollTop);
+    assert.ok(Math.abs(after - bottom) < 1, 'focus snapshots preserve bottom scroll position: ' + JSON.stringify({ bottom, after }));
+    const measurements = await page.evaluate(() => window.messageMeasurements);
+    assert.equal(measurements.filter(item => Math.abs(item.before - item.after) >= 1).length, 0, 'editor resize must not transiently clamp bottom scroll: ' + JSON.stringify(measurements.filter(item => Math.abs(item.before - item.after) >= 1)));
+    const message = card.locator('.repo-message');
+    const tallMessage = await message.evaluate(node => node.offsetHeight);
+    await message.fill('short draft');
+    assert.ok(await message.evaluate(node => node.offsetHeight) < tallMessage, 'draft editor still shrinks when content is removed');
+    assert.equal(await message.evaluate(node => node.parentElement.style.minHeight), '', 'measurement height is released');
+    state.selectedCommit = { hash: 'bottom-history', repositoryPath: repositories.at(-1).repositoryPath,
+      message: 'history', rawMessage: Array.from({ length: 40 }, (_, i) => 'history line ' + i).join('\n') };
+    state.files = [{ path: 'history.cpp', status: 'M' }];
+    await publish();
+    await list.evaluate(node => { node.scrollTop = node.scrollHeight; });
+    await page.evaluate(() => {
+      window.bottomScrollBaseline = document.getElementById('repositoryChangesList').scrollTop;
+      window.messageMeasurements = [];
+    });
+    await publish(); await publish();
+    const historyMeasurements = await page.evaluate(() => window.messageMeasurements);
+    assert.ok(historyMeasurements.length > 0, 'historical editor measurements were observed');
+    assert.equal(historyMeasurements.filter(item => Math.abs(item.before - item.after) >= 1).length, 0, 'historical editor resize preserves bottom scroll throughout measurement');
+    await page.evaluate(() => Object.defineProperty(Element.prototype, 'scrollHeight', window.originalHeightDescriptor));
+    const details = card.locator('.repo-commit-details');
+    const tallDetails = await details.evaluate(node => node.offsetHeight);
+    state.selectedCommit = { ...state.selectedCommit, rawMessage: 'short history' };
+    await publish();
+    assert.ok(await details.evaluate(node => node.offsetHeight) < tallDetails, 'historical editor still shrinks when content is removed');
+    assert.equal(await details.evaluate(node => node.parentElement.style.minHeight), '', 'historical measurement height is released');
+    await card.locator('.repo-changes-toggle').click();
+    await card.locator('.repo-changes-toggle').click();
+    assert.equal(await card.locator('.repo-changes-body').isVisible(), true);
+  } finally { await page.close(); }
 }
 async function verifyMultiDiffLinkage(page, state, publish, repositories) {
   const saved = { files: state.files, selectedCommit: state.selectedCommit, selectedPath: state.selectedPath, selectedRepositoryPaths: state.selectedRepositoryPaths };
@@ -644,6 +953,9 @@ async function verifyProvider() {
   assert.deepEqual(published.state.repositoryChanges[2].unstaged, [], 'clean repositories are not filtered out');
   const selectedMetadata = { hash: 'history', message: 'subject', body: 'body', rawMessage: 'exact raw text', gitBranchOption: { repoOption: repositories[1] } };
   provider.commitController.selectedCommit = selectedMetadata; provider.pushStateToWebview();
+  store.setState({ currentHash: selectedMetadata.hash, currentRepositoryPath: repositories[1].path });
+  provider.pushStateToWebview();
+  assert.deepEqual(published.state.filesIdentity, { hash: selectedMetadata.hash, repositoryPath: repositories[1].path }, 'file ownership is published separately from controller selection');
   assert.equal(published.state.selectedCommit.rawMessage, selectedMetadata.rawMessage, 'selected metadata is published even outside the visible history page');
   assert.equal(published.state.selectedCommit.message, 'subject'); assert.equal(published.state.selectedCommit.body, 'body');
   assert.equal(published.state.selectedCommit.repositoryPath, repositories[1].path);
