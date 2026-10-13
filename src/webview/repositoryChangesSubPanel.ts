@@ -143,7 +143,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     details.readOnly = true; details.rows = 1; details.spellcheck = false;
     details.setAttribute('aria-label', '提交标题与描述');
     card.querySelector('.repo-changes-body').insertBefore(details, card.querySelector('.repo-message-box'));
-    header.append(repoChangesIcon('syncRefresh', 'sync', '同步并刷新此仓库'));
+    header.append(repoChangesIcon('syncRefresh', 'sync', '同步此仓库'));
     header.append(repoChangesIcon('terminal', 'terminal', '在终端中打开此仓库'));
     const menu = card.querySelector('.repo-commit-menu');
     [['commit', 'Commit'], ['amend', 'Commit (Amend)'], ['push', 'Commit & Push'], ['syncCommit', 'Commit & Sync']].forEach(function(item) {

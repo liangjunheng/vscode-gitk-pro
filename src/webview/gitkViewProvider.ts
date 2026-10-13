@@ -80,6 +80,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private view?: vscode.WebviewView;
     // 异步控制 / 内部状态 (不存入 Store)
     private refreshAbortController?: AbortController;
+    private viewDataRefresh?: Promise<void>;
+    private viewDataRefreshProgress?: { completed: number; total: number };
     private commitFilesAbortController?: AbortController;
     private commitPanelDiffAbortController?: AbortController;
     private repositoryChangesSelectionAbortController?: AbortController;
@@ -401,6 +403,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 stagedFiles: s.stagedFiles,
                 unstagedFiles: s.unstagedFiles,
                 filesLoading: s.filesLoading,
+                refreshProgress: this.viewDataRefreshProgress,
                 commitMessage: workingTreeRepositoryPath ? this.commitMessageByRepo.get(workingTreeRepositoryPath) ?? '' : '',
                 commitEditorLoading: s.commitEditorLoading,
                 diffLoading: s.diffLoading,
@@ -1539,27 +1542,49 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     /**
      * 手动刷新: 重读当前提交列表和全部仓库当前 HEAD 的未提交变更, 并异步重扫仓库拓扑与分支列表,
      * 不干扰选择器生命周期。
-     * 仓库与分支是提交列表的筛选维度, 与提交读取是三条独立数据源, 因此并行推进、互不等待:
-     *   重扫后若仓库集合变化, 由 SelectedRepoTotalBranchWatcher.syncRepositories 按 needsFullRefresh 补齐新仓库。
-     * 选中仓库的提交列表与工作区状态由 GitCommitController 负责并吸收异常;
-     * 其余 current-head 仓库经 watcher 强制刷新, 结果通过 onEachHeadBranchUncommittedFileChanged 回流多仓库 Store。
+     * 全部仓库并发刷新, 仅保证聚焦仓库的任务先创建; 每个结果独立回流界面。
+     * 工作区结果通过 watcher 回流 Store, 不改变聚焦仓库、提交选择和卡片折叠状态。
      */
-    private refreshCurrentViewData(refreshedRepositoryPath?: string): Promise<void> {
-        void this.requestRepositoryScan();
-        this.selectedRepoTotalBranchWatcher.refreshSelectedRepositories();
-        const historyRefresh = !refreshedRepositoryPath || this.selectedRepositoryPaths.includes(refreshedRepositoryPath)
-            ? this.commitController.forceRefreshCurrentSelection()
-            : Promise.resolve();
-        // Card refresh already read its own HEAD/status. Toolbar refresh retains the full sweep.
-        if (refreshedRepositoryPath) { return historyRefresh; }
-        const selectedRepositoryPath = this.commitController.uncommittedRepositoryPath;
-        for (const branch of this.uncommittedFilesWatcher.listCurrentHeadBranches()) {
-            // 选中仓库已由 commit controller 刷新, 避免重复 status。
-            if (branch.repoOption.path === selectedRepositoryPath) { continue; }
-            void this.uncommittedFilesWatcher.refreshUncommittedFilesByHeadBranch(branch)
-                .catch(error => console.warn(`无法刷新未提交文件: ${branch.repoOption.path}`, error));
-        }
-        return historyRefresh;
+    private refreshCurrentViewData(): Promise<void> {
+        if (this.viewDataRefresh) { return this.viewDataRefresh; }
+        const focusedRepositoryPath = this.selectedRepositoryPath;
+        const refreshRepository = async (repositoryPath: string): Promise<void> => {
+            try {
+                await this.uncommittedFilesWatcher.refreshHeadBranch(repositoryPath);
+                const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+                    .find(candidate => candidate.repoOption.path === repositoryPath);
+                if (branch) { await this.uncommittedFilesWatcher.refreshUncommittedFilesByHeadBranch(branch); }
+            } catch (error) {
+                console.warn(`无法刷新未提交文件: ${repositoryPath}`, error);
+            }
+        };
+        this.viewDataRefresh = Promise.resolve().then(async () => {
+            const repositoryPaths = this.repositories.map(repository => repository.path);
+            const orderedPaths = focusedRepositoryPath
+                ? [focusedRepositoryPath, ...repositoryPaths.filter(repositoryPath => repositoryPath !== focusedRepositoryPath)]
+                : repositoryPaths;
+            const progress = { completed: 0, total: orderedPaths.length + 1 };
+            this.viewDataRefreshProgress = progress;
+            this.schedulePushState();
+            const track = (task: Promise<void>): Promise<void> => task.finally(() => {
+                progress.completed++;
+                this.schedulePushState();
+            });
+            // Create the focused task first, without waiting before starting the other tasks.
+            const tasks = orderedPaths.map(repositoryPath => track(refreshRepository(repositoryPath)));
+            tasks.push(track(this.commitController.forceRefreshCurrentSelection()));
+            this.selectedRepoTotalBranchWatcher.refreshSelectedRepositories();
+            this.requestRepositoryScan();
+            // Keep the refresh lock until every task settles, including after a history failure.
+            const results = await Promise.allSettled(tasks);
+            const failure = results.find(result => result.status === 'rejected');
+            if (failure?.status === 'rejected') { throw failure.reason; }
+        }).finally(() => {
+            this.viewDataRefresh = undefined;
+            this.viewDataRefreshProgress = undefined;
+            this.schedulePushState();
+        });
+        return this.viewDataRefresh;
     }
 
     private onMessage(message: unknown): void {
@@ -1615,17 +1640,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 .find(candidate => candidate.repoOption.path === input.repositoryPath);
             if (!branch) { return; }
             if (input.action === 'syncRefresh') {
-                try {
-                    // Existing sync flow confirms the push targets and performs pull followed by push.
-                    await this.runCommitPanelPush([input.repositoryPath], true, false);
-                } finally {
-                    await this.uncommittedFilesWatcher.refreshHeadBranch(input.repositoryPath);
-                    const current = this.uncommittedFilesWatcher.listCurrentHeadBranches()
-                        .find(candidate => candidate.repoOption.path === input.repositoryPath);
-                    if (current) { await this.uncommittedFilesWatcher.refreshUncommittedFilesByHeadBranch(current); }
-                    await this.refreshCurrentViewData(input.repositoryPath);
-                    this.schedulePushState();
-                }
+                await this.runCommitPanelPush([input.repositoryPath], true, false);
                 return;
             }
             if (!['stage', 'unstage', 'discard'].includes(input.action)
@@ -1786,7 +1801,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.pushStateToWebview();
                 break;
             case 'refresh':
-                this.refreshCurrentViewData();
+                void this.refreshCurrentViewData().catch(error => {
+                    void vscode.window.showErrorMessage('刷新仓库数据失败：' + (error instanceof Error ? error.message : String(error)));
+                });
                 break;
             case 'selectRepositories': {
                 if (!Array.isArray(effect.paths)) {

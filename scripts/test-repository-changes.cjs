@@ -63,6 +63,18 @@ async function main() {
     assert.equal(iconTextGaps.repo, 0, 'repository icon touches its label');
     assert.equal(iconTextGaps.branch, 0, 'branch icon touches its label');
     await assertCount(page.locator('#refreshBtn'), 0);
+    await assertCount(page.locator('#filesRefreshBtn'), 1);
+    assert.deepEqual(await page.locator('#filesActions button').evaluateAll(buttons => buttons.map(button => button.id)), ['uncommittedRepoBadge', 'filesRefreshBtn', 'filesModeBtn'], 'refresh follows Open Commit Panel in the files header');
+    await page.locator('#filesRefreshBtn').click();
+    assert.deepEqual(await lastMessage(page), { type: 'refresh' }, 'refresh is local data only, not a Git sync action');
+    assert.equal(await page.locator('#filesRefreshProgress').isVisible(), false);
+    state.refreshProgress = { completed: 1, total: 4 }; await publish();
+    assert.equal(await page.locator('#filesRefreshProgress').isVisible(), true);
+    assert.equal(await page.locator('#filesRefreshProgress').getAttribute('aria-valuenow'), null, 'refresh indicator is indeterminate');
+    assert.equal(await page.locator('#filesRefreshProgressFill').evaluate(node => getComputedStyle(node).animationName), 'files-refresh-scroll');
+    assert.equal(await page.locator('#filesRefreshProgressFill').evaluate(node => getComputedStyle(node).backgroundColor), 'rgb(0, 122, 204)');
+    delete state.refreshProgress; await publish();
+    assert.equal(await page.locator('#filesRefreshProgress').isVisible(), false, 'refresh completion hides the progress bar');
     await assertCount(page.locator('#repositoryTerminalBtn'), 0);
     await assertCount(page.locator('.repo-changes-icon .has-submodules'), 2);
     await assertCount(page.locator('.repo-submodules-marker'), 0);
@@ -1058,9 +1070,67 @@ async function verifyProvider() {
   provider.uncommittedFilesWatcher.refreshHeadBranch = async value => syncSteps.push(['head', value]);
   provider.uncommittedFilesWatcher.refreshUncommittedFilesByHeadBranch = async branch => syncSteps.push(['status', branch.repoOption.path]);
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', action: 'syncRefresh', repositoryPath: repositories[1].path });
-  assert.deepEqual(syncSteps, [['sync', [repositories[1].path], true, false], ['head', repositories[1].path], ['status', repositories[1].path]], 'sync then refresh uses only the clicked repository');
+  assert.deepEqual(syncSteps, [['sync', [repositories[1].path], true, false]], 'card sync no longer runs the manual workspace/history refresh');
+  await verifyFocusedRefresh(GitkViewProvider, repositories);
   await verifyGitlinkNavigation(GitkViewProvider, store);
   await verifyMultiDiffHostSelection(GitkViewProvider, store, repositories);
+}
+async function verifyFocusedRefresh(Provider, repositories) {
+  const provider = Object.create(Provider.prototype);
+  const steps = [];
+  const progressSnapshots = [];
+  let releaseHead, releaseHistory;
+  const child = repositories[1].path;
+  Object.defineProperties(provider, {
+    repositories: { value: repositories }, selectedRepositoryPaths: { value: [child], configurable: true },
+  });
+  Object.assign(provider, {
+    uncommittedFilesWatcher: {
+      refreshHeadBranch: async repositoryPath => {
+        steps.push(['head', repositoryPath]);
+        if (repositoryPath === child) await new Promise(resolve => { releaseHead = resolve; });
+      },
+      listCurrentHeadBranches: () => repositories.map(repoOption => ({ repoOption })),
+      refreshUncommittedFilesByHeadBranch: async branch => steps.push(['status', branch.repoOption.path]),
+    },
+    selectedRepoTotalBranchWatcher: { refreshSelectedRepositories: () => steps.push(['branches']) },
+    commitController: { forceRefreshCurrentSelection: async () => {
+      steps.push(['history']);
+      await new Promise(resolve => { releaseHistory = resolve; });
+    } },
+    schedulePushState: () => {
+      steps.push(['publish']);
+      progressSnapshots.push(provider.viewDataRefreshProgress ? { ...provider.viewDataRefreshProgress } : undefined);
+    },
+    requestRepositoryScan: () => steps.push(['scan']),
+    runCommitPanelPush: () => { throw new Error('manual refresh must not push'); },
+  });
+  const pending = provider.refreshCurrentViewData();
+  assert.equal(provider.refreshCurrentViewData(), pending, 'repeated refresh clicks share the in-flight operation');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(steps.filter(step => step[0] !== 'publish').slice(0, 6), [['head', child], ['head', repositories[0].path], ['head', repositories[2].path], ['history'], ['branches'], ['scan']], 'focused task is created first, but all repositories and history start without waiting');
+  assert.deepEqual(steps.filter(step => step[0] === 'status'), [['status', repositories[0].path], ['status', repositories[2].path]], 'other repositories publish while focused HEAD and history are still pending');
+  assert.deepEqual(progressSnapshots, [{ completed: 0, total: 4 }, { completed: 1, total: 4 }, { completed: 2, total: 4 }], 'progress starts immediately and advances per completed repository');
+  releaseHead(); await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(steps.slice(-2), [['status', child], ['publish']], 'focused data also publishes without waiting for history');
+  assert.equal(provider.refreshCurrentViewData(), pending, 'refresh lock remains held while history is pending');
+  releaseHistory(); await pending;
+  assert.equal(steps.at(-1)[0], 'publish', 'history publishes when it completes');
+  assert.equal(provider.viewDataRefresh, undefined, 'refresh lock is released');
+  assert.deepEqual(progressSnapshots.slice(-3), [{ completed: 3, total: 4 }, { completed: 4, total: 4 }, undefined], 'progress completes and is cleared after all tasks settle');
+  assert.deepEqual(provider.selectedRepositoryPaths, [child], 'refresh preserves focus');
+  const failure = new Error('history failed');
+  provider.commitController.forceRefreshCurrentSelection = async () => { throw failure; };
+  provider.uncommittedFilesWatcher.refreshHeadBranch = async () => {};
+  await assert.rejects(provider.refreshCurrentViewData(), error => error === failure);
+  assert.equal(provider.viewDataRefresh, undefined, 'failed refresh also releases the lock');
+  assert.equal(provider.viewDataRefreshProgress, undefined, 'failed refresh also clears progress');
+  Object.defineProperty(provider, 'selectedRepositoryPaths', { value: [] });
+  provider.commitController.forceRefreshCurrentSelection = async () => steps.push(['history']);
+  provider.uncommittedFilesWatcher.refreshHeadBranch = async repositoryPath => steps.push(['head', repositoryPath]);
+  steps.length = 0;
+  await provider.refreshCurrentViewData();
+  assert.deepEqual(steps.filter(step => step[0] === 'head').map(step => step[1]), repositories.map(repository => repository.path), 'without focus all known repositories still refresh');
 }
 async function verifyMultiDiffHostSelection(Provider, store, repositories) {
   const provider = Object.create(Provider.prototype);

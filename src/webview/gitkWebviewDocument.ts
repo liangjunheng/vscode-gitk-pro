@@ -112,6 +112,7 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR
       // 每次都以完整 Store 快照替换业务模型；局部变量仅保存 DOM 交互细节。
       var state = msg.state;
       if (!state) return;
+      updateFilesRefreshProgress(state.refreshProgress);
       var previousCommitLoading = isCommitLoading;
       isCommitLoading = Boolean(state.isLoading);
       // 加载态呈现方式由后端按"已选是否变化"判定后下发, 前端不再自行猜测。
