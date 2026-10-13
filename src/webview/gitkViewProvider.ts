@@ -4,6 +4,7 @@ import { type AppState, type ChangeSetMode, type ChangedFile, GitBranchOption, C
 import { getCommitFiles, getGitAheadCount, getGitBranches, getGitlinkPathsInCommit, getPushBranches, type PushBranchOption, readCurrentCommitMessage } from '../git/gitLogProvider';
 import { checkoutBranch, checkoutRemoteBranch, commitDetails, hasConflicts, indexGitlink, pull, push, rangeCommits, resolveRevision, restoreAll, restoreSubmodule, trackedPaths, type NativePushResult } from '../git/gitNativeOperations';
 import { MultiDiffPanel } from './multiDiffPanel';
+import { MergeEditorSessions } from './mergeEditorSessions';
 import { CommitPanel, type CommitPanelSnapshot, type CommitCard, type CommitCardStatePatch } from './commitPanel';
 import { CommitPanelViewTitleController } from './commitPanelViewTitleController';
 import { renderGitkWebviewHtml } from './gitkWebviewDocument';
@@ -107,6 +108,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private readonly changedFileSummaryCache = new WeakMap<object, CommitFile>();
     private gitWatchDisposables: vscode.Disposable[] = [];
     private readonly multiDiffPanel: MultiDiffPanel;
+    private readonly mergeEditorSessions: MergeEditorSessions;
     private requestedDiffReveal?: { readonly hash: string; readonly repositoryPath?: string; readonly path?: string };
     private pendingGitlinkWorktreeSnapshot?: {
         readonly repositoryPath: string;
@@ -456,6 +458,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.gitBackend,
         );
         // Diff 面板顶部卡片变化时回写 selectedPath，驱动 Changed Files 高亮。
+        this.mergeEditorSessions = new MergeEditorSessions(async repositoryPath => {
+            await this.uncommittedFilesWatcher.refreshHeadBranch(repositoryPath);
+            const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+                .find(candidate => candidate.repoOption.path === repositoryPath);
+            if (branch) { await this.uncommittedFilesWatcher.refreshUncommittedFilesByHeadBranch(branch); }
+            await this.refreshCommitPanel();
+        });
         this.multiDiffPanel = new MultiDiffPanel(
             (path, generation, selectionEpoch) => this.syncFileHighlightFromDiffPanel(path, generation, selectionEpoch),
             (paths, generation, priority) => this.requestCurrentDiffs(paths, generation, priority),
@@ -465,6 +474,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             () => void this.backToParentCommit(),
             (path, content) => void this.saveWorkspaceFile(path, content),
             (action, section, path) => void this.runWorkingTreeAction(action, section, path),
+            this.mergeEditorSessions,
         );
         this.commitPanel = new CommitPanel({
             onCommit: (repositoryPath, repositoryPaths, message, amend) => void this.runCommit(repositoryPath, repositoryPaths, message, amend),
@@ -585,6 +595,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         context.subscriptions.push(
             this.onDidChangeDiffAvailabilityEmitter,
             this.multiDiffPanel,
+            this.mergeEditorSessions,
             this.commitPanel,
             this.commitPanelViewTitleController,
             new vscode.Disposable(() => {
@@ -905,7 +916,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             workingTreeKind: file.isUntracked ? 'untracked' : 'unstaged',
             diffKey: `unstaged:${file.path}`,
         }));
-        const files = [...conflicts, ...staged, ...unstaged];
+        const files = [...conflicts, ...unstaged, ...staged];
         const workingTreeDiffCacheKey = this.getWorkingTreeDiffCacheKey(selectedBranch.repoOption.path, selectedHash, files);
         // Commit 列表虚拟行、Changed Files 分组与 Commit Panel 投影必须作为同一份 UI 快照发布。
         let workingTreeStatePatch: Partial<AppState> | undefined;

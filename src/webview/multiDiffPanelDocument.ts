@@ -1,4 +1,5 @@
 import { MONACO_DIFF_LANGUAGES, MONACO_DIFF_OPTIONS } from './monacoDiffConfig';
+import { mergeEditorCardSource } from './mergeEditorCardDocument';
 
 /**
  * Gitk Diff 面板 webview 页面: Monaco Diff 卡片列表 + 滚动虚拟化 + 全局水平滚动条。
@@ -10,7 +11,7 @@ export function renderMultiDiffHtml(
     monacoUri: string,
     nonce: string,
 ): string {
-    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src ${cspSource} 'nonce-${nonce}' 'unsafe-eval'; worker-src ${cspSource}; font-src ${cspSource};"><link rel="stylesheet" href="${codiconCssUri}"><style>
+    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src 'self'; style-src ${cspSource} 'unsafe-inline'; script-src ${cspSource} 'nonce-${nonce}' 'unsafe-eval'; worker-src ${cspSource}; font-src ${cspSource};"><link rel="stylesheet" href="${codiconCssUri}"><style>
 /* 吸顶组与文件顶部高亮轮廓对齐，不额外向上偏移。
    --header-cover-bleed 控制标题栏背后不透明盖板向上及向两侧的延展。 */
 :root{color-scheme:light dark;--header-surface:var(--vscode-editorWidget-background,var(--vscode-tab-activeBackground));--card-radius:9px;--card-border:1px;--card-ring:1px;--header-gap:0px;--header-inset:0px;--header-cover-bleed:8px;--parent-navigation-height:0px}
@@ -103,6 +104,14 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 /* 标题栏下方的 git 元信息行: index <old>..<new> <mode> 以及重命名来源。 */
 .file-meta{position:relative;z-index:1;display:flex;flex-direction:column;gap:1px;padding:0 8px 4px;border-bottom:var(--card-border) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));color:var(--vscode-descriptionForeground);background:var(--header-surface);font-family:var(--vscode-editor-font-family,monospace);font-size:calc(var(--vscode-editor-font-size) * .85);line-height:1.45}
 .diff.collapsed>.pinned-group>.file-meta{display:none}
+/* State colors cover the card outline and sticky header, without tinting source text. */
+.diff[data-working-tree-kind="unstaged"],.diff[data-working-tree-kind="untracked"]{--card-accent:#d7ba7d}
+.diff[data-working-tree-kind="conflict"]{--card-accent:#f14c4c}
+.diff[data-working-tree-kind="unstaged"],.diff[data-working-tree-kind="untracked"],.diff[data-working-tree-kind="conflict"]{--header-surface:color-mix(in srgb,var(--card-accent) 16%,var(--vscode-editorWidget-background,var(--vscode-editor-background,#1e1e1e)));border-color:var(--card-accent)}
+.diff[data-working-tree-kind="unstaged"]>.pinned-group,.diff[data-working-tree-kind="untracked"]>.pinned-group,.diff[data-working-tree-kind="conflict"]>.pinned-group{background:var(--header-surface);border-color:var(--card-accent)}
+.diff[data-working-tree-kind="unstaged"]>.pinned-group::after,.diff[data-working-tree-kind="untracked"]>.pinned-group::after,.diff[data-working-tree-kind="conflict"]>.pinned-group::after{border-color:var(--card-accent)}
+.diff[data-working-tree-kind="unstaged"].selected,.diff[data-working-tree-kind="untracked"].selected,.diff[data-working-tree-kind="conflict"].selected{box-shadow:0 0 0 var(--card-ring) var(--card-accent),0 1px 4px rgba(0,0,0,.08)}
+.diff[data-working-tree-kind="unstaged"] .file-header:hover,.diff[data-working-tree-kind="untracked"] .file-header:hover,.diff[data-working-tree-kind="conflict"] .file-header:hover{background:color-mix(in srgb,var(--card-accent) 24%,var(--vscode-editorWidget-background,var(--vscode-editor-background,#1e1e1e)))}
 .meta-line{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .meta-rename-from{color:var(--vscode-gitDecoration-deletedResourceForeground)}
 .meta-rename-to{color:var(--vscode-gitDecoration-addedResourceForeground)}
@@ -409,6 +418,7 @@ function acquireSlot(entry){
   slot.owner=entry;slot.generation++;slot.host.style.height=initialHeight+'px';entry.body.style.height=initialHeight+'px';entry.body.replaceChildren(slot.host);return slot;
 }
 function disposeEntry(entry){
+  disposeMerge(entry);
   mountedEntries.delete(entry);queuedEditorMounts.delete(entry);
   clearChangeFlash(entry);
   entry.mountVersion++;
@@ -524,6 +534,7 @@ function updateLineStats(entry){
   host.classList.add('ready');
 }
 function estimateBodyHeight(diff){
+  if(diff.workingTreeKind==='conflict')return 620;
   const originalLines=(diff.original||'').split('\\n').length,modifiedLines=(diff.modified||'').split('\\n').length;
   return Math.max(80,Math.max(originalLines,modifiedLines)*20+12);
 }
@@ -568,6 +579,7 @@ function unmountCardShell(entry){
 function mountCardShell(entry,parent){
   const diff=entry.diff,order=entry.index;
   const key=entry.path,card=document.createElement('section');card.className='diff';card.dataset.path=diff.path;card.dataset.diffKey=key;card.dataset.index=String(order);
+  card.dataset.workingTreeKind=diff.workingTreeKind||'';
   const pinnedGroup=document.createElement('div');pinnedGroup.className='pinned-group';
   // 独立标题层: 盖板与标题栏同高, 盖板位于标题内容下方但可跨出标题栏 8px 覆盖相邻卡片。
   const headerLayer=document.createElement('div');headerLayer.className='header-layer';
@@ -575,8 +587,7 @@ function mountCardShell(entry,parent){
   const header=document.createElement('button');header.type='button';header.className='file-header'+(diff.status==='R'&&diff.oldPath&&diff.oldPath!==diff.path?' rename-header':'');header.innerHTML=headerHtml(diff);
   const actions=document.createElement('div');actions.className='diff-actions';
   function actionButton(action,section,title,icon){const button=document.createElement('button');button.type='button';button.className='diff-action';button.dataset.action=action;button.dataset.section=section;button.title=title;button.setAttribute('aria-label',title);button.innerHTML='<span class="codicon codicon-'+icon+'" aria-hidden="true"></span>';return button}
-  if(diff.workingTreeKind==='conflict')actions.append(actionButton('stage','conflict','暂存当前文件并标记冲突已解决','add'));
-  else if(diff.workingTreeKind==='staged')actions.append(actionButton('unstage','staged','取消暂存当前文件（移回 Unstaged Changes）','remove'));
+  if(diff.workingTreeKind==='staged')actions.append(actionButton('unstage','staged','取消暂存当前文件（移回 Unstaged Changes）','remove'));
   else if(diff.workingTreeKind==='unstaged'||diff.workingTreeKind==='untracked')actions.append(actionButton('discard','unstaged','放弃当前文件的未暂存更改（不可撤销）','discard'),actionButton('stage','unstaged','暂存当前文件（移入 Staged Changes）','add'));
   const openFile=document.createElement('button');openFile.type='button';openFile.className='open-file';
   openFile.title='在编辑器中打开当前文件';openFile.setAttribute('aria-label','在编辑器中打开当前文件');
@@ -612,6 +623,7 @@ function mountCardShell(entry,parent){
     try{window.gitkVscode.postMessage({type:'selectGitlinkCommit',path:entry.filePath,hash:hash})}catch(_){}
   });
   mountedCardEntries.add(entry);
+  if(diff.workingTreeKind==='conflict'){mountMerge(entry);return entry}
   if(!loaded){body.style.height=entry.bodyHeight+'px';return entry;}
   if(diff.isGitlink){
     body.style.height='';body.innerHTML=gitlinkBodyHtml(diff);entry.staticContent=true;
@@ -1118,7 +1130,7 @@ function toggle(entry){
   externalRevealPath='';
   entry.collapsed=!entry.collapsed;
   entry.card.classList.toggle('collapsed',entry.collapsed);
-  if(entry.collapsed)disposeEntry(entry);else scheduleVirtualization();
+  if(entry.collapsed&&entry.diff.workingTreeKind!=='conflict')disposeEntry(entry);else scheduleVirtualization();
   setActive(entry.path,true);updateGlobalHScroll();
 }
 function setActive(path,notify){
@@ -1379,9 +1391,16 @@ function updateVirtualLayout(start,end,rebuildCards){
     const entry=cards[index];
     // 新卡片先在离屏 Fragment 中批量构造，避免每张卡片 append 后立刻读取布局造成强制回流。
     if(!entry.card)mountCardShell(entry,fragment);
-    else fragment.appendChild(entry.card);
+    // Connected iframe-backed merge editors must not be detached during reordering.
   }
-  virtualCardsHost.replaceChildren(fragment);
+  virtualCardsHost.appendChild(fragment);
+  let cursor=virtualCardsHost.firstChild;
+  for(let index=start;index<=end;index++){
+    const card=cards[index].card;
+    if(card===cursor){cursor=cursor.nextSibling;continue}
+    if(typeof virtualCardsHost.moveBefore==='function'&&card.isConnected)virtualCardsHost.moveBefore(card,cursor);
+    else virtualCardsHost.insertBefore(card,cursor);
+  }
   // DOM 写入全部完成后再统一测量；连续读取共享同一次布局计算。
   for(let index=start;index<=end;index++)measureMountedCardShell(cards[index]);
   restoreViewportAnchor(viewportAnchor);
@@ -1428,6 +1447,7 @@ function applyVirtualWindow(first,last,fromScroll,priorityIndex=-1,priorityOnly=
   const bind=function(index,priority,visible){
     const entry=cards[index];
     if(entry.collapsed)return;
+    if(entry.diff.workingTreeKind==='conflict'){if(!entry.mergeFrame)mountMerge(entry);return}
     if(entry.diff.loaded!==true)ensureDiffRequested(entry,priority);
     else if(!entry.staticContent&&!hasMountedEditorContent(entry)&&!entry.mounting){
       // 只有点击目标立即绑定；其余可视卡片和 overscan 都分帧创建，避免首次打开或滚动时一帧创建十几个 Monaco。
@@ -1543,6 +1563,12 @@ function updateEntryFromSnapshot(entry,diff){
     const old=entry.diff;
     const wasLoaded=entry.diff.loaded===true,isLoaded=diff.loaded===true;
     entry.diff=diff;entry.filePath=diff.path;entry.modifiedValue=diff.modified||entry.modifiedValue;
+    if(entry.card)entry.card.dataset.workingTreeKind=diff.workingTreeKind||'';
+    if(diff.workingTreeKind==='conflict'){
+      entry.staticContent=true;entry.bodyHeight=620;entry.navigationChangeCount=0;layoutDirty=true;
+      if(entry.card){entry.header.innerHTML=headerHtml(diff);entry.meta.innerHTML=metaHtml(diff);mountMerge(entry)}
+      return;
+    }
     if(old.original!==diff.original||old.modified!==diff.modified||old.loaded!==diff.loaded||old.isBinary!==diff.isBinary||old.error!==diff.error||old.isGitlink!==diff.isGitlink)entry.navigationChangeCount=null;
     if(isLoaded){requestedDiffPaths.delete(entry.path);prioritizedDiffPaths.delete(entry.path)}
     if(!isLoaded)entry.bodyHeight=80;
@@ -1597,6 +1623,7 @@ function render(snapshot){
   try{
     const sameIdentity=lastIdentity!==''&&snapshot.identity===lastIdentity;
     const state=sameIdentity?refreshState():null;
+    lastIdentity=snapshot.identity;
     editable=snapshot.editable===true;
     if(!snapshot.diffs.length){dispose();list.classList.remove('rendering');list.textContent='暂无变更文件';loading.hidden=true;list.hidden=false;lastIdentity=snapshot.identity;log('render #'+snapshot.revision+': empty');notifyRendered(snapshot.revision,snapshot.identity);return}
     const total=snapshot.diffs.length;
@@ -1677,6 +1704,7 @@ function flushPendingDiffUpdates(){
 }
 function receive(message){
   if(!message)return;
+  if(message.type==='mergeLoaded'||message.type==='mergeSaved'){mergeHostMessage(message);return}
   if(message.type==='releaseDiffRequests'){
     const released=new Set(Array.isArray(message.paths)?message.paths.filter(function(path){return typeof path==='string'}):[]);
     released.forEach(function(path){requestedDiffPaths.delete(path);prioritizedDiffPaths.delete(path);pendingDiffRequestPaths.delete(path);pendingPriorityDiffRequestPaths.delete(path)});
@@ -1716,6 +1744,7 @@ function receive(message){
   }
   if(monacoReady){const snapshot=pending;pending=undefined;render(snapshot);flushPendingDiffUpdates()}
 }
+${mergeEditorCardSource(cspSource, monacoUri, codiconCssUri, nonce)}
 window.addEventListener('message',event=>receive(event.data));window.gitkQueue.forEach(receive);window.gitkQueue.push=()=>{};window.gitkVscode.postMessage({type:'ready'});
 function applyVsCodeTheme(){const css=name=>getComputedStyle(document.documentElement).getPropertyValue(name).trim(),colors={},background=css('--vscode-editor-background'),foreground=css('--vscode-editor-foreground');if(background)colors['editor.background']=background;if(foreground)colors['editor.foreground']=foreground;monaco.editor.defineTheme('gitk-vscode-surface',{base:document.body.classList.contains('vscode-light')?'vs':'vs-dark',inherit:true,rules:[],colors});monaco.editor.setTheme('gitk-vscode-surface')}
 function applyVsCodeFont(editor){const style=getComputedStyle(document.documentElement),fontFamily=style.getPropertyValue('--vscode-editor-font-family').trim(),fontSize=Number.parseFloat(style.getPropertyValue('--vscode-editor-font-size'));editor.updateOptions({fontFamily:fontFamily||undefined,fontSize:Number.isFinite(fontSize)?fontSize:undefined})}

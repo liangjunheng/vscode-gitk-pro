@@ -1,3 +1,4 @@
+mod conflicts;
 mod filters;
 mod history;
 mod hooks;
@@ -43,6 +44,7 @@ fn is_mutating_operation(operation: &str) -> bool {
     matches!(
         operation,
         "stage"
+            | "saveMergeResult"
             | "stageAll"
             | "unstage"
             | "restoreWorktree"
@@ -72,6 +74,8 @@ fn dispatch_operation(operation: &str, payload: &Value) -> std::result::Result<V
         "configGet" => repository::config_get(payload),
         "submodules" => repository::submodules(payload),
         "readObjects" => objects::read_objects(payload),
+        "readMergeConflict" => conflicts::read(payload),
+        "saveMergeResult" => conflicts::save(payload),
         "resolveRevision" => objects::resolve_revision(payload),
         "status" => status::status(payload),
         "hasChanges" => status::has_changes(payload),

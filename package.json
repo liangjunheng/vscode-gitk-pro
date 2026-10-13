@@ -250,6 +250,7 @@
     "build": "npm run compile",
     "test:native": "cargo test --manifest-path native/git2-backend/Cargo.toml",
     "test:binding": "node scripts/test-native-binding.cjs",
+    "test:merge-editor": "node scripts/test-merge-editor.cjs && node scripts/test-aggregate-merge.cjs",
     "test:parity": "npm run check:native && npm run test:native && npm run build:native && npm run compile && npm run test:binding",
     "check:native": "cargo fmt --check --manifest-path native/git2-backend/Cargo.toml && cargo clippy --manifest-path native/git2-backend/Cargo.toml --all-targets --all-features -- -D warnings",
     "package:vsix": "vsce package",
@@ -262,11 +263,14 @@
     "@types/node": "^18.0.0",
     "@types/vscode": "^1.94.0",
     "@vscode/vsce": "^3.9.2",
+    "playwright": "^1.64.0",
+    "pngjs": "^7.0.0",
     "typescript": "^5.1.0"
   },
   "dependencies": {
     "@vscode/codicons": "^0.0.36",
-    "monaco-editor": "^0.52.2"
+    "monaco-editor": "^0.52.2",
+    "node-diff3": "^3.2.1"
   },
   "repository": {
     "type": "git",

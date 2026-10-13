@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import type { ChangedFile, DiffPayload } from '../types';
 import { store } from '../state/store';
 import { renderMultiDiffHtml } from './multiDiffPanelDocument';
+import type { MergeEditorSessions } from './mergeEditorSessions';
 
 type DiffEntry = Omit<ChangedFile, 'equals'> & Partial<Pick<DiffPayload, 'original' | 'modified'>> & { loaded: boolean; editable?: boolean };
 
@@ -58,6 +59,8 @@ export class MultiDiffPanel implements vscode.Disposable {
     private renderedSnapshotRevision?: number;
     private readonly publishedEntries = new Map<string, { source: ChangedFile; value: DiffEntry }>();
     private readonly unsubscribers: (() => void)[];
+    private readonly mergeLoads = new Map<string, Promise<void>>();
+    private readonly mergeSessionIds = new Set<number>();
 
     constructor(
         private readonly onSelectFile?: (path: string, generation: number, selectionEpoch: number) => void,
@@ -68,6 +71,7 @@ export class MultiDiffPanel implements vscode.Disposable {
         private readonly onBackToParentCommit?: () => void,
         private readonly onSaveFile?: (path: string, content: string) => void,
         private readonly onWorkingTreeAction?: (action: 'stage' | 'unstage' | 'discard', section: 'conflict' | 'staged' | 'unstaged', path: string) => void,
+        private readonly mergeSessions?: MergeEditorSessions,
     ) {
         this.unsubscribers = [
             store.subscribeSelector(state => state.diffLoading, () => this.schedulePublish()),
@@ -171,7 +175,19 @@ export class MultiDiffPanel implements vscode.Disposable {
             localResourceRoots: [monacoRoot, codiconsRoot],
         });
         this.panel.webview.onDidReceiveMessage(message => {
-            if (message?.type === 'ready') {
+            if (message?.type === 'mergeDraft' && typeof message.sessionId === 'number'
+                && this.mergeSessionIds.has(message.sessionId) && typeof message.content === 'string') {
+                this.mergeSessions?.setDraft(message.sessionId, message.content);
+            } else if (message?.type === 'loadMerge' && typeof message.key === 'string' && typeof message.identity === 'string') {
+                void this.loadMerge(message.key, message.identity);
+            } else if (message?.type === 'saveMerge' && typeof message.sessionId === 'number'
+                && this.mergeSessionIds.has(message.sessionId) && typeof message.content === 'string'
+                && typeof message.remaining === 'number' && typeof message.key === 'string') {
+                const panel = this.panel;
+                void this.mergeSessions?.save(message.sessionId, message.content, message.complete === true, message.remaining)
+                    .then(() => { if (panel === this.panel) { this.post({ type: 'mergeSaved', key: message.key, sessionId: message.sessionId, complete: message.complete === true }); } })
+                    .catch(error => { if (panel === this.panel) { this.post({ type: 'mergeSaved', key: message.key, sessionId: message.sessionId, error: error instanceof Error ? error.message : String(error) }); } });
+            } else if (message?.type === 'ready') {
                 this.webviewReady = true;
                 this.post({ type: 'setRenderSideBySide', renderSideBySide: this.renderSideBySide });
                 this.post({ type: 'setParentCommitNavigation', parentCommit: this.parentCommitNavigation });
@@ -227,6 +243,8 @@ export class MultiDiffPanel implements vscode.Disposable {
         });
         // 面板被关闭后不会再有渲染完成信号, 通知 Provider 兜底放行 Changed Files 列表。
         this.panel.onDidDispose(() => {
+            this.mergeSessionIds.forEach(id => this.mergeSessions?.release(id));
+            this.mergeSessionIds.clear();
             this.panel = undefined;
             this.webviewReady = false;
             this.publishedIdentity = undefined;
@@ -250,6 +268,29 @@ export class MultiDiffPanel implements vscode.Disposable {
             this.publishScheduled = false;
             this.publish();
         });
+    }
+
+    private loadMerge(key: string, identity: string): Promise<void> {
+        const state = store.getState();
+        const currentIdentity = `${state.currentRepositoryPath ?? ''}\u0000${state.currentHash ?? ''}`;
+        const file = state.files.find(candidate => (candidate.diffKey || candidate.path) === key && candidate.workingTreeKind === 'conflict');
+        if (!file || !this.mergeSessions || state.currentChangeSet !== 'uncommitted' || identity !== currentIdentity) { return Promise.resolve(); }
+        const loadKey = JSON.stringify([identity, key]);
+        const pending = this.mergeLoads.get(loadKey);
+        if (pending) { return pending; }
+        const panel = this.panel;
+        const task = this.mergeSessions.load(state.currentRepositoryPath, file.path).then(data => {
+            const latest = store.getState();
+            if (panel !== this.panel || identity !== `${latest.currentRepositoryPath ?? ''}\u0000${latest.currentHash ?? ''}`) {
+                this.mergeSessions.release(data.sessionId); return;
+            }
+            this.mergeSessionIds.add(data.sessionId);
+            this.post({ type: 'mergeLoaded', key, identity, ...data });
+        }).catch(error => {
+            if (panel === this.panel) { this.post({ type: 'mergeLoaded', key, identity, error: error instanceof Error ? error.message : String(error) }); }
+        }).finally(() => this.mergeLoads.delete(loadKey));
+        this.mergeLoads.set(loadKey, task);
+        return task;
     }
 
     private publish(): void {

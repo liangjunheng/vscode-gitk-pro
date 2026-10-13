@@ -553,9 +553,9 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
       const conflictSectionFiles = sectionFiles.filter(function(file) { return file.workingTreeKind === 'conflict'; });
       const stagedSectionFiles = sectionFiles.filter(function(file) { return file.workingTreeKind === 'staged'; });
       const unstagedSectionFiles = sectionFiles.filter(function(file) { return file.workingTreeKind === 'unstaged' || file.workingTreeKind === 'untracked'; });
-      const sectionHTML = workingTreeSectionHTML('conflict', 'Merge Changes', conflictSectionFiles) + workingTreeSectionHTML('staged', 'Staged Changes', stagedSectionFiles) + workingTreeSectionHTML('unstaged', 'Unstaged Changes', unstagedSectionFiles);
+      const sectionHTML = workingTreeSectionHTML('conflict', 'Merge Changes', conflictSectionFiles) + workingTreeSectionHTML('unstaged', 'Unstaged Changes', unstagedSectionFiles) + workingTreeSectionHTML('staged', 'Staged Changes', stagedSectionFiles);
       list.innerHTML = '<div class="working-tree-content">' + sectionHTML + '</div>';
-      [['conflict', conflictSectionFiles], ['staged', stagedSectionFiles], ['unstaged', unstagedSectionFiles]].forEach(function(pair) {
+      [['conflict', conflictSectionFiles], ['unstaged', unstagedSectionFiles], ['staged', stagedSectionFiles]].forEach(function(pair) {
         const body = list.querySelector('.working-tree-section[data-section="' + pair[0] + '"] .working-tree-section-body');
         if (body && pair[1].length && !body.hidden) renderWorkingTreeVirtualBody(body, pair[0], pair[1]);
       });

@@ -139,8 +139,8 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     });
     return [
       { key: 'conflict', label: 'Merge Changes', files: Array.from(conflicts.values()) },
-      { key: 'staged', label: 'Staged Changes', files: (repository.staged || []).filter(function(file) { return !file.isConflict; }) },
-      { key: 'unstaged', label: 'Changes', files: (repository.unstaged || []).filter(function(file) { return !file.isConflict; }) }
+      { key: 'unstaged', label: 'Unstaged Changes', files: (repository.unstaged || []).filter(function(file) { return !file.isConflict; }) },
+      { key: 'staged', label: 'Staged Changes', files: (repository.staged || []).filter(function(file) { return !file.isConflict; }) }
     ];
   }
   function createRepositoryChangesNode(repository) {

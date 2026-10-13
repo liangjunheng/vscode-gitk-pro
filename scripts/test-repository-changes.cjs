@@ -1200,6 +1200,30 @@ async function verifyFocusedRefresh(Provider, repositories) {
   assert.deepEqual(steps.filter(step => step[0] === 'head').map(step => step[1]), repositories.map(repository => repository.path), 'without focus all known repositories still refresh');
 }
 async function verifyMultiDiffHostSelection(Provider, store, repositories) {
+  const defaults = Object.create(Provider.prototype);
+  const branch = { repoOption: repositories[1] };
+  Object.assign(defaults, {
+    commitController: { selectedCommit: { hash: 'uncommitted', gitBranchOption: branch } },
+    commitFilesGeneration: 0, pendingDiffPaths: new Set(), workingTreeDiffCache: new Map(),
+    diffReader: { stop() {} }, cancelPriorityDiffLoad() {},
+  });
+  const changes = { staged: [{ path: 'same.cpp', status: 'M' }], changes: [{ path: 'same.cpp', status: 'M' }] };
+  store.setState({ currentHash: 'uncommitted', currentRepositoryPath: repositories[1].path,
+    currentChangeSet: 'uncommitted', files: [], selectedPath: undefined });
+  const select = changes => defaults.selectWorkingTreeChanges(changes, false, false, undefined, false);
+  await select(changes);
+  assert.deepEqual(store.getState().files.map(file => file.diffKey), ['unstaged:same.cpp', 'staged:same.cpp']);
+  assert.equal(store.getState().selectedPath, 'unstaged:same.cpp', 'initial selection follows first visible group');
+  store.setState({ selectedPath: 'staged:same.cpp' });
+  await select(changes);
+  assert.equal(store.getState().selectedPath, 'staged:same.cpp', 'refresh preserves explicit staged selection');
+  store.setState({ files: [], selectedPath: undefined });
+  await select({ staged: changes.staged, changes: [] });
+  assert.equal(store.getState().selectedPath, 'staged:same.cpp', 'staged-only repository falls back correctly');
+  store.setState({ files: [], selectedPath: undefined });
+  await select({ staged: changes.staged, changes: [{ path: 'conflict.cpp', status: 'U', isConflict: true }, ...changes.changes] });
+  assert.deepEqual(store.getState().files.map(file => file.diffKey), ['conflict:conflict.cpp', 'unstaged:same.cpp', 'staged:same.cpp']);
+  assert.equal(store.getState().selectedPath, 'conflict:conflict.cpp', 'conflict takes first-group priority');
   const provider = Object.create(Provider.prototype);
   const child = repositories[1].path; const fileKey = 'unstaged:same.cpp';
   const reveals = [], opened = [];
