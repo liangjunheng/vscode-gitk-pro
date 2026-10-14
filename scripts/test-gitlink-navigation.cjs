@@ -4,7 +4,13 @@ const originalLoad = Module._load;
 let Provider, DiffReader, CommitFile, DiffPayload, WorkingTreeChanges, store;
 try {
   Module._load = function(name, ...args) {
-    if (name === 'vscode') return { Uri: { parse: value => ({ fsPath: value, toString: () => value }) } };
+    if (name === 'vscode') return { Uri: {
+      parse: value => ({ fsPath: value, toString: () => value }),
+      file: value => ({ fsPath: value, toString: () => 'file://'+value.replaceAll('\\\\','/') }),
+    } };
+    if (name === '../git/gitNativeOperations') return {
+      commitDetails: async () => [], rangeCommits: async () => [], resolveRevision: async () => 'a'.repeat(40),
+    };
     return originalLoad.call(this, name, ...args);
   };
   ({ GitkViewProvider: Provider } = require('../out/webview/gitkViewProvider'));
@@ -121,6 +127,19 @@ async function main() {
   const dirtyPayload = reader.updateGitlinkPayloads([new DiffPayload({ path: 'child', isGitlink: true })], [dirtyGitlink])[0];
   assert.equal(dirtyPayload.original, '');
   assert.equal(dirtyPayload.modified, '');
+  const transientMetadata = fixture();
+  transientMetadata.provider.gitBackend = {
+    getWorkingTreeStatus: async () => new WorkingTreeChanges({
+      staged: [new CommitFile({ path: 'staged.cpp' })],
+      changes: [new CommitFile({ path: 'staged.cpp' }), new CommitFile({ path: 'unstaged.cpp' })],
+    }),
+  };
+  transientMetadata.provider.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch = async () => new WorkingTreeChanges();
+  const transient = new CommitFile({ path: 'child', isGitlink: true, workingTreeKind: 'unstaged',
+    gitlinkWorktreeDirty: true, oldObjectId: sha, newObjectId: sha });
+  await transientMetadata.provider.readGitlinkCommitSubjects({ fsPath: '/root', toString: () => 'file:///root' }, [transient]);
+  assert.equal(transient.gitlinkWorktreeDirty, true, 'an empty watcher bootstrap cannot hide a dirty child worktree');
+  assert.equal(transient.gitlinkWorktreeChangeCount, 2, 'the card uses the direct child snapshot count');
   console.log('Gitlink navigation: explicit SHA, all worktree groups, clean fallback, card ownership, cancellation and metadata patches passed');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

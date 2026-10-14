@@ -52,6 +52,13 @@ function toGitlinkCommit(detail: NativeCommitDetails): GitlinkCommit {
     };
 }
 
+function workingTreeChangeCount(changes: WorkingTreeChanges): number {
+    return new Set([
+        ...changes.staged.map(change => change.path),
+        ...changes.changes.map(change => change.path),
+    ]).size;
+}
+
 async function pickPushBranch(
     branches: readonly PushBranchOption[],
     defaultBranch: PushBranchOption,
@@ -3051,16 +3058,22 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     .find(branch => branch.repoOption.path === submoduleUri.toString());
                 // A parent unstaged Gitlink does not by itself mean the child
                 // worktree is dirty: the child HEAD may simply have moved.
-                // Read the direct child state and use that as the navigation
-                // decision; only fall back to the backend hint if the read races.
-                if (file.workingTreeKind && childBranch) {
+                // A watcher can briefly hold an empty bootstrap snapshot, so
+                // never let that snapshot erase the parent Gitlink dirty hint.
+                if (file.workingTreeKind) {
                     try {
-                        const childChanges = await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(childBranch);
-                        file.gitlinkWorktreeChangeCount = new Set([
-                            ...childChanges.staged.map(change => change.path),
-                            ...childChanges.changes.map(change => change.path),
-                        ]).size;
-                        file.gitlinkWorktreeDirty = file.gitlinkWorktreeChangeCount > 0;
+                        const watcherChanges = childBranch
+                            ? await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(childBranch)
+                            : undefined;
+                        const watcherCount = watcherChanges ? workingTreeChangeCount(watcherChanges) : 0;
+                        if (watcherCount > 0) {
+                            file.gitlinkWorktreeChangeCount = watcherCount;
+                            file.gitlinkWorktreeDirty = true;
+                        } else if (file.gitlinkWorktreeDirty) {
+                            const directChanges = await this.gitBackend.getWorkingTreeStatus(submoduleUri);
+                            file.gitlinkWorktreeChangeCount = workingTreeChangeCount(directChanges);
+                            file.gitlinkWorktreeDirty = file.gitlinkWorktreeChangeCount > 0;
+                        }
                     } catch {
                         // The navigation card stays usable if the child status
                         // refresh races a HEAD change; retain the backend hint.
