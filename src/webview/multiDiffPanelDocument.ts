@@ -123,6 +123,14 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .gitlink-commit:last-child{border-bottom:0}
 .gitlink-commit-hash{color:var(--vscode-textLink-foreground);white-space:nowrap}
 .gitlink-commit-message{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.gitlink-conflict-commits .gitlink-conflict-stage{display:grid;grid-template-columns:100px 90px minmax(0,1fr) 16px;align-items:center;gap:10px;padding:10px 12px;min-height:42px}
+.gitlink-conflict-stage-label{display:flex;align-items:center;gap:6px;color:var(--vscode-foreground);font-family:var(--vscode-font-family,sans-serif);font-size:12px;font-weight:500}
+.gitlink-conflict-stage-label .codicon{color:var(--vscode-descriptionForeground)}
+.gitlink-conflict-stage-empty,.gitlink-conflict-stage-description{color:var(--vscode-descriptionForeground)}
+.gitlink-conflict-stage-unavailable{cursor:default}
+.gitlink-conflict-stage-unavailable:hover{background:transparent}
+.gitlink-conflict-notice{display:flex;align-items:flex-start;gap:7px;padding:9px 12px;border-bottom:1px solid var(--vscode-editorWidget-border,var(--vscode-panel-border));color:var(--vscode-descriptionForeground);font-family:var(--vscode-font-family,sans-serif);font-size:12px;line-height:1.5}
+@media(max-width:520px){.gitlink-conflict-commits .gitlink-conflict-stage{grid-template-columns:90px minmax(0,1fr) 16px;gap:6px}.gitlink-conflict-stage .gitlink-commit-message{grid-column:2;grid-row:2}.gitlink-conflict-stage>.codicon{grid-column:3;grid-row:1}}
 @keyframes gitlink-loading-spin{to{transform:rotate(360deg)}}
 .gitlink-loading{display:inline-flex;align-items:center;justify-content:center;gap:8px}
 .gitlink-loading-spinner{width:13px;height:13px;border:2px solid var(--vscode-descriptionForeground);border-top-color:var(--vscode-focusBorder);border-radius:50%;animation:gitlink-loading-spin .8s linear infinite}
@@ -498,10 +506,12 @@ function gitlinkBodyHtml(diff){
     const choices=[['Base',diff.gitlinkConflictBaseCommit,diff.gitlinkConflictBaseObjectId],['Current',diff.gitlinkConflictCurrentCommit,diff.gitlinkConflictCurrentObjectId],['Incoming',diff.gitlinkConflictIncomingCommit,diff.gitlinkConflictIncomingObjectId]];
     const rows=choices.map(function(item){
       const commit=item[1],hash=item[2];
-      if(!hash||/^0+$/.test(hash))return '<div class="meta-line">'+item[0]+': '+(hash?'Deleted':'Unavailable')+'</div>';
-      return '<button type="button" class="gitlink-commit" data-hash="'+escapeHtml(hash)+'" title="查看子模块 '+item[0]+' 提交 '+escapeHtml(hash)+'"><span class="gitlink-commit-hash">'+item[0]+' '+escapeHtml(commit?.shortHash||hash.slice(0,7))+'</span><span class="gitlink-commit-message">'+escapeHtml(commit?.message||commit?.subject||'')+'</span></button>';
+      const label='<span class="gitlink-conflict-stage-label"><span class="codicon codicon-git-commit" aria-hidden="true"></span>'+item[0]+'</span>';
+      if(!hash||/^0+$/.test(hash))return '<div class="gitlink-commit gitlink-conflict-stage gitlink-conflict-stage-unavailable">'+label+'<span class="gitlink-conflict-stage-empty">—</span><span class="gitlink-commit-message gitlink-conflict-stage-description">'+(!hash?'阶段数据未提供':item[0]==='Base'?'无共同祖先（该阶段不存在）':'该侧不存在此子模块')+'</span></div>';
+      return '<button type="button" class="gitlink-commit gitlink-conflict-stage" data-hash="'+escapeHtml(hash)+'" title="查看子模块 '+item[0]+' 提交 '+escapeHtml(hash)+'">'+label+'<span class="gitlink-commit-hash">'+escapeHtml(commit?.shortHash||hash.slice(0,7))+'</span><span class="gitlink-commit-message">'+escapeHtml(commit?.message||commit?.subject||'提交说明未加载')+'</span><span class="codicon codicon-chevron-right" aria-hidden="true"></span></button>';
     }).join('');
-    return '<div class="gitlink-commits gitlink-conflict-commits">'+rows+worktree+'</div>';
+    const notice=choices.some(item=>!item[2])?'<div class="gitlink-conflict-notice" role="status"><span class="codicon codicon-warning" aria-hidden="true"></span><span>未收到完整的索引冲突阶段数据；请确认扩展包含最新的原生模块。缺少阶段数据不代表提交已删除。</span></div>':'';
+    return '<div class="gitlink-commits gitlink-conflict-commits">'+notice+rows+worktree+'</div>';
   }
   if(diff.gitlinkScanPending)return (worktree?'<div class="gitlink-commits">'+worktree+'</div>':'')+'<div class="empty gitlink-loading"><span class="gitlink-loading-spinner" aria-hidden="true"></span><span>正在扫描子模块提交…</span></div>';
   const commits=state.worktreeOnly?[]:(Array.isArray(diff.gitlinkRangeCommits)?diff.gitlinkRangeCommits:[diff.status==='A'?undefined:diff.oldGitlinkCommit,diff.status==='D'?undefined:diff.newGitlinkCommit].filter(function(commit,index,values){return commit&&values.findIndex(function(item){return item&&item.hash===commit.hash})===index}));
@@ -526,6 +536,7 @@ function metaHtml(diff){
   }
   const oldId=shortObjectId(diff.oldObjectId),newId=shortObjectId(diff.newObjectId);
   if(diff.isGitlink){
+    if(diff.workingTreeKind==='conflict')return '<span class="meta-line meta-gitlink">子模块指针冲突 · Base / Current / Incoming</span>';
     const state=gitlinkDisplayState(diff);
     if(state.worktreeOnly)return '<span class="meta-line meta-gitlink">'+gitlinkWorktreeStatusText(diff)+'</span>';
     const oldCommit=diff.oldGitlinkCommit,newCommit=diff.newGitlinkCommit;

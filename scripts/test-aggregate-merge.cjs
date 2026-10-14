@@ -148,6 +148,9 @@ async function main(){
   const links=['conflict','unstaged','staged'].map(link);
   await publish({type:'snapshot',revision:20,identity:'file:///gitlinks\0uncommitted',loading:false,editable:true,diffs:links,total:3,completed:3,selectionEpoch:20});
   await page.waitForFunction(()=>document.querySelectorAll('.gitlink-worktree').length===3);
+  assert.equal(await page.locator('.gitlink-conflict-stage').count(),3);
+  assert.equal(await page.locator('.gitlink-conflict-notice').count(),0);
+  assert.ok((await page.locator('.diff[data-diff-key="conflict:child"] .file-meta').textContent()).includes('子模块指针冲突'));
   const unstagedCard=page.locator('.diff[data-diff-key="unstaged:child"]');
   const unstagedMeta=await unstagedCard.locator('.file-meta').textContent();
   assert.ok(unstagedMeta.includes('Submodule commit')&&unstagedMeta.includes('子模块有 2 个未提交变更文件'),'pointer movement and child worktree dirtiness are both shown');
@@ -181,6 +184,21 @@ async function main(){
   assert.equal(await page.locator('.gitlink-commit[data-hash="'+sha+'"]').count(),1);
   assert.deepEqual(errors,[]);
   // Check rendered pixels: a correctly colored outline can still be above the viewport.
+  const unavailable={...link('conflict'),gitlinkWorktreeDirty:false,gitlinkConflictBaseObjectId:undefined,gitlinkConflictCurrentObjectId:undefined,gitlinkConflictIncomingObjectId:undefined};
+  const absent={...link('conflict'),path:'deleted-child',diffKey:'conflict:deleted-child',gitlinkWorktreeDirty:false,gitlinkConflictBaseObjectId:'0'.repeat(40),gitlinkConflictIncomingObjectId:'0'.repeat(40)};
+  await publish({type:'snapshot',revision:23,identity:'file:///gitlinks\0missing-stages',loading:false,editable:true,diffs:[unavailable,absent],total:2,completed:2,selectionEpoch:23});
+  await page.waitForFunction(()=>document.querySelectorAll('.gitlink-conflict-stage').length===6);
+  const missingCard=page.locator('.diff[data-path="child"]'),absentCard=page.locator('.diff[data-path="deleted-child"]');
+  assert.equal(await missingCard.locator('.gitlink-conflict-notice').count(),1);
+  assert.equal(await missingCard.locator('.gitlink-conflict-stage-unavailable').count(),3);
+  assert.ok((await missingCard.textContent()).includes('阶段数据未提供'));
+  assert.ok(!(await missingCard.textContent()).includes('Unavailable'));
+  assert.equal(await absentCard.locator('.gitlink-conflict-notice').count(),0);
+  assert.ok((await absentCard.textContent()).includes('该阶段不存在'));
+  assert.ok((await absentCard.textContent()).includes('该侧不存在此子模块'));
+  await page.setViewportSize({width:420,height:900});
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+  await page.screenshot({path:path.join(require('node:os').tmpdir(),'gitk-gitlink-conflict-states.png')});
   for(const width of [1200,640])for(const navigation of [false,true])for(const kind of [undefined,'unstaged','conflict']){
    await page.goto('http://fixture/');
    await page.setViewportSize({width,height:900});
@@ -201,10 +219,11 @@ async function main(){
    const offset=(Math.round(header.y)*image.width+Math.floor(header.x+header.width/2))*4;
    const pixel=[...image.data.subarray(offset,offset+3)];
    assert.ok(pixel[0]<10&&pixel[1]>80&&pixel[2]>150,'Selected sticky header must render its blue top edge inside the viewport: '+pixel);
-   await page.locator('.diff[data-path="tail"]').evaluate(node=>node.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true})));
+   await page.evaluate(()=>{beginUserMultiDiffInteraction();suppressSyncUntil=performance.now()+1000;setActive('tail',false)});
+   await page.waitForFunction(()=>!document.querySelector('.diff[data-path="sticky-child"]').classList.contains('selected'));
    const unselected=PNG.sync.read(await page.screenshot());
    const inactivePixel=[...unselected.data.subarray(offset,offset+3)];
-   assert.ok(!(inactivePixel[0]<10&&inactivePixel[1]>80&&inactivePixel[2]>150),'Deselected sticky header must not retain the blue edge');
+   assert.ok(!(inactivePixel[0]<10&&inactivePixel[1]>80&&inactivePixel[2]>150),'Deselected sticky header must not retain the blue edge: '+JSON.stringify({width,navigation,kind,inactivePixel,selected:await card.getAttribute('class')}));
   }
   // Real wheel events must chain to the document only at a pane's boundary.
   await page.goto('http://fixture/');

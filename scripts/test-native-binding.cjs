@@ -26,6 +26,28 @@ const invoke = async (operation, payload = {}) => JSON.parse(await binding.invok
     assert.equal(hash, git('rev-parse', 'HEAD'));
     assert.equal((await invoke('commitDetails', { hashes: [hash] }))[0].message, 'subject\n\nbody');
     assert.deepEqual(await invoke('status'), { staged: [], changes: [] });
+    git('commit', '--allow-empty', '-m', 'current stage');
+    const ours = git('rev-parse', 'HEAD');
+    git('commit', '--allow-empty', '-m', 'incoming stage');
+    const theirs = git('rev-parse', 'HEAD');
+    execFileSync('git', ['-C', root, 'update-index', '--index-info'], {
+      input: [hash, ours, theirs].map((oid, i) => `160000 ${oid} ${i + 1}\tchild\n`).join(''),
+    });
+    const conflict = await invoke('status');
+    for (const group of [conflict.staged, conflict.changes]) {
+      const child = group.find(file => file.path === 'child');
+      assert.equal(child.isGitlink, true);
+      assert.equal(child.isConflict, true);
+      assert.equal(child.gitlinkConflictBaseObjectId, hash, 'native binary must return the base stage');
+      assert.equal(child.gitlinkConflictCurrentObjectId, ours, 'native binary must return the current stage');
+      assert.equal(child.gitlinkConflictIncomingObjectId, theirs, 'native binary must return the incoming stage');
+    }
+    execFileSync('git', ['-C', root, 'update-index', '--index-info'], {
+      input: `0 ${'0'.repeat(40)}\tchild\n160000 ${hash} 1\tchild\n160000 ${ours} 2\tchild\n`,
+    });
+    const deletion = await invoke('status');
+    assert.equal(deletion.changes.find(file => file.path === 'child').gitlinkConflictIncomingObjectId, '0'.repeat(40), 'absent stages use explicit zero IDs, not missing fields');
+    execFileSync('git', ['-C', root, 'update-index', '--index-info'], { input: `0 ${'0'.repeat(40)}\tchild\n` });
 
     // 同仓库状态读取与 index 写入会从不同 N-API worker 并发进入；
     // 每个快照都必须是写入前或写入后的完整状态，不能出现错误分组或丢失文件。
