@@ -67,7 +67,7 @@ export class MultiDiffPanel implements vscode.Disposable {
         private readonly onRequestDiffs?: (paths: string[], generation: number, priority: boolean) => void,
         private readonly onRendered?: (identity?: string) => void,
         private readonly onOpenFileAtLine?: (path: string, line?: number, column?: number, side?: 'original' | 'modified') => void,
-        private readonly onSelectGitlinkCommit?: (path: string, hash: string) => void,
+        private readonly onSelectGitlinkCommit?: (path: string, hash: string, key?: string) => void,
         private readonly onBackToParentCommit?: () => void,
         private readonly onSaveFile?: (path: string, content: string) => void,
         private readonly onWorkingTreeAction?: (action: 'stage' | 'unstage' | 'discard', section: 'conflict' | 'staged' | 'unstaged', path: string) => void,
@@ -210,7 +210,11 @@ export class MultiDiffPanel implements vscode.Disposable {
             } else if (message?.type === 'selectGitlinkCommit'
                 && typeof message.path === 'string'
                 && typeof message.hash === 'string') {
-                this.onSelectGitlinkCommit?.(message.path, message.hash);
+                const key = typeof message.key === 'string' ? message.key : undefined;
+                const file = store.getState().files.find(candidate =>
+                    candidate.isGitlink && candidate.path === message.path
+                    && (key === undefined || (candidate.diffKey || candidate.path) === key));
+                if (file) { this.onSelectGitlinkCommit?.(message.path, message.hash, key); }
             } else if (message?.type === 'backToParentCommit') {
                 this.onBackToParentCommit?.();
             } else if (message?.type === 'saveFile' && typeof message.path === 'string' && typeof message.content === 'string') {

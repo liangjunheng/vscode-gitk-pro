@@ -623,10 +623,10 @@ function mountCardShell(entry,parent){
     if(!target||!body.contains(target))return;
     const hash=target.dataset.hash;if(!hash)return;
     event.stopPropagation();
-    try{window.gitkVscode.postMessage({type:'selectGitlinkCommit',path:entry.filePath,hash:hash})}catch(_){}
+    try{window.gitkVscode.postMessage({type:'selectGitlinkCommit',path:entry.filePath,hash:hash,key:entry.path})}catch(_){}
   });
   mountedCardEntries.add(entry);
-  if(diff.workingTreeKind==='conflict'){mountMerge(entry);return entry}
+  if(diff.workingTreeKind==='conflict'&&!diff.isGitlink){mountMerge(entry);return entry}
   if(!loaded){body.style.height=entry.bodyHeight+'px';return entry;}
   if(diff.isGitlink){
     body.style.height='';body.innerHTML=gitlinkBodyHtml(diff);entry.staticContent=true;
@@ -1469,7 +1469,7 @@ function applyVirtualWindow(first,last,fromScroll,priorityIndex=-1,priorityOnly=
   const bind=function(index,priority,visible){
     const entry=cards[index];
     if(entry.collapsed)return;
-    if(entry.diff.workingTreeKind==='conflict'){if(!entry.mergeFrame)mountMerge(entry);return}
+    if(entry.diff.workingTreeKind==='conflict'&&!entry.diff.isGitlink){if(!entry.mergeModel)mountMerge(entry);return}
     if(entry.diff.loaded!==true)ensureDiffRequested(entry,priority);
     else if(!entry.staticContent&&!hasMountedEditorContent(entry)&&!entry.mounting){
       // 只有点击目标立即绑定；其余可视卡片和 overscan 都分帧创建，避免首次打开或滚动时一帧创建十几个 Monaco。

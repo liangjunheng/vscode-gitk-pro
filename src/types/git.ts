@@ -175,6 +175,12 @@ export class CommitFile {
     isGitlink?: boolean;
     oldGitlinkCommit?: GitlinkCommit;
     newGitlinkCommit?: GitlinkCommit;
+    gitlinkConflictBaseObjectId?: string;
+    gitlinkConflictCurrentObjectId?: string;
+    gitlinkConflictIncomingObjectId?: string;
+    gitlinkConflictBaseCommit?: GitlinkCommit;
+    gitlinkConflictCurrentCommit?: GitlinkCommit;
+    gitlinkConflictIncomingCommit?: GitlinkCommit;
     gitlinkRangeCommits?: GitlinkCommit[];
     gitlinkScanPending?: boolean;
     // A dirty child worktree whose Gitlink commit itself did not move.
@@ -208,6 +214,12 @@ export class CommitFile {
             && this.newGitlinkCommit?.shortHash === other.newGitlinkCommit?.shortHash
             && this.newGitlinkCommit?.subject === other.newGitlinkCommit?.subject
             && this.newGitlinkCommit?.message === other.newGitlinkCommit?.message
+            && this.gitlinkConflictBaseObjectId === other.gitlinkConflictBaseObjectId
+            && this.gitlinkConflictCurrentObjectId === other.gitlinkConflictCurrentObjectId
+            && this.gitlinkConflictIncomingObjectId === other.gitlinkConflictIncomingObjectId
+            && this.gitlinkConflictBaseCommit?.hash === other.gitlinkConflictBaseCommit?.hash
+            && this.gitlinkConflictCurrentCommit?.hash === other.gitlinkConflictCurrentCommit?.hash
+            && this.gitlinkConflictIncomingCommit?.hash === other.gitlinkConflictIncomingCommit?.hash
             && this.gitlinkRangeCommits?.length === other.gitlinkRangeCommits?.length
             && this.gitlinkScanPending === other.gitlinkScanPending
             && this.gitlinkWorktreeDirty === other.gitlinkWorktreeDirty

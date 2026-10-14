@@ -2,7 +2,7 @@ use crate::filters::worktree_matches_index;
 use crate::support::{NativeResult, format_git_error, open_repository, string_arg, string_array};
 use git2::{Delta, DiffDelta, FileMode, IndexEntry, Status, StatusOptions};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn mode_text(mode: FileMode) -> String {
     format!("{:06o}", u32::from(mode))
@@ -173,6 +173,35 @@ pub fn status(payload: &Value) -> NativeResult<Value> {
             conflicts.insert(path, conflict);
         }
     }
+    // libgit2 can report the checked-out directory behind a conflicted Gitlink
+    // as an additional untracked directory (for example `module/`). The
+    // conflict entry is the authoritative parent-repository record; publishing
+    // the directory duplicate makes the UI try to read a directory as a file.
+    let conflicted_gitlink_paths: BTreeSet<String> = conflicts
+        .iter()
+        .filter_map(|(path, conflict)| {
+            let is_gitlink = conflict
+                .ancestor
+                .as_ref()
+                .or(conflict.our.as_ref())
+                .or(conflict.their.as_ref())
+                .is_some_and(|entry| index_mode_text(entry.mode) == "160000");
+            is_gitlink.then(|| path.clone())
+        })
+        .collect();
+    let is_gitlink_directory_duplicate = |value: &Value| {
+        value
+            .get("path")
+            .and_then(Value::as_str)
+            .is_some_and(|candidate| {
+                conflicted_gitlink_paths
+                    .iter()
+                    .any(|path| candidate == format!("{path}/"))
+            })
+    };
+    staged.retain(|value| !is_gitlink_directory_duplicate(value));
+    changes.retain(|value| !is_gitlink_directory_duplicate(value));
+
     for (path, conflict) in conflicts {
         let (_, base_id, base_mode) = conflict
             .ancestor
@@ -184,6 +213,13 @@ pub fn status(payload: &Value) -> NativeResult<Value> {
             .as_ref()
             .map(conflict_entry)
             .unwrap_or_else(|| (path.clone(), zero_oid(40), "000000".to_owned()));
+        let (_, incoming_id, incoming_mode) = conflict
+            .their
+            .as_ref()
+            .map(conflict_entry)
+            .unwrap_or_else(|| (path.clone(), zero_oid(40), "000000".to_owned()));
+        let is_gitlink =
+            base_mode == "160000" || ours_mode == "160000" || incoming_mode == "160000";
         staged.push(json!({
             "path": path,
             "status": "U",
@@ -191,7 +227,10 @@ pub fn status(payload: &Value) -> NativeResult<Value> {
             "newObjectId": ours_id,
             "oldMode": base_mode,
             "newMode": ours_mode,
-            "isGitlink": base_mode == "160000" || ours_mode == "160000",
+            "gitlinkConflictBaseObjectId": base_id,
+            "gitlinkConflictCurrentObjectId": ours_id,
+            "gitlinkConflictIncomingObjectId": incoming_id,
+            "isGitlink": is_gitlink,
             "isConflict": true,
         }));
         changes.push(json!({
@@ -201,7 +240,10 @@ pub fn status(payload: &Value) -> NativeResult<Value> {
             "newObjectId": zero_oid(ours_id.len()),
             "oldMode": ours_mode,
             "newMode": ours_mode,
-            "isGitlink": ours_mode == "160000",
+            "gitlinkConflictBaseObjectId": base_id,
+            "gitlinkConflictCurrentObjectId": ours_id,
+            "gitlinkConflictIncomingObjectId": incoming_id,
+            "isGitlink": is_gitlink,
             "isConflict": true,
         }));
     }

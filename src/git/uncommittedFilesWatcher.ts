@@ -96,8 +96,6 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         if (branch.kind !== 'current') {
             throw new Error('只能查询当前 HEAD 分支的未提交文件');
         }
-        const cached = this.changesByRepository.get(branch.repoOption.path)?.get(branch.hash);
-        if (cached) { return copyChanges(cached); }
         const slot = this.slots.get(branch.repoOption.path);
         if (!slot || slot.branch?.hash !== branch.hash) {
             throw new Error('该分支不是仓库当前 HEAD');
@@ -105,7 +103,8 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         if (slot.running) {
             await slot.completion;
         } else {
-            await this.requestRefresh(branch.repoOption.path);
+            const cached = this.changesByRepository.get(branch.repoOption.path)?.get(branch.hash);
+            if (!cached) { await this.requestRefresh(branch.repoOption.path); }
         }
         return copyChanges(
             this.changesByRepository.get(branch.repoOption.path)?.get(branch.hash)

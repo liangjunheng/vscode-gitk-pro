@@ -9,6 +9,9 @@ interface NativeCommitFile {
     oldPath?: string | null;
     oldObjectId?: string;
     newObjectId?: string;
+    gitlinkConflictBaseObjectId?: string;
+    gitlinkConflictCurrentObjectId?: string;
+    gitlinkConflictIncomingObjectId?: string;
     oldMode?: string;
     newMode?: string;
     isGitlink?: boolean;
@@ -23,12 +26,15 @@ interface NativeWorkingTreeChanges {
 }
 
 function toCommitFile(file: NativeCommitFile): CommitFile {
+    const isGitlink = file.isGitlink === true || file.oldMode === '160000' || file.newMode === '160000';
     return new CommitFile({
         ...file,
+        isGitlink,
+        path: isGitlink ? file.path.replace(/[\\\\/]+$/, '') : file.path,
         oldPath: file.oldPath ?? undefined,
         // libgit2 reports a dirty submodule worktree as equal old/new Gitlink OIDs.
         gitlinkWorktreeDirty: file.gitlinkWorktreeDirty === true
-            || (file.isGitlink === true && file.status === 'M' && file.oldObjectId === file.newObjectId),
+            || (isGitlink && file.status === 'M' && file.oldObjectId === file.newObjectId),
     });
 }
 
@@ -94,9 +100,13 @@ export class LibGit2Backend implements GitBackend {
             recurseUntrackedDirs: true,
         });
         this.throwIfAborted(signal);
+        const staged = status.staged.map(toCommitFile);
+        const changes = status.changes.map(toCommitFile);
+        const gitlinkPaths = new Set([...staged, ...changes].filter(file => file.isGitlink).map(file => file.path));
+        const removeGitlinkDirectoryAlias = (file: CommitFile): boolean => !file.isGitlink && file.isUntracked === true && file.path.endsWith('/') && gitlinkPaths.has(file.path.slice(0, -1));
         return new WorkingTreeChanges({
-            staged: status.staged.map(toCommitFile),
-            changes: status.changes.map(toCommitFile),
+            staged: staged.filter(file => !removeGitlinkDirectoryAlias(file)),
+            changes: changes.filter(file => !removeGitlinkDirectoryAlias(file)),
         });
     }
 

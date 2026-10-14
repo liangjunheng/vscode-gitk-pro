@@ -295,6 +295,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             gitlinkScanPending: file.gitlinkScanPending,
             gitlinkWorktreeDirty: file.gitlinkWorktreeDirty,
             gitlinkWorktreeChangeCount: file.gitlinkWorktreeChangeCount,
+            gitlinkConflictBaseObjectId: file.gitlinkConflictBaseObjectId,
+            gitlinkConflictCurrentObjectId: file.gitlinkConflictCurrentObjectId,
+            gitlinkConflictIncomingObjectId: file.gitlinkConflictIncomingObjectId,
+            gitlinkConflictBaseCommit: file.gitlinkConflictBaseCommit,
+            gitlinkConflictCurrentCommit: file.gitlinkConflictCurrentCommit,
+            gitlinkConflictIncomingCommit: file.gitlinkConflictIncomingCommit,
             isBinary: file.isBinary,
             isUntracked: file.isUntracked,
             isConflict: file.isConflict,
@@ -470,7 +476,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             (paths, generation, priority) => this.requestCurrentDiffs(paths, generation, priority),
             identity => this.handleDiffRendered(identity),
             (path, line, column, side) => void this.openWorkspaceFileAtLine(path, line, column, side),
-            (path, hash) => void this.selectGitlinkCommit(path, hash),
+            (path, hash, key) => void this.selectGitlinkCommit(path, hash, key),
             () => void this.backToParentCommit(),
             (path, content) => void this.saveWorkspaceFile(path, content),
             (action, section, path) => void this.runWorkingTreeAction(action, section, path),
@@ -2949,22 +2955,28 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 const isRealObjectId = (hash: string | undefined): hash is string => Boolean(hash) && !/^0+$/.test(hash);
                 const childBranch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
                     .find(branch => branch.repoOption.path === submoduleUri.toString());
-                if (file.gitlinkWorktreeDirty && childBranch) {
+                // A parent unstaged Gitlink does not by itself mean the child
+                // worktree is dirty: the child HEAD may simply have moved.
+                // Read the direct child state and use that as the navigation
+                // decision; only fall back to the backend hint if the read races.
+                if (file.workingTreeKind && childBranch) {
                     try {
                         const childChanges = await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(childBranch);
                         file.gitlinkWorktreeChangeCount = new Set([
                             ...childChanges.staged.map(change => change.path),
                             ...childChanges.changes.map(change => change.path),
                         ]).size;
+                        file.gitlinkWorktreeDirty = file.gitlinkWorktreeChangeCount > 0;
                     } catch {
-                        // The navigation card stays usable even if the count snapshot races a HEAD refresh.
+                        // The navigation card stays usable if the child status
+                        // refresh races a HEAD change; retain the backend hint.
                     }
                 }
                 // `git diff` 的工作区端 gitlink OID 是零占位；真实新端只能由子模块工作区 HEAD 提供。
                 if (file.workingTreeKind === 'unstaged' && !isRealObjectId(file.newObjectId)) {
                     file.newObjectId = await resolveRevision(submoduleUri, 'HEAD');
                 }
-                const hashes = [file.oldObjectId, file.newObjectId].filter(isRealObjectId);
+                const hashes = [file.oldObjectId, file.newObjectId, file.gitlinkConflictBaseObjectId, file.gitlinkConflictCurrentObjectId, file.gitlinkConflictIncomingObjectId].filter(isRealObjectId);
                 if (hashes.length === 0) { continue; }
                 try {
                     const details = await commitDetails(submoduleUri, hashes);
@@ -2976,6 +2988,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     }
                     file.oldGitlinkCommit = file.oldObjectId ? commits.get(file.oldObjectId) : undefined;
                     file.newGitlinkCommit = file.newObjectId ? commits.get(file.newObjectId) : undefined;
+                    file.gitlinkConflictBaseCommit = file.gitlinkConflictBaseObjectId ? commits.get(file.gitlinkConflictBaseObjectId) : undefined;
+                    file.gitlinkConflictCurrentCommit = file.gitlinkConflictCurrentObjectId ? commits.get(file.gitlinkConflictCurrentObjectId) : undefined;
+                    file.gitlinkConflictIncomingCommit = file.gitlinkConflictIncomingObjectId ? commits.get(file.gitlinkConflictIncomingObjectId) : undefined;
                     if (file.status !== 'A' && file.status !== 'D'
                         && isRealObjectId(file.oldObjectId) && isRealObjectId(file.newObjectId)) {
                         const detailsInRange = await rangeCommits(submoduleUri, file.oldObjectId, file.newObjectId);
@@ -3122,71 +3137,96 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     /** Open exactly the direct child Gitlink target; nested modules remain visible at their own level. */
-    private async selectGitlinkCommit(filePath: string, hash: string): Promise<void> {
+    private async selectGitlinkCommit(filePath: string, hash: string, key?: string): Promise<void> {
+        const normalizedFilePath = filePath.replace(/[\\\\/]+$/, '');
         const parentRepositoryPath = this.currentRepositoryPath;
         const parentCommit = this.commitController.selectedCommit;
         if (!parentRepositoryPath || !parentCommit || !hash) { return; }
-        const submodule = this.repoSubmoduleWatcher.findSubmoduleRepository(parentRepositoryPath, filePath);
+        const submodule = this.repoSubmoduleWatcher.findSubmoduleRepository(parentRepositoryPath, normalizedFilePath);
         if (!submodule) {
             void vscode.window.showWarningMessage(`无法跳转子模块提交：${filePath} 尚未初始化或仓库扫描尚未完成。`);
             return;
         }
         const repositoryPath = submodule.path;
-        const isDirtyWorktreeGitlink = this.files.some(file => file.path === filePath && file.gitlinkWorktreeDirty);
-        const targetHash = isDirtyWorktreeGitlink ? 'uncommitted' : hash;
+        const selectedParentFile = this.files.find(file => (file.diffKey || file.path) === (key ?? this.selectedPath)
+            && file.path === normalizedFilePath)
+            ?? this.files.find(file => file.path === normalizedFilePath);
+        const navigationToken = new AbortController();
+        this.gitlinkNavigationAbortController?.abort();
+        this.gitlinkNavigationAbortController = navigationToken;
         // Submodules are commonly detached. A worktree target must use the watcher-owned
         // current branch (whose hash is the real detached HEAD), never a synthetic 'uncommitted' branch.
         let watcherBranch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
             .find(candidate => candidate.repoOption.path === repositoryPath);
-        if (isDirtyWorktreeGitlink && !watcherBranch) {
-            try {
-                await this.uncommittedFilesWatcher.refreshHeadBranch(repositoryPath);
-                watcherBranch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
-                    .find(candidate => candidate.repoOption.path === repositoryPath);
-            } catch {
-                // The actionable error below is clearer than a background refresh failure.
+        let preparedChanges: WorkingTreeChanges | undefined;
+        let targetHash = hash;
+        try {
+            // A SHA is an explicit commit request. Only the worktree button may
+            // inspect live status; a dirty checkout must never redirect a SHA.
+            if (isWorkingTreeHash(hash)) {
+                if (!isWorkingTreeHash(parentCommit.hash)) { return; }
+                if (!watcherBranch) {
+                    await this.uncommittedFilesWatcher.refreshHeadBranch(repositoryPath);
+                    if (navigationToken.signal.aborted) { return; }
+                    watcherBranch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+                        .find(candidate => candidate.repoOption.path === repositoryPath);
+                }
+                if (!watcherBranch) { throw new Error('目标子模块 HEAD 尚未就绪'); }
+                preparedChanges = await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(watcherBranch);
+                if (navigationToken.signal.aborted) { return; }
+                const hasChanges = preparedChanges.staged.length > 0 || preparedChanges.changes.length > 0;
+                targetHash = hasChanges ? 'uncommitted' : watcherBranch.hash;
             }
+            if (navigationToken.signal.aborted) { return; }
+            const branch = watcherBranch
+                ?? this.branchesController.getCurrentBranch(submodule)
+                ?? new GitBranchOption({ repoOption: submodule, name: targetHash, label: targetHash.slice(0, 7), hash: targetHash, kind: 'local' });
+            const commit = this.findCommit(targetHash, repositoryPath) ?? new CommitMetadata({ hash: targetHash, gitBranchOption: branch });
+            await this.selectGitlinkRepositoryCommit(commit, undefined, () => {
+                this.gitlinkParentNavigationStack.push({
+                    commit: parentCommit,
+                    revealPath: selectedParentFile?.diffKey || selectedParentFile?.path || normalizedFilePath,
+                    childHash: targetHash,
+                    childRepositoryPath: repositoryPath,
+                });
+            }, navigationToken, preparedChanges);
+        } catch (error) {
+            if (!navigationToken.signal.aborted) {
+                void vscode.window.showErrorMessage('Gitlink 跳转失败：' + (error instanceof Error ? error.message : String(error)));
+            }
+        } finally {
+            if (this.gitlinkNavigationAbortController === navigationToken) { this.gitlinkNavigationAbortController = undefined; }
         }
-        if (isDirtyWorktreeGitlink && !watcherBranch) {
-            void vscode.window.showWarningMessage(`无法读取子模块未提交状态：${submodule.label} 的 HEAD 尚未就绪。`);
-            return;
-        }
-        const branch = watcherBranch
-            ?? this.branchesController.getCurrentBranch(submodule)
-            ?? new GitBranchOption({
-                repoOption: submodule,
-                name: targetHash,
-                label: targetHash.slice(0, 7),
-                hash: targetHash,
-                kind: 'local',
-            });
-        const commit = this.findCommit(targetHash, repositoryPath) ?? new CommitMetadata({ hash: targetHash, gitBranchOption: branch });
-        const selectedParentFile = this.files.find(file => (file.diffKey || file.path) === this.selectedPath && file.path === filePath)
-            ?? this.files.find(file => file.path === filePath);
-        await this.selectGitlinkRepositoryCommit(commit, undefined, () => {
-            this.gitlinkParentNavigationStack.push({
-                commit: parentCommit,
-                revealPath: selectedParentFile?.diffKey || selectedParentFile?.path || filePath,
-                childHash: targetHash,
-                childRepositoryPath: repositoryPath,
-            });
-        });
     }
 
-    private async selectGitlinkRepositoryCommit(commit: CommitMetadata, revealPath: string | undefined, updateStack: () => void): Promise<void> {
+    private async selectGitlinkRepositoryCommit(
+        commit: CommitMetadata,
+        revealPath: string | undefined,
+        updateStack: () => void,
+        navigationToken?: AbortController,
+        preparedChanges?: WorkingTreeChanges,
+    ): Promise<void> {
         const targetBranch = commit.gitBranchOption;
         if (!targetBranch) { return; }
-        this.gitlinkNavigationAbortController?.abort();
-        const controller = new AbortController();
+        if (!navigationToken) { this.gitlinkNavigationAbortController?.abort(); }
+        const controller = navigationToken ?? new AbortController();
+        if (controller.signal.aborted) { return; }
         this.gitlinkNavigationAbortController = controller;
         const repositoryPath = targetBranch.repoOption.path;
         try {
             const branch = await this.selectCommitPanelRepository(targetBranch, controller.signal);
             if (!branch || controller.signal.aborted) { return; }
             if (isWorkingTreeHash(commit.hash)) {
-                const changes = await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(branch);
+                const changes = preparedChanges && branch.hash === targetBranch.hash
+                    ? preparedChanges
+                    : await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(branch);
                 if (controller.signal.aborted) { return; }
                 this.pendingGitlinkWorktreeSnapshot = { repositoryPath, branch, changes };
+            } else {
+                // A previously prepared worktree snapshot belongs only to the
+                // synthetic Uncommitted Changes target. Never let it be reused
+                // when the user explicitly selected a commit SHA.
+                this.pendingGitlinkWorktreeSnapshot = undefined;
             }
             updateStack();
             this.syncGitlinkParentNavigation();

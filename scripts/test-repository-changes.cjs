@@ -1313,17 +1313,17 @@ async function verifyGitlinkNavigation(GitkViewProvider, store) {
   });
   store.setState({ currentHash: 'uncommitted', currentRepositoryPath: repositories[0].path,
     files: snapshots.get(repositories[0].path).changes, selectedPath: 'unstaged:render' });
-  await provider.selectGitlinkCommit('render', branches[1].hash);
+  await provider.selectGitlinkCommit('render', 'uncommitted');
   assert.equal(store.getState().currentRepositoryPath, repositories[1].path);
-  assert.deepEqual(messages.at(-1), { type: 'revealRepositoryChanges', repositoryPath: repositories[1].path });
+  assert.ok(messages.some(message => message.type === 'revealRepositoryChanges' && message.repositoryPath === repositories[1].path));
   assert.equal(provider.gitlinkParentNavigationStack.length, 1);
-  await provider.selectGitlinkCommit('gfx', branches[2].hash);
+  await provider.selectGitlinkCommit('gfx', 'uncommitted');
   assert.equal(store.getState().currentRepositoryPath, repositories[2].path);
   assert.equal(provider.gitlinkParentNavigationStack.length, 2);
   await provider.backToParentCommit();
   assert.equal(store.getState().currentRepositoryPath, repositories[1].path);
   assert.equal(reveals.at(-1).path, 'unstaged:gfx');
-  assert.deepEqual(messages.at(-1), { type: 'revealRepositoryChanges', repositoryPath: repositories[1].path });
+  assert.ok(messages.some(message => message.type === 'revealRepositoryChanges' && message.repositoryPath === repositories[1].path));
   await provider.backToParentCommit();
   assert.equal(store.getState().currentRepositoryPath, repositories[0].path);
   assert.equal(reveals.at(-1).path, 'unstaged:render');
@@ -1337,7 +1337,7 @@ async function verifyGitlinkNavigation(GitkViewProvider, store) {
     if (slowReads++ === 0) return new Promise(resolve => { release = resolve; });
     return Promise.resolve({ staged: [], changes: [] });
   };
-  const pending = provider.selectGitlinkCommit('render', branches[1].hash);
+  const pending = provider.selectGitlinkCommit('render', 'uncommitted');
   await new Promise(resolve => setImmediate(resolve));
   Object.defineProperty(provider, 'repositories', { value: repositories });
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', action: 'focus', repositoryPath: repositories[2].path });

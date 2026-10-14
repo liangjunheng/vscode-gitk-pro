@@ -60,7 +60,7 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
     findSubmoduleRepository(parentRepositoryPath: string, gitlinkPath: string): GitRepositoryOption | undefined {
         const parentPath = vscode.Uri.parse(parentRepositoryPath).fsPath;
         const parentKey = repoKey(parentPath);
-        const normalizedGitlinkPath = gitlinkPath.split('\\').join('/');
+        const normalizedGitlinkPath = gitlinkPath.split('\\').join('/').replace(/[\\\\/]+$/, '');
         return this._totalRepoList.find(repository => {
             const repositoryPath = vscode.Uri.parse(repository.path).fsPath;
             if (this.parentByRepository.get(repoKey(repositoryPath)) !== parentKey) { return false; }
