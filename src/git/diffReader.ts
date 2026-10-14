@@ -136,8 +136,9 @@ export class DiffReader {
             if (!diff.isGitlink) { return diff; }
             const file = filesByKey.get(diff.diffKey || diff.path);
             if (!file) { return diff; }
-            const original = file.status === 'A' ? '' : this.createGitlinkText(file.oldGitlinkCommit, file.oldObjectId);
-            const modified = file.status === 'D' ? '' : this.createGitlinkRangeText(file.gitlinkRangeCommits ?? [], file.newGitlinkCommit, file.newObjectId);
+            const dirtyOnly = file.gitlinkWorktreeDirty === true && file.oldObjectId === file.newObjectId;
+            const original = dirtyOnly || file.status === 'A' ? '' : this.createGitlinkText(file.oldGitlinkCommit, file.oldObjectId);
+            const modified = dirtyOnly || file.status === 'D' ? '' : this.createGitlinkRangeText(file.gitlinkRangeCommits ?? [], file.newGitlinkCommit, file.newObjectId);
             return new DiffPayload({
                 ...diff,
                 index,
@@ -184,6 +185,7 @@ export class DiffReader {
     ): DiffPayload[] {
         return files.map((file, index) => {
             if (file.isGitlink) {
+                const dirtyOnly = file.gitlinkWorktreeDirty === true && file.oldObjectId === file.newObjectId;
                 return new DiffPayload({
                     index: index + indexOffset,
                     path: file.path,
@@ -205,8 +207,8 @@ export class DiffReader {
                     isConflict: file.isConflict,
                     workingTreeKind: file.workingTreeKind,
                     diffKey: file.diffKey,
-                    original: file.status === 'A' ? '' : this.createGitlinkText(file.oldGitlinkCommit, file.oldObjectId),
-                    modified: file.status === 'D' ? '' : this.createGitlinkRangeText(file.gitlinkRangeCommits ?? [], file.newGitlinkCommit, file.newObjectId),
+                    original: dirtyOnly || file.status === 'A' ? '' : this.createGitlinkText(file.oldGitlinkCommit, file.oldObjectId),
+                    modified: dirtyOnly || file.status === 'D' ? '' : this.createGitlinkRangeText(file.gitlinkRangeCommits ?? [], file.newGitlinkCommit, file.newObjectId),
                 });
             }
             const originalObject = file.isBinary || file.status === 'A'
@@ -242,6 +244,7 @@ export class DiffReader {
         const contents = await this.readGitObjects(rootUri, objects);
         const readFile = async (file: CommitFile, index: number): Promise<DiffPayload> => {
             if (file.isGitlink) {
+                const dirtyOnly = file.gitlinkWorktreeDirty === true && file.oldObjectId === file.newObjectId;
                 return new DiffPayload({
                     index: index + indexOffset,
                     path: file.path,
@@ -263,8 +266,8 @@ export class DiffReader {
                     isConflict: file.isConflict,
                     workingTreeKind: file.workingTreeKind,
                     diffKey: file.diffKey,
-                    original: file.status === 'A' ? '' : this.createGitlinkText(file.oldGitlinkCommit, file.oldObjectId),
-                    modified: file.status === 'D' ? '' : this.createGitlinkRangeText(file.gitlinkRangeCommits ?? [], file.newGitlinkCommit, file.newObjectId),
+                    original: dirtyOnly || file.status === 'A' ? '' : this.createGitlinkText(file.oldGitlinkCommit, file.oldObjectId),
+                    modified: dirtyOnly || file.status === 'D' ? '' : this.createGitlinkRangeText(file.gitlinkRangeCommits ?? [], file.newGitlinkCommit, file.newObjectId),
                 });
             }
             const fromIndex = readsIndex(file);

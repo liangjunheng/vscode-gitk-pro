@@ -115,6 +115,12 @@ async function main() {
   const result = reader.updateGitlinkPayloads([initial], [metadata])[0];
   assert.equal(result.gitlinkConflictIncomingCommit.subject, 'incoming loaded');
   assert.equal(result.gitlinkConflictBaseObjectId, sha);
+  const dirtyGitlink = new CommitFile({ path: 'child', isGitlink: true, gitlinkWorktreeDirty: true,
+    oldObjectId: sha, newObjectId: sha, oldGitlinkCommit: { hash: sha, shortHash: 'aaaaaaa' },
+    newGitlinkCommit: { hash: sha, shortHash: 'aaaaaaa' } });
+  const dirtyPayload = reader.updateGitlinkPayloads([new DiffPayload({ path: 'child', isGitlink: true })], [dirtyGitlink])[0];
+  assert.equal(dirtyPayload.original, '');
+  assert.equal(dirtyPayload.modified, '');
   console.log('Gitlink navigation: explicit SHA, all worktree groups, clean fallback, card ownership, cancellation and metadata patches passed');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

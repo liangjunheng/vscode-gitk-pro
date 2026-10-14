@@ -3087,8 +3087,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                                 message: normalizedMessage || undefined,
                             };
                         });
-                        file.gitlinkRangeCommits = [file.oldGitlinkCommit, ...rangeValues]
-                            .filter((commit): commit is GitlinkCommit => Boolean(commit));
+                        file.gitlinkRangeCommits = rangeValues;
                     }
                 } catch {
                     // SHA 仍由父仓库 gitlink 保存；子模块本地缺少对象或两端非线性时仅不显示范围消息。

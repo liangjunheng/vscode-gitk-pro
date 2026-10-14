@@ -49,7 +49,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .file-header{display:grid;grid-template-columns:minmax(0,1fr);width:100%;margin:0;padding:4px 8px;border:0;color:var(--vscode-tab-activeForeground);background:var(--header-surface);font:inherit;font-size:calc(var(--vscode-editor-font-size) * .95);text-align:left;cursor:pointer}
 .file-header.rename-header{grid-template-columns:calc((100% + 26px)/2) minmax(0,1fr);padding-right:0;padding-left:0}
 .file-header.rename-header .title-side-left{padding-left:8px}
-.file-header:hover{background:var(--vscode-list-hoverBackground,var(--vscode-editorWidget-background))}
+.file-header:hover,.file-header:active{background:var(--header-surface)}
 /* 标题栏底边保持常规边框色: 选中高光只体现在卡片外框与顶部预留条, 底部不跟着高亮。 */
 .diff.collapsed>.pinned-group>.header-layer>.header-row>.file-header{border-bottom-color:transparent}
 .title-side{display:flex;align-items:center;gap:6px;min-width:0}
@@ -78,19 +78,17 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .file-name{flex:0 0 auto;font-size:calc(var(--vscode-editor-font-size) + 2px);line-height:1.2}
 .file-path-gap{flex:0 0 auto;white-space:pre}
 .file-folder{min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--vscode-descriptionForeground);opacity:.72;line-height:1.2}
-/* 标题栏和 index 栏是同一吸顶组: 顶部与左右边都复刻卡片的 border + ring 宽度。
-   负水平 margin 让这三条高亮边精确覆盖卡片的外环和边框；不能用 overflow:hidden 裁圆角，
-   否则会改变 sticky 滚动上下文。 */
-.pinned-group{position:sticky;top:calc(var(--parent-navigation-height) + var(--header-gap) + var(--header-inset));z-index:2;margin-top:calc((var(--card-border) + var(--card-ring)) * -1);margin-right:calc((var(--card-border) + var(--card-ring)) * -1);margin-bottom:0;margin-left:calc((var(--card-border) + var(--card-ring)) * -1);border-top:calc(var(--card-border) + var(--card-ring)) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-right:calc(var(--card-border) + var(--card-ring)) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-left:calc(var(--card-border) + var(--card-ring)) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:var(--card-radius) var(--card-radius) 0 0;background:var(--vscode-editorWidget-background,var(--vscode-tab-activeBackground));box-shadow:0 1px 3px rgba(0,0,0,.18)}
+/* 标题栏和 index 栏在卡片内容边界内吸顶，不覆盖卡片自身边框或外环。 */
+.pinned-group{position:sticky;top:calc(var(--parent-navigation-height) + var(--header-gap) + var(--header-inset));z-index:2;margin:0;border-top:0;border-right:0;border-left:0;border-radius:calc(var(--card-radius) - var(--card-border)) calc(var(--card-radius) - var(--card-border)) 0 0;background:var(--vscode-editorWidget-background,var(--vscode-tab-activeBackground));box-shadow:0 1px 3px rgba(0,0,0,.18)}
 /* 独立标题层在 pinned 组内建立完整的遮罩层叠上下文: 盖板覆盖相邻 diff 内容和其 box-shadow 高亮，
    但低于标题内容与 pinned 轮廓。底边严格等于标题栏底边，上/左/右外延 8px。 */
 .diff.selected>.pinned-group{border-color:var(--vscode-focusBorder)}
 .header-layer{position:relative;z-index:1}
-.header-layer::before{content:'';position:absolute;z-index:0;top:calc(var(--header-cover-bleed) * -1);right:calc(var(--header-cover-bleed) * -1);bottom:0;left:calc(var(--header-cover-bleed) * -1);background:var(--vscode-editor-background);pointer-events:none}
+.header-layer::before{content:'';position:absolute;z-index:0;top:calc(var(--header-cover-bleed) * -1);right:0;bottom:0;left:0;background:var(--vscode-editor-background);pointer-events:none}
 .header-row{position:relative;z-index:1;display:flex;align-items:center}
 .header-row>.file-header,.header-row>.diff-actions{position:relative;z-index:1}
 /* 轮廓层位于盖板上方：向外延展高亮总宽度，和底层卡片的三边高亮线无缝连接。 */
-.pinned-group::after{content:'';position:absolute;z-index:3;top:calc((var(--card-border) + var(--card-ring)) * -1);right:calc((var(--card-border) + var(--card-ring)) * -1);bottom:0;left:calc((var(--card-border) + var(--card-ring)) * -1);border-top:calc(var(--card-border) + var(--card-ring)) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-right:calc(var(--card-border) + var(--card-ring)) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-left:calc(var(--card-border) + var(--card-ring)) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:var(--card-radius) var(--card-radius) 0 0;pointer-events:none}
+.pinned-group::after{content:'';position:absolute;z-index:3;top:calc(var(--card-border) * -1);right:0;bottom:0;left:0;border-top:var(--card-border) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-right:0;border-left:0;border-radius:calc(var(--card-radius) - var(--card-border)) calc(var(--card-radius) - var(--card-border)) 0 0;pointer-events:none}
 .diff.selected>.pinned-group::after{border-color:var(--vscode-focusBorder)}
 .header-row>.file-header{flex:1 1 auto;min-width:0;border-radius:calc(var(--card-radius) - var(--card-border) - var(--card-ring)) 0 0 0}
 .diff-actions{align-self:stretch;flex:0 0 auto;display:flex;align-items:center;gap:2px;margin-right:0;padding-right:4px;background:var(--header-surface)}
@@ -112,7 +110,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .diff[data-working-tree-kind="unstaged"]>.pinned-group::after,.diff[data-working-tree-kind="untracked"]>.pinned-group::after,.diff[data-working-tree-kind="conflict"]>.pinned-group::after{border-color:var(--card-outline)}
 .diff[data-working-tree-kind="unstaged"].selected,.diff[data-working-tree-kind="untracked"].selected,.diff[data-working-tree-kind="conflict"].selected{border-color:var(--vscode-focusBorder,#007acc);box-shadow:0 0 0 var(--card-ring) var(--vscode-focusBorder,#007acc),0 1px 4px rgba(0,0,0,.08)}
 .diff[data-working-tree-kind="unstaged"].selected>.pinned-group,.diff[data-working-tree-kind="untracked"].selected>.pinned-group,.diff[data-working-tree-kind="conflict"].selected>.pinned-group,.diff[data-working-tree-kind="unstaged"].selected>.pinned-group::after,.diff[data-working-tree-kind="untracked"].selected>.pinned-group::after,.diff[data-working-tree-kind="conflict"].selected>.pinned-group::after{border-color:var(--vscode-focusBorder,#007acc)}
-.diff[data-working-tree-kind="unstaged"] .file-header:hover,.diff[data-working-tree-kind="untracked"] .file-header:hover,.diff[data-working-tree-kind="conflict"] .file-header:hover{background:color-mix(in srgb,var(--card-accent) 24%,var(--vscode-editorWidget-background,var(--vscode-editor-background,#1e1e1e)))}
+.diff[data-working-tree-kind="unstaged"] .file-header:hover,.diff[data-working-tree-kind="unstaged"] .file-header:active,.diff[data-working-tree-kind="untracked"] .file-header:hover,.diff[data-working-tree-kind="untracked"] .file-header:active,.diff[data-working-tree-kind="conflict"] .file-header:hover,.diff[data-working-tree-kind="conflict"] .file-header:active{background:var(--header-surface)}
 .meta-line{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .meta-rename-from{color:var(--vscode-gitDecoration-deletedResourceForeground)}
 .meta-rename-to{color:var(--vscode-gitDecoration-addedResourceForeground)}
@@ -133,7 +131,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .merge-pane-actions{display:flex;gap:0;min-height:25px;padding:3px 8px;border-bottom:1px solid var(--vscode-panel-border);background:var(--vscode-editorWidget-background)}.merge-pane-actions button{padding:2px 6px;border:0;border-right:1px solid var(--vscode-editorWidget-border,var(--vscode-panel-border));color:var(--vscode-descriptionForeground);background:transparent;font:11px var(--vscode-font-family);cursor:pointer}.merge-pane-actions button:first-child{padding-left:0}.merge-pane-actions button:hover:not(:disabled){color:var(--vscode-foreground);background:var(--vscode-list-hoverBackground)}.merge-pane-actions button:disabled{opacity:.45;cursor:default}
 .merge-pane h3{justify-content:space-between}.merge-accept-all{width:24px;height:22px;padding:0;border:0;border-radius:3px;color:var(--vscode-icon-foreground,var(--vscode-foreground));background:transparent;cursor:pointer}.merge-accept-all:hover:not(:disabled){background:var(--vscode-toolbar-hoverBackground,var(--vscode-list-hoverBackground))}.merge-accept-all:disabled{opacity:.45;cursor:default}
 .merge-card .scrollbar.vertical{display:none!important}
-.merge-card{height:100%}
+.merge-card{height:100%;isolation:isolate}
 .merge-card{grid-template-rows:minmax(210px,.9fr) minmax(250px,1.1fr)}
 @media(max-width:720px){.merge-card{grid-template-rows:minmax(430px,1fr) minmax(300px,1fr)}.merge-inputs{grid-template-columns:1fr;grid-template-rows:repeat(2,minmax(0,1fr))}}
 
@@ -491,6 +489,7 @@ function gitlinkBodyHtml(diff){
     const message=count===null?'子模块存在未提交变更':'子模块有 '+count+' 个未提交变更文件';
     worktree='<button type="button" class="gitlink-commit gitlink-worktree" data-hash="uncommitted" title="查看子模块当前工作区"><span class="gitlink-commit-hash">Uncommitted Changes</span><span class="gitlink-commit-message">'+message+'</span></button>';
   }
+  const dirtyOnly=diff.workingTreeKind&&diff.gitlinkWorktreeDirty&&diff.oldObjectId&&diff.oldObjectId===diff.newObjectId;
   if(diff.workingTreeKind==='conflict'){
     const choices=[['Base',diff.gitlinkConflictBaseCommit,diff.gitlinkConflictBaseObjectId],['Current',diff.gitlinkConflictCurrentCommit,diff.gitlinkConflictCurrentObjectId],['Incoming',diff.gitlinkConflictIncomingCommit,diff.gitlinkConflictIncomingObjectId]];
     const rows=choices.map(function(item){
@@ -501,7 +500,7 @@ function gitlinkBodyHtml(diff){
     return '<div class="gitlink-commits gitlink-conflict-commits">'+rows+worktree+'</div>';
   }
   if(diff.gitlinkScanPending)return (worktree?'<div class="gitlink-commits">'+worktree+'</div>':'')+'<div class="empty gitlink-loading"><span class="gitlink-loading-spinner" aria-hidden="true"></span><span>正在扫描子模块提交…</span></div>';
-  const commits=diff.gitlinkRangeCommits&&diff.gitlinkRangeCommits.length?diff.gitlinkRangeCommits:[diff.status==='A'?undefined:diff.oldGitlinkCommit,diff.status==='D'?undefined:diff.newGitlinkCommit].filter(function(commit,index,values){return commit&&values.findIndex(function(item){return item&&item.hash===commit.hash})===index});
+  const commits=dirtyOnly?[]:(Array.isArray(diff.gitlinkRangeCommits)?diff.gitlinkRangeCommits:[diff.status==='A'?undefined:diff.oldGitlinkCommit,diff.status==='D'?undefined:diff.newGitlinkCommit].filter(function(commit,index,values){return commit&&values.findIndex(function(item){return item&&item.hash===commit.hash})===index}));
   const rows=commits.map(function(commit){return '<button type="button" class="gitlink-commit" data-hash="'+escapeHtml(commit.hash)+'" title="查看子模块提交 '+escapeHtml(commit.hash)+'"><span class="gitlink-commit-hash">'+escapeHtml(commit.shortHash||String(commit.hash||'').slice(0,7))+'</span><span class="gitlink-commit-message">'+escapeHtml(commit.message||commit.subject||'')+'</span></button>'}).join('');
   return rows||worktree?'<div class="gitlink-commits">'+rows+worktree+'</div>':'<div class="empty">没有可显示的子模块提交。</div>';
 }

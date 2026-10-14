@@ -47,8 +47,37 @@ async function main(){
   for(const [i,name] of ['one.ts','two.ts'].entries())await publish({type:'mergeLoaded',key:'conflict:'+name,identity,sessionId:i+1,snapshot:{type:'snapshot',path:name,base:'base\n',current:'ours\n',incoming:'theirs\n',plan:createMergePlan('base\n','ours\n','theirs\n'),automaticPlan:createMergePlan('base\n','ours\n','theirs\n')}});
   await page.waitForFunction(()=>document.querySelectorAll('.merge-card').length===2);
   const first=page.locator('.merge-card').nth(0),second=page.locator('.merge-card').nth(1);
+  for(const width of [1200,640]){
+   await page.setViewportSize({width,height:900});
+   for(const selector of ['.merge-result h3','.merge-result-host']){
+    await first.locator(selector).evaluate(target=>{
+     const header=target.closest('.diff').querySelector('.pinned-group');
+     window.scrollBy(0,target.getBoundingClientRect().top-header.getBoundingClientRect().height+16);
+    });
+    await page.waitForFunction(()=>{
+     const card=document.querySelector('.merge-card')?.closest('.diff');
+     if(!card)return false;
+     const header=card.querySelector('.pinned-group'),rect=header.getBoundingClientRect();
+     return rect.top>=-1&&rect.top<2;
+    });
+    const layering=await first.evaluate(root=>{
+     const header=root.closest('.diff').querySelector('.pinned-group'),rect=header.getBoundingClientRect();
+     const overlay=document.createElement('div');
+     overlay.style.cssText='position:fixed;inset:0;z-index:9999';
+     root.querySelector('.merge-result').append(overlay);
+     const points=[rect.left+20,rect.left+rect.width/2,rect.right-20];
+     const headerOnTop=points.every(x=>header.contains(document.elementFromPoint(x,rect.top+rect.height-8)));
+     overlay.remove();
+     return {isolation:getComputedStyle(root).isolation,headerOnTop};
+    });
+    assert.equal(layering.isolation,'isolate','Merge contents have their own stacking context');
+    assert.equal(layering.headerOnTop,true,'Sticky file header stays above the Result title and Monaco content');
+   }
+  }
+  await page.setViewportSize({width:1200,height:900});
+  await page.evaluate(()=>window.scrollTo(0,0));
   const mergeHeights=await page.locator('.merge-card').evaluateAll(cards=>cards.map(card=>({height:card.getBoundingClientRect().height,viewport:innerHeight})));
-  assert.ok(mergeHeights.every(metric=>Math.abs(metric.height-metric.viewport*.7)<2),'Merge cards occupy 70 percent of the container height');
+  assert.ok(mergeHeights.every(metric=>Math.abs(metric.height-metric.viewport*.85)<2),'Merge cards occupy 85 percent of the container height');
   await first.locator('.merge-status').filter({hasText:'1 Conflict Remaining'}).waitFor();
   await second.locator('.merge-status').filter({hasText:'1 Conflict Remaining'}).waitFor();
   const mergeWidths=await page.locator('.merge-card').evaluateAll(cards=>cards.map(card=>{const rect=card.getBoundingClientRect(),inputs=card.querySelector('.merge-inputs').getBoundingClientRect(),panes=[...card.querySelectorAll('.merge-pane')].map(pane=>pane.getBoundingClientRect());return {card:rect.width,inputs:inputs.width,panes:panes.map(pane=>pane.width)}}));
@@ -117,6 +146,17 @@ async function main(){
    message=await page.evaluate(()=>window.messages.filter(m=>m.type==='selectGitlinkCommit').at(-1));
    assert.equal(message.hash,'uncommitted');assert.equal(message.key,kind+':child');
   }
+  const dirtyOnly={...link('unstaged'),oldObjectId:sha,newObjectId:sha,oldGitlinkCommit:{hash:sha,shortHash:'aaaaaaa',subject:'same pointer'}};
+  await publish({type:'snapshot',revision:20.5,identity:'file:///gitlinks\0dirty-only',loading:false,editable:true,diffs:[dirtyOnly],total:1,completed:1,selectionEpoch:20.5});
+  await page.waitForFunction(()=>document.querySelectorAll('.gitlink-worktree').length===1);
+  assert.equal(await page.locator('.gitlink-commit[data-hash="'+sha+'"]').count(),0,'unchanged dirty Gitlink shows only the worktree entry');
+  await publish({type:'snapshot',revision:20.75,identity:'file:///gitlinks\0uncommitted',loading:false,editable:true,diffs:links,total:3,completed:3,selectionEpoch:20.75});
+  await page.waitForFunction(()=>document.querySelectorAll('.gitlink-worktree').length===3);
+  await publish({type:'snapshot',revision:20.8,identity:'file:///gitlinks\0range',loading:false,editable:true,diffs:[{...links[1],workingTreeKind:undefined,gitlinkWorktreeDirty:false,oldObjectId:base,newObjectId:sha,oldGitlinkCommit:{hash:base,shortHash:'ccccccc',subject:'old pointer'},newGitlinkCommit:{hash:sha,shortHash:'aaaaaaa',subject:'new pointer'},gitlinkRangeCommits:[{hash:sha,shortHash:'aaaaaaa',subject:'new pointer'}]}],total:1,completed:1,selectionEpoch:20.8});
+  await page.waitForFunction(hash=>document.querySelectorAll('.gitlink-commit[data-hash="'+hash+'"]').length===1,sha);
+  assert.equal(await page.locator('.gitlink-commit[data-hash="'+base+'"]').count(),0,'the old index object is not a commit in the gitlink range list');
+  await publish({type:'snapshot',revision:20.9,identity:'file:///gitlinks\0uncommitted',loading:false,editable:true,diffs:links,total:3,completed:3,selectionEpoch:20.9});
+  await page.waitForFunction(()=>document.querySelectorAll('.gitlink-worktree').length===3);
   await publish({type:'diffUpdates',revision:21,identity:'file:///gitlinks\0uncommitted',loading:false,diffs:[{...links[0],gitlinkConflictIncomingCommit:{hash:incoming,shortHash:'bbbbbbb',subject:'incoming metadata loaded'}}]});
   await page.waitForFunction(()=>document.querySelector('.gitlink-conflict-commits').textContent.includes('incoming metadata loaded'));
   const history={...link(undefined),diffKey:'history:child'};
@@ -124,6 +164,67 @@ async function main(){
   await page.waitForFunction(()=>document.querySelectorAll('.diff').length===1);
   assert.equal(await page.locator('.gitlink-worktree').count(),0,'history must not expose the live worktree shortcut');
   assert.equal(await page.locator('.gitlink-commit[data-hash="'+sha+'"]').count(),1);
+  assert.deepEqual(errors,[]);
+  // Real wheel events must chain to the document only at a pane's boundary.
+  await page.goto('http://fixture/');
+  await page.setViewportSize({width:1200,height:900});
+  const scrollIdentity='file:///wheel\0uncommitted';
+  const scrollDiffs=[conflict('before.ts'),conflict('wheel.ts'),conflict('after.ts')];
+  await publish({type:'snapshot',revision:1,identity:scrollIdentity,loading:false,editable:true,diffs:scrollDiffs,total:3,completed:3,selectionEpoch:1});
+  await page.waitForFunction(()=>window.messages.filter(m=>m.type==='loadMerge').length===3);
+  const baseText=Array.from({length:200},(_,i)=>'line '+i+'\n').join('');
+  const currentText=baseText.replace('line 100\n','ours\n'),incomingText=baseText.replace('line 100\n','theirs\n');
+  for(const [i,name] of ['before.ts','wheel.ts','after.ts'].entries())await publish({type:'mergeLoaded',key:'conflict:'+name,identity:scrollIdentity,sessionId:i+1,snapshot:{type:'snapshot',path:name,base:baseText,current:currentText,incoming:incomingText,plan:createMergePlan(baseText,currentText,incomingText)}});
+  await page.waitForFunction(()=>document.querySelectorAll('.merge-card').length===3);
+  for(const selector of ['.merge-pane:nth-child(1) .merge-editor-host','.merge-pane:nth-child(2) .merge-editor-host','.merge-result-host']){
+   const host=page.locator('.diff[data-path="wheel.ts"] '+selector);
+   for(const [boundary,delta] of [['top',-120],['bottom',120],['middle',120],['top',120],['bottom',-120]]){
+    const before=await host.evaluate(async(node,boundary)=>{
+     window.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));
+     const card=node.closest('.diff');
+     window.scrollTo(0,window.scrollY+card.getBoundingClientRect().top-60);
+     await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+     const editor=monaco.editor.getEditors().find(editor=>node.contains(editor.getDomNode()));
+     const max=editor.getScrollHeight()-editor.getLayoutInfo().height;
+     editor.setScrollTop(boundary==='top'?0:boundary==='bottom'?max:Math.floor(max/2));
+     return {page:window.scrollY,top:editor.getScrollTop()};
+    },boundary);
+    const rect=await host.boundingBox();
+    await page.mouse.move(rect.x+rect.width/2,rect.y+Math.min(50,rect.height/2));
+    await page.mouse.wheel(0,delta);
+    if((boundary==='top'&&delta<0)||(boundary==='bottom'&&delta>0)){
+     await page.waitForFunction(({page,delta})=>delta<0?window.scrollY<page:window.scrollY>page,{page:before.page,delta});
+    }else{
+     await host.evaluate(async(node,{top,delta})=>{
+      const editor=monaco.editor.getEditors().find(editor=>node.contains(editor.getDomNode()));
+      for(let i=0;i<60;i++){
+       if(delta<0?editor.getScrollTop()<top:editor.getScrollTop()>top)return;
+       await new Promise(resolve=>requestAnimationFrame(resolve));
+      }
+      throw new Error('Wheel did not scroll the merge pane');
+     },{top:before.top,delta});
+     assert.equal(await page.evaluate(()=>window.scrollY),before.page,'Internal scrolling must not move the document');
+    }
+   }
+  }
+  assert.deepEqual(errors,[]);
+  for(const delta of [-120,120]){
+   const host=page.locator('.diff[data-path="wheel.ts"] .merge-result-host');
+   const before=await host.evaluate(async node=>{
+    window.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));
+    const card=node.closest('.diff');
+    window.scrollTo(0,window.scrollY+card.getBoundingClientRect().top-60);
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+    const editors=monaco.editor.getEditors().filter(editor=>card.contains(editor.getDomNode()));
+    for(const editor of editors)editor.getModel().setValue('short\n');
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+    return window.scrollY;
+   });
+   const rect=await host.boundingBox();
+   await page.mouse.move(rect.x+rect.width/2,rect.y+40);
+   await page.mouse.wheel(0,delta);
+   await page.waitForFunction(({before,delta})=>delta<0?window.scrollY<before:window.scrollY>before,{before,delta});
+  }
   assert.deepEqual(errors,[]);
   console.log('Aggregate Merge: multiple conflict cards, normal diff, isolated save, refresh/collapse persistence, completion removal passed');
  }finally{await browser.close()}
