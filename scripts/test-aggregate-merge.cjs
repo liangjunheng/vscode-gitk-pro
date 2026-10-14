@@ -2,6 +2,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
 const {chromium}=require('playwright');
+const {PNG}=require('pngjs');
 const {renderMultiDiffHtml}=require('../out/webview/multiDiffPanelDocument');
 const {createMergePlan}=require('../out/webview/mergeEditor');
 
@@ -10,7 +11,7 @@ async function main(){
  try{
   const page=await browser.newPage({viewport:{width:1200,height:900}}),errors=[];
   page.on('pageerror',e=>errors.push(e.message));
-  const html=renderMultiDiffHtml('http://fixture','http://fixture/icons.css','http://fixture/vs','test').replace('<style>', '<style>:root{--vscode-editor-background:#1e1e1e;--vscode-editorWidget-background:#252526;--vscode-editor-foreground:#cccccc;--vscode-tab-activeForeground:#ffffff;--vscode-foreground:#cccccc;--vscode-descriptionForeground:#aaaaaa;--vscode-widget-border:#454545;--vscode-editorGroup-border:#454545;--vscode-panel-border:#454545;--vscode-focusBorder:#007acc;--vscode-button-background:#0e639c;--vscode-button-hoverBackground:#1177bb;--vscode-button-foreground:#ffffff}');
+  const html=renderMultiDiffHtml('http://fixture','http://fixture/icons.css','http://fixture/vs','test').replace('<style>', '<style>:root{--vscode-editor-font-family:Consolas,monospace;--vscode-editor-font-size:16px;--vscode-editor-background:#1e1e1e;--vscode-editorWidget-background:#252526;--vscode-editor-foreground:#cccccc;--vscode-tab-activeForeground:#ffffff;--vscode-foreground:#cccccc;--vscode-descriptionForeground:#aaaaaa;--vscode-widget-border:#454545;--vscode-editorGroup-border:#454545;--vscode-panel-border:#454545;--vscode-focusBorder:#007acc;--vscode-button-background:#0e639c;--vscode-button-hoverBackground:#1177bb;--vscode-button-foreground:#ffffff}');
   for(const m of html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g))new Function(m[1]);
   await page.route('http://fixture/**',route=>{
    const name=new URL(route.request().url()).pathname;
@@ -47,6 +48,16 @@ async function main(){
   for(const [i,name] of ['one.ts','two.ts'].entries())await publish({type:'mergeLoaded',key:'conflict:'+name,identity,sessionId:i+1,snapshot:{type:'snapshot',path:name,base:'base\n',current:'ours\n',incoming:'theirs\n',plan:createMergePlan('base\n','ours\n','theirs\n'),automaticPlan:createMergePlan('base\n','ours\n','theirs\n')}});
   await page.waitForFunction(()=>document.querySelectorAll('.merge-card').length===2);
   const first=page.locator('.merge-card').nth(0),second=page.locator('.merge-card').nth(1);
+  await page.waitForFunction(()=>monaco.editor.getEditors().some(editor=>editor.getModel()?.uri.scheme!=='gitk-merge'&&editor.getModel()?.getValue()==='after\n'));
+  const typography=await page.evaluate(()=>{
+   const editors=monaco.editor.getEditors();
+   const normal=editors.find(editor=>editor.getModel()?.uri.scheme!=='gitk-merge'&&editor.getModel()?.getValue()==='after\n');
+   const read=editor=>{const font=editor.getOption(monaco.editor.EditorOption.fontInfo);return {fontFamily:font.fontFamily,fontSize:font.fontSize,fontWeight:font.fontWeight,lineHeight:font.lineHeight,letterSpacing:font.letterSpacing,language:editor.getModel().getLanguageId()}};
+   return {normal:read(normal),merge:editors.filter(editor=>editor.getModel()?.uri.scheme==='gitk-merge').map(read)};
+  });
+  assert.equal(typography.normal.fontSize,16,'Diff uses the configured VS Code editor size');
+  assert.ok(typography.merge.length===6,'Both merge cards expose three editors');
+  for(const font of typography.merge)assert.deepEqual(font,typography.normal,'Merge panes use the same editor typography and language as Diff cards');
   for(const width of [1200,640]){
    await page.setViewportSize({width,height:900});
    for(const selector of ['.merge-result h3','.merge-result-host']){
@@ -129,6 +140,7 @@ async function main(){
   await page.goto('http://fixture/');
   const sha='a'.repeat(40),incoming='b'.repeat(40),base='c'.repeat(40);
   const link=kind=>({path:'child',diffKey:kind+':child',workingTreeKind:kind,status:kind==='conflict'?'U':'M',isGitlink:true,loaded:true,
+   oldObjectId:base,newObjectId:sha,
    gitlinkWorktreeDirty:true,gitlinkWorktreeChangeCount:2,gitlinkScanPending:false,
    newGitlinkCommit:{hash:sha,shortHash:'aaaaaaa',subject:'pointer moved'},
    gitlinkConflictBaseObjectId:base,gitlinkConflictCurrentObjectId:sha,gitlinkConflictIncomingObjectId:incoming});
@@ -136,6 +148,9 @@ async function main(){
   const links=['conflict','unstaged','staged'].map(link);
   await publish({type:'snapshot',revision:20,identity:'file:///gitlinks\0uncommitted',loading:false,editable:true,diffs:links,total:3,completed:3,selectionEpoch:20});
   await page.waitForFunction(()=>document.querySelectorAll('.gitlink-worktree').length===3);
+  const unstagedCard=page.locator('.diff[data-diff-key="unstaged:child"]');
+  const unstagedMeta=await unstagedCard.locator('.file-meta').textContent();
+  assert.ok(unstagedMeta.includes('Submodule commit')&&unstagedMeta.includes('子模块有 2 个未提交变更文件'),'pointer movement and child worktree dirtiness are both shown');
   for(const kind of ['conflict','unstaged','staged']){
    const card=page.locator('.diff[data-diff-key="'+kind+':child"]');
    const commit=card.locator('.gitlink-commit[data-hash="'+sha+'"]');
@@ -165,6 +180,32 @@ async function main(){
   assert.equal(await page.locator('.gitlink-worktree').count(),0,'history must not expose the live worktree shortcut');
   assert.equal(await page.locator('.gitlink-commit[data-hash="'+sha+'"]').count(),1);
   assert.deepEqual(errors,[]);
+  // Check rendered pixels: a correctly colored outline can still be above the viewport.
+  for(const width of [1200,640])for(const navigation of [false,true])for(const kind of [undefined,'unstaged','conflict']){
+   await page.goto('http://fixture/');
+   await page.setViewportSize({width,height:900});
+   const tall={path:'sticky-child',diffKey:'sticky-child',status:'M',workingTreeKind:kind,isGitlink:true,loaded:true,
+    gitlinkRangeCommits:Array.from({length:60},(_,i)=>({hash:sha,shortHash:'aaaaaaa',subject:'commit '+i}))};
+   await publish({type:'snapshot',revision:1,identity:'file:///sticky',loading:false,editable:false,diffs:[tall,{...tall,path:'tail',diffKey:'tail'}],total:2,completed:2,selectionEpoch:1,
+    parentCommit:navigation?{hash:sha,title:'Parent commit'}:undefined});
+   const card=page.locator('.diff[data-path="sticky-child"]');
+   await card.waitFor();
+   await card.evaluate(node=>{node.querySelector('.diff-body').style.minHeight='1600px';node.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}))});
+   await page.evaluate(()=>window.scrollTo(0,160));
+   await page.waitForFunction(top=>{
+    const card=document.querySelector('.diff[data-path="sticky-child"]');
+    return card?.classList.contains('selected')&&Math.abs(card.querySelector('.pinned-group').getBoundingClientRect().top-top)<.1;
+   },navigation?40:0);
+   const header=await card.locator('.pinned-group').boundingBox();
+   const image=PNG.sync.read(await page.screenshot());
+   const offset=(Math.round(header.y)*image.width+Math.floor(header.x+header.width/2))*4;
+   const pixel=[...image.data.subarray(offset,offset+3)];
+   assert.ok(pixel[0]<10&&pixel[1]>80&&pixel[2]>150,'Selected sticky header must render its blue top edge inside the viewport: '+pixel);
+   await page.locator('.diff[data-path="tail"]').evaluate(node=>node.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true})));
+   const unselected=PNG.sync.read(await page.screenshot());
+   const inactivePixel=[...unselected.data.subarray(offset,offset+3)];
+   assert.ok(!(inactivePixel[0]<10&&inactivePixel[1]>80&&inactivePixel[2]>150),'Deselected sticky header must not retain the blue edge');
+  }
   // Real wheel events must chain to the document only at a pane's boundary.
   await page.goto('http://fixture/');
   await page.setViewportSize({width:1200,height:900});

@@ -88,7 +88,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .header-row{position:relative;z-index:1;display:flex;align-items:center}
 .header-row>.file-header,.header-row>.diff-actions{position:relative;z-index:1}
 /* 轮廓层位于盖板上方：向外延展高亮总宽度，和底层卡片的三边高亮线无缝连接。 */
-.pinned-group::after{content:'';position:absolute;z-index:3;top:calc(var(--card-border) * -1);right:0;bottom:0;left:0;border-top:var(--card-border) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-right:0;border-left:0;border-radius:calc(var(--card-radius) - var(--card-border)) calc(var(--card-radius) - var(--card-border)) 0 0;pointer-events:none}
+.pinned-group::after{content:'';position:absolute;z-index:3;top:0;right:0;bottom:0;left:0;border-top:var(--card-border) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-right:0;border-left:0;border-radius:calc(var(--card-radius) - var(--card-border)) calc(var(--card-radius) - var(--card-border)) 0 0;pointer-events:none}
 .diff.selected>.pinned-group::after{border-color:var(--vscode-focusBorder)}
 .header-row>.file-header{flex:1 1 auto;min-width:0;border-radius:calc(var(--card-radius) - var(--card-border) - var(--card-ring)) 0 0 0}
 .diff-actions{align-self:stretch;flex:0 0 auto;display:flex;align-items:center;gap:2px;margin-right:0;padding-right:4px;background:var(--header-surface)}
@@ -482,14 +482,18 @@ function workingTreeKindHtml(kind){
   return '';
 }
 function gitlinkLabelHtml(){return '<span class="gitlink-label" title="Submodule repository">Repo</span>'}
+function gitlinkDisplayState(diff){
+  const worktreeDirty=diff.gitlinkWorktreeDirty===true&&Boolean(diff.workingTreeKind);
+  const pointerChanged=Boolean(diff.oldObjectId&&diff.newObjectId&&diff.oldObjectId!==diff.newObjectId);
+  return {worktreeDirty,pointerChanged,worktreeOnly:worktreeDirty&&diff.oldObjectId===diff.newObjectId};
+}
+function gitlinkWorktreeStatusText(diff){const count=Number.isInteger(diff.gitlinkWorktreeChangeCount)?diff.gitlinkWorktreeChangeCount:null;return count===null?'子模块存在未提交变更':'子模块有 '+count+' 个未提交变更文件'}
 function gitlinkBodyHtml(diff){
+  const state=gitlinkDisplayState(diff);
   let worktree='';
-  if(diff.workingTreeKind&&diff.gitlinkWorktreeDirty){
-    const count=Number.isInteger(diff.gitlinkWorktreeChangeCount)?diff.gitlinkWorktreeChangeCount:null;
-    const message=count===null?'子模块存在未提交变更':'子模块有 '+count+' 个未提交变更文件';
-    worktree='<button type="button" class="gitlink-commit gitlink-worktree" data-hash="uncommitted" title="查看子模块当前工作区"><span class="gitlink-commit-hash">Uncommitted Changes</span><span class="gitlink-commit-message">'+message+'</span></button>';
+  if(state.worktreeDirty){
+    worktree='<button type="button" class="gitlink-commit gitlink-worktree" data-hash="uncommitted" title="查看子模块当前工作区"><span class="gitlink-commit-hash">Uncommitted Changes</span><span class="gitlink-commit-message">'+gitlinkWorktreeStatusText(diff)+'</span></button>';
   }
-  const dirtyOnly=diff.workingTreeKind&&diff.gitlinkWorktreeDirty&&diff.oldObjectId&&diff.oldObjectId===diff.newObjectId;
   if(diff.workingTreeKind==='conflict'){
     const choices=[['Base',diff.gitlinkConflictBaseCommit,diff.gitlinkConflictBaseObjectId],['Current',diff.gitlinkConflictCurrentCommit,diff.gitlinkConflictCurrentObjectId],['Incoming',diff.gitlinkConflictIncomingCommit,diff.gitlinkConflictIncomingObjectId]];
     const rows=choices.map(function(item){
@@ -500,7 +504,7 @@ function gitlinkBodyHtml(diff){
     return '<div class="gitlink-commits gitlink-conflict-commits">'+rows+worktree+'</div>';
   }
   if(diff.gitlinkScanPending)return (worktree?'<div class="gitlink-commits">'+worktree+'</div>':'')+'<div class="empty gitlink-loading"><span class="gitlink-loading-spinner" aria-hidden="true"></span><span>正在扫描子模块提交…</span></div>';
-  const commits=dirtyOnly?[]:(Array.isArray(diff.gitlinkRangeCommits)?diff.gitlinkRangeCommits:[diff.status==='A'?undefined:diff.oldGitlinkCommit,diff.status==='D'?undefined:diff.newGitlinkCommit].filter(function(commit,index,values){return commit&&values.findIndex(function(item){return item&&item.hash===commit.hash})===index}));
+  const commits=state.worktreeOnly?[]:(Array.isArray(diff.gitlinkRangeCommits)?diff.gitlinkRangeCommits:[diff.status==='A'?undefined:diff.oldGitlinkCommit,diff.status==='D'?undefined:diff.newGitlinkCommit].filter(function(commit,index,values){return commit&&values.findIndex(function(item){return item&&item.hash===commit.hash})===index}));
   const rows=commits.map(function(commit){return '<button type="button" class="gitlink-commit" data-hash="'+escapeHtml(commit.hash)+'" title="查看子模块提交 '+escapeHtml(commit.hash)+'"><span class="gitlink-commit-hash">'+escapeHtml(commit.shortHash||String(commit.hash||'').slice(0,7))+'</span><span class="gitlink-commit-message">'+escapeHtml(commit.message||commit.subject||'')+'</span></button>'}).join('');
   return rows||worktree?'<div class="gitlink-commits">'+rows+worktree+'</div>':'<div class="empty">没有可显示的子模块提交。</div>';
 }
@@ -522,7 +526,8 @@ function metaHtml(diff){
   }
   const oldId=shortObjectId(diff.oldObjectId),newId=shortObjectId(diff.newObjectId);
   if(diff.isGitlink){
-    if(diff.workingTreeKind&&diff.gitlinkWorktreeDirty){const count=Number.isInteger(diff.gitlinkWorktreeChangeCount)?diff.gitlinkWorktreeChangeCount:null;return '<span class="meta-line meta-gitlink">'+(count===null?'子模块未提交变更':'子模块有 '+count+' 个未提交变更文件')+'</span>';}
+    const state=gitlinkDisplayState(diff);
+    if(state.worktreeOnly)return '<span class="meta-line meta-gitlink">'+gitlinkWorktreeStatusText(diff)+'</span>';
     const oldCommit=diff.oldGitlinkCommit,newCommit=diff.newGitlinkCommit;
     if(diff.status!=='A')lines.push('<span class="meta-line meta-gitlink" title="'+escapeHtml(oldCommit?.hash||diff.oldObjectId||'')+'">Submodule commit '+escapeHtml(oldCommit?.shortHash||oldId)+(oldCommit?.subject?': '+escapeHtml(oldCommit.subject):'')+'</span>');
     if(diff.status!=='D')lines.push('<span class="meta-line meta-gitlink" title="'+escapeHtml(newCommit?.hash||diff.newObjectId||'')+'">Submodule commit '+escapeHtml(newCommit?.shortHash||newId)+(newCommit?.subject?': '+escapeHtml(newCommit.subject):'')+'</span>');
@@ -535,6 +540,7 @@ function metaHtml(diff){
   }
   const indexText='index '+oldId+'..'+newId+(mode?' '+mode:'');
   lines.push('<span class="meta-line meta-index" title="'+escapeHtml('旧对象 '+(diff.oldObjectId||'-')+' → 新对象 '+(diff.newObjectId||'-'))+'">'+escapeHtml(indexText)+'</span>');
+  if(diff.isGitlink){const state=gitlinkDisplayState(diff);if(state.worktreeDirty&&state.pointerChanged)lines.push('<span class="meta-line meta-gitlink">'+gitlinkWorktreeStatusText(diff)+'</span>');}
   return lines.join('');
 }
 // 直接读 Monaco 已算好的行变更推导增删行数, 不额外跑 git 命令也不重复计算。

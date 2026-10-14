@@ -2,7 +2,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { type AppState, type ChangeSetMode, type ChangedFile, GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
 import { getCommitFiles, getGitAheadCount, getGitBranches, getGitlinkPathsInCommit, getPushBranches, type PushBranchOption, readCurrentCommitMessage } from '../git/gitLogProvider';
-import { checkoutBranch, checkoutRemoteBranch, commitDetails, hasConflicts, indexGitlink, pull, push, rangeCommits, resolveRevision, restoreAll, restoreSubmodule, trackedPaths, type NativePushResult } from '../git/gitNativeOperations';
+import { checkoutBranch, checkoutRemoteBranch, commitDetails, hasConflicts, indexGitlink, pull, push, rangeCommits, resolveRevision, restoreAll, restoreSubmodule, trackedPaths, type NativeCommitDetails, type NativePushResult } from '../git/gitNativeOperations';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { readMergeOperation, runMergeOperation, type MergeOperation } from '../git/mergeOperation';
 import { MergeEditorSessions } from './mergeEditorSessions';
@@ -41,6 +41,16 @@ type GitlinkParentNavigation = {
     readonly childHash: string;
     readonly childRepositoryPath: string;
 };
+
+function toGitlinkCommit(detail: NativeCommitDetails): GitlinkCommit {
+    const message = detail.message.trim();
+    return {
+        hash: detail.hash,
+        shortHash: detail.shortHash,
+        subject: message.split(/\r?\n/).find(line => line.trim().length > 0)?.trim(),
+        message: message || undefined,
+    };
+}
 
 async function pickPushBranch(
     branches: readonly PushBranchOption[],
@@ -3064,12 +3074,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 if (hashes.length === 0) { continue; }
                 try {
                     const details = await commitDetails(submoduleUri, hashes);
-                    const commits = new Map<string, GitlinkCommit>();
-                    for (const detail of details) {
-                        const normalizedMessage = detail.message.trim();
-                        const subject = normalizedMessage.split(/\r?\n/).find(line => line.trim().length > 0)?.trim();
-                        commits.set(detail.hash, { hash: detail.hash, shortHash: detail.shortHash, subject, message: normalizedMessage || undefined });
-                    }
+                    const commits = new Map(details.map(detail => [detail.hash, toGitlinkCommit(detail)]));
                     file.oldGitlinkCommit = file.oldObjectId ? commits.get(file.oldObjectId) : undefined;
                     file.newGitlinkCommit = file.newObjectId ? commits.get(file.newObjectId) : undefined;
                     file.gitlinkConflictBaseCommit = file.gitlinkConflictBaseObjectId ? commits.get(file.gitlinkConflictBaseObjectId) : undefined;
@@ -3078,16 +3083,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     if (file.status !== 'A' && file.status !== 'D'
                         && isRealObjectId(file.oldObjectId) && isRealObjectId(file.newObjectId)) {
                         const detailsInRange = await rangeCommits(submoduleUri, file.oldObjectId, file.newObjectId);
-                        const rangeValues: GitlinkCommit[] = detailsInRange.map(detail => {
-                            const normalizedMessage = detail.message.trim();
-                            return {
-                                hash: detail.hash,
-                                shortHash: detail.shortHash,
-                                subject: normalizedMessage.split(/\r?\n/).find(line => line.trim().length > 0)?.trim(),
-                                message: normalizedMessage || undefined,
-                            };
-                        });
-                        file.gitlinkRangeCommits = rangeValues;
+                        // `old..new` contains only commits introduced after the old gitlink OID.
+                        file.gitlinkRangeCommits = detailsInRange.map(toGitlinkCommit);
                     }
                 } catch {
                     // SHA 仍由父仓库 gitlink 保存；子模块本地缺少对象或两端非线性时仅不显示范围消息。

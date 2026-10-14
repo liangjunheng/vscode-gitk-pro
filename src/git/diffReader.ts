@@ -16,6 +16,10 @@ function containsNul(text: string | undefined): boolean {
     return false;
 }
 
+function isGitlinkWorktreeOnly(file: Pick<CommitFile, 'gitlinkWorktreeDirty' | 'oldObjectId' | 'newObjectId'>): boolean {
+    return file.gitlinkWorktreeDirty === true && file.oldObjectId === file.newObjectId;
+}
+
 /**
  * Diff 读取器: 负责从 Git 仓库读取文件内容并写入 Store (单一数据源)
  *
@@ -136,7 +140,7 @@ export class DiffReader {
             if (!diff.isGitlink) { return diff; }
             const file = filesByKey.get(diff.diffKey || diff.path);
             if (!file) { return diff; }
-            const dirtyOnly = file.gitlinkWorktreeDirty === true && file.oldObjectId === file.newObjectId;
+            const dirtyOnly = isGitlinkWorktreeOnly(file);
             const original = dirtyOnly || file.status === 'A' ? '' : this.createGitlinkText(file.oldGitlinkCommit, file.oldObjectId);
             const modified = dirtyOnly || file.status === 'D' ? '' : this.createGitlinkRangeText(file.gitlinkRangeCommits ?? [], file.newGitlinkCommit, file.newObjectId);
             return new DiffPayload({
@@ -185,7 +189,7 @@ export class DiffReader {
     ): DiffPayload[] {
         return files.map((file, index) => {
             if (file.isGitlink) {
-                const dirtyOnly = file.gitlinkWorktreeDirty === true && file.oldObjectId === file.newObjectId;
+                const dirtyOnly = isGitlinkWorktreeOnly(file);
                 return new DiffPayload({
                     index: index + indexOffset,
                     path: file.path,
@@ -244,7 +248,7 @@ export class DiffReader {
         const contents = await this.readGitObjects(rootUri, objects);
         const readFile = async (file: CommitFile, index: number): Promise<DiffPayload> => {
             if (file.isGitlink) {
-                const dirtyOnly = file.gitlinkWorktreeDirty === true && file.oldObjectId === file.newObjectId;
+                const dirtyOnly = isGitlinkWorktreeOnly(file);
                 return new DiffPayload({
                     index: index + indexOffset,
                     path: file.path,
