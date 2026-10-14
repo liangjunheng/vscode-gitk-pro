@@ -159,6 +159,9 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .empty{padding:16px 8px;color:var(--vscode-descriptionForeground);text-align:center}.diff-loading{min-height:80px;display:grid;place-items:center;color:var(--vscode-descriptionForeground)}
 .gitk-diff-link-hover{text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:2px;cursor:pointer}
 .gitk-change-flash{position:absolute;z-index:12;right:2px;left:2px;pointer-events:none;border-radius:4px;background:color-mix(in srgb,var(--vscode-focusBorder,#007acc) 30%,transparent);box-shadow:inset 0 0 0 2px var(--vscode-focusBorder,#007acc),0 3px 8px rgba(0,0,0,.38),0 1px 2px rgba(0,0,0,.28);transform:translateY(-1px)}
+/* Monaco can retain the horizontal track while an editor is reused from the virtualized pool.
+   MultiDiff exposes one fixed, synchronized track for the active card, so suppress every per-pane track. */
+.editor .monaco-scrollable-element>.scrollbar.horizontal{display:none!important}
 #global-hscroll{position:fixed;z-index:20;right:0;bottom:0;left:0;height:14px;overflow-x:auto;overflow-y:hidden;background:var(--vscode-scrollbar-shadow,rgba(0,0,0,.18));scrollbar-color:var(--vscode-scrollbarSlider-background) transparent;scrollbar-width:auto}
 #global-hscroll[hidden]{display:none}
 #global-hscroll-content{height:1px;pointer-events:none}

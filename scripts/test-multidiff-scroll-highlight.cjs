@@ -49,14 +49,29 @@ async function main() {
             await page.waitForFunction(() => window.messages.some(message => message.type === 'rendered'));
             assert.equal(await page.locator('.diff[data-diff-key="missing-path"]').count(), 1, 'missing paths fall back to plaintext without failing the whole diff');
             assert.equal(errors.length, 0);
+            const longLine = 'x'.repeat(2_000);
+            let renderedCount = await page.evaluate(() => window.messages.filter(message => message.type === 'rendered').length);
+            await publish({ type: 'snapshot', revision: 2, identity: 'horizontal-scroll-fixture', loading: false, editable: false,
+                diffs: [{ path: 'long-line.cpp', status: 'M', loaded: true, original: `const oldValue = '${longLine}';\n`, modified: `const newValue = '${longLine}';\n` }], total: 1, completed: 1, selectionEpoch: 1, revealPath: 'long-line.cpp' });
+            await page.waitForFunction(count => window.messages.filter(message => message.type === 'rendered').length > count, renderedCount);
+            await page.waitForFunction(() => !document.getElementById('global-hscroll').hidden);
+            await page.waitForFunction(() => { const scrollbar = document.getElementById('global-hscroll'); return scrollbar.scrollWidth > scrollbar.clientWidth; });
+            assert.ok(await page.locator('.editor .monaco-scrollable-element > .scrollbar.horizontal').evaluateAll(scrollbars => scrollbars.every(scrollbar => getComputedStyle(scrollbar).display === 'none')), 'only the global horizontal scrollbar is visible');
+            const globalScroll = page.locator('#global-hscroll');
+            const globalScrollWidth = await globalScroll.evaluate(scrollbar => scrollbar.scrollWidth);
+            const globalClientWidth = await globalScroll.evaluate(scrollbar => scrollbar.clientWidth);
+            assert.ok(globalScrollWidth > globalClientWidth, 'long lines make the global horizontal scrollbar scrollable');
+            await globalScroll.evaluate(scrollbar => { scrollbar.scrollLeft = Math.floor((scrollbar.scrollWidth - scrollbar.clientWidth) / 2); scrollbar.dispatchEvent(new Event('scroll')); });
+            assert.ok(await globalScroll.evaluate(scrollbar => scrollbar.scrollLeft > 0), 'the global horizontal scrollbar accepts a scroll position');
             const diffs = [
                 ...Array.from({ length: 10 }, (_, index) => ({ path: `repo-${index}`, status: 'M', loaded: true, isGitlink: true, gitlinkWorktreeDirty: true })),
                 { path: '.clangd', status: 'M', loaded: true, original: 'before\n', modified: 'after\n' },
                 { path: 'canvas_handle_jni.cpp', status: 'M', loaded: true, original: 'old\n', modified: 'new\n' }
             ];
-            await publish({ type: 'snapshot', revision: 2, identity, loading: false, editable: false, diffs, total: diffs.length, completed: diffs.length, selectionEpoch: 1, revealPath: diffs[0].path,
+            renderedCount = await page.evaluate(() => window.messages.filter(message => message.type === 'rendered').length);
+            await publish({ type: 'snapshot', revision: 3, identity, loading: false, editable: false, diffs, total: diffs.length, completed: diffs.length, selectionEpoch: 1, revealPath: diffs[0].path,
                 parentCommit: height === 360 ? { hash: '123456789', title: 'Parent commit' } : undefined });
-            await page.waitForFunction(() => window.messages.some(message => message.type === 'rendered'));
+            await page.waitForFunction(count => window.messages.filter(message => message.type === 'rendered').length > count, renderedCount);
             await page.mouse.move(900, height / 2);
             await page.waitForTimeout(300);
             // Only wheel input, including the final event at the bottom. No card clicks or reveals.
