@@ -99,7 +99,7 @@ export class GitBranchesController implements vscode.Disposable {
         this.pendingSelectionDelivery = true;
         const keep = new Set(this.repositories.map(repository => repository.path));
         this.pruneSelected(keep);
-        // 已缓存当前分支的仓库立即回填默认选择; 尚未读到 HEAD 的仓库由 applyTotalBranches 到达时补。
+        // Cached branch snapshots can default immediately; later snapshots complete the selection.
         const defaulted = this.ensureDefaultSelection();
         this.fireBranches();
         // 分支快照已收齐时无需等待读取(命中缓存的仓库不会再有快照事件), 选择当场定型。
@@ -107,18 +107,18 @@ export class GitBranchesController implements vscode.Disposable {
     }
 
     /**
-     * 默认选择: 用户从未手动选过分支时, 为已选仓库中尚无勾选的仓库自动选中其当前分支 (kind==='current')。
-     * 与 GitRepoController「默认选第一个仓库」对称; 当前分支 HEAD 是异步读入的, 故到达处 (applyTotalBranches) 也要调用。
-     * 返回是否新增了默认选择。
+     * Default all branches when the user has not manually selected branches.
+     * A snapshot can arrive with only HEAD before the complete refs list, so refresh the
+     * default whenever a new snapshot arrives. Returns whether the default changed.
      */
     private ensureDefaultSelection(): boolean {
         if (this.hasUserSelection) { return false; }
         let changed = false;
         for (const repository of this.repositories) {
-            if (this.selectedBranchNamesByRepository.has(repository.path)) { continue; }
-            const current = this.totalBranchWatcher.getTotalBranches(repository).find(branch => branch.kind === 'current');
-            if (!current) { continue; }
-            this.selectedBranchNamesByRepository.set(repository.path, new Set([current.name]));
+            const names = new Set(this.totalBranchWatcher.getTotalBranches(repository).map(branch => branch.name));
+            const previous = this.selectedBranchNamesByRepository.get(repository.path);
+            if (previous?.size === names.size && [...names].every(name => previous.has(name))) { continue; }
+            this.selectedBranchNamesByRepository.set(repository.path, names);
             changed = true;
         }
         return changed;
@@ -194,11 +194,11 @@ export class GitBranchesController implements vscode.Disposable {
             });
             this.branchHeadEmitter.fire();
         }
-        // 当前分支此刻才异步到达, 是回填默认选择的关键时机 (仓库变化时该仓库 HEAD 可能尚未读到)。
+        // A branch snapshot can begin with HEAD and later expand to the complete refs list.
         const defaulted = this.ensureDefaultSelection();
         this.fireBranches();
-        // 选中仓库的快照收齐后选择即定型: 没有当前分支的仓库(空仓库/HEAD 不可读)不会再触发
-        // headChanged/defaulted, 必须在此收口, 否则等待分支输入的提交读取会一直停在加载态。
+        // Empty repositories may never trigger headChanged/defaulted. Close selection once all
+        // snapshots arrive so downstream commit reads do not remain loading indefinitely.
         if (headChanged || defaulted
             || (this.pendingSelectionDelivery && this.hasAllSelectedSnapshots())) {
             this.fireSelected();
