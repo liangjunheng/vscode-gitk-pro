@@ -43,13 +43,18 @@ async function main() {
             });
             await page.goto('http://fixture/');
             const identity = 'scroll-highlight-fixture';
+            const publish = data => page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), data);
+            await publish({ type: 'snapshot', revision: 1, identity: 'missing-path-fixture', loading: false, editable: false,
+                diffs: [{ diffKey: 'missing-path', status: 'M', loaded: true, original: 'before\\n', modified: 'after\\n' }], total: 1, completed: 1, selectionEpoch: 1, revealPath: 'missing-path' });
+            await page.waitForFunction(() => window.messages.some(message => message.type === 'rendered'));
+            assert.equal(await page.locator('.diff[data-diff-key="missing-path"]').count(), 1, 'missing paths fall back to plaintext without failing the whole diff');
+            assert.equal(errors.length, 0);
             const diffs = [
                 ...Array.from({ length: 10 }, (_, index) => ({ path: `repo-${index}`, status: 'M', loaded: true, isGitlink: true, gitlinkWorktreeDirty: true })),
                 { path: '.clangd', status: 'M', loaded: true, original: 'before\n', modified: 'after\n' },
                 { path: 'canvas_handle_jni.cpp', status: 'M', loaded: true, original: 'old\n', modified: 'new\n' }
             ];
-            const publish = data => page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), data);
-            await publish({ type: 'snapshot', revision: 1, identity, loading: false, editable: false, diffs, total: diffs.length, completed: diffs.length, selectionEpoch: 1, revealPath: diffs[0].path,
+            await publish({ type: 'snapshot', revision: 2, identity, loading: false, editable: false, diffs, total: diffs.length, completed: diffs.length, selectionEpoch: 1, revealPath: diffs[0].path,
                 parentCommit: height === 360 ? { hash: '123456789', title: 'Parent commit' } : undefined });
             await page.waitForFunction(() => window.messages.some(message => message.type === 'rendered'));
             await page.mouse.move(900, height / 2);

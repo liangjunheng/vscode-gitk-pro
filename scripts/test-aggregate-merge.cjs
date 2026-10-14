@@ -36,11 +36,14 @@ async function main(){
    outline:getComputedStyle(card.querySelector('.pinned-group'),'::after').borderTopColor,
    background:getComputedStyle(card.querySelector('.file-header')).backgroundColor
   })));
-  assert.equal(colors[0].border,'rgb(241, 76, 76)','selected conflict card stays red');
-  assert.equal(colors[1].border,'rgb(241, 76, 76)','unselected conflict card stays red');
-  assert.equal(colors[2].border,'rgb(215, 186, 125)','unstaged card is yellow');
-  for(const color of colors.filter(color=>color.kind!=='staged')){assert.equal(color.pinned,color.border);assert.equal(color.outline,color.border)}
+  assert.equal(colors[0].border,'rgb(0, 122, 204)','selected conflict card uses the standard focus border');
+  assert.match(colors[1].border,/0\\.3\\)|30%/,'unselected conflict card outline uses 30 percent red');
+  assert.match(colors[2].border,/0\\.3\\)|30%/,'unstaged card outline uses 30 percent yellow');
+  assert.equal(colors[0].pinned,'rgb(0, 122, 204)','selected conflict sticky header uses the standard focus outline');
+  assert.equal(colors[0].outline,'rgb(0, 122, 204)','selected conflict sticky header cap uses the standard focus outline');
+  for(const color of colors.slice(1).filter(color=>color.kind!=='staged')){assert.equal(color.pinned,color.border);assert.equal(color.outline,color.border)}
   assert.notEqual(colors[0].background,colors[2].background,'header backgrounds reflect status');
+  assert.notEqual(colors[0].pinned,colors[1].pinned,'selected conflict card promotes the sticky header outline');
   for(const [i,name] of ['one.ts','two.ts'].entries())await publish({type:'mergeLoaded',key:'conflict:'+name,identity,sessionId:i+1,snapshot:{type:'snapshot',path:name,base:'base\n',current:'ours\n',incoming:'theirs\n',plan:createMergePlan('base\n','ours\n','theirs\n')}});
   await page.waitForFunction(()=>document.querySelectorAll('iframe.merge-editor-frame').length===2);
   const first=page.frameLocator('iframe').nth(0),second=page.frameLocator('iframe').nth(1);

@@ -105,12 +105,13 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .file-meta{position:relative;z-index:1;display:flex;flex-direction:column;gap:1px;padding:0 8px 4px;border-bottom:var(--card-border) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));color:var(--vscode-descriptionForeground);background:var(--header-surface);font-family:var(--vscode-editor-font-family,monospace);font-size:calc(var(--vscode-editor-font-size) * .85);line-height:1.45}
 .diff.collapsed>.pinned-group>.file-meta{display:none}
 /* State colors cover the card outline and sticky header, without tinting source text. */
-.diff[data-working-tree-kind="unstaged"],.diff[data-working-tree-kind="untracked"]{--card-accent:#d7ba7d}
-.diff[data-working-tree-kind="conflict"]{--card-accent:#f14c4c}
-.diff[data-working-tree-kind="unstaged"],.diff[data-working-tree-kind="untracked"],.diff[data-working-tree-kind="conflict"]{--header-surface:color-mix(in srgb,var(--card-accent) 16%,var(--vscode-editorWidget-background,var(--vscode-editor-background,#1e1e1e)));border-color:var(--card-accent)}
-.diff[data-working-tree-kind="unstaged"]>.pinned-group,.diff[data-working-tree-kind="untracked"]>.pinned-group,.diff[data-working-tree-kind="conflict"]>.pinned-group{background:var(--header-surface);border-color:var(--card-accent)}
-.diff[data-working-tree-kind="unstaged"]>.pinned-group::after,.diff[data-working-tree-kind="untracked"]>.pinned-group::after,.diff[data-working-tree-kind="conflict"]>.pinned-group::after{border-color:var(--card-accent)}
-.diff[data-working-tree-kind="unstaged"].selected,.diff[data-working-tree-kind="untracked"].selected,.diff[data-working-tree-kind="conflict"].selected{box-shadow:0 0 0 var(--card-ring) var(--card-accent),0 1px 4px rgba(0,0,0,.08)}
+.diff[data-working-tree-kind="unstaged"],.diff[data-working-tree-kind="untracked"]{--card-accent:#fff44f;--header-accent-strength:30%}
+.diff[data-working-tree-kind="conflict"]{--card-accent:#f14c4c;--header-accent-strength:20%}
+.diff[data-working-tree-kind="unstaged"],.diff[data-working-tree-kind="untracked"],.diff[data-working-tree-kind="conflict"]{--card-outline:color-mix(in srgb,var(--card-accent) 30%,transparent);--header-surface:color-mix(in srgb,var(--card-accent) var(--header-accent-strength),var(--vscode-editorWidget-background,var(--vscode-editor-background,#1e1e1e)));border-color:var(--card-outline)}
+.diff[data-working-tree-kind="unstaged"]>.pinned-group,.diff[data-working-tree-kind="untracked"]>.pinned-group,.diff[data-working-tree-kind="conflict"]>.pinned-group{background:var(--header-surface);border-color:var(--card-outline)}
+.diff[data-working-tree-kind="unstaged"]>.pinned-group::after,.diff[data-working-tree-kind="untracked"]>.pinned-group::after,.diff[data-working-tree-kind="conflict"]>.pinned-group::after{border-color:var(--card-outline)}
+.diff[data-working-tree-kind="unstaged"].selected,.diff[data-working-tree-kind="untracked"].selected,.diff[data-working-tree-kind="conflict"].selected{border-color:var(--vscode-focusBorder,#007acc);box-shadow:0 0 0 var(--card-ring) var(--vscode-focusBorder,#007acc),0 1px 4px rgba(0,0,0,.08)}
+.diff[data-working-tree-kind="unstaged"].selected>.pinned-group,.diff[data-working-tree-kind="untracked"].selected>.pinned-group,.diff[data-working-tree-kind="conflict"].selected>.pinned-group,.diff[data-working-tree-kind="unstaged"].selected>.pinned-group::after,.diff[data-working-tree-kind="untracked"].selected>.pinned-group::after,.diff[data-working-tree-kind="conflict"].selected>.pinned-group::after{border-color:var(--vscode-focusBorder,#007acc)}
 .diff[data-working-tree-kind="unstaged"] .file-header:hover,.diff[data-working-tree-kind="untracked"] .file-header:hover,.diff[data-working-tree-kind="conflict"] .file-header:hover{background:color-mix(in srgb,var(--card-accent) 24%,var(--vscode-editorWidget-background,var(--vscode-editor-background,#1e1e1e)))}
 .meta-line{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .meta-rename-from{color:var(--vscode-gitDecoration-deletedResourceForeground)}
@@ -461,9 +462,10 @@ function dispose(){
   cards=[];cardByPath=new Map();activePath='';clickedPath='';activeChangeIndex=-1;activeChangePage=0;pinnedAnchor=null;list.replaceChildren();globalHScroll.hidden=true;globalHScroll.scrollLeft=0;
   searchResults=[];activeSearchIndex=-1;searchPendingLoadCount=0;updateSearchStatus();updateNavigationState()
 }
-function language(path){const ext=path.slice(path.lastIndexOf('.')+1).toLowerCase();return languages[ext]||'plaintext'}
+function filePath(path){return typeof path==='string'?path:''}
+function language(path){path=filePath(path);const ext=path.slice(path.lastIndexOf('.')+1).toLowerCase();return languages[ext]||'plaintext'}
 function escapeHtml(value){return String(value==null?'':value).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
-function pathHtml(path,deleted){const slash=path.lastIndexOf('/');const name=slash<0?path:path.slice(slash+1),folder=slash<0?'':path.slice(0,slash+1);return '<span class="file-location'+(deleted?' is-deleted':'')+'" title="'+escapeHtml(path)+'"><span class="file-name">'+escapeHtml(name)+'</span>'+(folder?'<span class="file-path-gap"> </span><span class="file-folder">'+escapeHtml(folder)+'</span>':'')+'</span>'}
+function pathHtml(path,deleted){path=filePath(path);const slash=path.lastIndexOf('/');const name=slash<0?path:path.slice(slash+1),folder=slash<0?'':path.slice(0,slash+1);return '<span class="file-location'+(deleted?' is-deleted':'')+'" title="'+escapeHtml(path)+'"><span class="file-name">'+escapeHtml(name)+'</span>'+(folder?'<span class="file-path-gap"> </span><span class="file-folder">'+escapeHtml(folder)+'</span>':'')+'</span>'}
 function statusHtml(status){return '<span class="status status-'+escapeHtml(status)+'">'+escapeHtml(status)+'</span>'}
 function workingTreeKindHtml(kind){
   if(kind==='conflict')return '<span class="working-tree-kind working-tree-kind-conflict" title="Conflict：存在未解决冲突" aria-label="Conflict：存在未解决冲突"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M9 2.5 16 15.5H2Z"/><path d="M9 6.25v4.5M9 13v.1" stroke-width="1.8"/></svg></span>';
