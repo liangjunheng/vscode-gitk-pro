@@ -35,6 +35,8 @@ export interface CommitCard {
     readonly unpushedCommitCount: number;
     readonly changedSubmoduleRepositoryPaths: readonly string[];
     readonly conflictFiles: readonly CommitPanelFile[];
+    readonly mergeOperation?: string;
+    readonly mergeOperationBusy?: boolean;
     readonly stagedFiles: readonly CommitPanelFile[];
     readonly unstagedFiles: readonly CommitPanelFile[];
     readonly committing: boolean;
@@ -53,6 +55,7 @@ export type CommitCardStatePatch = {
 };
 
 type CommitPanelCallbacks = {
+    readonly onMergeOperation?: (repositoryPath: string, action: 'continue' | 'abort') => void;
     readonly onCommit: (repositoryPath: string, repositoryPaths: readonly string[], message: string, amend: boolean) => void;
     readonly onPush: (repositoryPaths: readonly string[], pullBeforePush: boolean) => void;
     readonly onPickPushBranch: (repositoryPath: string) => void;
@@ -194,6 +197,8 @@ export class CommitPanel implements vscode.Disposable {
             this.callbacks.onHistory(repo);
         } else if (data.type === 'focusRepository' && repo) {
             this.callbacks.onFocusRepository(repo);
+        } else if (data.type === 'mergeOperation' && repo && (data.action === 'continue' || data.action === 'abort')) {
+            this.callbacks.onMergeOperation?.(repo, data.action);
         } else if (data.type === 'selectFile' && repo
             && (data.section === 'conflict' || data.section === 'staged' || data.section === 'unstaged')
             && typeof data.path === 'string') {

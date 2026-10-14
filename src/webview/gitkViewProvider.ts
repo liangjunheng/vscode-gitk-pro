@@ -4,6 +4,7 @@ import { type AppState, type ChangeSetMode, type ChangedFile, GitBranchOption, C
 import { getCommitFiles, getGitAheadCount, getGitBranches, getGitlinkPathsInCommit, getPushBranches, type PushBranchOption, readCurrentCommitMessage } from '../git/gitLogProvider';
 import { checkoutBranch, checkoutRemoteBranch, commitDetails, hasConflicts, indexGitlink, pull, push, rangeCommits, resolveRevision, restoreAll, restoreSubmodule, trackedPaths, type NativePushResult } from '../git/gitNativeOperations';
 import { MultiDiffPanel } from './multiDiffPanel';
+import { readMergeOperation, runMergeOperation, type MergeOperation } from '../git/mergeOperation';
 import { MergeEditorSessions } from './mergeEditorSessions';
 import { CommitPanel, type CommitPanelSnapshot, type CommitCard, type CommitCardStatePatch } from './commitPanel';
 import { CommitPanelViewTitleController } from './commitPanelViewTitleController';
@@ -109,6 +110,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private gitWatchDisposables: vscode.Disposable[] = [];
     private readonly multiDiffPanel: MultiDiffPanel;
     private readonly mergeEditorSessions: MergeEditorSessions;
+    private readonly mergeOperations = new Map<string, MergeOperation>();
+    private readonly mergeOperationBusy = new Set<string>();
+    private readonly mergeOperationReads = new Map<string, Promise<void>>();
     private requestedDiffReveal?: { readonly hash: string; readonly repositoryPath?: string; readonly path?: string };
     private pendingGitlinkWorktreeSnapshot?: {
         readonly repositoryPath: string;
@@ -394,6 +398,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                         headLabel: branch?.label ?? '',
                         message: this.commitMessageByRepo.get(repository.path) ?? '',
                         committing: this.commitCommittingByRepo.has(repository.path),
+                        mergeOperation: this.mergeOperations?.get(repository.path),
+                        mergeOperationBusy: this.mergeOperationBusy?.has(repository.path) ?? false,
                         staged: (snapshot?.staged ?? []).map(file => this.changedFileSummary(file)),
                         unstaged: (snapshot?.unstaged ?? []).map(file => this.changedFileSummary(file)),
                     };
@@ -483,6 +489,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.mergeEditorSessions,
         );
         this.commitPanel = new CommitPanel({
+            onMergeOperation: (repositoryPath, action) => void this.handleMergeOperation(repositoryPath, action),
             onCommit: (repositoryPath, repositoryPaths, message, amend) => void this.runCommit(repositoryPath, repositoryPaths, message, amend),
             onPush: (repositoryPaths, pullBeforePush) => void this.runCommitPanelPush(repositoryPaths, pullBeforePush),
             onPickPushBranch: repositoryPath => void this.pickCommitPanelPushBranch(repositoryPath),
@@ -1165,6 +1172,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     /** 任一仓库未提交变化 (来自 watcher) 时增量更新多仓库 Store, 并刷新 Commit 面板对应卡片。 */
     private onRepositoryUncommittedFilesChanged(branch: GitBranchOption, changes: WorkingTreeChanges): void {
         const repositoryPath = branch.repoOption.path;
+        void this.refreshMergeOperation(repositoryPath);
         this.clearWorkingTreeDiffCache(repositoryPath);
         const label = branch.repoOption.label ?? path.basename(vscode.Uri.parse(repositoryPath).fsPath);
         const existing = store.getState().commitRepositories;
@@ -1183,6 +1191,65 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.onDidChangeWorkingTreeSummaryEmitter.fire();
         this.commitPanelViewTitleController.update(next);
         if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
+    }
+
+    private refreshMergeOperation(repositoryPath: string): Promise<void> {
+        if (!this.mergeOperationReads) { return Promise.resolve(); }
+        const pending = this.mergeOperationReads.get(repositoryPath);
+        if (pending) { return pending; }
+        const task = readMergeOperation(vscode.Uri.parse(repositoryPath)).then(operation => {
+            if (this.mergeOperations.get(repositoryPath) === operation) { return; }
+            if (operation) { this.mergeOperations.set(repositoryPath, operation); }
+            else { this.mergeOperations.delete(repositoryPath); }
+            this.schedulePushState();
+            if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
+        }).catch(error => console.error('[Gitk][merge-operation]', error))
+            .finally(() => this.mergeOperationReads.delete(repositoryPath));
+        this.mergeOperationReads.set(repositoryPath, task);
+        return task;
+    }
+
+    private async handleMergeOperation(repositoryPath: string, action: 'continue' | 'abort'): Promise<void> {
+        if (!this.repositories.some(repository => repository.path === repositoryPath) || this.mergeOperationBusy.has(repositoryPath)) { return; }
+        this.mergeOperationBusy.add(repositoryPath);
+        try {
+            const root = vscode.Uri.parse(repositoryPath);
+            const operation = await readMergeOperation(root);
+            if (!operation) { throw new Error('此仓库没有可继续或中止的合并操作。'); }
+            if (action === 'abort') {
+                const answer = await vscode.window.showWarningMessage(`中止 ${operation}？本次冲突解决结果将被丢弃，Git 将尝试恢复操作前状态。`, { modal: true }, '中止操作');
+                if (answer !== '中止操作') { return; }
+            }
+            this.schedulePushState();
+            if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
+            const repository = this.repositories.find(candidate => candidate.path === repositoryPath);
+            const label = repository?.label || path.basename(root.fsPath);
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: `Gitk: ${operation} ${action} (${label})`,
+                cancellable: false,
+            }, async progress => {
+                progress.report({ message: action === 'continue' ? '正在继续 Git 操作…' : '正在中止 Git 操作…' });
+                try {
+                    await runMergeOperation(root, operation, action);
+                } finally {
+                    progress.report({ message: '正在刷新仓库状态…' });
+                    await this.uncommittedFilesWatcher.refreshHeadBranch(repositoryPath);
+                    const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches().find(candidate => candidate.repoOption.path === repositoryPath);
+                    if (branch) { await this.uncommittedFilesWatcher.refreshUncommittedFilesByHeadBranch(branch); }
+                    await this.refreshMergeOperation(repositoryPath);
+                    this.schedulePushState();
+                    await this.refreshCommitPanel();
+                }
+            });
+            void vscode.window.showInformationMessage(`Gitk: ${operation} ${action} 完成 (${label})`);
+        } catch (error) {
+            void vscode.window.showErrorMessage(`Gitk ${action} 失败：${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+            this.mergeOperationBusy.delete(repositoryPath);
+            this.schedulePushState();
+            if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
+        }
     }
 
     /** 文件内容变化不改变未提交状态，仅替换当前虚拟提交中受影响路径的 Diff 负载。 */
@@ -1630,6 +1697,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (typeof input.repositoryPath !== 'string'
             || !this.repositories.some(repository => repository.path === input.repositoryPath)) { return; }
         try {
+            if (input.type === 'repositoryChangesAction' && (input.action === 'continue' || input.action === 'abort')) {
+                await this.handleMergeOperation(input.repositoryPath, input.action);
+                return;
+            }
             if (input.type === 'repositoryChangesAction' && input.action === 'terminal') {
                 const rootUri = vscode.Uri.parse(input.repositoryPath);
                 const terminalName = path.basename(rootUri.fsPath) || 'Gitk';
@@ -2052,7 +2123,18 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const isCurrentWorkingTree = this.currentHash === targetHash
                 && this.currentRepositoryPath === repositoryPath;
             if (isCurrentWorkingTree) {
-                this.selectChangedFile(revealPath);
+                // Repository Changes can publish the conflict row before the selected worktree snapshot has rebuilt MultiDiff.
+                const hasTarget = this.files.some(file => (file.diffKey || file.path) === revealPath);
+                if (!hasTarget) {
+                    const changes = await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(branch);
+                    if (abortController.signal.aborted) { return; }
+                    await this.selectWorkingTreeChanges(changes, false, false, undefined, false, undefined, revealPath);
+                    if (abortController.signal.aborted) { return; }
+                }
+                if (this.currentHash === targetHash && this.currentRepositoryPath === repositoryPath
+                    && this.files.some(file => (file.diffKey || file.path) === revealPath)) {
+                    this.selectChangedFile(revealPath);
+                }
                 return;
             }
             if (!isCurrentWorkingTree) {
@@ -2212,6 +2294,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     )?.path)
                     .filter((repositoryPath): repositoryPath is string => Boolean(repositoryPath)),
                 conflictFiles: [...conflictsByPath.values()].map(toCommitPanelFile),
+                mergeOperation: this.mergeOperations?.get(repo.repositoryPath),
+                mergeOperationBusy: this.mergeOperationBusy?.has(repo.repositoryPath) ?? false,
                 stagedFiles: repo.staged.filter(file => !file.isConflict).map(toCommitPanelFile),
                 unstagedFiles: repo.unstaged.filter(file => !file.isConflict).map(toCommitPanelFile),
                 committing: this.commitCommittingByRepo.has(repo.repositoryPath),

@@ -190,17 +190,25 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     let sections = snapshot.kind === 'commit'
       ? [{ key: 'commit', label: '提交变更 ' + snapshot.commit.hash.slice(0, 8), files: snapshot.files }]
       : repoChangesSections(displayRepository);
-    const key = JSON.stringify([filesMode, sections.map(function(section) { return [section.key, section.label, section.files]; })]);
+    const key = JSON.stringify([filesMode, repository.mergeOperation, repository.mergeOperationBusy, sections.map(function(section) { return [section.key, section.label, section.files]; })]);
     if (key === node.groupsKey) return;
     node.groupsKey = key; node.groups.replaceChildren(); node.rowsByDiffKey.clear();
     sections.forEach(function(section) {
-      if (!section.files.length) return;
+      if (!section.files.length && !(section.key === 'conflict' && repository.mergeOperation)) return;
       const group = document.createElement('div'); group.className = 'repo-group'; group.dataset.section = section.key;
       const header = document.createElement('div'); header.className = 'repo-group-header';
       const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'repo-group-toggle'; toggle.dataset.repoAction = 'group';
       toggle.innerHTML = '<span class="codicon codicon-chevron-down"></span><span>' + escapeHtml(section.label) + '</span>';
       const badge = document.createElement('span'); badge.className = 'repo-count'; badge.textContent = String(section.files.length);
       header.append(toggle, badge);
+      if (section.key === 'conflict') {
+        const actions = document.createElement('span'); actions.style.cssText = 'display:flex;margin-left:auto;gap:2px';
+        const proceed = repoChangesIcon('continue', 'check', '继续当前合并操作');
+        const abort = repoChangesIcon('abort', 'close', '中止当前合并操作');
+        proceed.disabled = !repository.mergeOperation || section.files.length > 0 || repository.mergeOperationBusy;
+        abort.disabled = !repository.mergeOperation || repository.mergeOperationBusy;
+        actions.append(proceed, abort); header.append(actions);
+      }
       if (section.key !== 'conflict' && section.key !== 'commit') header.appendChild(repoChangesIcon(section.key === 'staged' ? 'unstage' : 'stage', section.key === 'staged' ? 'remove' : 'add', section.key === 'staged' ? '取消暂存全部' : '暂存全部'));
       const rows = document.createElement('div'); rows.className = 'repo-group-files';
       const folderRows = new Map();
@@ -478,6 +486,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       return;
     }
     if (['syncRefresh', 'branch', 'terminal'].includes(action)) { vscode.postMessage({ type: 'repositoryChangesAction', action: action, repositoryPath: repositoryPath }); return; }
+    if (action === 'continue' || action === 'abort') { vscode.postMessage({ type: 'repositoryChangesAction', action: action, repositoryPath: repositoryPath }); return; }
     const group = button.closest('.repo-group'); const section = group.dataset.section;
     const fileRow = button.closest('.repo-file-row'); const filePath = fileRow && fileRow.dataset.filePath;
     if (action === 'file') {

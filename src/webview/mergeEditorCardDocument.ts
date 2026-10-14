@@ -1,48 +1,59 @@
-import { renderMergeEditorHtml } from './mergeEditorDocument';
+import { mergeEditorBrowserSource } from './mergeEditor';
 
-/** Isolated Monaco controls inside the aggregate card; the outer document owns sessions and drafts. */
-export function mergeEditorCardSource(csp: string, monaco: string, icons: string, nonce: string): string {
-    const html = renderMergeEditorHtml(csp, monaco, icons, nonce, true);
+/** Inline conflict cards deliberately share the parent Webview's Monaco runtime; nested srcdoc iframes are not reliable in VS Code. */
+export function mergeEditorCardSource(): string {
     return `
-const mergeFrameHtml=${JSON.stringify(html).replace(/</g, '\\u003c')};
+${mergeEditorBrowserSource()}
 const mergeDrafts=new Map(),mergePending=new Map();
 function mergeKey(entry){return JSON.stringify([lastIdentity,entry.path])}
-function mergeTheme(){const style=getComputedStyle(document.documentElement),theme={};for(let i=0;i<style.length;i++){const key=style[i];if(key.startsWith('--vscode-'))theme[key]=style.getPropertyValue(key)}return {theme,themeClass:document.body.className}}
 function requestMerge(entry){queueMicrotask(()=>{if(!cards.includes(entry))return;const key=mergeKey(entry);if(mergeDrafts.has(key)||mergePending.has(key))return;mergePending.set(key,true);window.gitkVscode.postMessage({type:'loadMerge',key:entry.path,identity:lastIdentity})})}
+function mergeLine(text,offset){return String(text).slice(0,offset).split('\\n').length}
+function mergeCardHeight(){return Math.round(window.innerHeight*.7)}
+function resizeMergeCards(){for(const entry of cards){if(!entry.mergeModel)continue;const height=mergeCardHeight();entry.bodyHeight=height;entry.body.style.height=height+'px'}layoutDirty=true}
 function mountMerge(entry){
- entry.staticContent=true;entry.bodyHeight=620;entry.navigationChangeCount=0;entry.body.style.height='620px';
+ const height=mergeCardHeight();entry.staticContent=true;entry.bodyHeight=height;entry.navigationChangeCount=0;entry.body.style.height=height+'px';
  const key=mergeKey(entry),data=mergeDrafts.get(key);
  if(!data){entry.body.textContent='Loading merge inputs...';requestMerge(entry);return}
- if(data.error){entry.body.textContent=data.error;const retry=document.createElement('button');retry.textContent='Reload Conflict';retry.onclick=()=>{mergeDrafts.delete(key);mountMerge(entry)};entry.body.append(retry);return}
+ if(data.error){entry.body.replaceChildren(Object.assign(document.createElement('div'),{className:'empty',textContent:data.error}));const retry=document.createElement('button');retry.textContent='Reload Conflict';retry.onclick=()=>{mergeDrafts.delete(key);mountMerge(entry)};entry.body.append(retry);return}
  if(data.complete){entry.body.textContent='Merge completed';return}
- if(entry.mergeFrame)return;
- const frame=document.createElement('iframe');frame.className='merge-editor-frame';frame.title='Merge Editor: '+entry.filePath;frame.setAttribute('sandbox','allow-scripts allow-same-origin');frame.style.cssText='border:0;width:100%;height:620px;display:block';entry.mergeFrame=frame;
- const initialize=()=>{if(entry.mergeFrame!==frame)return;const snapshot=Object.assign({},data.snapshot,mergeTheme(),{plan:data.plan||data.snapshot.plan,history:data.history,historyIndex:data.historyIndex,selected:data.selected,busy:data.busy});frame.contentWindow.postMessage(snapshot,'*')};
- entry.mergeInitialize=initialize;entry.body.replaceChildren(frame);frame.srcdoc=mergeFrameHtml;
+ if(entry.mergeModel)return;
+ let engine=new MergeEditor(data.plan||data.snapshot.plan);entry.mergeModel=engine;
+ const root=document.createElement('div');root.className='merge-card';
+ const inputs=document.createElement('div');inputs.className='merge-inputs';
+ function pane(label,value,choice){const section=document.createElement('section');section.className='merge-pane';const title=document.createElement('h3');const titleLabel=document.createElement('span');titleLabel.textContent=label;const acceptAll=document.createElement('button');acceptAll.type='button';acceptAll.className='merge-accept-all codicon codicon-check-all';acceptAll.title='Accept all '+label+' changes';acceptAll.setAttribute('aria-label','Accept all '+label+' changes');title.append(titleLabel,acceptAll);const actions=document.createElement('div');actions.className='merge-pane-actions';const accept=document.createElement('button');accept.type='button';accept.textContent='Accept '+label;const combination=document.createElement('button');combination.type='button';combination.textContent='Accept Combination';actions.append(accept,combination);const host=document.createElement('div');host.className='merge-editor-host';section.append(title,actions,host);inputs.append(section);const model=monaco.editor.createModel(value,undefined,monaco.Uri.parse('gitk-merge://'+entry.index+'/'+label));const editor=monaco.editor.create(host,{model,readOnly:true,minimap:{enabled:false},scrollBeyondLastLine:false,fontSize:12,automaticLayout:true,scrollbar:{vertical:'hidden',horizontal:'auto',handleMouseWheel:true}});return {model,editor,accept,combination,acceptAll,choice}}
+ const incoming=pane('Incoming',data.snapshot.incoming,'incoming'),current=pane('Current',data.snapshot.current,'current');
+ const resultSection=document.createElement('section');resultSection.className='merge-result';const resultTitle=document.createElement('h3');const resultLabel=document.createElement('span');resultLabel.textContent='Result';const resultActions=document.createElement('span');resultActions.className='merge-title-actions';const applyAutomatic=document.createElement('button');applyAutomatic.type='button';applyAutomatic.className='merge-title-action codicon codicon-wand';applyAutomatic.title='Apply non-conflicting changes';applyAutomatic.setAttribute('aria-label','Apply non-conflicting changes');const reset=document.createElement('button');reset.type='button';reset.className='merge-title-action codicon codicon-discard';reset.title='Reset Result';reset.setAttribute('aria-label','Reset Result');resultActions.append(applyAutomatic,reset);resultTitle.append(resultLabel,resultActions);const resultHost=document.createElement('div');resultHost.className='merge-result-host';resultSection.append(resultTitle,resultHost);
+ const resultModel=monaco.editor.createModel(engine.result,undefined,monaco.Uri.parse('gitk-merge://'+entry.index+'/result'));const resultEditor=monaco.editor.create(resultHost,{model:resultModel,readOnly:data.busy===true,minimap:{enabled:false},scrollBeyondLastLine:false,fontSize:12,automaticLayout:true,scrollbar:{vertical:'hidden',horizontal:'auto',handleMouseWheel:true}});
+ const status=document.createElement('span');status.className='merge-status';resultTitle.append(status);
+ const complete=document.createElement('button');complete.type='button';complete.className='merge-complete';complete.textContent='Complete Merge';resultSection.append(complete);root.append(inputs,resultSection);entry.body.replaceChildren(root);
+ let syncing=false,decorations=[],incomingDecorations=[],currentDecorations=[];
+ function draft(){data.plan={result:engine.result,conflicts:engine.conflicts,manualOnly:engine.manualOnly};data.dirty=engine.result!==(data.saved??data.snapshot.plan.result);window.gitkVscode.postMessage({type:'mergeDraft',sessionId:data.sessionId,content:engine.result})}
+ function inputRanges(pane){return engine.conflicts.filter(conflict=>!conflict.choice).map(conflict=>{const line=Math.max(1,Math.min(conflict[pane.choice+'Line'],pane.model.getLineCount()));const text=conflict[pane.choice]||'';const end=Math.min(pane.model.getLineCount(),line+Math.max(0,text.split('\\n').length-1));return {range:new monaco.Range(line,1,end,1),options:{isWholeLine:true,className:'merge-input-conflict'}}})}
+ function refresh(){const active=engine.conflicts.find(conflict=>!conflict.choice);status.textContent=engine.remaining?engine.remaining+' Conflict Remaining':'All Conflicts Resolved';complete.disabled=data.busy===true||engine.remaining>0;resultEditor.updateOptions({readOnly:data.busy===true});for(const pane of [incoming,current]){pane.accept.disabled=data.busy===true||!active;pane.combination.disabled=data.busy===true||!active;pane.acceptAll.disabled=data.busy===true||!active}const ranges=engine.conflicts.map(conflict=>{const start=resultModel.getPositionAt(conflict.start),end=resultModel.getPositionAt(conflict.end);return {range:new monaco.Range(start.lineNumber,start.column,end.lineNumber,end.column),options:{isWholeLine:true,className:conflict.choice?'merge-resolved':'merge-unresolved'}}});decorations=resultModel.deltaDecorations(decorations,ranges);incomingDecorations=incoming.model.deltaDecorations(incomingDecorations,inputRanges(incoming));currentDecorations=current.model.deltaDecorations(currentDecorations,inputRanges(current))}
+ let selectedConflictId=engine.conflicts.find(item=>!item.choice)?.id;
+ incoming.accept.onclick=()=>choose(engine.conflicts.find(conflict=>!conflict.choice)?.id,incoming.choice);incoming.combination.onclick=()=>choose(engine.conflicts.find(conflict=>!conflict.choice)?.id,'both');current.accept.onclick=()=>choose(engine.conflicts.find(conflict=>!conflict.choice)?.id,current.choice);current.combination.onclick=()=>choose(engine.conflicts.find(conflict=>!conflict.choice)?.id,'both');
+ function acceptAll(pane){for(const conflict of [...engine.conflicts])if(!conflict.choice)choose(conflict.id,pane.choice)}incoming.acceptAll.onclick=()=>acceptAll(incoming);current.acceptAll.onclick=()=>acceptAll(current);
+ function replacePlan(plan){if(data.busy)return;engine=new MergeEditor(plan);entry.mergeModel=engine;syncing=true;resultModel.setValue(engine.result);syncing=false;selectedConflictId=engine.conflicts.find(item=>!item.choice)?.id;draft();refresh()}
+ applyAutomatic.onclick=()=>replacePlan(data.snapshot.automaticPlan||data.snapshot.plan);reset.onclick=()=>replacePlan(data.snapshot.plan);
+ function choose(id,choice){const conflict=engine.conflicts.find(item=>item.id===id);if(!conflict||data.busy)return;const start=resultModel.getPositionAt(conflict.start),end=resultModel.getPositionAt(conflict.end),edit=engine.choose(conflict.id,choice);if(!edit)return;syncing=true;resultEditor.executeEdits('merge-choice',[{range:new monaco.Range(start.lineNumber,start.column,end.lineNumber,end.column),text:edit.text}]);syncing=false;selectedConflictId=engine.conflicts.find(item=>!item.choice)?.id;draft();refresh();resultEditor.revealLineInCenter(mergeLine(engine.result,edit.start))}
+ resultEditor.onDidChangeModelContent(event=>{if(syncing)return;event.changes.slice().sort((a,b)=>b.rangeOffset-a.rangeOffset).forEach(change=>engine.edit(change.rangeOffset,change.rangeLength,change.text));draft();refresh()});
+ complete.onclick=()=>{if(data.busy||engine.remaining)return;data.busy=true;refresh();window.gitkVscode.postMessage({type:'saveMerge',key:entry.path,sessionId:data.sessionId,content:engine.result,remaining:engine.remaining,complete:true})};
+ const editors=[current.editor,incoming.editor,resultEditor];
+ let syncingScroll=false;
+ function syncVertical(source){if(syncingScroll)return;syncingScroll=true;const sourceMax=Math.max(1,source.getScrollHeight()-source.getLayoutInfo().height),ratio=source.getScrollTop()/sourceMax;for(const editor of editors)if(editor!==source){const max=Math.max(0,editor.getScrollHeight()-editor.getLayoutInfo().height);editor.setScrollTop(ratio*max)}syncingScroll=false}
+ const scrollListeners=editors.map(editor=>editor.onDidScrollChange(event=>{if(event.scrollTopChanged)syncVertical(editor)}));
+ function consumeWheel(event){if(!event.deltaY)return;event.preventDefault();event.stopPropagation();const target=event.target instanceof Node?event.target:null;const source=editors.find(editor=>target&&editor.getDomNode()?.contains(target))||resultEditor;const max=Math.max(0,source.getScrollHeight()-source.getLayoutInfo().height);source.setScrollTop(Math.max(0,Math.min(max,source.getScrollTop()+event.deltaY)))}
+ root.addEventListener('wheel',consumeWheel,{capture:true,passive:false});
+ function syncFromPage(){if(syncingScroll)return;const rect=entry.card.getBoundingClientRect(),span=Math.max(1,rect.height-window.innerHeight),ratio=Math.max(0,Math.min(1,-rect.top/span));syncingScroll=true;for(const editor of editors){const max=Math.max(0,editor.getScrollHeight()-editor.getLayoutInfo().height);editor.setScrollTop(ratio*max)}syncingScroll=false}
+ window.addEventListener('scroll',syncFromPage,{passive:true});
+ function layout(){for(const editor of editors){const host=editor.getDomNode().parentElement;if(host&&host.clientWidth>0&&host.clientHeight>0)editor.layout({width:host.clientWidth,height:host.clientHeight})}}
+ const resizeObserver=new ResizeObserver(layout);resizeObserver.observe(root);requestAnimationFrame(()=>{layout();requestAnimationFrame(layout)});setTimeout(layout,100);
+ entry.mergeRefresh=()=>{layout();refresh()};entry.mergeDispose=()=>{resizeObserver.disconnect();window.removeEventListener('scroll',syncFromPage);root.removeEventListener('wheel',consumeWheel,true);scrollListeners.forEach(listener=>listener.dispose());current.editor.dispose();current.model.dispose();incoming.editor.dispose();incoming.model.dispose();resultEditor.dispose();resultModel.dispose()};refresh();
 }
-function disposeMerge(entry){if(entry.mergeFrame){entry.mergeFrame.remove();entry.mergeFrame=null;entry.mergeInitialize=null}}
+function disposeMerge(entry){if(entry.mergeDispose)entry.mergeDispose();entry.mergeDispose=null;entry.mergeRefresh=null;entry.mergeModel=null}
 function mergeHostMessage(message){
- if(message.type==='mergeLoaded'){
-  const key=JSON.stringify([message.identity,message.key]);mergePending.delete(key);
-  if(mergeDrafts.has(key))return;
-  mergeDrafts.set(key,message);const entry=cardByPath.get(message.key);
-  if(message.identity===lastIdentity&&entry&&entry.card){mountMerge(entry)}return;
- }
- if(message.type==='mergeSaved'){
-  for(const [key,data] of mergeDrafts){if(data.sessionId!==message.sessionId)continue;data.busy=false;if(!message.error){data.saved=data.plan&&data.plan.result;data.dirty=false;data.complete=message.complete===true}
-   const entry=cardByPath.get(message.key);if(entry&&entry.mergeFrame&&data===mergeDrafts.get(mergeKey(entry)))entry.mergeFrame.contentWindow.postMessage({type:'saved',error:message.error},'*');break;
-  }
- }
+ if(message.type==='mergeLoaded'){const key=JSON.stringify([message.identity,message.key]);mergePending.delete(key);if(mergeDrafts.has(key))return;mergeDrafts.set(key,message);const entry=cardByPath.get(message.key);if(message.identity===lastIdentity&&entry&&entry.card){mountMerge(entry)}return}
+ if(message.type==='mergeSaved'){for(const data of mergeDrafts.values())if(data.sessionId===message.sessionId){data.busy=false;if(!message.error){data.saved=data.plan&&data.plan.result;data.dirty=false;data.complete=message.complete===true}const entry=cards.find(candidate=>mergeDrafts.get(mergeKey(candidate))===data);if(entry&&entry.mergeRefresh)entry.mergeRefresh();break}}
 }
-window.addEventListener('message',event=>{
- if(event.data?.type!=='mergeFrame')return;
- const entry=cards.find(c=>c.mergeFrame&&c.mergeFrame.contentWindow===event.source);if(!entry)return;
- const data=mergeDrafts.get(mergeKey(entry)),message=event.data.message;if(!data||!message)return;
- if(message.type==='ready'){entry.mergeInitialize();return}
- if(message.type==='focus'){clickedPath=entry.path;setActive(entry.path,true);return}
- if(message.type==='draft'){data.plan=message.plan;data.history=message.history;data.historyIndex=message.historyIndex;data.selected=message.selected;data.dirty=message.content!==(data.saved??data.snapshot.plan.result);window.gitkVscode.postMessage({type:'mergeDraft',sessionId:data.sessionId,content:message.content});return}
- if(message.type==='save'&&!data.busy){data.busy=true;window.gitkVscode.postMessage({type:'saveMerge',key:entry.path,sessionId:data.sessionId,content:message.content,remaining:message.remaining,complete:message.complete})}
-});
-new MutationObserver(()=>{for(const entry of cards)if(entry.mergeFrame)entry.mergeFrame.contentWindow.postMessage(Object.assign({type:'theme'},mergeTheme()),'*')}).observe(document.body,{attributes:true,attributeFilter:['class','style']});
 `;
 }

@@ -202,6 +202,9 @@ export const COMMIT_CARD_SCRIPT = `
       if(!card)return;
       const button=event.target.closest('.icon-btn');
       if(button&&button.dataset.action){
+        if(button.dataset.action==='continue'||button.dataset.action==='abort'){
+          vscode.postMessage({type:'mergeOperation',repositoryPath:repo,action:button.dataset.action});return;
+        }
         const section=button.dataset.section;
         const filePath=button.dataset.path;
         const files=cardSectionFiles(card,section);
@@ -270,7 +273,7 @@ export const COMMIT_CARD_SCRIPT = `
     ancestry.hidden=card.repositoryAncestry.length===0;
     const refs=el._refs;
     el.classList.toggle('selected-card',el.dataset.repo===selectedRepositoryPath);
-    const isEmpty=card.conflictFiles.length===0&&card.stagedFiles.length===0&&card.unstagedFiles.length===0;
+    const isEmpty=!card.mergeOperation&&card.conflictFiles.length===0&&card.stagedFiles.length===0&&card.unstagedFiles.length===0;
     refs.amendCheckbox.checked=card.amend;
     refs.amendCheckbox.disabled=false;
     // 输入框处于焦点时不用后端快照覆盖本地输入, 否则快速在中间插入文字时会把光标重置到末尾。
@@ -333,10 +336,17 @@ export const COMMIT_CARD_SCRIPT = `
     const conflictSection=el.querySelector('.section.conflict');
     const conflictList=el.querySelector('.conflict-list');
     const conflictCountBadge=el.querySelector('.conflict-count');
-    conflictSection.hidden=card.conflictFiles.length===0;
+    conflictSection.hidden=card.conflictFiles.length===0&&!card.mergeOperation;
     conflictCountBadge.textContent=card.conflictFiles.length?String(card.conflictFiles.length):'';
     conflictCountBadge.hidden=card.conflictFiles.length===0;
     el.querySelector('.conflict-all').disabled=card.conflictFiles.length===0;
+    const conflictActions=el.querySelector('.conflict-actions');
+    if(!conflictActions.querySelector('.merge-continue')){
+      conflictActions.insertAdjacentHTML('beforeend','<button class="icon-btn merge-continue" data-action="continue" title="继续当前合并操作" aria-label="继续当前合并操作"><span class="codicon codicon-check"></span></button><button class="icon-btn merge-abort" data-action="abort" title="中止当前合并操作" aria-label="中止当前合并操作"><span class="codicon codicon-close"></span></button>');
+      conflictActions.querySelectorAll('.merge-continue,.merge-abort').forEach(function(button){button.addEventListener('click',function(event){event.stopPropagation();vscode.postMessage({type:'mergeOperation',repositoryPath:el.dataset.repo,action:button.dataset.action})})});
+    }
+    el.querySelector('.merge-continue').disabled=!card.mergeOperation||card.conflictFiles.length>0||card.mergeOperationBusy;
+    el.querySelector('.merge-abort').disabled=!card.mergeOperation||card.mergeOperationBusy;
     renderFileList(conflictList,card.conflictFiles,'conflict',el.dataset.repo,el._state.selectedWorkingTreeFiles);
     conflictList.hidden=!el._state.conflictOpen;
     refs.conflictChevron.className='codicon codicon-chevron-'+(el._state.conflictOpen?'down':'right')+' conflict-chevron';

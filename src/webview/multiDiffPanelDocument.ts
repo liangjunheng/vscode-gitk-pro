@@ -11,7 +11,7 @@ export function renderMultiDiffHtml(
     monacoUri: string,
     nonce: string,
 ): string {
-    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src 'self'; style-src ${cspSource} 'unsafe-inline'; script-src ${cspSource} 'nonce-${nonce}' 'unsafe-eval'; worker-src ${cspSource}; font-src ${cspSource};"><link rel="stylesheet" href="${codiconCssUri}"><style>
+    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src ${cspSource} 'nonce-${nonce}' 'unsafe-eval'; worker-src ${cspSource}; font-src ${cspSource};"><link rel="stylesheet" href="${codiconCssUri}"><style>
 /* 吸顶组与文件顶部高亮轮廓对齐，不额外向上偏移。
    --header-cover-bleed 控制标题栏背后不透明盖板向上及向两侧的延展。 */
 :root{color-scheme:light dark;--header-surface:var(--vscode-editorWidget-background,var(--vscode-tab-activeBackground));--card-radius:9px;--card-border:1px;--card-ring:1px;--header-gap:0px;--header-inset:0px;--header-cover-bleed:8px;--parent-navigation-height:0px}
@@ -129,6 +129,15 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .gitlink-loading{display:inline-flex;align-items:center;justify-content:center;gap:8px}
 .gitlink-loading-spinner{width:13px;height:13px;border:2px solid var(--vscode-descriptionForeground);border-top-color:var(--vscode-focusBorder);border-radius:50%;animation:gitlink-loading-spin .8s linear infinite}
 .diff-body{border-radius:0 0 calc(var(--card-radius) - var(--card-border)) calc(var(--card-radius) - var(--card-border));overflow:hidden}
+.merge-card{width:100%;min-width:0;height:680px;display:grid;grid-template-rows:auto minmax(210px,.9fr) minmax(250px,1.1fr);gap:1px;background:var(--vscode-panel-border)}.merge-toolbar{display:flex;align-items:center;gap:4px;min-height:34px;padding:4px 8px;color:var(--vscode-descriptionForeground);background:var(--vscode-editorWidget-background);font-size:12px}.merge-toolbar button{height:24px;padding:2px 7px;border:1px solid var(--vscode-editorWidget-border,var(--vscode-panel-border));border-radius:3px;color:var(--vscode-foreground);background:transparent;cursor:pointer}.merge-toolbar button.codicon{width:24px;padding:0;border-color:transparent}.merge-toolbar button:hover:not(:disabled){background:var(--vscode-list-hoverBackground)}.merge-toolbar button:disabled{opacity:.45;cursor:default}.merge-toolbar span{margin-left:6px}.merge-inputs{width:100%;min-width:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:1px;min-height:0}.merge-pane,.merge-result{width:100%;min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--vscode-editor-background)}.merge-pane h3,.merge-result h3{display:flex;align-items:center;min-height:31px;margin:0;padding:5px 9px;border-bottom:1px solid var(--vscode-panel-border);color:var(--vscode-editor-foreground);background:var(--vscode-editorWidget-background);font-size:12px;font-weight:500}.merge-result h3{justify-content:space-between}.merge-title-actions{display:inline-flex;align-items:center;gap:2px;margin-left:auto}.merge-title-action{width:22px;height:22px;padding:0;border:0;border-radius:3px;color:var(--vscode-icon-foreground,var(--vscode-foreground));background:transparent;cursor:pointer}.merge-title-action:hover{background:var(--vscode-toolbar-hoverBackground,var(--vscode-list-hoverBackground))}.merge-editor-host,.merge-result-host{width:100%;min-width:0;flex:1;min-height:0}.merge-result{position:relative}.merge-complete{position:absolute;right:10px;bottom:10px;z-index:5;padding:6px 10px;border:0;border-radius:5px;color:var(--vscode-button-foreground);background:var(--vscode-button-background);cursor:pointer}.merge-complete:hover{background:var(--vscode-button-hoverBackground)}.merge-complete:disabled{opacity:.5;cursor:default}.merge-status{margin-left:8px;color:var(--vscode-descriptionForeground);font-size:12px}.merge-unresolved,.merge-input-conflict{background:rgba(218,180,92,.20)}.merge-resolved{background:var(--vscode-diffEditor-insertedLineBackground,rgba(80,190,110,.12))}.merge-action-widget{display:flex;gap:0;background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-editorWidget-border,var(--vscode-panel-border));box-shadow:0 1px 2px rgba(0,0,0,.35)}.merge-action-widget button{padding:2px 6px;border:0;border-right:1px solid var(--vscode-editorWidget-border,var(--vscode-panel-border));color:var(--vscode-descriptionForeground);background:transparent;font:11px var(--vscode-font-family);cursor:pointer}.merge-action-widget button:last-child{border-right:0}.merge-action-widget button:hover{color:var(--vscode-foreground);background:var(--vscode-list-hoverBackground)}.merge-action-widget[hidden]{display:none}@media(max-width:720px){.merge-card{height:760px;grid-template-rows:auto minmax(260px,1fr) minmax(300px,1fr)}.merge-inputs{grid-template-columns:1fr}}
+.merge-pane-actions{display:flex;gap:0;min-height:25px;padding:3px 8px;border-bottom:1px solid var(--vscode-panel-border);background:var(--vscode-editorWidget-background)}.merge-pane-actions button{padding:2px 6px;border:0;border-right:1px solid var(--vscode-editorWidget-border,var(--vscode-panel-border));color:var(--vscode-descriptionForeground);background:transparent;font:11px var(--vscode-font-family);cursor:pointer}.merge-pane-actions button:first-child{padding-left:0}.merge-pane-actions button:hover:not(:disabled){color:var(--vscode-foreground);background:var(--vscode-list-hoverBackground)}.merge-pane-actions button:disabled{opacity:.45;cursor:default}
+.merge-pane h3{justify-content:space-between}.merge-accept-all{width:24px;height:22px;padding:0;border:0;border-radius:3px;color:var(--vscode-icon-foreground,var(--vscode-foreground));background:transparent;cursor:pointer}.merge-accept-all:hover:not(:disabled){background:var(--vscode-toolbar-hoverBackground,var(--vscode-list-hoverBackground))}.merge-accept-all:disabled{opacity:.45;cursor:default}
+.merge-card .scrollbar.vertical{display:none!important}
+.merge-card{height:100%}
+.merge-card{grid-template-rows:minmax(210px,.9fr) minmax(250px,1.1fr)}
+@media(max-width:720px){.merge-card{grid-template-rows:minmax(430px,1fr) minmax(300px,1fr)}.merge-inputs{grid-template-columns:1fr;grid-template-rows:repeat(2,minmax(0,1fr))}}
+
+@media(max-width:720px){.merge-card{grid-template-rows:minmax(430px,1fr) minmax(300px,1fr)}}
 .diff.collapsed>.diff-body{display:none}
 .editor{position:relative;width:100%;min-width:0;height:80px}
 /* 二进制文件沿用旧版 Custom Diff 的左右面板展示，而不是压缩成单行空态。 */
@@ -476,11 +485,25 @@ function workingTreeKindHtml(kind){
 }
 function gitlinkLabelHtml(){return '<span class="gitlink-label" title="Submodule repository">Repo</span>'}
 function gitlinkBodyHtml(diff){
-  if(diff.gitlinkWorktreeDirty){const count=Number.isInteger(diff.gitlinkWorktreeChangeCount)?diff.gitlinkWorktreeChangeCount:null;const message=count===null?'子模块存在未提交变更':'子模块有 '+count+' 个未提交变更文件';return '<div class="gitlink-commits"><button type="button" class="gitlink-commit gitlink-worktree" data-hash="uncommitted" title="查看子模块未提交变更"><span class="gitlink-commit-hash">Uncommitted Changes</span><span class="gitlink-commit-message">'+message+'</span></button></div>';}
-  if(diff.gitlinkScanPending)return '<div class="empty gitlink-loading"><span class="gitlink-loading-spinner" aria-hidden="true"></span><span>正在扫描子模块提交…</span></div>';
+  let worktree='';
+  if(diff.workingTreeKind&&diff.gitlinkWorktreeDirty){
+    const count=Number.isInteger(diff.gitlinkWorktreeChangeCount)?diff.gitlinkWorktreeChangeCount:null;
+    const message=count===null?'子模块存在未提交变更':'子模块有 '+count+' 个未提交变更文件';
+    worktree='<button type="button" class="gitlink-commit gitlink-worktree" data-hash="uncommitted" title="查看子模块当前工作区"><span class="gitlink-commit-hash">Uncommitted Changes</span><span class="gitlink-commit-message">'+message+'</span></button>';
+  }
+  if(diff.workingTreeKind==='conflict'){
+    const choices=[['Base',diff.gitlinkConflictBaseCommit,diff.gitlinkConflictBaseObjectId],['Current',diff.gitlinkConflictCurrentCommit,diff.gitlinkConflictCurrentObjectId],['Incoming',diff.gitlinkConflictIncomingCommit,diff.gitlinkConflictIncomingObjectId]];
+    const rows=choices.map(function(item){
+      const commit=item[1],hash=item[2];
+      if(!hash||/^0+$/.test(hash))return '<div class="meta-line">'+item[0]+': '+(hash?'Deleted':'Unavailable')+'</div>';
+      return '<button type="button" class="gitlink-commit" data-hash="'+escapeHtml(hash)+'" title="查看子模块 '+item[0]+' 提交 '+escapeHtml(hash)+'"><span class="gitlink-commit-hash">'+item[0]+' '+escapeHtml(commit?.shortHash||hash.slice(0,7))+'</span><span class="gitlink-commit-message">'+escapeHtml(commit?.message||commit?.subject||'')+'</span></button>';
+    }).join('');
+    return '<div class="gitlink-commits gitlink-conflict-commits">'+rows+worktree+'</div>';
+  }
+  if(diff.gitlinkScanPending)return (worktree?'<div class="gitlink-commits">'+worktree+'</div>':'')+'<div class="empty gitlink-loading"><span class="gitlink-loading-spinner" aria-hidden="true"></span><span>正在扫描子模块提交…</span></div>';
   const commits=diff.gitlinkRangeCommits&&diff.gitlinkRangeCommits.length?diff.gitlinkRangeCommits:[diff.status==='A'?undefined:diff.oldGitlinkCommit,diff.status==='D'?undefined:diff.newGitlinkCommit].filter(function(commit,index,values){return commit&&values.findIndex(function(item){return item&&item.hash===commit.hash})===index});
-  if(!commits.length)return '<div class="empty">没有可显示的子模块提交。</div>';
-  return '<div class="gitlink-commits">'+commits.map(function(commit){return '<button type="button" class="gitlink-commit" data-hash="'+escapeHtml(commit.hash)+'" title="查看子模块提交 '+escapeHtml(commit.hash)+'"><span class="gitlink-commit-hash">'+escapeHtml(commit.shortHash||String(commit.hash||'').slice(0,7))+'</span><span class="gitlink-commit-message">'+escapeHtml(commit.message||commit.subject||'')+'</span></button>'}).join('')+'</div>';
+  const rows=commits.map(function(commit){return '<button type="button" class="gitlink-commit" data-hash="'+escapeHtml(commit.hash)+'" title="查看子模块提交 '+escapeHtml(commit.hash)+'"><span class="gitlink-commit-hash">'+escapeHtml(commit.shortHash||String(commit.hash||'').slice(0,7))+'</span><span class="gitlink-commit-message">'+escapeHtml(commit.message||commit.subject||'')+'</span></button>'}).join('');
+  return rows||worktree?'<div class="gitlink-commits">'+rows+worktree+'</div>':'<div class="empty">没有可显示的子模块提交。</div>';
 }
 function binaryBodyHtml(diff){
   const oldLabel=diff.status==='A'?'/dev/null':(diff.oldPath||diff.path),newLabel=diff.status==='D'?'/dev/null':diff.path;
@@ -500,7 +523,7 @@ function metaHtml(diff){
   }
   const oldId=shortObjectId(diff.oldObjectId),newId=shortObjectId(diff.newObjectId);
   if(diff.isGitlink){
-    if(diff.gitlinkWorktreeDirty){const count=Number.isInteger(diff.gitlinkWorktreeChangeCount)?diff.gitlinkWorktreeChangeCount:null;return '<span class="meta-line meta-gitlink">'+(count===null?'子模块未提交变更':'子模块有 '+count+' 个未提交变更文件')+'</span>';}
+    if(diff.workingTreeKind&&diff.gitlinkWorktreeDirty){const count=Number.isInteger(diff.gitlinkWorktreeChangeCount)?diff.gitlinkWorktreeChangeCount:null;return '<span class="meta-line meta-gitlink">'+(count===null?'子模块未提交变更':'子模块有 '+count+' 个未提交变更文件')+'</span>';}
     const oldCommit=diff.oldGitlinkCommit,newCommit=diff.newGitlinkCommit;
     if(diff.status!=='A')lines.push('<span class="meta-line meta-gitlink" title="'+escapeHtml(oldCommit?.hash||diff.oldObjectId||'')+'">Submodule commit '+escapeHtml(oldCommit?.shortHash||oldId)+(oldCommit?.subject?': '+escapeHtml(oldCommit.subject):'')+'</span>');
     if(diff.status!=='D')lines.push('<span class="meta-line meta-gitlink" title="'+escapeHtml(newCommit?.hash||diff.newObjectId||'')+'">Submodule commit '+escapeHtml(newCommit?.shortHash||newId)+(newCommit?.subject?': '+escapeHtml(newCommit.subject):'')+'</span>');
@@ -1352,7 +1375,6 @@ function currentViewportOffset(){
 }
 function topVisibleCard(){
   if(!cards.length)return undefined;
-  if(layoutDirty)rebuildLayoutMetrics();
   // Mounted geometry is authoritative; estimates can lag behind asynchronous editor layout.
   const viewportTop=viewportContentTop();
   if(virtualCardsHost){
@@ -1361,6 +1383,7 @@ function topVisibleCard(){
       if(rect.bottom>viewportTop+.5&&rect.top<window.innerHeight)return cardByPath.get(card.dataset.diffKey);
     }
   }
+  if(layoutDirty)rebuildLayoutMetrics();
   return cards[lowerBoundOffset(currentViewportOffset())];
 }
 let viewportSyncTimer=0;
@@ -1552,7 +1575,7 @@ globalHScroll.addEventListener('scroll',function(){
   entry.horizontalLeft=globalHScroll.scrollLeft;
   syncingGlobalHScroll=true;entry.editor.getOriginalEditor().setScrollLeft(entry.horizontalLeft);entry.editor.getModifiedEditor().setScrollLeft(entry.horizontalLeft);syncingGlobalHScroll=false;
 },{passive:true});
-window.addEventListener('resize',function(){scheduleVirtualization();updateGlobalHScroll()});
+window.addEventListener('resize',function(){resizeMergeCards();scheduleVirtualization();updateGlobalHScroll()});
 // 同一提交刷新前记录选中卡片及其相对视口位置，key 变化时按真实文件路径映射。
 function refreshState(){
   const selected=activeEntry();
@@ -1587,7 +1610,7 @@ function updateEntryFromSnapshot(entry,diff){
     const wasLoaded=entry.diff.loaded===true,isLoaded=diff.loaded===true;
     entry.diff=diff;entry.filePath=diff.path;entry.modifiedValue=diff.modified||entry.modifiedValue;
     if(entry.card)entry.card.dataset.workingTreeKind=diff.workingTreeKind||'';
-    if(diff.workingTreeKind==='conflict'){
+    if(diff.workingTreeKind==='conflict'&&!diff.isGitlink){
       entry.staticContent=true;entry.bodyHeight=620;entry.navigationChangeCount=0;layoutDirty=true;
       if(entry.card){entry.header.innerHTML=headerHtml(diff);entry.meta.innerHTML=metaHtml(diff);mountMerge(entry)}
       return;
@@ -1767,7 +1790,7 @@ function receive(message){
   }
   if(monacoReady){const snapshot=pending;pending=undefined;render(snapshot);flushPendingDiffUpdates()}
 }
-${mergeEditorCardSource(cspSource, monacoUri, codiconCssUri, nonce)}
+${mergeEditorCardSource()}
 window.addEventListener('message',event=>receive(event.data));window.gitkQueue.forEach(receive);window.gitkQueue.push=()=>{};window.gitkVscode.postMessage({type:'ready'});
 function applyVsCodeTheme(){const css=name=>getComputedStyle(document.documentElement).getPropertyValue(name).trim(),colors={},background=css('--vscode-editor-background'),foreground=css('--vscode-editor-foreground');if(background)colors['editor.background']=background;if(foreground)colors['editor.foreground']=foreground;monaco.editor.defineTheme('gitk-vscode-surface',{base:document.body.classList.contains('vscode-light')?'vs':'vs-dark',inherit:true,rules:[],colors});monaco.editor.setTheme('gitk-vscode-surface')}
 function applyVsCodeFont(editor){const style=getComputedStyle(document.documentElement),fontFamily=style.getPropertyValue('--vscode-editor-font-family').trim(),fontSize=Number.parseFloat(style.getPropertyValue('--vscode-editor-font-size'));editor.updateOptions({fontFamily:fontFamily||undefined,fontSize:Number.isFinite(fontSize)?fontSize:undefined})}

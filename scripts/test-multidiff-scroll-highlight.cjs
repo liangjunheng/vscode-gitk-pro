@@ -45,7 +45,7 @@ async function main() {
             const identity = 'scroll-highlight-fixture';
             const publish = data => page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), data);
             await publish({ type: 'snapshot', revision: 1, identity: 'missing-path-fixture', loading: false, editable: false,
-                diffs: [{ diffKey: 'missing-path', status: 'M', loaded: true, original: 'before\\n', modified: 'after\\n' }], total: 1, completed: 1, selectionEpoch: 1, revealPath: 'missing-path' });
+                diffs: [{ diffKey: 'missing-path', status: 'M', loaded: true, original: 'before\n', modified: 'after\n' }], total: 1, completed: 1, selectionEpoch: 1, revealPath: 'missing-path' });
             await page.waitForFunction(() => window.messages.some(message => message.type === 'rendered'));
             assert.equal(await page.locator('.diff[data-diff-key="missing-path"]').count(), 1, 'missing paths fall back to plaintext without failing the whole diff');
             assert.equal(errors.length, 0);
