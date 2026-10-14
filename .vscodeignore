@@ -1,6 +1,10 @@
 .vscode/**
 .vscode-test/**
 .codebuddy/**
+.claude/**
+.gitnexus/**
+AGENTS.md
+CLAUDE.md
 .github/**
 src/**
 native/**
