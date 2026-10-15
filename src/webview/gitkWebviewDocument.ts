@@ -20,7 +20,7 @@ export function renderGitkWebviewHtml(codiconCssUri: string): string {
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; margin: 0; overflow: hidden; }
-  body { font-family: var(--vscode-editor-font-family, sans-serif); font-size: 12px; background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); display: flex; flex-direction: column; height: 100%; }
+  body { font-family: var(--vscode-font-family, var(--vscode-editor-font-family, sans-serif)); font-size: var(--vscode-font-size, var(--vscode-editor-font-size, 12px)); background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); display: flex; flex-direction: column; height: 100%; }
   #workspace { display: grid; grid-template-rows: minmax(0, 1fr) 5px minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); flex: 1; min-height: 0; width: 100%; }
   #panelResizeHandle { cursor: row-resize; background: var(--vscode-panel-border); }
   #panelResizeHandle:hover, #panelResizeHandle.resizing { background: var(--vscode-focusBorder); }
@@ -155,6 +155,9 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR
       selectedCommitHash = state.selectedCommit ? state.selectedCommit.hash : '';
       const previousFileRepositoryPath = selectedCommitRepositoryPath;
       selectedCommitRepositoryPath = state.selectedCommit ? state.selectedCommit.repositoryPath : '';
+      selectedWorkingTreeRepositoryPath = typeof state.selectedWorkingTreeRepositoryPath === 'string'
+        ? state.selectedWorkingTreeRepositoryPath
+        : (isWorkingTreeHash(selectedCommitHash) ? selectedCommitRepositoryPath : '');
       selectedRepositoryCommitDetails = state.selectedCommit || null;
       selectedRepositoryPaths = state.selectedRepositoryPaths || [];
       const repositorySelectionEcho = Boolean(pendingRepositoryFileSelection

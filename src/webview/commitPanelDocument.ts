@@ -34,7 +34,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 @keyframes loading-slide{0%{transform:translateX(-120%)}100%{transform:translateX(320%)}}
 .card{position:relative;width:100%;margin:0 0 14px;display:flex;flex-direction:column;border:var(--card-border) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:var(--card-radius);background:var(--vscode-editor-background);box-shadow:0 1px 4px rgba(0,0,0,.08);overflow:visible}
 /* 卡片标题吸顶, 与 MultiDiff 的 file-header 行为一致。 */
-.card-header{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--header-surface);font-weight:600;border-bottom:var(--card-border) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:var(--card-radius) var(--card-radius) 0 0;box-shadow:0 1px 3px rgba(0,0,0,.18)}
+.card-header{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--header-surface);font-size:calc(var(--vscode-editor-font-size) + 1px);font-weight:600;border-bottom:var(--card-border) solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:var(--card-radius) var(--card-radius) 0 0;box-shadow:0 1px 3px rgba(0,0,0,.18)}
 .repo-label{white-space:nowrap}
 .repository-ancestry{display:inline-flex;align-items:center;gap:3px;min-width:0;color:var(--vscode-descriptionForeground);font-size:inherit;font-weight:400;opacity:.65}
 .repository-ancestry[hidden]{display:none}
@@ -46,6 +46,11 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .card-header .repository-icon.codicon{display:flex;align-items:center;justify-content:center;width:16px;height:16px;font-size:16px;line-height:16px}
 .card.selected-card{border-color:var(--vscode-focusBorder);box-shadow:0 0 0 1px var(--vscode-focusBorder),0 1px 4px rgba(0,0,0,.12)}
 .card.selected-card .card-header{border-bottom-color:var(--vscode-focusBorder)}
+/* 与 MultiDiff 的工作区卡片一致：黄色只标识当前选中的未提交变更上下文。 */
+.card.working-tree-card{--card-accent:#ffea00;--card-outline:color-mix(in srgb,var(--card-accent) 30%,transparent);--header-surface:color-mix(in srgb,var(--card-accent) 16%,var(--vscode-editorWidget-background,var(--vscode-editor-background,#1e1e1e)));border-color:var(--card-outline)}
+.card.working-tree-card .card-header{border-bottom-color:var(--card-outline)}
+.card.working-tree-card.selected-card{border-color:var(--vscode-focusBorder);box-shadow:0 0 0 1px var(--vscode-focusBorder),0 1px 4px rgba(0,0,0,.12)}
+.card.working-tree-card.selected-card .card-header{border-bottom-color:var(--vscode-focusBorder)}
 .card-header .codicon:not(.repository-icon){font-size:15px;color:var(--vscode-icon-foreground)}
 .card.collapsible-card .card-header{cursor:pointer}
 /* 折叠后只剩标题栏: 去掉多余底边框, 让标题栏自身呈完整卡片外观。 */
@@ -177,12 +182,18 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
   const cardEls=new Map();
   const collapsedFolders=new Set();
   let selectedRepositoryPath='';
+  let selectedWorkingTreeRepositoryPath='';
   let displayMode='flat';
   let currentCards=[];
 
+  function updateCardSelection(card){
+    card.classList.toggle('selected-card',card.dataset.repo===selectedRepositoryPath);
+    card.classList.toggle('working-tree-card',card.dataset.repo===selectedWorkingTreeRepositoryPath);
+  }
+
   function selectCard(repositoryPath){
     selectedRepositoryPath=repositoryPath;
-    cardEls.forEach(function(card){card.classList.toggle('selected-card',card.dataset.repo===repositoryPath)});
+    cardEls.forEach(updateCardSelection);
   }
 
 ${COMMIT_FILE_LIST_SCRIPT}
@@ -240,7 +251,7 @@ ${COMMIT_CARD_SCRIPT}
   window.addEventListener('message',function(event){
     const message=event.data;
     if(!message)return;
-    if(message.type==='snapshot'){displayMode=message.displayMode;render(message.cards||[])}
+    if(message.type==='snapshot'){displayMode=message.displayMode;selectedWorkingTreeRepositoryPath=message.selectedWorkingTreeRepositoryPath||'';render(message.cards||[])}
     else if(message.type==='setMessage'){
       const el=cardEls.get(message.repositoryPath);
       if(el){el._refs.messageInput.value=message.message||'';resizeMessageInput(el._refs.messageInput);el._refs.hint.textContent='';el._refs.messageInput.focus()}
@@ -255,6 +266,7 @@ ${COMMIT_CARD_SCRIPT}
   if(initialSnapshotNode){
     const initial=JSON.parse(initialSnapshotNode.textContent);
     displayMode=initial.displayMode;
+    selectedWorkingTreeRepositoryPath=initial.selectedWorkingTreeRepositoryPath||'';
     render(initial.cards||[]);
   }
   vscode.postMessage({type:'ready'});
