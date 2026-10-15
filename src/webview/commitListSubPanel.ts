@@ -51,7 +51,7 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   .col-main-summary { grid-column: 2; grid-row: 1; display: flex; align-items: center; min-width: 0; overflow: hidden; padding: 0 calc(var(--commit-row-refs-width, 0px) + 5px) 0 0; }
   .col-main-summary .commit-message-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-foreground, inherit); }
   .commit-row.selected .commit-message-text { font-weight: 600; }
-  .commit-description { display: none; grid-column: 2; grid-row: 2; padding: 9px 10px 10px 0; color: var(--vscode-descriptionForeground); cursor: text; }
+  .commit-description { display: none; grid-column: 2; grid-row: 2; padding: 0 10px 10px 0; color: var(--vscode-descriptionForeground); cursor: text; }
   .commit-row.expanded .commit-description { display: block; }
   .commit-description:empty { display: none; }
   .commit-description-body { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vscode-editor-foreground, inherit); line-height: 19px; }
@@ -360,8 +360,6 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     var title = raw.slice(0, lineEnd);
     if (title.charCodeAt(title.length - 1) === 13) title = title.slice(0, -1);
     var body = raw.slice(lineEnd + 1);
-    if (body.charCodeAt(0) === 13) body = body.slice(1);
-    if (body.charCodeAt(0) === 10) body = body.slice(1);
     return { title: title, body: body };
   }
 
