@@ -2,7 +2,7 @@
 export const REPOSITORY_CHANGES_STYLES = `
   #filesList { display: none; }
   #repositoryChangesViewport { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; }
-  #repositoryChangesList { width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: auto; padding: 2px 2px 8px; }
+  #repositoryChangesList { width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: auto; padding: 5px 2px 8px; }
   #repositoryChangesList[hidden] { display: none; }
   .repo-changes { width: 100%; min-width: 0; margin-bottom: 12px; border: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); border-radius: 6px; background: var(--vscode-sideBar-background, var(--vscode-editor-background)); cursor: pointer; }
   .repo-changes.focused { border-color: var(--vscode-focusBorder); }
@@ -31,7 +31,8 @@ export const REPOSITORY_CHANGES_STYLES = `
   .repo-changes-header { border-radius: 5px; }
   /* 保留标题/正文层级，但用低对比细线替代主题硬边框，减弱上下区域的割裂感。 */
   .repo-changes:has(.repo-changes-body:not([hidden])) > .repo-changes-header { border-radius: 5px 5px 0 0; border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 6%, transparent); }
-  .repo-changes > .repo-changes-header.pinned { border-top-left-radius: 0; border-top-right-radius: 0; }
+  /* 列表静止时保留顶部 5px；吸顶后抵消容器 padding，恢复贴顶效果。 */
+  .repo-changes > .repo-changes-header.pinned { top: -5px; border-top-left-radius: 0; border-top-right-radius: 0; }
   .repo-changes-body { min-width: 0; padding: 6px 10px 10px; }
   .repo-message-box, .repo-file-groups, .repo-commit-actions { cursor: default; }
   .repo-commit-details { box-sizing: border-box; display: block; width: 100%; min-height: 36px; max-height: calc(7.5em + 18px); resize: none; overflow-y: auto; overflow-x: hidden; margin-bottom: 4px; padding: 8px 9px; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); border-radius: 5px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); font: inherit; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; }

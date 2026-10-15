@@ -130,7 +130,7 @@ async function main() {
       };
     });
     const expandedLayout = await gutterLayout();
-    assert.equal(await page.locator('#repositoryChangesList').evaluate(node => getComputedStyle(node).paddingTop), '2px', 'first repository card keeps 2px spacing below the panel header');
+    assert.equal(await page.locator('#repositoryChangesList').evaluate(node => getComputedStyle(node).paddingTop), '5px', 'first repository card keeps 5px spacing below the panel header');
     await page.locator('.repo-changes-label').first().click();
     await assertCount(page.locator('.repo-changes.focused'), 1);
     assert.equal(expandedLayout.gutter, 'auto', 'overlay scrollbar does not reserve a gutter');
