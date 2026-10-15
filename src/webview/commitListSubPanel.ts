@@ -78,11 +78,11 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   .graph-svg { flex: 0 0 auto; }
   /* 各分组独立成圆形图标位，并与描述共用第 1 行；横向 sticky 固定在可视区右缘。 */
   .commit-row-refs { position: sticky; z-index: 1; right: 0; grid-row: 1; grid-column: 1 / -1; align-self: start; justify-self: end; display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-end; gap: 2px; height: 20px; margin-top: 3px; pointer-events: auto; }
-  .commit-row-ref { display: inline-flex; align-items: center; justify-content: center; gap: 0; min-width: 20px; height: 20px; padding: 0 4px; border-radius: 999px; box-sizing: border-box; color: var(--vscode-editor-background); font-size: 11px; line-height: 20px; white-space: nowrap; transition: gap 80ms ease-out; }
-  .commit-row-ref--current { gap: 3px; background: var(--vscode-charts-blue, #4daafc); }
-  .commit-row-ref--tag { background: var(--vscode-charts-yellow, #cca700); }
-  .commit-row-ref--local { background: var(--vscode-charts-green, #89d185); }
-  .commit-row-ref--remote { background: var(--vscode-charts-orange, #d18616); }
+  .commit-row-ref { display: inline-flex; align-items: center; justify-content: center; gap: 0; min-width: 20px; height: 20px; padding: 0 4px; border-radius: 999px; box-sizing: border-box; color: #17212b; font-size: 11px; line-height: 20px; white-space: nowrap; transition: gap 80ms ease-out; }
+  .commit-row-ref--current { gap: 3px; background: #5aa7e8; }
+  .commit-row-ref--tag { background: #f3d77b; }
+  .commit-row-ref--local { background: #69c58f; }
+  .commit-row-ref--remote { background: #c9a227; }
   .commit-row-refs:has(.commit-row-ref:hover) .commit-row-ref { gap: 3px; }
   .commit-row-ref-label { display: inline-block; max-width: 0; overflow: hidden; opacity: 0; line-height: 16px; transition: max-width 120ms ease-out, opacity 80ms ease-out; }
   .commit-row-ref--current .commit-row-ref-label { max-width: 100vw; opacity: 1; }
