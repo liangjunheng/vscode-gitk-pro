@@ -60,13 +60,20 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   #graph.without-lanes .col-main { grid-template-columns: minmax(0, 1fr); }
   #graph.without-lanes .col-main-summary, #graph.without-lanes .commit-description { grid-column: 1; }
   #graph.without-lanes { --main-width: 60ch; }
-  .col-main-summary { grid-column: 2; grid-row: 1; display: flex; align-items: center; min-width: 0; overflow: hidden; padding: 0 5px 0 2px; }
+  .col-main-summary { grid-column: 2; grid-row: 1; display: flex; align-items: center; min-width: 0; overflow: hidden; padding: 0 5px 0 0; }
   .col-main-summary .commit-message-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-foreground, inherit); }
-  .commit-description { display: none; grid-column: 2; grid-row: 2; padding: 7px 5px; border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 12%, transparent); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vscode-descriptionForeground); line-height: 17px; cursor: text; }
+  .commit-row.selected .commit-message-text { font-weight: 600; }
+  .commit-description { display: none; grid-column: 2; grid-row: 2; padding: 9px 10px 10px 6px; border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 12%, transparent); color: var(--vscode-descriptionForeground); cursor: text; }
   .commit-row.expanded .commit-description { display: block; }
   .commit-description:empty { display: none; }
-  .commit-description-refs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; white-space: normal; }
-  .commit-description-ref { display: inline-flex; align-items: center; min-height: 18px; padding: 0 6px; border-radius: 5px; color: var(--vscode-editor-background); font-size: inherit; line-height: 18px; }
+  .commit-description-body { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vscode-editor-foreground, inherit); line-height: 19px; }
+  .commit-description-meta { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; }
+  .commit-description.has-body .commit-description-meta { margin-top: 10px; padding-top: 8px; border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 8%, transparent); }
+  .commit-detail-item { display: grid; grid-template-columns: 14px 58px minmax(0, 1fr); column-gap: 6px; align-items: start; min-width: 0; }
+  .commit-detail-item .codicon { grid-column: 1; grid-row: 1; padding-top: 2px; color: var(--vscode-descriptionForeground); font-size: 13px; line-height: 1; }
+  .commit-detail-label { grid-column: 2; grid-row: 1; color: var(--vscode-descriptionForeground); font-size: calc(var(--vscode-font-size, 13px) - 1px); line-height: 17px; }
+  .commit-detail-value { grid-column: 3; grid-row: 1; min-width: 0; overflow-wrap: anywhere; color: var(--vscode-editor-foreground, inherit); line-height: 17px; }
+  .commit-detail-value--hash, .commit-detail-value--parents { font-family: var(--vscode-editor-font-family, monospace); font-size: calc(var(--vscode-font-size, 13px) - 1px); }
   .commit-row.selected { background: var(--vscode-list-activeSelectionBackground, #094771); outline: 1px solid var(--vscode-focusBorder, #007acc); outline-offset: -1px; }
   .commit-row.working-tree:hover { background: var(--vscode-list-hoverBackground); }
   /* 空分组虚拟行置灰: 降透明度 + 默认光标; 不用 pointer-events:none(曾导致点击完全不触发无法排查), 点击拦截由 JS 的 classList.contains('disabled') 负责。 */
@@ -87,7 +94,7 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   .commit-header .resize-handle:hover { background: var(--vscode-focusBorder); }
   .col-main { min-width: 0; overflow: hidden; white-space: nowrap; text-align: left; }
   .graph-svg { flex: 0 0 auto; }
-  /* 各分组独立成圆形图标位，并与描述共用第 1 行；横向 sticky 固定在可视区右缘。 */
+  /* 各分组独立成圆形图标位，并与描述共用第 1 行；悬浮列固定在可视区右缘，展开时向左覆盖提交标题。 */
   .commit-row-refs { position: sticky; z-index: 1; right: 0; grid-row: 1; grid-column: 1 / -1; align-self: start; justify-self: end; display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-end; gap: 2px; height: 20px; margin-top: 3px; pointer-events: auto; }
   .commit-row-ref { display: inline-flex; align-items: center; justify-content: center; gap: 0; min-width: 20px; height: 20px; padding: 0 4px; border-radius: 999px; box-sizing: border-box; color: #17212b; font-size: calc(var(--vscode-font-size, 13px) - 1px); line-height: 20px; white-space: nowrap; cursor: pointer; user-select: none; transition: gap 80ms ease-out; }
   .commit-row-ref--current { background: #5aa7e8; }
@@ -99,6 +106,9 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   #graph.commit-floating-local-expanded .commit-row-ref--local,
   #graph.commit-floating-remote-expanded .commit-row-ref--remote { gap: 3px; }
   .commit-row-ref-label { display: inline-block; max-width: 0; overflow: hidden; opacity: 0; line-height: 16px; transition: max-width 120ms ease-out, opacity 80ms ease-out; }
+  /* 鼠标进入右侧悬浮列时四类分支标签一起展开，宽度从右向左增长。 */
+  .commit-row-refs:hover .commit-row-ref { gap: 3px; }
+  .commit-row-refs:hover .commit-row-ref-label { max-width: min(32ch, 40vw); opacity: 1; }
   #graph.commit-floating-current-expanded .commit-row-ref--current .commit-row-ref-label,
   #graph.commit-floating-tag-expanded .commit-row-ref--tag .commit-row-ref-label,
   #graph.commit-floating-local-expanded .commit-row-ref--local .commit-row-ref-label,
@@ -379,7 +389,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     commitHoverTimer = setTimeout(function() {
       commitHoverTimer = 0;
       if (row.matches(':hover')) showCommitHoverCard(row);
-    }, 350);
+    }, 1000);
   }
 
   document.getElementById('commitList').addEventListener('contextmenu', function(event) {
@@ -474,9 +484,9 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
   }
 
   // 单行 SVG 宽度 = 该行实际泳道所需宽度; 描述随每行泳道紧贴, 泳道少的行不再留全表最大空白。
-  // 坐标系与 width 同值保证 1:1 不缩放; (max+1)*LANE_W + 10 含节点半径余量。
+  // 坐标系与 width 同值保证 1:1 不缩放; (max+1)*LANE_W + 6 含节点半径余量。
   function rowGraphW(c) {
-    return (rowMaxSwimlane(c) + 1) * LANE_W + 10;
+    return (rowMaxSwimlane(c) + 1) * LANE_W + 6;
   }
 
   // 每类 ref 最多渲染一个图标位：当前分支、Tag、本地分支、远程分支。
@@ -563,10 +573,11 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     var html = '<div class="commit-row' + (expanded ? ' expanded' : '') + (selected ? ' selected' : '') + '" data-hash="' + escapeAttr(c.hash) + '" data-repository-path="' + escapeAttr(c.gitBranchOption.repoOption.path) + '" data-row="' + i + '" data-has-description="true">';
     var repositoryPath = c.gitBranchOption.repoOption.path;
     var branchList = (c.refs || []).join(', ');
-    var authorPreview = c.authorEmail ? c.author + ' <' + c.authorEmail + '>' : c.author;
-    var commitDate = c.authorDate ? new Date(c.authorDate).toString() : c.authorDateLabel;
-    var descriptionText = [c.message, c.body || ''].filter(Boolean).join('\\n')
-      .trim().replace(/\\n[ \\t]*\\n(?:[ \\t]*\\n)+/g, '\\n\\n');
+    var commitTitle = String(c.message || '');
+    var firstLineEnd = commitTitle.indexOf(String.fromCharCode(10));
+    if (firstLineEnd >= 0) commitTitle = commitTitle.slice(0, firstLineEnd);
+    if (commitTitle.charCodeAt(commitTitle.length - 1) === 13) commitTitle = commitTitle.slice(0, -1);
+    var commitBody = c.body || '';
     // 每个分支类别独立展开；Commit、作者、时间也是独立的全局显示按钮。
     var refChipsHtml = categorizedRefs(c.refs || [], repositoryPath).map(function(category) {
       var label = category.labels.join(', ');
@@ -587,19 +598,19 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     var rowW = rowGraphW(c);
     html += '<div class="col-main">';
     html += '<svg class="graph-svg" width="' + rowW + '" height="' + ROW_H + '" viewBox="0 0 ' + rowW + ' ' + ROW_H + '"></svg>';
-    html += '<div class="col-main-summary"><span class="commit-message-text">' + escapeHtml(c.message) + '</span></div>';
-    var committerPreview = c.committerEmail ? c.committer + ' <' + c.committerEmail + '>' : c.committer;
-    var parentList = (c.parents || []).join(' ');
-    var description = [
-      descriptionText,
-      '────────────────',
-      'Author: ' + authorPreview,
-      'Date: ' + commitDate,
-      'Commit: ' + c.hash,
-      'Parents: ' + parentList,
-      'Committer: ' + committerPreview,
-    ].filter(Boolean).join('\\n');
-    html += '<div class="commit-description">' + escapeHtml(description) + '</div>';
+    html += '<div class="col-main-summary"><span class="commit-message-text">' + escapeHtml(commitTitle) + '</span></div>';
+    var parentList = (c.parents || []).map(function(parent) { return parent.slice(0, 12); }).join(' ');
+    var detailItem = function(icon, label, value, valueClass) {
+      if (!value) return '';
+      return '<div class="commit-detail-item"><span class="codicon codicon-' + icon + '" aria-hidden="true"></span><span class="commit-detail-label">' + escapeHtml(label) + '</span><span class="commit-detail-value' + (valueClass ? ' ' + valueClass : '') + '">' + escapeHtml(value) + '</span></div>';
+    };
+    var detailMeta = detailItem('account', '作者', c.authorEmail ? c.author + ' <' + c.authorEmail + '>' : c.author)
+      + detailItem('calendar', '时间', c.authorDate ? new Date(c.authorDate).toString() : c.authorDateLabel)
+      + detailItem('git-commit', 'Commit', c.shortHash || c.hash, 'commit-detail-value--hash')
+      + detailItem('git-merge', '父提交', parentList, 'commit-detail-value--parents');
+    var bodyHtml = commitBody ? '<div class="commit-description-body">' + escapeHtml(commitBody) + '</div>' : '';
+    html += '<div class="commit-description' + (bodyHtml ? ' has-body' : '') + '">' + bodyHtml
+      + '<div class="commit-description-meta">' + detailMeta + '</div></div>';
     html += '</div>';
     if (refChipsHtml || floatingInfoHtml) html += '<span class="commit-row-refs">' + refChipsHtml + floatingInfoHtml + '</span>';
     html += '</div>';
