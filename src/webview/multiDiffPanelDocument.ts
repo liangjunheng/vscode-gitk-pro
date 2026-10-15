@@ -14,23 +14,23 @@ export function renderMultiDiffHtml(
     return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src ${cspSource} 'nonce-${nonce}' 'unsafe-eval'; worker-src ${cspSource}; font-src ${cspSource};"><link rel="stylesheet" href="${codiconCssUri}"><style>
 /* 吸顶组与文件顶部高亮轮廓对齐，不额外向上偏移。
    --header-cover-bleed 控制标题栏背后不透明盖板向上及向两侧的延展。 */
-:root{color-scheme:light dark;--header-surface:var(--vscode-editorWidget-background,var(--vscode-tab-activeBackground));--card-radius:9px;--card-border:1px;--card-ring:1px;--header-gap:0px;--header-inset:0px;--header-cover-bleed:8px;--parent-navigation-height:0px}
+:root{color-scheme:light dark;--header-surface:var(--vscode-editorWidget-background,var(--vscode-tab-activeBackground));--card-radius:9px;--card-border:1px;--card-ring:1px;--header-gap:0px;--header-inset:0px;--header-cover-bleed:8px;--parent-navigation-height:0px;--gitk-ui-font-family:var(--vscode-font-family,var(--vscode-editor-font-family,sans-serif));--gitk-ui-font-size:var(--vscode-font-size,13px)}
 body.has-parent-navigation{--parent-navigation-height:40px}
 *{box-sizing:border-box}
 /* 不要给 html/body 设 overflow 或 min-height: 那会改变滚动容器归属, 使 window.scrollY /
    window 的 scroll 事件失效, 并让 sticky 的参照系偏移导致标题栏无法吸顶。保持文档视口滚动。 */
 html.programmatic-reveal,html.programmatic-reveal body,html.settled-reveal-anchor,html.settled-reveal-anchor body{overflow-anchor:none}
-body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-editor-background) 50%, #000);color:var(--vscode-editor-foreground);font-family:var(--vscode-editor-font-family);font-size:var(--vscode-editor-font-size)}
+body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-editor-background) 50%, #000);color:var(--vscode-editor-foreground);font-family:var(--gitk-ui-font-family);font-size:var(--gitk-ui-font-size)}
 #parent-commit-navigation{position:sticky;z-index:30;top:0;isolation:isolate;display:flex;width:100%;min-width:100%;height:40px;align-items:center;gap:10px;padding:0 10px;background:transparent}
 #parent-commit-navigation::before{content:"";position:absolute;z-index:-1;top:0;bottom:0;left:calc(50% - 50vw);right:calc(50% - 50vw);pointer-events:none;border-bottom:1px solid color-mix(in srgb,var(--vscode-focusBorder) 36%,var(--vscode-editorGroup-border));background:var(--vscode-editorGroupHeader-tabsBackground,var(--vscode-editorWidget-background,var(--vscode-editor-background)));box-shadow:0 2px 7px rgba(0,0,0,.2)}
 #parent-commit-navigation[hidden]{display:none}
-#back-to-parent-commit{display:inline-flex;flex:0 0 auto;height:26px;align-items:center;justify-content:center;padding:0 10px;border:1px solid color-mix(in srgb,var(--vscode-focusBorder) 48%,transparent);border-radius:5px;color:var(--vscode-button-foreground,var(--vscode-foreground));background:color-mix(in srgb,var(--vscode-button-background) 72%,transparent);font:inherit;font-size:calc(var(--vscode-editor-font-size,13px) - 2px);font-weight:600;cursor:pointer}
+#back-to-parent-commit{display:inline-flex;flex:0 0 auto;height:26px;align-items:center;justify-content:center;padding:0 10px;border:1px solid color-mix(in srgb,var(--vscode-focusBorder) 48%,transparent);border-radius:5px;color:var(--vscode-button-foreground,var(--vscode-foreground));background:color-mix(in srgb,var(--vscode-button-background) 72%,transparent);font:inherit;font-weight:600;cursor:pointer}
 #back-to-parent-commit:hover{background:var(--vscode-button-hoverBackground,var(--vscode-list-hoverBackground));border-color:var(--vscode-focusBorder)}
 #back-to-parent-commit:active{transform:translateY(1px)}
 #back-to-parent-commit:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:2px}
 #parent-commit-info{display:flex;min-width:0;height:22px;flex:1 1 auto;align-items:center;gap:8px;padding-left:10px;border-left:1px solid color-mix(in srgb,var(--vscode-foreground) 18%,transparent)}
-#parent-commit-title{min-width:0;overflow:hidden;color:var(--vscode-foreground);font-size:12px;font-weight:500;text-overflow:ellipsis;white-space:nowrap}
-#parent-commit-hash{flex:0 0 auto;padding:2px 6px;border:1px solid color-mix(in srgb,var(--vscode-badge-background) 64%,var(--vscode-widget-border));border-radius:10px;color:var(--vscode-badge-foreground,var(--vscode-foreground));background:color-mix(in srgb,var(--vscode-badge-background) 78%,transparent);font-family:var(--vscode-editor-font-family,monospace);font-size:10px;line-height:14px;white-space:nowrap}
+#parent-commit-title{min-width:0;overflow:hidden;color:var(--vscode-foreground);font-weight:500;text-overflow:ellipsis;white-space:nowrap}
+#parent-commit-hash{flex:0 0 auto;padding:2px 6px;border:1px solid color-mix(in srgb,var(--vscode-badge-background) 64%,var(--vscode-widget-border));border-radius:10px;color:var(--vscode-badge-foreground,var(--vscode-foreground));background:color-mix(in srgb,var(--vscode-badge-background) 78%,transparent);font-family:var(--vscode-editor-font-family,monospace);font-size:calc(var(--gitk-ui-font-size) * .85);line-height:1.2;white-space:nowrap}
 #loading{min-height:calc(100vh - var(--parent-navigation-height) - 14px);display:grid;place-items:center;color:var(--vscode-descriptionForeground)}
 #loading[hidden]{display:none}
 #list{width:100%;padding:8px}.multi-virtual-root{width:100%;min-width:0}.multi-virtual-spacer{width:1px;pointer-events:none}.multi-virtual-cards{display:flow-root;width:100%;min-width:0}
@@ -46,7 +46,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .diff:last-child{margin-bottom:0}
 .diff.selected{border-color:var(--vscode-focusBorder);box-shadow:0 0 0 var(--card-ring) var(--vscode-focusBorder),0 1px 4px rgba(0,0,0,.08)}
 /* 标题栏贴合卡片顶部与两侧内沿并沿用圆角，但不覆盖卡片边框本身。 */
-.file-header{display:grid;grid-template-columns:minmax(0,1fr);width:100%;margin:0;padding:4px 8px;border:0;color:var(--vscode-tab-activeForeground);background:var(--header-surface);font:inherit;font-size:calc(var(--vscode-editor-font-size) * .95);text-align:left;cursor:pointer}
+.file-header{display:grid;grid-template-columns:minmax(0,1fr);width:100%;margin:0;padding:4px 8px;border:0;color:var(--vscode-tab-activeForeground);background:var(--header-surface);font:inherit;text-align:left;cursor:pointer}
 .file-header.rename-header{grid-template-columns:calc((100% + 26px)/2) minmax(0,1fr);padding-right:0;padding-left:0}
 .file-header.rename-header .title-side-left{padding-left:8px}
 .file-header:hover,.file-header:active{background:var(--header-surface)}
@@ -69,13 +69,13 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .status-D{color:var(--vscode-gitDecoration-deletedResourceForeground)}
 .status-U{color:var(--vscode-gitDecoration-conflictingResourceForeground,#e51400)}
 .status-R,.status-C{color:var(--vscode-gitDecoration-renamedResourceForeground)}
-.line-stats{flex:0 0 auto;display:none;gap:6px;font-size:calc(var(--vscode-editor-font-size) * .85);font-variant-numeric:tabular-nums}
+.line-stats{flex:0 0 auto;display:none;gap:6px;font-size:.85em;font-variant-numeric:tabular-nums}
 .line-stats.ready{display:inline-flex}
 .line-stat-added{color:var(--vscode-gitDecoration-addedResourceForeground)}
 .line-stat-removed{color:var(--vscode-gitDecoration-deletedResourceForeground)}
 .file-location{display:flex;align-items:center;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .file-location.is-deleted{text-decoration-line:line-through;text-decoration-thickness:1px}
-.file-name{flex:0 0 auto;font-size:calc(var(--vscode-editor-font-size) + 2px);line-height:1.2}
+.file-name{flex:0 0 auto;line-height:1.2}
 .file-path-gap{flex:0 0 auto;white-space:pre}
 .file-folder{min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--vscode-descriptionForeground);opacity:.72;line-height:1.2}
 /* 标题栏和 index 栏在卡片内容边界内吸顶，不覆盖卡片自身边框或外环。 */
@@ -165,7 +165,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 #global-hscroll{position:fixed;z-index:20;right:0;bottom:0;left:0;height:14px;overflow-x:auto;overflow-y:hidden;background:var(--vscode-scrollbar-shadow,rgba(0,0,0,.18));scrollbar-color:var(--vscode-scrollbarSlider-background) transparent;scrollbar-width:auto}
 #global-hscroll[hidden]{display:none}
 #global-hscroll-content{height:1px;pointer-events:none}
-#multi-diff-search{position:fixed;z-index:40;top:calc(var(--parent-navigation-height) + 8px);right:12px;display:flex;align-items:center;gap:4px;max-width:min(560px,calc(100vw - 24px));height:32px;padding:3px 5px;border:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:6px;background:var(--vscode-editorWidget-background,var(--vscode-editor-background));box-shadow:0 3px 10px rgba(0,0,0,.28);font-family:var(--vscode-font-family);font-size:12px}
+#multi-diff-search{position:fixed;z-index:40;top:calc(var(--parent-navigation-height) + 8px);right:12px;display:flex;align-items:center;gap:4px;max-width:min(560px,calc(100vw - 24px));height:32px;padding:3px 5px;border:1px solid var(--vscode-widget-border,var(--vscode-editorGroup-border));border-radius:6px;background:var(--vscode-editorWidget-background,var(--vscode-editor-background));box-shadow:0 3px 10px rgba(0,0,0,.28);font:inherit}
 #multi-diff-search[hidden]{display:none}
 #multi-diff-search-input{width:220px;min-width:80px;height:24px;padding:2px 7px;border:1px solid var(--vscode-input-border,transparent);border-radius:3px;color:var(--vscode-input-foreground);background:var(--vscode-input-background);font:inherit;outline:none}
 #multi-diff-search-input:focus{border-color:var(--vscode-focusBorder)}
