@@ -415,8 +415,8 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       if (document.activeElement !== node.input) node.input.value = repositoryDrafts.get(repository.repositoryPath);
       const displayRepository = snapshot.kind === 'worktree' ? { ...repository, staged: snapshot.staged || [], unstaged: snapshot.unstaged || [] } : repository;
       const conflicts = repoChangesSections(displayRepository)[0].files.length > 0;
-      const displayHasChanges = (displayRepository.staged || []).length > 0 || (displayRepository.unstaged || []).length > 0;
-      const disabled = historical || conflicts || repository.committing || !node.input.value.trim() || !displayHasChanges;
+      const displayHasStagedChanges = (displayRepository.staged || []).length > 0;
+      const disabled = historical || conflicts || repository.committing || !node.input.value.trim() || !displayHasStagedChanges;
       node.card.querySelectorAll('.repo-commit-main, .repo-commit-menu button').forEach(function(button) { button.disabled = Boolean(disabled); });
       const commitButton = node.card.querySelector('.repo-commit-main');
       commitButton.title = conflicts ? '请先解决合并冲突' : 'Commit (Ctrl / ⌘ + Enter)';

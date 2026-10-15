@@ -47,6 +47,9 @@ async function main() {
     const publish = async () => page.evaluate(state => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state } })), state);
     await publish();
     await assertCount(page.locator('.repo-changes'), 6);
+    repositories[1].message = 'unstaged-only draft'; await publish();
+    assert.equal(await page.locator('.repo-changes').nth(1).locator('.repo-commit-main').isDisabled(), true, 'a repository with only unstaged changes cannot be committed');
+    repositories[1].message = ''; await publish();
     await page.evaluate(() => document.fonts.ready);
     assert.equal(await page.evaluate(() => document.fonts.check('18px seti')), true, 'Seti file icon font must load');
     const originalChildUnstaged = repositories[1].unstaged;

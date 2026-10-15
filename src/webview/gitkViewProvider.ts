@@ -2635,6 +2635,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         message: string,
         amend: boolean,
         focusCommitPanel = true,
+        selectLatestCommit = false,
     ): Promise<boolean> {
         const rootAncestry = new Set([repositoryPath, ...this.repoSubmoduleWatcher.getRepositorySubtree(repositoryPath).map(repository => repository.path)]);
         const orderedRepositoryPaths = [...new Set(repositoryPaths)]
@@ -2663,6 +2664,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             return false;
         }
         orderedRepositoryPaths.forEach(path => this.commitCommittingByRepo.add(path));
+        this.schedulePushState();
         await this.refreshCommitPanel();
         const committedRepositoryPaths: string[] = [];
         let committed = false;
@@ -2673,7 +2675,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 const changes = currentBranch
                     ? await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(currentBranch)
                     : undefined;
-                if (!changes || (changes.staged.length === 0 && changes.changes.length === 0)) { continue; }
+                if (!changes || changes.staged.length === 0) { continue; }
                 const rootUri = this.getRepoRootUri(currentPath);
                 if (!rootUri) { continue; }
                 await commitWithMessage(rootUri, message, currentPath === repositoryPath ? amend : false);
@@ -2690,17 +2692,21 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     }
                 }
             }
-            if (!committed) { void vscode.window.showInformationMessage('变更文件为空，无需提交'); }
+            if (!committed) { void vscode.window.showInformationMessage('没有已暂存的变更，无需提交'); }
             this.commitAmendByRepo.delete(repositoryPath);
             // commit 不改写 .git/HEAD, HEAD 文件监听器不会触发; 必须显式重读并等待新 HEAD 的
             // 工作区状态就绪, 再刷新提交列表, 保证遮罩结束时 staged/unstaged 与新 commit 同步。
             await Promise.all(committedRepositoryPaths
                 .map(committedPath => this.uncommittedFilesWatcher.refreshHeadBranch(committedPath)));
             await this.commitController.forceRefreshCurrentSelection();
+            if (committed && selectLatestCommit) {
+                this.selectLatestCommitForRepository(repositoryPath);
+            }
         } catch (error) {
             void vscode.window.showErrorMessage(`Git Commit 失败：${error instanceof Error ? error.message : String(error)}`);
         } finally {
             orderedRepositoryPaths.forEach(path => this.commitCommittingByRepo.delete(path));
+            this.schedulePushState();
             await this.refreshCommitPanel();
             // 操作由 Commit 面板触发, 显示权归触发者: 结束后把面板带回编辑器区前台。
             if (focusCommitPanel) {
@@ -2728,15 +2734,29 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             message,
             normalizedAction === 'amend',
             false,
+            true,
         );
-        if (!committed || (normalizedAction !== 'push' && normalizedAction !== 'sync')) {
+        if (!committed) {
             return;
         }
-        await this.runCommitPanelPush(
-            [repositoryPath],
-            normalizedAction === 'sync',
-            false,
+        if (normalizedAction === 'push' || normalizedAction === 'sync') {
+            await this.runCommitPanelPush(
+                [repositoryPath],
+                normalizedAction === 'sync',
+                false,
+            );
+        }
+    }
+
+    private selectLatestCommitForRepository(repositoryPath: string): void {
+        const latest = this.commitController.totalCommitList.find(commit =>
+            commit.gitBranchOption?.repoOption.path === repositoryPath,
+        ) ?? this.commitController.searchedCommitList.find(commit =>
+            commit.gitBranchOption?.repoOption.path === repositoryPath,
         );
+        if (latest) {
+            this.commitController.selectCommit(latest);
+        }
     }
 
     private updateWorkingTreeCommitMessage(repositoryPath: string, message: string): void {
