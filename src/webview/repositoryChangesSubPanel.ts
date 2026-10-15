@@ -71,6 +71,8 @@ export const REPOSITORY_CHANGES_STYLES = `
   .repo-folder-files .repo-file-folder { display: none; }
   .repo-file-row { display: flex; align-items: center; height: 25px; min-width: 0; }
   .repo-file { display: flex; flex: 1; align-items: center; height: 25px; gap: 6px; min-width: 0; padding: 0 5px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+  .repo-file-icon { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 16px; width: 16px; height: 16px; line-height: 16px; }
+  .repo-file-seti-icon { font-family: 'seti'; font-size: 18px; font-style: normal; font-weight: normal; -webkit-font-smoothing: antialiased; }
   .repo-file-name { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .repo-file-folder { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); font-size: 11px; }
   .repo-file-status { flex: 0 0 13px; text-align: center; margin-left: auto; }
@@ -133,6 +135,56 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     button.title = title; button.setAttribute('aria-label', title);
     button.innerHTML = '<span class="codicon codicon-' + icon + '" aria-hidden="true"></span>';
     return button;
+  }
+  const repositoryFallbackSetiIconDefinitions = {
+    default: ['E023', '#d4d7d6'], c: ['E00C', '#519aba'], cHeader: ['E00C', '#a074c4'], cpp: ['E01A', '#519aba'], cppHeader: ['E01A', '#a074c4'],
+    objectiveC: ['E00C', '#cbcb41'], objectiveCpp: ['E01A', '#cbcb41'], csharp: ['E00B', '#519aba'], fsharp: ['E02E', '#519aba'],
+    kotlin: ['E058', '#e37933'], java: ['E050', '#cc3e44'], groovy: ['E03D', '#8dc149'], gradle: ['E03C', '#519aba'], rust: ['E082', '#6d8086'],
+    typescript: ['E099', '#519aba'], react: ['E07D', '#519aba'], javascript: ['E051', '#cbcb41'], python: ['E07B', '#519aba'], go: ['E03A', '#519aba'],
+    html: ['E048', '#e37933'], css: ['E01D', '#519aba'], sass: ['E084', '#f55385'], less: ['E059', '#519aba'], vue: ['E09D', '#8dc149'], svelte: ['E090', '#cc3e44'],
+    json: ['E055', '#cbcb41'], markdown: ['E060', '#519aba'], image: ['E04C', '#a074c4'], svg: ['E091', '#a074c4'], audio: ['E005', '#a074c4'], video: ['E09B', '#f55385'],
+    pdf: ['E06D', '#cc3e44'], zip: ['E0A9', '#6d8086'], archive: ['E0A9', '#cc3e44'], database: ['E022', '#f55385'], shell: ['E089', '#8dc149'],
+    powershell: ['E074', '#519aba'], windows: ['E0A2', '#519aba'], hex: ['E047', '#cc3e44'], config: ['E019', '#6d8086'], xml: ['E0A5', '#e37933'], yaml: ['E0A7', '#a074c4'], csv: ['E01E', '#8dc149'],
+    docker: ['E025', '#519aba'], makefile: ['E05F', '#e37933'], jenkins: ['E052', '#cc3e44'], info: ['E04D', '#519aba'], license: ['E05A', '#cbcb41'],
+    npm: ['E067', '#41535b'], yarn: ['E0A6', '#519aba'], tsconfig: ['E097', '#519aba'], git: ['E034', '#41535b'], dart: ['E021', '#519aba'], php: ['E070', '#a074c4'], ruby: ['E081', '#cc3e44'], swift: ['E092', '#e37933'], lua: ['E05E', '#519aba'],
+  };
+  let repositorySetiIconDefinitions = repositoryFallbackSetiIconDefinitions;
+  const repositorySetiDefinitionsNode = document.getElementById('gitk-seti-icon-definitions');
+  if (repositorySetiDefinitionsNode?.textContent) {
+    try {
+      repositorySetiIconDefinitions = Object.assign({}, repositoryFallbackSetiIconDefinitions, JSON.parse(repositorySetiDefinitionsNode.textContent));
+    } catch {
+      repositorySetiIconDefinitions = repositoryFallbackSetiIconDefinitions;
+    }
+  }
+  const repositorySetiExtensionIcons = {
+    c: 'c', h: 'cHeader', cc: 'cpp', cpp: 'cpp', cxx: 'cpp', hpp: 'cppHeader', hh: 'cppHeader', hxx: 'cppHeader', m: 'objectiveC', mm: 'objectiveCpp',
+    kt: 'kotlin', kts: 'kotlin', java: 'java', groovy: 'groovy', gradle: 'gradle', rs: 'rust', ts: 'typescript', tsx: 'react', js: 'javascript', jsx: 'react', mjs: 'javascript', cjs: 'javascript',
+    py: 'python', pyw: 'python', go: 'go', cs: 'csharp', fs: 'fsharp', fsx: 'fsharp', vb: 'csharp', dart: 'dart', php: 'php', rb: 'ruby', swift: 'swift', lua: 'lua',
+    html: 'html', htm: 'html', vue: 'vue', svelte: 'svelte', css: 'css', scss: 'sass', sass: 'sass', less: 'less',
+    json: 'json', jsonc: 'json', 'code-workspace': 'json', md: 'markdown', mdx: 'markdown', markdown: 'markdown', rst: 'markdown', adoc: 'markdown',
+    png: 'image', jpg: 'image', jpeg: 'image', gif: 'image', webp: 'image', bmp: 'image', ico: 'image', avif: 'image', heic: 'image', svg: 'svg',
+    mp3: 'audio', wav: 'audio', ogg: 'audio', flac: 'audio', aac: 'audio', mp4: 'video', mov: 'video', webm: 'video', avi: 'video', mkv: 'video',
+    pdf: 'pdf', zip: 'zip', '7z': 'zip', rar: 'zip', tar: 'zip', gz: 'zip', bz2: 'zip', xz: 'zip', tgz: 'zip', jar: 'archive', war: 'archive',
+    db: 'database', sqlite: 'database', sqlite3: 'database', sql: 'database', mdb: 'database', sh: 'shell', bash: 'shell', zsh: 'shell', fish: 'shell',
+    ps1: 'powershell', psm1: 'powershell', bat: 'windows', cmd: 'windows', exe: 'hex', dll: 'hex', so: 'hex', dylib: 'hex', bin: 'hex', class: 'hex', o: 'hex', obj: 'hex', a: 'hex',
+    yaml: 'yaml', yml: 'yaml', toml: 'config', xml: 'xml', ini: 'config', conf: 'config', cfg: 'config', properties: 'config', env: 'config', csv: 'csv', tsv: 'csv',
+  };
+  const repositorySetiFileNameIcons = {
+    dockerfile: 'docker', makefile: 'makefile', 'cmakelists.txt': 'makefile', jenkinsfile: 'jenkins', gradlew: 'shell', 'gradlew.bat': 'windows',
+    readme: 'info', 'readme.md': 'info', license: 'license', 'license.txt': 'license', notice: 'info', authors: 'info', changelog: 'info',
+    '.gitignore': 'git', '.gitattributes': 'git', '.editorconfig': 'config', '.clangd': 'config', '.npmrc': 'npm', '.yarnrc': 'yarn',
+    'package.json': 'npm', 'package-lock.json': 'npm', 'yarn.lock': 'yarn', 'tsconfig.json': 'tsconfig', 'docker-compose.yml': 'docker', 'docker-compose.yaml': 'docker',
+  };
+  function repositoryFileIconHTML(file) {
+    if (file.isGitlink) return '<span class="repo-file-icon codicon codicon-archive" data-file-icon="archive" aria-hidden="true"></span>';
+    const path = String(file.path || '').replace(/\\/g, '/');
+    const name = path.slice(path.lastIndexOf('/') + 1).toLowerCase();
+    const dot = name.lastIndexOf('.');
+    const extension = dot > 0 ? name.slice(dot + 1) : '';
+    const iconName = repositorySetiFileNameIcons[name] || repositorySetiExtensionIcons[extension] || 'default';
+    const definition = repositorySetiIconDefinitions[iconName] || repositorySetiIconDefinitions.default;
+    return '<span class="repo-file-icon repo-file-seti-icon" data-file-icon="' + iconName + '" style="color:' + definition[1] + '" aria-hidden="true">&#x' + definition[0] + ';</span>';
   }
   function repoChangesSections(repository) {
     const conflicts = new Map();
@@ -235,7 +287,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
         row.dataset.diffKey = section.key === 'commit' ? (file.diffKey || file.path) : section.key + ':' + file.path;
         node.rowsByDiffKey.set(row.dataset.diffKey, row);
         const button = document.createElement('button'); button.type = 'button'; button.className = 'repo-file'; button.dataset.repoAction = 'file'; button.title = file.path;
-        button.innerHTML = '<span class="codicon codicon-' + (file.isGitlink ? 'repo' : 'file-code') + '"></span><span class="repo-file-name">' + escapeHtml(file.path.slice(slash + 1)) + '</span><span class="repo-file-folder">' + escapeHtml(slash < 0 ? '' : file.path.slice(0, slash)) + '</span><span class="repo-file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span>';
+        button.innerHTML = repositoryFileIconHTML(file) + '<span class="repo-file-name">' + escapeHtml(file.path.slice(slash + 1)) + '</span><span class="repo-file-folder">' + escapeHtml(slash < 0 ? '' : file.path.slice(0, slash)) + '</span><span class="repo-file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span>';
         row.appendChild(button);
         const actions = document.createElement('span'); actions.className = 'repo-file-actions';
         if (section.key !== 'commit') actions.appendChild(repoChangesIcon(section.key === 'staged' ? 'unstage' : 'stage', section.key === 'staged' ? 'remove' : 'add', section.key === 'staged' ? '取消暂存' : '暂存'));

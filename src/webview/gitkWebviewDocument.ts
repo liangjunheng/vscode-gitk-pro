@@ -9,7 +9,15 @@ import { OVERLAY_SCROLLBAR_SCRIPT, OVERLAY_SCROLLBAR_STYLES } from './overlayScr
  * 与三个子面板片段拼成完整 HTML。子面板片段按"谁拥有 DOM 谁持有监听"划分,
  * 所有脚本片段最终拼进同一个 IIFE, 共享作用域。
  */
-export function renderGitkWebviewHtml(codiconCssUri: string): string {
+export function renderGitkWebviewHtml(
+    codiconCssUri: string,
+    setiFontUri = '',
+    setiIconDefinitions: Readonly<Record<string, readonly [string, string]>> = {},
+): string {
+    const setiFontFace = setiFontUri
+        ? `@font-face{font-family:'seti';src:url('${setiFontUri}') format('woff');font-weight:normal;font-style:normal;font-display:block}`
+        : '';
+    const setiIconDefinitionsJson = JSON.stringify(setiIconDefinitions).replace(/</g, '\\u003c');
     return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -18,6 +26,7 @@ export function renderGitkWebviewHtml(codiconCssUri: string): string {
 <title>Gitk</title>
 <link rel="stylesheet" href="${codiconCssUri}">
 <style>
+  ${setiFontFace}
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; margin: 0; overflow: hidden; }
   body { font-family: var(--vscode-font-family, var(--vscode-editor-font-family, sans-serif)); font-size: var(--vscode-font-size, var(--vscode-editor-font-size, 12px)); background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); display: flex; flex-direction: column; height: 100%; }
@@ -49,6 +58,7 @@ ${CHANGED_FILES_SUB_PANEL_MARKUP}
 ${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR_SUB_PANEL_MARKUP)}
     </div>
   </main>
+<script id="gitk-seti-icon-definitions" type="application/json">${setiIconDefinitionsJson}</script>
 <script>
 (function() {
   const vscode = acquireVsCodeApi();

@@ -14,14 +14,15 @@ async function main() {
     page.on('pageerror', error => errors.push(error.message));
     const theme = ':root{--vscode-editor-background:#181818;--vscode-editor-foreground:#cccccc;--vscode-foreground:#cccccc;--vscode-icon-foreground:#aeb4bc;--vscode-descriptionForeground:#929292;--vscode-editorWidget-background:#202020;--vscode-tab-activeBackground:#202020;--vscode-tab-activeForeground:#cccccc;--vscode-editorGroup-border:#343434;--vscode-widget-border:#343434;--vscode-panel-border:#303030;--vscode-sideBarSectionHeader-background:#181818;--vscode-input-background:#1f1f1f;--vscode-input-foreground:#cccccc;--vscode-input-border:#383838;--vscode-button-background:#176c8b;--vscode-button-foreground:#ffffff;--vscode-button-hoverBackground:#2284a7;--vscode-focusBorder:#007fd4;--vscode-list-hoverBackground:#282828;--vscode-list-activeSelectionBackground:#37373d;--vscode-list-activeSelectionForeground:#ffffff;--vscode-badge-background:#24758e;--vscode-badge-foreground:#ffffff;--vscode-gitDecoration-modifiedResourceForeground:#d9b87a;--vscode-font-family:"Segoe UI";--vscode-font-size:13px;--vscode-editor-font-family:Arial;--vscode-editor-font-size:13px}';
     await page.route('https://gitk.test/codicon.ttf*', route => route.fulfill({ body: fs.readFileSync(path.resolve(__dirname, '../media/codicons/codicon.ttf')), contentType: 'font/ttf', headers: { 'Access-Control-Allow-Origin': '*' } }));
+    await page.route('https://gitk.test/seti.woff', route => route.fulfill({ body: fs.readFileSync(path.resolve(__dirname, '../media/seti/seti.woff')), contentType: 'font/woff', headers: { 'Access-Control-Allow-Origin': '*' } }));
     const iconCss = fs.readFileSync(path.resolve(__dirname, '../media/codicons/codicon.css'), 'utf8').replaceAll('./codicon.ttf', 'https://gitk.test/codicon.ttf');
-    const html = renderGitkWebviewHtml('codicon.css').replace('<link rel="stylesheet" href="codicon.css">', () => '<style>' + theme + iconCss + '</style>');
+    const html = renderGitkWebviewHtml('codicon.css', 'https://gitk.test/seti.woff', { cpp: ['E01A', '#123456'] }).replace('<link rel="stylesheet" href="codicon.css">', () => '<style>' + theme + iconCss + '</style>');
     await verifyPinnedHeaderPixels(browser, html);
     await verifyRepositoryDisplayModes(browser, html);
     await verifyRepositoryHeaderBorderTransitions(browser, html);
     await verifyRepositorySnapshotTransitions(browser, html);
     for (const width of [320, 400, 800]) await verifyBottomRepositoryExpansion(browser, html, width);
-    const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map(match => match[1]);
+    const scripts = [...html.matchAll(/<script(?![^>]*type="application\/json")[^>]*>([\s\S]*?)<\/script>/g)].map(match => match[1]);
     scripts.forEach(script => new Function(script));
     await page.addInitScript(() => {
       window.messages = [];
@@ -46,6 +47,24 @@ async function main() {
     const publish = async () => page.evaluate(state => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state } })), state);
     await publish();
     await assertCount(page.locator('.repo-changes'), 6);
+    await page.evaluate(() => document.fonts.ready);
+    assert.equal(await page.evaluate(() => document.fonts.check('18px seti')), true, 'Seti file icon font must load');
+    const originalChildUnstaged = repositories[1].unstaged;
+    repositories[1].unstaged = [
+      { path: 'native.cpp', status: 'M' }, { path: 'View.kt', status: 'M' }, { path: 'app.ts', status: 'M' },
+      { path: 'script.js', status: 'M' }, { path: 'tool.py', status: 'M' }, { path: 'lib.rs', status: 'M' },
+      { path: 'config.json', status: 'M' }, { path: 'README.md', status: 'M' }, { path: 'logo.png', status: 'M' },
+      { path: 'manual.pdf', status: 'M' }, { path: 'bundle.zip', status: 'M' }, { path: 'cache.sqlite', status: 'M' },
+      { path: 'build.ps1', status: 'M' }, { path: 'native.dll', status: 'M' }, { path: '.clangd', status: 'M' },
+      { path: 'unknown.asset', status: 'M' }, { path: 'submodule', status: 'M', isGitlink: true },
+    ];
+    await publish();
+    assert.deepEqual(await page.locator('.repo-changes').nth(1).locator('.repo-file-icon').evaluateAll(nodes => nodes.map(node => node.dataset.fileIcon)), [
+      'cpp', 'kotlin', 'typescript', 'javascript', 'python', 'rust', 'json', 'info', 'image', 'pdf', 'zip', 'database', 'powershell', 'hex', 'config', 'default', 'archive',
+    ]);
+    assert.equal(await page.locator('.repo-changes').nth(1).locator('.repo-file-icon').first().evaluate(node => getComputedStyle(node).color), 'rgb(18, 52, 86)', 'runtime Seti definitions override the bundled fallback map');
+    repositories[1].unstaged = originalChildUnstaged;
+    await publish();
     const cardTransition = await page.locator('.repo-changes').first().evaluate(card => ({
       divider: getComputedStyle(card.querySelector('.repo-changes-header')).borderBottomColor,
       bodyPaddingTop: getComputedStyle(card.querySelector('.repo-changes-body')).paddingTop,
@@ -127,6 +146,10 @@ async function main() {
         paddingLeft: getComputedStyle(list).paddingLeft,
         paddingRight: getComputedStyle(list).paddingRight,
         headerWidths: Array.from(list.querySelectorAll('.repo-changes-header'), header => header.getBoundingClientRect().width),
+        cardGaps: Array.from(list.querySelectorAll('.repo-changes'), card => {
+          const listRect = list.getBoundingClientRect(), cardRect = card.getBoundingClientRect();
+          return { left: cardRect.left - listRect.left, right: listRect.right - cardRect.right };
+        }),
       };
     });
     const expandedLayout = await gutterLayout();
@@ -136,7 +159,7 @@ async function main() {
     assert.equal(expandedLayout.gutter, 'auto', 'overlay scrollbar does not reserve a gutter');
     assert.equal(expandedLayout.paddingLeft, '2px');
     assert.equal(expandedLayout.paddingRight, '2px');
-    assert.ok(expandedLayout.headerWidths.every(width => Math.abs(width + 4 - expandedLayout.clientWidth) < 1), 'repository cards retain 2px spacing on both sides');
+    assert.ok(expandedLayout.cardGaps.every(gap => Math.abs(gap.left - 2) < 1 && Math.abs(gap.right - 2) < 1), 'repository cards retain 2px spacing on both sides');
     const focusBorder = await page.locator('.repo-changes').filter({ has: page.locator('.repo-changes-header') }).nth(0).evaluate(card => {
       const cardRect = card.getBoundingClientRect();
       const listRect = document.getElementById('repositoryChangesList').getBoundingClientRect();

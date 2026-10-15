@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { type AppState, type ChangeSetMode, type ChangedFile, GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
@@ -23,6 +24,42 @@ import { SelectedRepoTotalBranchWatcher } from '../git/selectedRepoTotalBranchWa
 import { GitBranchesController } from '../git/gitBranchesController';
 import { GitCommitController } from '../git/gitCommitController';
 import { store, type StoreEffect } from '../state/store';
+
+type SetiIconDefinitions = Record<string, readonly [string, string]>;
+
+const SETI_ICON_DEFINITION_IDS: Readonly<Record<string, string>> = {
+    default: '_default', c: '_c', cHeader: '_c_1', cpp: '_cpp', cppHeader: '_cpp_1', objectiveC: '_c_2', objectiveCpp: '_cpp_2',
+    csharp: '_c-sharp', fsharp: '_f-sharp', kotlin: '_kotlin', java: '_java', groovy: '_grails', gradle: '_gradle', rust: '_rust',
+    typescript: '_typescript', react: '_react', javascript: '_javascript', python: '_python', go: '_go2', html: '_html_3', css: '_css', sass: '_sass', less: '_less', vue: '_vue', svelte: '_svelte',
+    json: '_json', markdown: '_markdown', image: '_image', svg: '_svg', audio: '_audio', video: '_video', pdf: '_pdf', zip: '_zip_1', archive: '_zip', database: '_db',
+    shell: '_shell', powershell: '_powershell', windows: '_windows', hex: '_hex', config: '_config', xml: '_xml', yaml: '_yml', csv: '_csv', docker: '_docker', makefile: '_makefile',
+    jenkins: '_jenkins', info: '_info', license: '_license', npm: '_npm', yarn: '_yarn', tsconfig: '_tsconfig', git: '_git', dart: '_dart', php: '_php', ruby: '_ruby', swift: '_swift', lua: '_lua',
+};
+
+function readInstalledSetiIconDefinitions(iconRoot: vscode.Uri): SetiIconDefinitions {
+    if (iconRoot.scheme !== 'file') { return {}; }
+    try {
+        const theme = JSON.parse(readFileSync(vscode.Uri.joinPath(iconRoot, 'vs-seti-icon-theme.json').fsPath, 'utf8')) as {
+            readonly iconDefinitions?: Readonly<Record<string, { readonly fontCharacter?: string; readonly fontColor?: string }>>;
+        };
+        const light = vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Light
+            || vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.HighContrastLight;
+        const definitions: SetiIconDefinitions = {};
+        for (const [name, baseId] of Object.entries(SETI_ICON_DEFINITION_IDS)) {
+            const lightId = `${baseId}_light`;
+            const id = light && theme.iconDefinitions?.[lightId] ? lightId : baseId;
+            const definition = theme.iconDefinitions?.[id];
+            if (!definition?.fontCharacter || !definition.fontColor) { continue; }
+            const character = definition.fontCharacter.startsWith('\\')
+                ? definition.fontCharacter.slice(1)
+                : definition.fontCharacter;
+            definitions[name] = [character, definition.fontColor];
+        }
+        return definitions;
+    } catch {
+        return {};
+    }
+}
 
 
 // 归一化行尾, 消除 core.autocrlf 造成的 CRLF/LF 差异后再比较文本内容。
@@ -1517,10 +1554,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.openDiffOnInitialVisible = true;
         }
         this.commitPanelViewTitleController.bindView(view, store.getState().commitRepositories);
+        const setiIconRoot = this.getSetiIconRoot();
         view.webview.options = {
             enableScripts: true,
             localResourceRoots: [
                 vscode.Uri.joinPath(this.context.extensionUri, 'media', 'codicons'),
+                setiIconRoot,
             ],
         };
         view.webview.html = this.getHtml();
@@ -3503,10 +3542,28 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     // 生成 webview HTML (div flex 布局, 替代 table)
+    private getSetiIconRoot(): vscode.Uri {
+        const bundledRoot = vscode.Uri.joinPath(this.context.extensionUri, 'media', 'seti');
+        const installedExtension = vscode.extensions.getExtension('vscode.vscode-theme-seti')
+            ?? vscode.extensions.getExtension('vscode.theme-seti');
+        if (!installedExtension) { return bundledRoot; }
+        const installedRoot = vscode.Uri.joinPath(installedExtension.extensionUri, 'icons');
+        if (installedRoot.scheme !== 'file'
+            || existsSync(vscode.Uri.joinPath(installedRoot, 'seti.woff').fsPath)) {
+            return installedRoot;
+        }
+        return bundledRoot;
+    }
+
     private getHtml(): string {
         const codiconCssUri = this.view?.webview.asWebviewUri(
             vscode.Uri.joinPath(this.context.extensionUri, 'media', 'codicons', 'codicon.css'),
         );
-        return renderGitkWebviewHtml(String(codiconCssUri));
+        const setiIconRoot = this.getSetiIconRoot();
+        const setiFontUri = this.view?.webview.asWebviewUri(
+            vscode.Uri.joinPath(setiIconRoot, 'seti.woff'),
+        );
+        const setiIconDefinitions = readInstalledSetiIconDefinitions(setiIconRoot);
+        return renderGitkWebviewHtml(String(codiconCssUri), String(setiFontUri), setiIconDefinitions);
     }
 }
