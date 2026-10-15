@@ -8,15 +8,15 @@
 export const COMMIT_LIST_SUB_PANEL_STYLES = `
   #commitGraphViewport { flex: 1 1 auto; min-width: 0; min-height: 0; }
   #commitSection #commitGraphViewport > #graph { height: 100%; }
-  #graph { --graph-lane-width: 22px; --main-width: calc(var(--graph-lane-width) + 60ch); --hash-width: max-content; --author-width: max-content; --date-width: max-content; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: auto; overflow-anchor: none; display: flex; flex-direction: column; }
+  #graph { --graph-lane-width: 22px; --main-width: calc(var(--graph-lane-width) + 60ch); --hash-width: max-content; --author-width: max-content; --date-width: max-content; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: auto; overflow-anchor: none; display: flex; flex-direction: column; font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", sans-serif); font-size: var(--vscode-font-size, 13px); }
   /* 竖向铺满: 列表吃掉表头以外的剩余高度。flex-shrink 必须为 0, 否则内容超高时会被压扁而无法滚动。 */
   #commitList { flex: 1 0 auto; width: 100%; min-width: 0; }
   #commitWorkingTreeRows, #commitVirtualRows { width: 100%; min-width: max-content; }
   .commit-virtual-spacer { width: 1px; min-height: 0; pointer-events: none; }
   /* 搜索/计数/刷新都是提交列表的能力, 随面板一起放在列头之上并吸顶。 */
-  .count { opacity: 0.7; font-size: 11px; white-space: nowrap; }
+  .count { opacity: 0.7; font-size: calc(var(--vscode-font-size, 13px) - 1px); white-space: nowrap; }
   #searchBox { display: flex; align-items: center; position: relative; }
-  #searchInput { width: 100px; padding: 3px 22px 3px 24px; font-size: 12px; border: 1px solid var(--vscode-input-border, transparent); background: var(--vscode-input-background, #1e1e1e); color: var(--vscode-input-foreground, inherit); border-radius: 4px; transition: border-color 0.15s, box-shadow 0.15s; }
+  #searchInput { width: 100px; padding: 3px 22px 3px 24px; font-family: inherit; font-size: inherit; border: 1px solid var(--vscode-input-border, transparent); background: var(--vscode-input-background, #1e1e1e); color: var(--vscode-input-foreground, inherit); border-radius: 4px; transition: border-color 0.15s, box-shadow 0.15s; }
   #searchInput:focus { outline: none; border-color: var(--vscode-focusBorder, #007acc); box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007acc); }
   #searchInput::placeholder { color: var(--vscode-inputPlaceholderForeground, #888); }
   #searchIcon { position: absolute; left: 6px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; opacity: 0.5; pointer-events: none; color: var(--vscode-input-foreground, inherit); }
@@ -29,10 +29,10 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   /* top 让出工具条 30px, 与工具条一起吸顶; z-index 高于提交行、低于工具条。 */
   /* min-width: max-content 不能丢: 列头背景与下边框要覆盖整条横向滚动宽度, 而不是只到可视宽度。 */
   /* 独立工具条行已并入列头, 列头直接吸在 top: 0; z-index 高于提交行。 */
-  .commit-header { flex: 0 0 auto; position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; min-width: max-content; height: 30px; margin: 0; padding: 0 10px; color: var(--vscode-tab-activeForeground); background: var(--commit-title-background); border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); box-sizing: border-box; font-weight: 600; }
+  .commit-header { flex: 0 0 auto; position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; min-width: max-content; height: 30px; margin: 0; padding: 0 10px; color: var(--vscode-tab-activeForeground); background: var(--commit-title-background); border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); box-sizing: border-box; font-size: inherit; font-weight: 600; }
   /* 横向吸边: 提交图变宽需要横向滚动时, 同步操作仍留在可视区右侧。 */
   #commitHeaderSearch { display: flex; align-items: center; gap: 6px; margin-left: auto; padding-left: 8px; position: sticky; right: 10px; z-index: 1; background: var(--commit-title-background); }
-  .commit-row { min-height: 26px; height: auto; box-sizing: border-box; cursor: pointer; align-items: start; }
+  .commit-row { min-height: 26px; height: auto; box-sizing: border-box; cursor: pointer; align-items: start; font-size: inherit; }
   .commit-row:hover { background: var(--vscode-list-hoverBackground); }
   /* 外层 Grid 的所有内容显式共用第 1 行；标签覆盖其上而不占出第 2 行。 */
   .commit-row > .col-main { grid-column: 1; grid-row: 1; }
@@ -54,7 +54,7 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   .commit-row.expanded .commit-description { display: block; }
   .commit-description:empty { display: none; }
   .commit-description-refs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; white-space: normal; }
-  .commit-description-ref { display: inline-flex; align-items: center; min-height: 18px; padding: 0 6px; border-radius: 5px; color: var(--vscode-editor-background); font-size: 12px; line-height: 18px; }
+  .commit-description-ref { display: inline-flex; align-items: center; min-height: 18px; padding: 0 6px; border-radius: 5px; color: var(--vscode-editor-background); font-size: inherit; line-height: 18px; }
   .commit-row.selected { background: var(--vscode-list-activeSelectionBackground, #094771); outline: 1px solid var(--vscode-focusBorder, #007acc); outline-offset: -1px; }
   .commit-row.working-tree:hover { background: var(--vscode-list-hoverBackground); }
   /* 空分组虚拟行置灰: 降透明度 + 默认光标; 不用 pointer-events:none(曾导致点击完全不触发无法排查), 点击拦截由 JS 的 classList.contains('disabled') 负责。 */
@@ -78,7 +78,7 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   .graph-svg { flex: 0 0 auto; }
   /* 各分组独立成圆形图标位，并与描述共用第 1 行；横向 sticky 固定在可视区右缘。 */
   .commit-row-refs { position: sticky; z-index: 1; right: 0; grid-row: 1; grid-column: 1 / -1; align-self: start; justify-self: end; display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-end; gap: 2px; height: 20px; margin-top: 3px; pointer-events: auto; }
-  .commit-row-ref { display: inline-flex; align-items: center; justify-content: center; gap: 0; min-width: 20px; height: 20px; padding: 0 4px; border-radius: 999px; box-sizing: border-box; color: #17212b; font-size: 11px; line-height: 20px; white-space: nowrap; transition: gap 80ms ease-out; }
+  .commit-row-ref { display: inline-flex; align-items: center; justify-content: center; gap: 0; min-width: 20px; height: 20px; padding: 0 4px; border-radius: 999px; box-sizing: border-box; color: #17212b; font-size: calc(var(--vscode-font-size, 13px) - 1px); line-height: 20px; white-space: nowrap; transition: gap 80ms ease-out; }
   .commit-row-ref--current { gap: 3px; background: #5aa7e8; }
   .commit-row-ref--tag { background: #f3d77b; }
   .commit-row-ref--local { background: #69c58f; }
@@ -87,9 +87,9 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   .commit-row-ref-label { display: inline-block; max-width: 0; overflow: hidden; opacity: 0; line-height: 16px; transition: max-width 120ms ease-out, opacity 80ms ease-out; }
   .commit-row-ref--current .commit-row-ref-label { max-width: 100vw; opacity: 1; }
   .commit-row-refs:has(.commit-row-ref:hover) .commit-row-ref-label { max-width: 100vw; opacity: 1; }
-  .commit-row-author { display: inline-flex; align-items: center; height: 20px; padding: 0 6px; border-radius: 999px; background: var(--vscode-badge-background, #4d4d4d); color: var(--vscode-badge-foreground, #ffffff); font-size: 11px; line-height: 20px; white-space: nowrap; }
+  .commit-row-author { display: inline-flex; align-items: center; height: 20px; padding: 0 6px; border-radius: 999px; background: var(--vscode-badge-background, #4d4d4d); color: var(--vscode-badge-foreground, #ffffff); font-size: calc(var(--vscode-font-size, 13px) - 1px); line-height: 20px; white-space: nowrap; }
   /* 选择器需两级以压过 codicon.css 的 .codicon[class*='codicon-']，否则其 16px/1 行高会让图标与标签文本错位。 */
-  .commit-row-ref .codicon { display: inline-flex; flex: 0 0 12px; align-items: center; justify-content: center; width: 12px; height: 20px; font-size: 11px; line-height: 20px; }
+  .commit-row-ref .codicon { display: inline-flex; flex: 0 0 12px; align-items: center; justify-content: center; width: 12px; height: 20px; font-size: calc(var(--vscode-font-size, 13px) - 1px); line-height: 20px; }
   .col-hash { width: max-content; font-family: var(--vscode-editor-font-family, monospace); opacity: 0.85; color: var(--vscode-descriptionForeground, inherit); }
   .col-author, .col-date { width: max-content; text-overflow: clip; }
   .col-author { opacity: 0.75; }
@@ -106,7 +106,7 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   #progressBarFill { height: 100%; background: var(--vscode-textLink-foreground, #007acc); width: 0%; transition: width 0.3s ease; border-radius: 2px; }
   #progressBarFill.indeterminate { width: 30%; animation: indeterminate 1s ease-in-out infinite alternate; }
   @keyframes indeterminate { from { transform: translateX(-150%); } to { transform: translateX(350%); } }
-  #progressStep { font-size: 11px; color: var(--vscode-descriptionForeground); opacity: 0.7; }
+  #progressStep { font-size: calc(var(--vscode-font-size, 13px) - 1px); color: var(--vscode-descriptionForeground); opacity: 0.7; }
   /* 顶部进度条贴在搜索行底边: 搜索行是 sticky 定位(top: 30px), 是绝对定位子元素的包含块,
      所以进度条随搜索行一起吸在列头下方, 滚动时始终在列表顶部, 且不占布局不会顶动列表。 */
   #commitProgress { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; z-index: 2; overflow: hidden; }
