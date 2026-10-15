@@ -56,11 +56,14 @@ async function main() {
       { path: 'config.json', status: 'M' }, { path: 'README.md', status: 'M' }, { path: 'logo.png', status: 'M' },
       { path: 'manual.pdf', status: 'M' }, { path: 'bundle.zip', status: 'M' }, { path: 'cache.sqlite', status: 'M' },
       { path: 'build.ps1', status: 'M' }, { path: 'native.dll', status: 'M' }, { path: '.clangd', status: 'M' },
-      { path: 'unknown.asset', status: 'M' }, { path: 'submodule', status: 'M', isGitlink: true },
+      { path: 'unknown.asset', status: 'M' },
+      { path: 'unknown-submodule', status: 'M', isGitlink: true },
+      { path: 'leaf-submodule', status: 'M', isGitlink: true, gitlinkHasSubmodules: false },
+      { path: 'parent-submodule', status: 'M', isGitlink: true, gitlinkHasSubmodules: true },
     ];
     await publish();
     assert.deepEqual(await page.locator('.repo-changes').nth(1).locator('.repo-file-icon').evaluateAll(nodes => nodes.map(node => node.dataset.fileIcon)), [
-      'cpp', 'kotlin', 'typescript', 'javascript', 'python', 'rust', 'json', 'info', 'image', 'pdf', 'zip', 'database', 'powershell', 'hex', 'config', 'default', 'archive',
+      'cpp', 'kotlin', 'typescript', 'javascript', 'python', 'rust', 'json', 'info', 'image', 'pdf', 'zip', 'database', 'powershell', 'hex', 'config', 'default', 'repo', 'archive', 'repo',
     ]);
     assert.equal(await page.locator('.repo-changes').nth(1).locator('.repo-file-icon').first().evaluate(node => getComputedStyle(node).color), 'rgb(18, 52, 86)', 'runtime Seti definitions override the bundled fallback map');
     repositories[1].unstaged = originalChildUnstaged;
@@ -367,6 +370,12 @@ async function main() {
     assert.equal(message.repositoryPath, repositories[0].repositoryPath);
     await page.locator('.repo-changes').first().locator('.repo-group[data-section="unstaged"] .repo-group-header [data-repo-action="stage"]').click();
     message = await lastMessage(page);
+    assert.deepEqual(message.paths, ['same.cpp', 'other.cpp']);
+    assert.equal(message.repositoryPath, repositories[0].repositoryPath);
+    await page.locator('.repo-changes').first().locator('.repo-group[data-section="unstaged"] .repo-group-header [data-repo-action="discard"]').click();
+    message = await lastMessage(page);
+    assert.equal(message.action, 'discard');
+    assert.equal(message.section, 'unstaged');
     assert.deepEqual(message.paths, ['same.cpp', 'other.cpp']);
     assert.equal(message.repositoryPath, repositories[0].repositoryPath);
     state.selectedCommit = { hash: 'uncommitted', repositoryPath: repositories[3].repositoryPath };
@@ -1030,6 +1039,9 @@ async function verifyProvider() {
     view: { webview: { postMessage: value => { published = value; } } },
     changedFileSummaryCache: new WeakMap(), selectedBranchesMap: new Map(),
     commitMessageByRepo: new Map([[repositories[1].path, 'child draft']]), commitCommittingByRepo: new Set(),
+    repoSubmoduleWatcher: {
+      findSubmoduleRepository: (_parent, file) => file === 'leaf-link' ? repositories[2] : file === 'parent-link' ? repositories[0] : undefined,
+    },
     commitPanelViewTitleController: { update() {} },
     commitController: { isLoading: false, searchedCommitList: [], displayedSearchKeywords: [], totalCommitList: [],
       selectCommit: commit => { provider.commitController.selectedCommit = commit; return true; } },
@@ -1044,7 +1056,11 @@ async function verifyProvider() {
     },
     selectWorkingTreeChanges: async () => {},
   });
-  store.setState({ commitRepositories: [{ repository: repositories[1], repositoryPath: repositories[1].path, repositoryLabel: 'child', staged: [], unstaged: [{ path: 'same.cpp', status: 'M' }] }] });
+  store.setState({ commitRepositories: [{ repository: repositories[1], repositoryPath: repositories[1].path, repositoryLabel: 'child', staged: [], unstaged: [
+    { path: 'same.cpp', status: 'M' },
+    { path: 'leaf-link', status: 'M', isGitlink: true },
+    { path: 'parent-link', status: 'M', isGitlink: true },
+  ] }] });
   provider.pushStateToWebview();
   assert.equal(published.state.repositoryChanges.length, 3, 'full topology is published even without opening Commit Panel');
   assert.deepEqual(published.state.repositoryChanges.map(repository => repository.isMainRepository), [true, false, false]);
@@ -1053,6 +1069,8 @@ async function verifyProvider() {
   assert.equal(published.state.repositoryChanges[1].message, 'child draft');
     assert.equal(published.state.repositoryChanges[1].headLabel, 'deadbeef');
   assert.equal(published.state.repositoryChanges[1].unstaged[0].path, 'same.cpp');
+  assert.equal(published.state.repositoryChanges[1].unstaged[1].gitlinkHasSubmodules, false, 'leaf Gitlink inherits the target repository topology');
+  assert.equal(published.state.repositoryChanges[1].unstaged[2].gitlinkHasSubmodules, true, 'parent Gitlink inherits the target repository topology');
   assert.deepEqual(published.state.repositoryChanges[2].unstaged, [], 'clean repositories are not filtered out');
   const selectedMetadata = { hash: 'history', message: 'subject', body: 'body', rawMessage: 'exact raw text', gitBranchOption: { repoOption: repositories[1] } };
   provider.commitController.selectedCommit = selectedMetadata; provider.pushStateToWebview();

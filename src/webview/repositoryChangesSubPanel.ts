@@ -177,7 +177,10 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     'package.json': 'npm', 'package-lock.json': 'npm', 'yarn.lock': 'yarn', 'tsconfig.json': 'tsconfig', 'docker-compose.yml': 'docker', 'docker-compose.yaml': 'docker',
   };
   function repositoryFileIconHTML(file) {
-    if (file.isGitlink) return '<span class="repo-file-icon codicon codicon-archive" data-file-icon="archive" aria-hidden="true"></span>';
+    if (file.isGitlink) {
+      const icon = file.gitlinkHasSubmodules === false ? 'archive' : 'repo';
+      return '<span class="repo-file-icon codicon codicon-' + icon + '" data-file-icon="' + icon + '" aria-hidden="true"></span>';
+    }
     const path = String(file.path || '').replace(/\\/g, '/');
     const name = path.slice(path.lastIndexOf('/') + 1).toLowerCase();
     const dot = name.lastIndexOf('.');
@@ -263,6 +266,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
         abort.disabled = !repository.mergeOperation || repository.mergeOperationBusy;
         actions.append(proceed, abort); header.append(actions);
       }
+      if (section.key === 'unstaged') header.appendChild(repoChangesIcon('discard', 'discard', '还原所有文件'));
       if (section.key !== 'conflict' && section.key !== 'commit') header.appendChild(repoChangesIcon(section.key === 'staged' ? 'unstage' : 'stage', section.key === 'staged' ? 'remove' : 'add', section.key === 'staged' ? '取消暂存全部' : '暂存全部'));
       const rows = document.createElement('div'); rows.className = 'repo-group-files';
       const folderRows = new Map();

@@ -383,7 +383,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (!this.view) { return; }
         const s = store.getState();
         // Changed Files 只需要文件元信息，绝不能把 Monaco 使用的 original/modified 大文本复制到主 Webview。
-        const files = s.files.map(file => this.changedFileSummary(file));
+        const summarizeFile = (file: ChangedFile, repositoryPath?: string) => {
+            const summary = this.changedFileSummary(file);
+            if (!summary.isGitlink || !repositoryPath) { return summary; }
+            const target = this.repoSubmoduleWatcher.findSubmoduleRepository(repositoryPath, summary.path);
+            return target ? { ...summary, gitlinkHasSubmodules: Boolean(target.hasSubmodules) } : summary;
+        };
+        const files = s.files.map(file => summarizeFile(file, s.currentRepositoryPath));
         this.commitPanelViewTitleController.update(s.commitRepositories);
         // 提交列表 loading 只由 GitCommitController 的加载事件驱动。
         const commitListLoading = this.commitController.isLoading;
@@ -454,8 +460,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                         committing: this.commitCommittingByRepo.has(repository.path),
                         mergeOperation: this.mergeOperations?.get(repository.path),
                         mergeOperationBusy: this.mergeOperationBusy?.has(repository.path) ?? false,
-                        staged: (snapshot?.staged ?? []).map(file => this.changedFileSummary(file)),
-                        unstaged: (snapshot?.unstaged ?? []).map(file => this.changedFileSummary(file)),
+                        staged: (snapshot?.staged ?? []).map(file => summarizeFile(file, repository.path)),
+                        unstaged: (snapshot?.unstaged ?? []).map(file => summarizeFile(file, repository.path)),
                     };
                 }),
                 stagedCount: workingTreeRow?.stagedCount ?? 0,
