@@ -103,6 +103,8 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   .commit-row-info-label { display: inline-block; max-width: 0; overflow: hidden; opacity: 0; line-height: 16px; transition: max-width 120ms ease-out, opacity 80ms ease-out; }
   #graph.commit-floating-author-expanded .commit-row-info--author,
   #graph.commit-floating-time-expanded .commit-row-info--time { gap: 3px; }
+  #graph.commit-floating-author-expanded .commit-row-info--author .codicon,
+  #graph.commit-floating-time-expanded .commit-row-info--time .codicon { display: none; }
   #graph.commit-floating-author-expanded .commit-row-info--author .commit-row-info-label,
   #graph.commit-floating-time-expanded .commit-row-info--time .commit-row-info-label { max-width: 100vw; opacity: 1; }
   /* 选择器需两级以压过 codicon.css 的 .codicon[class*='codicon-']，否则其 16px/1 行高会让图标与标签文本错位。 */
