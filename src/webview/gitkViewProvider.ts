@@ -395,12 +395,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             rawMessage: selectedCommitMetadata.rawMessage,
             kind: (isWorkingTreeHash(selectedCommitMetadata.hash) ? selectedCommitMetadata.hash : 'commit') as ChangeSetMode,
         } : null;
-        // Diff 视图的工作区选择以 Store 为真源；提交元数据在异步加载/失焦阶段可能暂时滞后。
-        const selectedWorkingTreeRepositoryPath = s.currentChangeSet === 'uncommitted'
-            ? s.currentRepositoryPath
-            : (isWorkingTreeHash(selectedCommitMetadata?.hash)
-                ? selectedCommitMetadata.gitBranchOption?.repoOption.path
-                : undefined);
         this.view.webview.postMessage({
             type: 'stateUpdate',
             state: {
@@ -450,7 +444,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 filesMode: s.displayMode,
                 selectedPath: s.selectedPath,
                 selectedCommit,
-                selectedWorkingTreeRepositoryPath,
                 isLoading: commitListLoading,
                 loadingMode: this.commitLoadingMode,
                 loadingMessage: commitListLoadingMessage,
@@ -1735,6 +1728,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             if (input.type === 'repositoryChangesAction' && input.action === 'blur') {
                 this.repositoryChangesSelectionAbortController?.abort();
                 this.gitlinkNavigationAbortController?.abort();
+                const selected = this.repoController.selectedRepoList;
+                if (selected.length === 1 && selected[0].path === input.repositoryPath) {
+                    this.repoController.selectRepositories([]);
+                }
                 return;
             }
             if (input.type === 'repositoryChangesAction' && input.action === 'focus') {
@@ -2322,14 +2319,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 committing: this.commitCommittingByRepo.has(repo.repositoryPath),
             } satisfies CommitCard;
         });
-        const selectedCommit = this.commitController.selectedCommit;
-        return {
-            cards,
-            displayMode: store.getState().displayMode,
-            selectedWorkingTreeRepositoryPath: isWorkingTreeHash(selectedCommit?.hash)
-                ? selectedCommit.gitBranchOption?.repoOption.path
-                : undefined,
-        };
+        return { cards, displayMode: store.getState().displayMode };
     }
 
     /** 刷新提交面板内容 (add/restore 或工作区变化后): 先同步多仓库 Store 再重建卡片。 */

@@ -45,7 +45,6 @@ export interface CommitCard {
 export interface CommitPanelSnapshot {
     readonly cards: readonly CommitCard[];
     readonly displayMode: 'tree' | 'flat';
-    readonly selectedWorkingTreeRepositoryPath?: string;
 }
 
 export type CommitCardStatePatch = {

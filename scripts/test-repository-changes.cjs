@@ -46,19 +46,6 @@ async function main() {
     const publish = async () => page.evaluate(state => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state } })), state);
     await publish();
     await assertCount(page.locator('.repo-changes'), 6);
-    assert.equal(await page.locator('.repo-changes').first().evaluate(card => card.classList.contains('working-tree-selected')), false);
-    state.selectedCommit = { hash: 'uncommitted', repositoryPath: repositories[0].repositoryPath };
-    await publish();
-    assert.equal(await page.locator('.repo-changes').first().evaluate(card => card.classList.contains('working-tree-selected')), true);
-    assert.notEqual(await page.locator('.repo-changes').first().evaluate(card => getComputedStyle(card).backgroundColor), 'rgb(24, 24, 24)');
-    state.selectedCommit = { hash: '12345678', repositoryPath: repositories[0].repositoryPath };
-    state.selectedWorkingTreeRepositoryPath = repositories[0].repositoryPath;
-    await publish();
-    assert.equal(await page.locator('.repo-changes').first().evaluate(card => card.classList.contains('working-tree-selected')), true, 'authoritative worktree state outlives a stale commit metadata snapshot');
-    delete state.selectedWorkingTreeRepositoryPath;
-    state.selectedCommit = { hash: '12345678', repositoryPath: repositories[0].repositoryPath };
-    await publish();
-    assert.equal(await page.locator('.repo-changes').first().evaluate(card => card.classList.contains('working-tree-selected')), false);
     const selectorPosition = await page.evaluate(() => {
       const header = document.getElementById('commitHeader').getBoundingClientRect();
       const selectors = document.getElementById('commitSelectors').getBoundingClientRect();
@@ -151,7 +138,7 @@ async function main() {
     assert.ok(focusBorder.cardRight <= focusBorder.listRight - 1 + 1);
     assert.ok(focusBorder.scrollbarLeft < focusBorder.listRight, 'vertical overlay remains inside its clipped viewport');
     assert.equal(await page.locator('.repo-changes.focused').count(), 1, 'one focused card owns the right focus border');
-    assert.equal(await page.locator('.repo-changes.focused').evaluate(card => getComputedStyle(card).borderRightColor), 'color(srgb 0.898039 0.72549 0.352941 / 0.24)', 'selected worktree card keeps its visible yellow right border when focused');
+    assert.equal(await page.locator('.repo-changes.focused').evaluate(card => getComputedStyle(card).borderRightColor), 'rgb(0, 127, 212)', 'focused card retains its visible right focus border');
     assert.equal(expandedLayout.overflowing, true, 'expanded fixture requires a scrollbar');
     const stickyHeader = page.locator('.repo-changes').first().locator('.repo-changes-header');
     const listBounds = await page.locator('#repositoryChangesList').boundingBox();
@@ -160,7 +147,7 @@ async function main() {
     assert.equal(await stickyHeader.evaluate(node => getComputedStyle(node).position), 'sticky');
     assert.notEqual(await stickyHeader.evaluate(node => getComputedStyle(node).backgroundColor), 'rgba(0, 0, 0, 0)', 'pinned header is opaque');
     assert.equal(await stickyHeader.evaluate(node => getComputedStyle(node).zIndex), '2');
-    assert.equal(await stickyHeader.evaluate(node => getComputedStyle(node, '::after').backgroundColor), 'color(srgb 0.898039 0.72549 0.352941 / 0.24)', 'selected worktree pinned header keeps its yellow top line inside the scroll viewport');
+    assert.equal(await stickyHeader.evaluate(node => getComputedStyle(node, '::after').backgroundColor), 'rgb(0, 127, 212)', 'focused pinned header keeps its top focus line inside the scroll viewport');
     await page.locator('#repositoryChangesList').evaluate(node => { node.scrollTop = 0; });
     for (const toggle of await page.locator('.repo-changes-toggle').all()) await toggle.click();
     const collapsedLayout = await gutterLayout();
@@ -210,7 +197,7 @@ async function main() {
     assert.deepEqual(await lastMessage(page), { type: 'repositoryChangesAction', action: 'focus', repositoryPath: repositories[0].repositoryPath }, 'selecting the current repository keeps it expanded');
     await page.locator('.repo-changes-label').first().click();
     await assertCount(page.locator('.repo-changes-body:visible'), 5);
-    assert.notDeepEqual(await lastMessage(page), { type: 'repositoryChangesAction', action: 'blur', repositoryPath: repositories[0].repositoryPath }, 'collapsing a card keeps the current commit selection');
+    assert.deepEqual(await lastMessage(page), { type: 'repositoryChangesAction', action: 'blur', repositoryPath: repositories[0].repositoryPath }, 'focused title toggles collapse');
     await page.locator('.repo-changes-label').first().click();
     await assertCount(page.locator('.repo-changes-body:visible'), 6);
     assert.deepEqual(await lastMessage(page), { type: 'repositoryChangesAction', action: 'focus', repositoryPath: repositories[0].repositoryPath }, 'collapsed title expands and focuses');
@@ -377,9 +364,9 @@ async function main() {
     assert.notEqual(await page.locator('#commitList').textContent(), '暂未选中仓库');
     const messagesBeforeFocusedCollapse = await page.evaluate(() => window.messages.length);
     await page.locator('.repo-changes-toggle').first().click();
-    assert.equal(await page.evaluate(() => window.messages.length), messagesBeforeFocusedCollapse, 'focused collapse keeps the current commit selection');
-    assert.notEqual(await page.locator('#commitList').textContent(), '暂未选中仓库', 'focused collapse retains history until the host changes selection');
-    await assertCount(page.locator('#commitList .commit-row'), 1);
+    assert.equal(await page.evaluate(() => window.messages.length), messagesBeforeFocusedCollapse + 1, 'focused collapse publishes a blur action');
+    assert.equal(await page.locator('#commitEmpty').textContent(), '暂未选中仓库', 'focused collapse clears history immediately, without waiting for a host message');
+    await assertCount(page.locator('#commitList .commit-row'), 0);
     state.selectedRepositoryPaths = []; state.commits = []; state.selectedCommit = null;
     await publish();
     assert.equal(await page.locator('#commitEmpty').textContent(), '暂未选中仓库', 'host confirmation preserves no-repository state');
@@ -597,7 +584,7 @@ async function verifyPinnedHeaderPixels(browser, html) {
       await page.locator('.repo-file-row').evaluateAll((rows, color) => rows.forEach(row => { row.style.backgroundColor = color; }), color);
       return PNG.sync.read(await page.screenshot());
     }
-    async function assertSelectedWorktreeOutline(label) {
+    async function assertSingleFocusLine(label) {
       await page.locator('.repo-changes').evaluate(card => card.classList.add('focused'));
       await page.mouse.move(10, 900);
       const cardRect = await page.locator('.repo-changes').boundingBox();
@@ -607,19 +594,23 @@ async function verifyPinnedHeaderPixels(browser, html) {
       const png = PNG.sync.read(await page.screenshot());
       const x = Math.round(rect.x + 100);
       const top = Math.round(Math.max(cardRect.y, geometry.listTop));
-      assert.equal(await page.locator('.repo-changes').evaluate(card => getComputedStyle(card).borderTopColor), 'color(srgb 0.898039 0.72549 0.352941 / 0.24)', label + ' keeps the selected worktree outline when focused');
-      assert.notEqual(await page.locator('.repo-changes').evaluate(card => getComputedStyle(card).backgroundColor), 'rgb(36, 36, 36)', label + ' keeps a subtle selected worktree card surface when focused');
+      const blueRows = [];
+      for (let y = top; y < top + 4; y++) {
+        if (pixel(png, x, y).join(',') === '0,127,212') blueRows.push(y);
+      }
+      assert.deepEqual(blueRows, [top], label + ' paints exactly one focus line at the visible top');
+      assert.deepEqual(pixel(png, x, Math.round(rect.y + 15)), [36, 36, 36], label + ' uses the card background');
     }
     await page.locator('#repositoryChangesList').evaluate(list => { list.scrollTop = 0; });
-    await assertSelectedWorktreeOutline('unpinned header');
+    await assertSingleFocusLine('unpinned header');
     await page.locator('.repo-changes-toggle').click();
-    await assertSelectedWorktreeOutline('collapsed header');
+    await assertSingleFocusLine('collapsed header');
     await page.locator('.repo-changes-toggle').click();
     await page.locator('#repositoryChangesList').evaluate(list => {
       const row = list.querySelector('.repo-file-row');
       list.scrollTop += row.getBoundingClientRect().top - list.getBoundingClientRect().top - 2;
     });
-    await assertSelectedWorktreeOutline('pinned header');
+    await assertSingleFocusLine('pinned header');
     for (const mode of ['focused', 'unfocused', 'hover']) {
       await page.locator('.repo-changes').evaluate((card, mode) => card.classList.toggle('focused', mode === 'focused'), mode);
       if (mode === 'hover') await page.mouse.move(geometry.left + 150, geometry.top + 15);
@@ -628,7 +619,7 @@ async function verifyPinnedHeaderPixels(browser, html) {
         card: getComputedStyle(node.parentElement).backgroundColor, image: getComputedStyle(node).backgroundImage,
         left: getComputedStyle(node, '::after').left, right: getComputedStyle(node, '::after').right,
         before: getComputedStyle(node, '::before').content, overflow: getComputedStyle(node).overflow }));
-      assert.notEqual(style.header, style.card, mode + ' uses a brighter selected worktree card header');
+      assert.equal(style.header, style.card, mode + ' header matches the card color');
       assert.equal(style.image, 'none', mode + ' does not tint the entire header');
       assert.equal(style.left, '0px'); assert.equal(style.right, '0px');
       assert.equal(style.before, 'none', 'no background extends across the card borders');
@@ -636,8 +627,8 @@ async function verifyPinnedHeaderPixels(browser, html) {
       const magenta = await screenshotWithUnderlay('#ff00ff');
       const green = await screenshotWithUnderlay('#00ff00');
       const x = Math.round(geometry.left + 100), y = Math.round(geometry.top);
-      assert.deepEqual(pixel(green, x, y), [110, 94, 63], mode + ' preserves the selected worktree outline');
-      assert.deepEqual(pixel(green, x, y + 15), [72, 66, 54], mode + ' preserves the selected worktree header surface even when pinned');
+      assert.deepEqual(pixel(green, x, y), mode === 'focused' ? [0, 127, 212] : [52, 52, 52], mode + ' top line is actually painted');
+      assert.deepEqual(pixel(green, x, y + 15), [36, 36, 36], mode + ' paints the card background even when pinned');
       for (const [px, py] of [[x, y + 2], [Math.floor(geometry.left), y + 2], [Math.ceil(geometry.right) - 1, y + 2]]) {
         assert.deepEqual(pixel(magenta, px, py), pixel(green, px, py), mode + ' header and corner pixels never reveal underlying files');
       }
@@ -1075,7 +1066,8 @@ async function verifyProvider() {
   assert.equal(selections.length, selectionsBeforeUnfocusedCollapse, 'collapse of an unfocused repository does not clear selection');
   const selectionsBeforeFocusedBlur = selections.length;
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', repositoryPath: repositories[2].path, action: 'blur' });
-  assert.equal(selections.length, selectionsBeforeFocusedBlur, 'a legacy blur intent preserves the focused repository selection');
+  assert.equal(selections.length, selectionsBeforeFocusedBlur + 1, 'blur of the focused repository clears its authoritative selection');
+  assert.deepEqual(selections.at(-1), [], 'focused repository blur clears selection');
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', repositoryPath: repositories[1].path, action: 'focus' });
   provider.openCommitPanelWorkingTreeDiff = async (...args) => { operation = args; };
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesFile', repositoryPath: repositories[1].path, section: 'unstaged', path: 'same.cpp' });

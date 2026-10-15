@@ -23,7 +23,8 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   #searchClear { position: absolute; right: 4px; top: 0; bottom: 0; margin: auto 0; width: 16px; height: 16px; border: none; background: transparent; color: var(--vscode-descriptionForeground, #888); cursor: pointer; display: none; font-size: 14px; line-height: 16px; padding: 0; border-radius: 3px; align-items: center; justify-content: center; }
   #searchClear:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.15)); color: var(--vscode-input-foreground, inherit); }
   #searchClear.visible { display: flex; }
-  .commit-row { position: relative; display: grid; grid-template-columns: var(--main-width) var(--author-width) var(--hash-width) var(--date-width); align-items: center; width: 100%; min-width: max-content; }
+  /* 最后一列吸收四个数据列之外的剩余宽度，使横跨整行的浮动信息真正到达容器右缘。 */
+  .commit-row { position: relative; display: grid; grid-template-columns: var(--main-width) var(--author-width) var(--hash-width) var(--date-width) minmax(0, 1fr); align-items: center; width: 100%; min-width: max-content; }
   /* 列头与提交行拆开: 列头是 flex, 左侧四列仍走同一套列宽变量, 右侧放同步操作。 */
   #commitHeaderColumns { display: grid; grid-template-columns: var(--main-width) var(--author-width) var(--hash-width) var(--date-width); align-items: center; min-width: max-content; }
   /* top 让出工具条 30px, 与工具条一起吸顶; z-index 高于提交行、低于工具条。 */
@@ -78,16 +79,16 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   .graph-svg { flex: 0 0 auto; }
   /* 各分组独立成圆形图标位，并与描述共用第 1 行；横向 sticky 固定在可视区右缘。 */
   .commit-row-refs { position: sticky; z-index: 1; right: 0; grid-row: 1; grid-column: 1 / -1; align-self: start; justify-self: end; display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-end; gap: 2px; height: 20px; margin-top: 3px; pointer-events: auto; }
-  .commit-row-ref { display: inline-flex; align-items: center; justify-content: center; gap: 0; min-width: 20px; height: 20px; padding: 0 4px; border-radius: 999px; box-sizing: border-box; color: #17212b; font-size: calc(var(--vscode-font-size, 13px) - 1px); line-height: 20px; white-space: nowrap; transition: gap 80ms ease-out; }
-  .commit-row-ref--current { gap: 3px; background: #5aa7e8; }
+  .commit-row-ref { display: inline-flex; align-items: center; justify-content: center; gap: 0; min-width: 20px; height: 20px; padding: 0 4px; border-radius: 999px; box-sizing: border-box; color: #17212b; font-size: calc(var(--vscode-font-size, 13px) - 1px); line-height: 20px; white-space: nowrap; cursor: pointer; user-select: none; transition: gap 80ms ease-out; }
+  .commit-row-ref--current { background: #5aa7e8; }
   .commit-row-ref--tag { background: #f3d77b; }
   .commit-row-ref--local { background: #69c58f; }
   .commit-row-ref--remote { background: #c9a227; }
-  .commit-row-refs:has(.commit-row-ref:hover) .commit-row-ref { gap: 3px; }
+  #graph.commit-ref-labels-expanded .commit-row-ref { gap: 3px; }
   .commit-row-ref-label { display: inline-block; max-width: 0; overflow: hidden; opacity: 0; line-height: 16px; transition: max-width 120ms ease-out, opacity 80ms ease-out; }
-  .commit-row-ref--current .commit-row-ref-label { max-width: 100vw; opacity: 1; }
-  .commit-row-refs:has(.commit-row-ref:hover) .commit-row-ref-label { max-width: 100vw; opacity: 1; }
-  .commit-row-author { display: inline-flex; align-items: center; height: 20px; padding: 0 6px; border-radius: 999px; background: var(--vscode-badge-background, #4d4d4d); color: var(--vscode-badge-foreground, #ffffff); font-size: calc(var(--vscode-font-size, 13px) - 1px); line-height: 20px; white-space: nowrap; }
+  #graph.commit-ref-labels-expanded .commit-row-ref-label { max-width: 100vw; opacity: 1; }
+  .commit-row-author { display: inline-flex; align-items: center; max-width: 0; height: 20px; padding: 0; border-radius: 999px; overflow: hidden; opacity: 0; background: var(--vscode-badge-background, #4d4d4d); color: var(--vscode-badge-foreground, #ffffff); font-size: calc(var(--vscode-font-size, 13px) - 1px); line-height: 20px; white-space: nowrap; transition: max-width 120ms ease-out, padding 120ms ease-out, opacity 80ms ease-out; }
+  #graph.commit-ref-labels-expanded .commit-row-author { max-width: 100vw; padding: 0 6px; opacity: 1; }
   /* 选择器需两级以压过 codicon.css 的 .codicon[class*='codicon-']，否则其 16px/1 行高会让图标与标签文本错位。 */
   .commit-row-ref .codicon { display: inline-flex; flex: 0 0 12px; align-items: center; justify-content: center; width: 12px; height: 20px; font-size: calc(var(--vscode-font-size, 13px) - 1px); line-height: 20px; }
   .col-hash { width: max-content; font-family: var(--vscode-editor-font-family, monospace); opacity: 0.85; color: var(--vscode-descriptionForeground, inherit); }
@@ -221,6 +222,9 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
   const columnWidths = {};
   const columnWidthChars = { hash: 0, author: 0, date: 0 };
   let resizing = null;
+  const persistedCommitListState = vscode.getState() || {};
+  let commitRefLabelsExpanded = persistedCommitListState.commitRefLabelsExpanded === true;
+  document.getElementById('graph').classList.toggle('commit-ref-labels-expanded', commitRefLabelsExpanded);
 
     const ROW_H = 26;
     const COMMIT_OVERSCAN = 50;
@@ -436,6 +440,18 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     return (outputSwimlanes[circleIndex] || inputSwimlanes[circleIndex] || {}).color || c.laneColor || '#888';
   }
 
+  function setCommitRefLabelsExpanded(expanded, persist) {
+    commitRefLabelsExpanded = expanded;
+    document.getElementById('graph').classList.toggle('commit-ref-labels-expanded', expanded);
+    document.querySelectorAll('.commit-row-ref').forEach(function(item) {
+      item.setAttribute('aria-expanded', String(expanded));
+    });
+    if (!persist) return;
+    var state = vscode.getState() || {};
+    state.commitRefLabelsExpanded = expanded;
+    vscode.setState(state);
+  }
+
   // 描述列的分支标签: 仅标注当前分支 HEAD 与其 upstream 远程分支 HEAD。
   // upstream 取自 for-each-ref 的 %(upstream), 不按 origin/<name> 命名约定猜测。
   function headBranchLabels(c) {
@@ -465,6 +481,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     var c = commits[i];
     var commitKey = c.gitBranchOption.repoOption.path + ':' + c.hash;
     var selected = selectedCommitHash === c.hash && c.gitBranchOption.repoOption.path === selectedCommitRepositoryPath;
+    var refsExpanded = commitRefLabelsExpanded;
     // 描述只能在当前高亮 commit 上显示。
     var expanded = selected && expandedCommits.has(commitKey);
     var html = '<div class="commit-row' + (expanded ? ' expanded' : '') + (selected ? ' selected' : '') + '" data-hash="' + escapeAttr(c.hash) + '" data-repository-path="' + escapeAttr(c.gitBranchOption.repoOption.path) + '" data-row="' + i + '" data-has-description="true">';
@@ -482,10 +499,10 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
       'Author: ' + authorPreview,
       'Date: ' + commitDate,
     ].filter(Boolean).join('\\n');
-    // 默认仅展示四个类别图标；悬浮后才展开每类实际 ref 名称。
+    // 默认仅展示四个类别图标；点击任意图标后全列表统一展开或收起，并持久化该显示偏好。
     var refChipsHtml = categorizedRefs(c.refs || [], repositoryPath).map(function(category) {
       var label = category.labels.join(', ');
-      return '<span class="commit-row-ref commit-row-ref--' + category.kind + '" title="' + escapeAttr(label) + '">'
+      return '<span class="commit-row-ref commit-row-ref--' + category.kind + '" role="button" tabindex="0" aria-expanded="' + String(refsExpanded) + '" title="' + escapeAttr(label) + '">'
         + '<span class="codicon codicon-' + category.icon + '" aria-hidden="true"></span>'
         + '<span class="commit-row-ref-label">' + escapeHtml(label) + '</span></span>';
     }).join('');
@@ -577,6 +594,21 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
       svg.setAttribute('height', String(ROW_H));
       svg.setAttribute('viewBox', '0 0 ' + rowW + ' ' + ROW_H);
       drawSvg(svg, idx, rowW, ROW_H, LANE_W, DOT_R);
+    }
+    var refGroup = row.querySelector('.commit-row-refs');
+    if (refGroup) {
+      var toggleRefGroup = function(event) {
+        var ref = event.target && event.target.closest('.commit-row-ref');
+        if (!ref || !refGroup.contains(ref)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        setCommitRefLabelsExpanded(!commitRefLabelsExpanded, true);
+      };
+      refGroup.addEventListener('click', toggleRefGroup);
+      refGroup.addEventListener('keydown', function(event) {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        toggleRefGroup(event);
+      });
     }
     row.addEventListener('click', function(event) {
       if (row.classList.contains('disabled')) return;

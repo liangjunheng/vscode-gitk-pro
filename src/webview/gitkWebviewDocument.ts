@@ -155,9 +155,6 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR
       selectedCommitHash = state.selectedCommit ? state.selectedCommit.hash : '';
       const previousFileRepositoryPath = selectedCommitRepositoryPath;
       selectedCommitRepositoryPath = state.selectedCommit ? state.selectedCommit.repositoryPath : '';
-      selectedWorkingTreeRepositoryPath = typeof state.selectedWorkingTreeRepositoryPath === 'string'
-        ? state.selectedWorkingTreeRepositoryPath
-        : (isWorkingTreeHash(selectedCommitHash) ? selectedCommitRepositoryPath : '');
       selectedRepositoryCommitDetails = state.selectedCommit || null;
       selectedRepositoryPaths = state.selectedRepositoryPaths || [];
       const repositorySelectionEcho = Boolean(pendingRepositoryFileSelection

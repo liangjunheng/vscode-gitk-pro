@@ -272,7 +272,7 @@ export const COMMIT_CARD_SCRIPT = `
     }
     ancestry.hidden=card.repositoryAncestry.length===0;
     const refs=el._refs;
-    updateCardSelection(el);
+    el.classList.toggle('selected-card',el.dataset.repo===selectedRepositoryPath);
     const isEmpty=!card.mergeOperation&&card.conflictFiles.length===0&&card.stagedFiles.length===0&&card.unstagedFiles.length===0;
     refs.amendCheckbox.checked=card.amend;
     refs.amendCheckbox.disabled=false;

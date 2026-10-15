@@ -6,19 +6,11 @@ export const REPOSITORY_CHANGES_STYLES = `
   #repositoryChangesList[hidden] { display: none; }
   .repo-changes { width: 100%; min-width: 0; margin-bottom: 8px; border: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); border-radius: 6px; background: var(--vscode-sideBar-background, var(--vscode-editor-background)); cursor: pointer; }
   .repo-changes.focused { border-color: var(--vscode-focusBorder); }
-  /* 仅当前选中的 Uncommitted Changes 仓库沿用 MultiDiff 的黄色工作区提示。 */
-  .repo-changes.working-tree-selected { --worktree-surface: #f6d78b; --worktree-outline: color-mix(in srgb, #e5b95a 24%, transparent); background-color: color-mix(in srgb, var(--worktree-surface) 10%, var(--vscode-sideBar-background, var(--vscode-editor-background))); border-color: var(--worktree-outline); }
-  .repo-changes.working-tree-selected > .repo-changes-header { background-color: color-mix(in srgb, var(--worktree-surface) 17%, var(--vscode-sideBar-background, var(--vscode-editor-background))); }
-  .repo-changes.working-tree-selected:has(.repo-changes-body:not([hidden])) > .repo-changes-header { border-bottom-color: var(--worktree-outline); }
-  .repo-changes.working-tree-selected > .repo-changes-header.pinned::after { background: var(--worktree-outline); }
   .repo-changes:focus { outline: none; }
   .repo-changes-header { position: sticky; top: 0; z-index: 2; isolation: isolate; display: flex; width: 100%; align-items: center; height: 30px; min-width: 0; gap: 3px; padding: 0 6px; overflow: hidden; background-color: inherit; }
   .repo-changes-header::after { content: none; }
   .repo-changes-header.pinned::after { content: ''; position: absolute; top: 0; right: 0; left: 0; z-index: 3; height: 1px; background: var(--vscode-widget-border, var(--vscode-editorGroup-border)); pointer-events: none; }
   .repo-changes.focused > .repo-changes-header.pinned::after { background: var(--vscode-focusBorder); }
-  /* 工作区颜色来自当前选择，不受仓库卡片焦点状态覆盖。 */
-  .repo-changes.working-tree-selected.focused { border-color: var(--worktree-outline); }
-  .repo-changes.working-tree-selected.focused > .repo-changes-header.pinned::after { background: var(--worktree-outline); }
   .repo-changes-toggle { display: flex; justify-content: center; align-items: center; flex: 0 0 18px; width: 18px; height: 24px; padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer; }
   .repo-changes-title { display: flex; align-items: center; flex: 1; min-width: 0; gap: 0; cursor: pointer; }
   .repo-changes-icon { position: relative; display: inline-flex; align-items: center; flex: 0 0 16px; width: 16px; height: 20px; }
@@ -120,7 +112,6 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     resizeRepositoryTextArea(input, 2);
   }
   let focusedRepositoryChangesPath = '';
-  let selectedWorkingTreeRepositoryPath = '';
   let repositoryChangesRevealPath = '';
   function revealRepositoryChanges(repositoryPath) {
     repositoryChangesCollapsed.delete(repositoryPath);
@@ -338,7 +329,6 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       node.card.querySelector('.repo-changes-title').title = repository.repositoryPath;
       node.card.querySelector('.repo-changes-toggle').setAttribute('aria-label', repository.repositoryLabel + '：展开或收起');
       node.card.classList.toggle('focused', focusedRepositoryChangesPath === repository.repositoryPath);
-      node.card.classList.toggle('working-tree-selected', selectedWorkingTreeRepositoryPath === repository.repositoryPath);
       node.input.placeholder = '提交信息';
       node.input.setAttribute('aria-label', repository.repositoryLabel + '：提交信息');
       node.input.title = '提交到 ' + (repository.headLabel || repository.repositoryLabel);
@@ -470,6 +460,12 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       if (repositoryChangesCollapsed.has(repositoryPath) && focusedRepositoryChangesPath === repositoryPath) {
         focusedRepositoryChangesPath = '';
         repositoryChangesNodes.forEach(function(node) { node.card.classList.remove('focused'); });
+        // Clear immediately, then confirm through the authoritative repository-selection pipeline.
+        selectedRepositoryPaths = []; selectedBranches = []; commits = []; workingTreeRowsState = [];
+        selectedCommitHash = ''; selectedCommitRepositoryPath = ''; isCommitLoading = false;
+        hasMoreCommits = false; isLoadingMoreCommits = false;
+        render(); hideLoadingProgress(); updateCountLabel();
+        vscode.postMessage({ type: 'repositoryChangesAction', action: 'blur', repositoryPath: repositoryPath });
       }
       if (!repositoryChangesCollapsed.has(repositoryPath)) focusRepositoryChanges(repositoryPath);
       updateRepositoryChangesVisibility(node, repository); return;
