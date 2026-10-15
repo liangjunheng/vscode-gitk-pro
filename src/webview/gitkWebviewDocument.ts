@@ -176,9 +176,6 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR
       commitListModelKey = nextCommitListModelKey;
       currentMaxLane = 0;
       currentGraphW = LANE_W + 10;
-      columnWidthChars.hash = 0;
-      columnWidthChars.author = 0;
-      columnWidthChars.date = 0;
       if (state.commitListRevision !== undefined && state.commitListRevision !== commitListRevision) expandedCommits.clear();
       commitListRevision = state.commitListRevision || 0;
       renderSelectorState(state);
