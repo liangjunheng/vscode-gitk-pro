@@ -48,7 +48,7 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   #graph.without-lanes .col-main { grid-template-columns: minmax(0, 1fr); }
   #graph.without-lanes .col-main-summary, #graph.without-lanes .commit-description { grid-column: 1; }
   #graph.without-lanes { --main-width: 60ch; }
-  .col-main-summary { grid-column: 2; grid-row: 1; display: flex; align-items: center; min-width: 0; overflow: hidden; padding: 0 5px 0 0; }
+  .col-main-summary { grid-column: 2; grid-row: 1; display: flex; align-items: center; min-width: 0; overflow: hidden; padding: 0 calc(var(--commit-row-refs-width, 0px) + 5px) 0 0; }
   .col-main-summary .commit-message-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-foreground, inherit); }
   .commit-row.selected .commit-message-text { font-weight: 600; }
   .commit-description { display: none; grid-column: 2; grid-row: 2; padding: 9px 10px 10px 0; color: var(--vscode-descriptionForeground); cursor: text; }
@@ -504,10 +504,23 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     document.querySelectorAll('[data-floating-kind="' + kind + '"]').forEach(function(item) {
       item.setAttribute('aria-expanded', String(expanded));
     });
+    requestAnimationFrame(syncVisibleCommitRowRefReservations);
     if (!persist) return;
     var state = vscode.getState() || {};
     state.commitFloatingButtons = Object.assign({}, floatingExpanded);
     vscode.setState(state);
+  }
+
+  // 标题和右侧悬浮按钮处于同一行；按每行实际按钮宽度预留标题尾部，避免文字落在按钮下方。
+  function reserveCommitRowRefs(row) {
+    var refGroup = row.querySelector('.commit-row-refs');
+    var main = row.querySelector('.col-main');
+    if (!main) return;
+    main.style.setProperty('--commit-row-refs-width', refGroup ? (refGroup.offsetWidth + 16) + 'px' : '0px');
+  }
+
+  function syncVisibleCommitRowRefReservations() {
+    document.querySelectorAll('#commitVirtualRows .commit-row, #commitWorkingTreeRows .commit-row').forEach(reserveCommitRowRefs);
   }
 
   // 描述列的分支标签: 仅标注当前分支 HEAD 与其 upstream 远程分支 HEAD。
@@ -662,6 +675,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
         toggleRefGroup(event);
       });
     }
+    reserveCommitRowRefs(row);
     row.addEventListener('click', function(event) {
       if (row.classList.contains('disabled')) return;
       if (event.target && event.target.closest('.commit-description')) return;
