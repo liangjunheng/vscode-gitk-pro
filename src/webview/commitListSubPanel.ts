@@ -674,6 +674,11 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
         if (event.key !== 'Enter' && event.key !== ' ') return;
         toggleRefGroup(event);
       });
+      refGroup.addEventListener('transitionend', function(event) {
+        if (event.propertyName !== 'max-width') return;
+        if (!event.target.matches('.commit-row-ref-label, .commit-row-info-label')) return;
+        reserveCommitRowRefs(row);
+      });
     }
     reserveCommitRowRefs(row);
     row.addEventListener('click', function(event) {
