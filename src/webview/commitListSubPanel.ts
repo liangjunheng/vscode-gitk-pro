@@ -35,6 +35,20 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   #commitHeaderSearch { display: flex; align-items: center; gap: 6px; margin-left: auto; padding-left: 8px; position: sticky; right: 10px; z-index: 1; background: var(--commit-title-background); }
   .commit-row { min-height: 26px; height: auto; box-sizing: border-box; cursor: pointer; align-items: start; font-size: inherit; }
   .commit-row:hover { background: var(--vscode-list-hoverBackground); }
+  #commitHoverCard { position: fixed; z-index: 10; width: min(430px, calc(100vw - 24px)); padding: 12px 14px; border: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); border-radius: 4px; background: var(--vscode-editorWidget-background, var(--vscode-editor-background)); box-shadow: 0 3px 10px rgba(0, 0, 0, .32); color: var(--vscode-editor-foreground, inherit); pointer-events: none; }
+  #commitHoverCard[hidden] { display: none; }
+  .commit-hover-meta { display: flex; align-items: center; gap: 5px; min-width: 0; color: var(--vscode-descriptionForeground); line-height: 18px; }
+  .commit-hover-author { min-width: 0; overflow: hidden; color: var(--vscode-textLink-foreground); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+  .commit-hover-message { margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 19px; }
+  .commit-hover-body { margin-top: 4px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vscode-descriptionForeground); line-height: 18px; }
+  .commit-hover-refs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
+  .commit-hover-ref { display: inline-flex; align-items: center; gap: 3px; min-height: 18px; padding: 0 6px; border-radius: 999px; color: #17212b; font-size: calc(var(--vscode-font-size, 13px) - 1px); line-height: 18px; }
+  .commit-hover-ref .codicon { font-size: calc(var(--vscode-font-size, 13px) - 1px); line-height: 1; }
+  .commit-hover-ref--current { background: #5aa7e8; }
+  .commit-hover-ref--tag { background: #f3d77b; }
+  .commit-hover-ref--local { background: #69c58f; }
+  .commit-hover-ref--remote { background: #c9a227; }
+  .commit-hover-hash { display: flex; align-items: center; gap: 6px; margin-top: 10px; color: var(--vscode-textLink-foreground); font-family: var(--vscode-editor-font-family, monospace); font-size: calc(var(--vscode-font-size, 13px) - 1px); }
   /* 外层 Grid 的所有内容显式共用第 1 行；标签覆盖其上而不占出第 2 行。 */
   .commit-row > .col-main { grid-column: 1; grid-row: 1; width: 100%; }
   /* 分支图与描述合并为 col-main 单列: SVG 画泳道(左), 摘要行与描述(右)在同一字段内竖排。 */
@@ -151,6 +165,7 @@ export const COMMIT_LIST_SUB_PANEL_MARKUP = `
       </div>
       <div id="commitList"><div id="commitEmpty">提交记录将在此显示</div></div>
       <div id="commitFooter" hidden></div>
+      <div id="commitHoverCard" role="tooltip" hidden></div>
     </div>
     <div id="commitVerticalScrollbar" class="overlay-scroll-track vertical" role="scrollbar" aria-label="纵向滚动提交列表" aria-controls="graph" aria-orientation="vertical" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" tabindex="0" hidden><div class="overlay-scroll-thumb"></div></div>
     </div>
@@ -223,6 +238,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
   let commitLoadObserver = null;
   let commitListModelKey = '';
   let workingTreeModelKey = '';
+  let commitHoverTimer = 0;
   const columnWidths = {};
   let resizing = null;
   const persistedCommitListState = vscode.getState() || {};
@@ -321,6 +337,51 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     fill.classList.remove('indeterminate');
     fill.style.width = '';
   }
+
+  function hideCommitHoverCard() {
+    if (commitHoverTimer) {
+      clearTimeout(commitHoverTimer);
+      commitHoverTimer = 0;
+    }
+    document.getElementById('commitHoverCard').hidden = true;
+  }
+
+  function showCommitHoverCard(row) {
+    if (row.classList.contains('working-tree')) return;
+    var index = Number(row.getAttribute('data-row'));
+    var commit = Number.isInteger(index) ? commits[index] : undefined;
+    if (!commit) return;
+    var card = document.getElementById('commitHoverCard');
+    var author = commit.author || 'Unknown author';
+    var date = commit.authorDate ? new Date(commit.authorDate).toLocaleString() : commit.authorDateLabel;
+    var body = (commit.body || '').trim();
+    var hoverRefsHtml = categorizedRefs(commit.refs || [], commit.gitBranchOption.repoOption.path).map(function(category) {
+      var label = category.labels.join(', ');
+      return '<span class="commit-hover-ref commit-hover-ref--' + category.kind + '"><span class="codicon codicon-' + category.icon + '" aria-hidden="true"></span><span>' + escapeHtml(label) + '</span></span>';
+    }).join('');
+    card.innerHTML = '<div class="commit-hover-meta"><span class="codicon codicon-account" aria-hidden="true"></span><span class="commit-hover-author">' + escapeHtml(author) + '</span><span>•</span><span>' + escapeHtml(date || '') + '</span></div>'
+      + '<div class="commit-hover-message">' + escapeHtml(commit.message || '') + '</div>'
+      + (body ? '<div class="commit-hover-body">' + escapeHtml(body) + '</div>' : '')
+      + (hoverRefsHtml ? '<div class="commit-hover-refs">' + hoverRefsHtml + '</div>' : '')
+      + '<div class="commit-hover-hash"><span class="codicon codicon-git-commit" aria-hidden="true"></span><span>' + escapeHtml(commit.shortHash || commit.hash || '') + '</span></div>';
+    card.hidden = false;
+    var rowRect = row.getBoundingClientRect();
+    var maxLeft = Math.max(12, window.innerWidth - card.offsetWidth - 12);
+    var left = Math.min(maxLeft, Math.max(12, rowRect.right - card.offsetWidth));
+    var preferredTop = rowRect.bottom + 6;
+    var top = preferredTop + card.offsetHeight <= window.innerHeight - 12 ? preferredTop : Math.max(12, rowRect.top - card.offsetHeight - 6);
+    card.style.left = left + 'px';
+    card.style.top = top + 'px';
+  }
+
+  function scheduleCommitHoverCard(row) {
+    if (commitHoverTimer) clearTimeout(commitHoverTimer);
+    commitHoverTimer = setTimeout(function() {
+      commitHoverTimer = 0;
+      if (row.matches(':hover')) showCommitHoverCard(row);
+    }, 350);
+  }
+
   document.getElementById('commitList').addEventListener('contextmenu', function(event) {
     var row = event.target.closest('.commit-row');
     if (!row || row.classList.contains('working-tree')) return;
@@ -506,14 +567,6 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     var commitDate = c.authorDate ? new Date(c.authorDate).toString() : c.authorDateLabel;
     var descriptionText = [c.message, c.body || ''].filter(Boolean).join('\\n')
       .trim().replace(/\\n[ \\t]*\\n(?:[ \\t]*\\n)+/g, '\\n\\n');
-    var hoverDescription = [
-      branchList,
-      branchList ? '────────────────' : '',
-      descriptionText,
-      '────────────────',
-      'Author: ' + authorPreview,
-      'Date: ' + commitDate,
-    ].filter(Boolean).join('\\n');
     // 每个分支类别独立展开；Commit、作者、时间也是独立的全局显示按钮。
     var refChipsHtml = categorizedRefs(c.refs || [], repositoryPath).map(function(category) {
       var label = category.labels.join(', ');
@@ -532,9 +585,9 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     }).join('');
     // col-main: SVG(仅泳道, 按本行泳道宽) + 摘要行 + 展开后的描述, 同属一个字段。
     var rowW = rowGraphW(c);
-    html += '<div class="col-main"' + (branchList ? ' title="' + escapeAttr(branchList) + '"' : '') + '>';
+    html += '<div class="col-main">';
     html += '<svg class="graph-svg" width="' + rowW + '" height="' + ROW_H + '" viewBox="0 0 ' + rowW + ' ' + ROW_H + '"></svg>';
-    html += '<div class="col-main-summary" title="' + escapeAttr(hoverDescription) + '"><span class="commit-message-text">' + escapeHtml(c.message) + '</span></div>';
+    html += '<div class="col-main-summary"><span class="commit-message-text">' + escapeHtml(c.message) + '</span></div>';
     var committerPreview = c.committerEmail ? c.committer + ' <' + c.committerEmail + '>' : c.committer;
     var parentList = (c.parents || []).join(' ');
     var description = [
@@ -630,6 +683,12 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
         toggleRefGroup(event);
       });
     }
+    if (!isWorkingTree) {
+      row.addEventListener('mouseenter', function() { scheduleCommitHoverCard(row); });
+      row.addEventListener('mouseleave', hideCommitHoverCard);
+      row.addEventListener('focusin', function() { scheduleCommitHoverCard(row); });
+      row.addEventListener('focusout', hideCommitHoverCard);
+    }
     row.addEventListener('click', function(event) {
       if (row.classList.contains('disabled')) return;
       if (event.target && event.target.closest('.commit-description')) return;
@@ -651,21 +710,14 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
         return;
       }
       if (wasSelected) {
-        // 仅已高亮 commit 可单击切换描述。
-        if (wasExpanded) {
-          expandedCommits.delete(commitKey);
-        } else {
-          expandedCommits.add(commitKey);
-        }
+        if (wasExpanded) expandedCommits.delete(commitKey);
+        else expandedCommits.add(commitKey);
         commitLayoutDirty = true;
         render();
         return;
       }
-      if (!wasSelected) {
-        // 乐观反馈仅改变 DOM 表现；Store 快照仍是唯一业务状态来源。
-        applyCommitSelection(hash, repositoryPath);
-        vscode.postMessage({ type: 'selectCommit', hash: hash, repositoryPath: repositoryPath });
-      }
+      applyCommitSelection(hash, repositoryPath);
+      vscode.postMessage({ type: 'selectCommit', hash: hash, repositoryPath: repositoryPath });
     });
   }
 
@@ -843,6 +895,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     bottom.style.height = Math.max(0, commitLayoutTotal - (commitLayoutPrefix[range.end] || 0)) + 'px';
     let html = '';
     for (let index = range.start; index < range.end; index++) html += buildCommitRowHTML(index, currentGraphW);
+    hideCommitHoverCard();
     rowsHost.innerHTML = html;
     rowsHost.querySelectorAll('.commit-row').forEach(function(row) { setupRow(row, currentGraphW); });
     measureExpandedCommitRows();
@@ -858,7 +911,10 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     });
   }
 
-  document.getElementById('graph').addEventListener('scroll', scheduleCommitVirtualWindow, { passive: true });
+  document.getElementById('graph').addEventListener('scroll', function() {
+    hideCommitHoverCard();
+    scheduleCommitVirtualWindow();
+  }, { passive: true });
 
   function captureVisibleCommitAnchor(graph, list) {
     if (!graph || !list) return null;
