@@ -75,7 +75,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .line-stat-removed{color:var(--vscode-gitDecoration-deletedResourceForeground)}
 .file-location{display:flex;align-items:center;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .file-location.is-deleted{text-decoration-line:line-through;text-decoration-thickness:1px}
-.file-name{flex:0 0 auto;line-height:1.2}
+.file-name{flex:0 0 auto;font-size:calc(var(--vscode-editor-font-size) + 2px);line-height:1.2}
 .file-path-gap{flex:0 0 auto;white-space:pre}
 .file-folder{min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--vscode-descriptionForeground);opacity:.72;line-height:1.2}
 /* 标题栏和 index 栏在卡片内容边界内吸顶，不覆盖卡片自身边框或外环。 */
