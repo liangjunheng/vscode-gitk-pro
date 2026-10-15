@@ -10,8 +10,8 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   #commitSection #commitGraphViewport > #graph { height: 100%; }
   #graph { --graph-lane-width: 22px; --main-width: calc(var(--graph-lane-width) + 60ch); --hash-width: max-content; --author-width: max-content; --date-width: max-content; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: auto; overflow-anchor: none; display: flex; flex-direction: column; }
   /* 竖向铺满: 列表吃掉表头以外的剩余高度。flex-shrink 必须为 0, 否则内容超高时会被压扁而无法滚动。 */
-  #commitList { flex: 1 0 auto; min-width: 0; }
-  #commitWorkingTreeRows, #commitVirtualRows { min-width: max-content; }
+  #commitList { flex: 1 0 auto; width: 100%; min-width: 0; }
+  #commitWorkingTreeRows, #commitVirtualRows { width: 100%; min-width: max-content; }
   .commit-virtual-spacer { width: 1px; min-height: 0; pointer-events: none; }
   /* 搜索/计数/刷新都是提交列表的能力, 随面板一起放在列头之上并吸顶。 */
   .count { opacity: 0.7; font-size: 11px; white-space: nowrap; }
@@ -23,7 +23,7 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   #searchClear { position: absolute; right: 4px; top: 0; bottom: 0; margin: auto 0; width: 16px; height: 16px; border: none; background: transparent; color: var(--vscode-descriptionForeground, #888); cursor: pointer; display: none; font-size: 14px; line-height: 16px; padding: 0; border-radius: 3px; align-items: center; justify-content: center; }
   #searchClear:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.15)); color: var(--vscode-input-foreground, inherit); }
   #searchClear.visible { display: flex; }
-  .commit-row { display: grid; grid-template-columns: var(--main-width) var(--author-width) var(--hash-width) var(--date-width); align-items: center; min-width: max-content; }
+  .commit-row { position: relative; display: grid; grid-template-columns: var(--main-width) var(--author-width) var(--hash-width) var(--date-width); align-items: center; width: 100%; min-width: max-content; }
   /* 列头与提交行拆开: 列头是 flex, 左侧四列仍走同一套列宽变量, 右侧放同步操作。 */
   #commitHeaderColumns { display: grid; grid-template-columns: var(--main-width) var(--author-width) var(--hash-width) var(--date-width); align-items: center; min-width: max-content; }
   /* top 让出工具条 30px, 与工具条一起吸顶; z-index 高于提交行、低于工具条。 */
@@ -34,6 +34,11 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   #commitHeaderSearch { display: flex; align-items: center; gap: 6px; margin-left: auto; padding-left: 8px; position: sticky; right: 10px; z-index: 1; background: var(--commit-title-background); }
   .commit-row { min-height: 26px; height: auto; box-sizing: border-box; cursor: pointer; align-items: start; }
   .commit-row:hover { background: var(--vscode-list-hoverBackground); }
+  /* 外层 Grid 的所有内容显式共用第 1 行；标签覆盖其上而不占出第 2 行。 */
+  .commit-row > .col-main { grid-column: 1; grid-row: 1; }
+  .commit-row > .col-author { grid-column: 2; grid-row: 1; }
+  .commit-row > .col-hash { grid-column: 3; grid-row: 1; }
+  .commit-row > .col-date { grid-column: 4; grid-row: 1; }
   /* 分支图与描述合并为 col-main 单列: SVG 画泳道(左), 摘要行与描述(右)在同一字段内竖排。 */
   .col-main { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 26px; align-items: center; min-width: 0; overflow: hidden; }
   .commit-row.expanded .col-main { grid-template-rows: 26px auto; }
@@ -43,7 +48,7 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   #graph.without-lanes .col-main { grid-template-columns: minmax(0, 1fr); }
   #graph.without-lanes .col-main-summary, #graph.without-lanes .commit-description { grid-column: 1; }
   #graph.without-lanes { --main-width: 60ch; }
-  .col-main-summary { grid-column: 2; grid-row: 1; display: flex; align-items: center; min-width: 0; overflow: hidden; padding: 0 5px; }
+  .col-main-summary { grid-column: 2; grid-row: 1; display: flex; align-items: center; min-width: 0; overflow: hidden; padding: 0 5px 0 2px; }
   .col-main-summary .commit-message-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-foreground, inherit); }
   .commit-description { display: none; grid-column: 2; grid-row: 2; padding: 7px 5px; border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 12%, transparent); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vscode-descriptionForeground); line-height: 17px; cursor: text; }
   .commit-row.expanded .commit-description { display: block; }
@@ -71,10 +76,20 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   .col-main, .col-hash, .col-author, .col-date { min-width: 0; overflow: hidden; white-space: nowrap; text-align: left; }
   .col-hash, .col-author, .col-date { padding: 0 5px; height: 26px; display: flex; align-items: center; }
   .graph-svg { flex: 0 0 auto; }
-  .col-message-head-refs { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-right: 8px; vertical-align: middle; flex: 0 0 auto; }
-  .col-message-head-ref { display: inline-flex; align-items: center; gap: 3px; min-height: 16px; padding: 0 5px; border-radius: 4px; color: var(--vscode-editor-background); font-size: 11px; line-height: 16px; }
+  /* 各分组独立成圆形图标位，并与描述共用第 1 行；横向 sticky 固定在可视区右缘。 */
+  .commit-row-refs { position: sticky; z-index: 1; right: 0; grid-row: 1; grid-column: 1 / -1; align-self: start; justify-self: end; display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-end; gap: 2px; height: 20px; margin-top: 3px; pointer-events: auto; }
+  .commit-row-ref { display: inline-flex; align-items: center; justify-content: center; gap: 0; min-width: 20px; height: 20px; padding: 0 4px; border-radius: 999px; box-sizing: border-box; color: var(--vscode-editor-background); font-size: 11px; line-height: 20px; white-space: nowrap; transition: gap 80ms ease-out; }
+  .commit-row-ref--current { gap: 3px; background: var(--vscode-charts-blue, #4daafc); }
+  .commit-row-ref--tag { background: var(--vscode-charts-yellow, #cca700); }
+  .commit-row-ref--local { background: var(--vscode-charts-green, #89d185); }
+  .commit-row-ref--remote { background: var(--vscode-charts-orange, #d18616); }
+  .commit-row-refs:has(.commit-row-ref:hover) .commit-row-ref { gap: 3px; }
+  .commit-row-ref-label { display: inline-block; max-width: 0; overflow: hidden; opacity: 0; line-height: 16px; transition: max-width 120ms ease-out, opacity 80ms ease-out; }
+  .commit-row-ref--current .commit-row-ref-label { max-width: 100vw; opacity: 1; }
+  .commit-row-refs:has(.commit-row-ref:hover) .commit-row-ref-label { max-width: 100vw; opacity: 1; }
+  .commit-row-author { display: inline-flex; align-items: center; height: 20px; padding: 0 6px; border-radius: 999px; background: var(--vscode-badge-background, #4d4d4d); color: var(--vscode-badge-foreground, #ffffff); font-size: 11px; line-height: 20px; white-space: nowrap; }
   /* 选择器需两级以压过 codicon.css 的 .codicon[class*='codicon-']，否则其 16px/1 行高会让图标与标签文本错位。 */
-  .col-message-head-ref .codicon { display: flex; align-items: center; font-size: 11px; line-height: 1; }
+  .commit-row-ref .codicon { display: inline-flex; flex: 0 0 12px; align-items: center; justify-content: center; width: 12px; height: 20px; font-size: 11px; line-height: 20px; }
   .col-hash { width: max-content; font-family: var(--vscode-editor-font-family, monospace); opacity: 0.85; color: var(--vscode-descriptionForeground, inherit); }
   .col-author, .col-date { width: max-content; text-overflow: clip; }
   .col-author { opacity: 0.75; }
@@ -383,21 +398,32 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     return (rowMaxSwimlane(c) + 1) * LANE_W + 10;
   }
 
-  // 分支标签图标(可多个): 当前分支=靶子, 远程分支=云, 本地分支=显示器。图标类型由 branches 的 kind 决定,
-  // 不按 ref 文本猜测。ref 文本 (git log %D 的 short 名) 与 branch.label (%(refname:short)) 同源可直接匹配。
-  // 特例: 远程 HEAD 符号指针命名恒为 "<remote>/HEAD" (git 规范), %(refname:short) 会被简化成 "<remote>",
-  // 与 %D 文本 "origin/HEAD" 对不上; 它既是该远程的 HEAD 指针(靶子)又是远程(云), 故返回 [target, cloud]。
-  function refIconsFor(ref, repositoryPath) {
-    if (/\\/HEAD$/.test(ref)) return ['target', 'cloud'];
-    var match = branches.find(function(branch) {
-      return branch.repoOption.path === repositoryPath && branch.label === ref;
+  // 每类 ref 最多渲染一个图标位：当前分支、Tag、本地分支、远程分支。
+  // 分支分类严格来自 branches 元数据；Tag 来自原生层规范化后的 "tag: " 前缀。
+  function categorizedRefs(refs, repositoryPath) {
+    var categories = [
+      { kind: 'current', icon: 'target', labels: [] },
+      { kind: 'tag', icon: 'tag', labels: [] },
+      { kind: 'local', icon: 'device-desktop', labels: [] },
+      { kind: 'remote', icon: 'cloud', labels: [] },
+    ];
+    var byKind = {};
+    categories.forEach(function(category) { byKind[category.kind] = category; });
+    refs.forEach(function(ref) {
+      var kind = ref.startsWith('tag: ') ? 'tag' : undefined;
+      var label = ref;
+      if (!kind) {
+        var matches = branches.filter(function(branch) {
+          return branch.repoOption.path === repositoryPath && branch.label === ref;
+        });
+        var current = matches.find(function(branch) { return branch.kind === 'current'; });
+        if (current) { kind = 'current'; label = current.label; }
+        else if (matches.some(function(branch) { return branch.kind === 'local'; })) kind = 'local';
+        else if (matches.some(function(branch) { return branch.kind === 'remote'; })) kind = 'remote';
+      }
+      if (kind && !byKind[kind].labels.includes(label)) byKind[kind].labels.push(label);
     });
-    if (!match) return [];
-    // 当前分支同时也是本地分支: 靶子在前, 本地分支图标(显示器)在后。
-    if (match.kind === 'current') return ['target', 'device-desktop'];
-    if (match.kind === 'remote') return ['cloud'];
-    if (match.kind === 'local') return ['device-desktop'];
-    return [];
+    return categories.filter(function(category) { return category.labels.length > 0; });
   }
 
 
@@ -456,21 +482,21 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
       'Author: ' + authorPreview,
       'Date: ' + commitDate,
     ].filter(Boolean).join('\\n');
-    // 分支标签(全部 c.refs)以 chip 形式并入描述字段的摘要行; 图标按 kind 决定: 当前=靶子, 远程=云, 本地=分支; 可多个。
-    var refChipsHtml = (c.refs || []).map(function(ref) {
-      var iconHtml = refIconsFor(ref, repositoryPath).map(function(icon) {
-        return '<span class="codicon codicon-' + icon + '" aria-hidden="true"></span>';
-      }).join('');
-      return '<span class="col-message-head-ref" style="background:' + escapeAttr(commitLaneColor(c)) + '">'
-        + iconHtml + escapeHtml(ref) + '</span>';
+    // 默认仅展示四个类别图标；悬浮后才展开每类实际 ref 名称。
+    var refChipsHtml = categorizedRefs(c.refs || [], repositoryPath).map(function(category) {
+      var label = category.labels.join(', ');
+      return '<span class="commit-row-ref commit-row-ref--' + category.kind + '" title="' + escapeAttr(label) + '">'
+        + '<span class="codicon codicon-' + category.icon + '" aria-hidden="true"></span>'
+        + '<span class="commit-row-ref-label">' + escapeHtml(label) + '</span></span>';
     }).join('');
-    // col-main: SVG(仅泳道, 按本行泳道宽) + 摘要行(chip + 提交信息) + 展开后的描述, 同属一个字段。
+    var floatingAuthorHtml = c.author
+      ? '<span class="commit-row-author" title="' + escapeAttr(c.author) + '">' + escapeHtml(c.author) + '</span>'
+      : '';
+    // col-main: SVG(仅泳道, 按本行泳道宽) + 摘要行 + 展开后的描述, 同属一个字段。
     var rowW = rowGraphW(c);
     html += '<div class="col-main"' + (branchList ? ' title="' + escapeAttr(branchList) + '"' : '') + '>';
     html += '<svg class="graph-svg" width="' + rowW + '" height="' + ROW_H + '" viewBox="0 0 ' + rowW + ' ' + ROW_H + '"></svg>';
-    html += '<div class="col-main-summary" title="' + escapeAttr(hoverDescription) + '">'
-      + (refChipsHtml ? '<span class="col-message-head-refs">' + refChipsHtml + '</span>' : '')
-      + '<span class="commit-message-text">' + escapeHtml(c.message) + '</span></div>';
+    html += '<div class="col-main-summary" title="' + escapeAttr(hoverDescription) + '"><span class="commit-message-text">' + escapeHtml(c.message) + '</span></div>';
     var committerPreview = c.committerEmail ? c.committer + ' <' + c.committerEmail + '>' : c.committer;
     var parentList = (c.parents || []).join(' ');
     var description = [
@@ -487,6 +513,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     html += '<div class="col-author" title="' + escapeAttr(authorPreview) + '">' + escapeHtml(authorPreview) + '</div>';
     html += '<div class="col-hash">' + escapeHtml(c.shortHash) + '</div>';
     html += '<div class="col-date" title="' + escapeAttr(c.authorDateLabel) + '">' + escapeHtml(c.authorDateLabel) + '</div>';
+    if (refChipsHtml || floatingAuthorHtml) html += '<span class="commit-row-refs">' + refChipsHtml + floatingAuthorHtml + '</span>';
     html += '</div>';
     return html;
   }
