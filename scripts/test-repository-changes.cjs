@@ -46,6 +46,14 @@ async function main() {
     const publish = async () => page.evaluate(state => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state } })), state);
     await publish();
     await assertCount(page.locator('.repo-changes'), 6);
+    const cardTransition = await page.locator('.repo-changes').first().evaluate(card => ({
+      divider: getComputedStyle(card.querySelector('.repo-changes-header')).borderBottomColor,
+      bodyPaddingTop: getComputedStyle(card.querySelector('.repo-changes-body')).paddingTop,
+      marginBottom: getComputedStyle(card).marginBottom,
+    }));
+    assert.notEqual(cardTransition.divider, 'rgb(52, 52, 52)', 'expanded repository header uses a softened divider instead of the theme widget border');
+    assert.equal(cardTransition.bodyPaddingTop, '6px', 'repository body sits closer to the softened header transition');
+    assert.equal(cardTransition.marginBottom, '12px', 'repository cards use 50 percent more vertical spacing');
     const selectorPosition = await page.evaluate(() => {
       const header = document.getElementById('commitHeader').getBoundingClientRect();
       const selectors = document.getElementById('commitSelectors').getBoundingClientRect();
@@ -122,20 +130,20 @@ async function main() {
       };
     });
     const expandedLayout = await gutterLayout();
-    assert.equal(await page.locator('#repositoryChangesList').evaluate(node => getComputedStyle(node).paddingTop), '0px', 'first pinned header starts at the list top');
+    assert.equal(await page.locator('#repositoryChangesList').evaluate(node => getComputedStyle(node).paddingTop), '2px', 'first repository card keeps 2px spacing below the panel header');
     await page.locator('.repo-changes-label').first().click();
     await assertCount(page.locator('.repo-changes.focused'), 1);
     assert.equal(expandedLayout.gutter, 'auto', 'overlay scrollbar does not reserve a gutter');
-    assert.equal(expandedLayout.paddingLeft, '0px');
-    assert.equal(expandedLayout.paddingRight, '1px');
-    assert.ok(expandedLayout.headerWidths.every(width => Math.abs(width + 3 - expandedLayout.clientWidth) < 1), 'repository cards retain a 1px right focus-border boundary');
+    assert.equal(expandedLayout.paddingLeft, '2px');
+    assert.equal(expandedLayout.paddingRight, '2px');
+    assert.ok(expandedLayout.headerWidths.every(width => Math.abs(width + 4 - expandedLayout.clientWidth) < 1), 'repository cards retain 2px spacing on both sides');
     const focusBorder = await page.locator('.repo-changes').filter({ has: page.locator('.repo-changes-header') }).nth(0).evaluate(card => {
       const cardRect = card.getBoundingClientRect();
       const listRect = document.getElementById('repositoryChangesList').getBoundingClientRect();
       const scrollbarRect = document.getElementById('repositoryChangesScrollbar').getBoundingClientRect();
       return { cardRight: cardRect.right, listRight: listRect.right, scrollbarLeft: scrollbarRect.left };
     });
-    assert.ok(focusBorder.cardRight <= focusBorder.listRight - 1 + 1);
+    assert.ok(focusBorder.cardRight <= focusBorder.listRight - 2 + 1);
     assert.ok(focusBorder.scrollbarLeft < focusBorder.listRight, 'vertical overlay remains inside its clipped viewport');
     assert.equal(await page.locator('.repo-changes.focused').count(), 1, 'one focused card owns the right focus border');
     assert.equal(await page.locator('.repo-changes.focused').evaluate(card => getComputedStyle(card).borderRightColor), 'rgb(0, 127, 212)', 'focused card retains its visible right focus border');
