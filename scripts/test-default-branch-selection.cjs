@@ -15,6 +15,7 @@ const remote = { repoOption: repository, name: 'refs/remotes/origin/topic', kind
 const repoEvents = new Emitter();
 const branchEvents = new Emitter();
 let branches = [current];
+let complete = false;
 
 const originalLoad = Module._load;
 let GitBranchesController;
@@ -31,6 +32,7 @@ const controller = new GitBranchesController({ onSelectedRepoListChanged: repoEv
   onRepositoryBranchesChanged: branchEvents.event,
   onBranchesLoadingChanged: new Emitter().event,
   getRepositorySnapshots: () => [],
+  isRepositorySnapshotComplete: () => complete,
   getTotalBranches: () => branches,
   refreshSelectedRepositories: () => {},
 });
@@ -39,7 +41,11 @@ controller.onSelectedBranchesChanged(snapshot => selections.push([...snapshot.va
 
 async function main() {
   repoEvents.fire([repository]);
-  assert.deepEqual(selections.at(-1), ['main'], 'the early HEAD-only snapshot is selected while refs are loading');
+  assert.deepEqual(selections.at(-1), ['main'], 'the early HEAD-only snapshot is available for the first commit page');
+
+  complete = true;
+  branchEvents.fire({ repository, branches, headChanged: false });
+  assert.deepEqual(selections.at(-1), ['main'], 'a complete one-branch snapshot keeps the same selection');
 
   branches = [current, local, remote];
   branchEvents.fire({ repository, branches, headChanged: false });
@@ -49,6 +55,6 @@ async function main() {
   branchEvents.fire({ repository, branches, headChanged: true });
   assert.deepEqual(selections.at(-1), [], 'a user-cleared selection is not defaulted again');
   controller.dispose();
-  console.log('Default branch selection tests passed: initial refs default to all branches and user selection remains authoritative.');
+  console.log('Default branch selection tests passed: all refs publish once after the complete snapshot and user selection remains authoritative.');
 }
 main().catch(error => { controller.dispose(); console.error(error); process.exitCode = 1; });

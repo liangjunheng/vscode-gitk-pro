@@ -14,9 +14,6 @@ export class GitBranchesController implements vscode.Disposable {
     private readonly selectedBranchNamesByRepository = new Map<string, Set<string>>();
     // 与 GitRepoController.hasUserSelection 对称: 用户手动选过分支后不再自动回填默认当前分支。
     private hasUserSelection = false;
-    // 仓库选择变化后是否已下发过选择快照。下游(提交读取)靠该快照结束等待,
-    // 无当前分支可回填的仓库不会再由 headChanged/defaulted 触发下发, 必须在分支快照收齐时收口。
-    private pendingSelectionDelivery = false;
 
     private _isLoading = false;
 
@@ -67,6 +64,9 @@ export class GitBranchesController implements vscode.Disposable {
         return this.selectedBranches.find(branch => branch.kind === 'current');
     }
 
+    /** Whether the current branch set is still controlled by automatic defaults. */
+    get hasManualBranchSelection(): boolean { return this.hasUserSelection; }
+
     private get selectedBranches(): GitBranchOption[] {
         return this.repositories.flatMap(repository => {
             const names = this.selectedBranchNamesByRepository.get(repository.path);
@@ -96,14 +96,13 @@ export class GitBranchesController implements vscode.Disposable {
     private async selectRepositories(repositories: readonly GitRepositoryOption[]): Promise<void> {
         if (this.sameRepositories(this.repositories, repositories)) { return; }
         this.repositories = [...repositories];
-        this.pendingSelectionDelivery = true;
         const keep = new Set(this.repositories.map(repository => repository.path));
         this.pruneSelected(keep);
-        // Cached branch snapshots can default immediately; later snapshots complete the selection.
+        // Publish a cached/current HEAD immediately so the commit reader can show its first
+        // page while the complete refs list continues loading in the background.
         const defaulted = this.ensureDefaultSelection();
         this.fireBranches();
-        // 分支快照已收齐时无需等待读取(命中缓存的仓库不会再有快照事件), 选择当场定型。
-        if (defaulted || this.hasAllSelectedSnapshots()) { this.fireSelected(); }
+        if (defaulted || this.hasAllSelectedCompleteSnapshots()) { this.fireSelected(); }
     }
 
     /**
@@ -124,15 +123,8 @@ export class GitBranchesController implements vscode.Disposable {
         return changed;
     }
 
-    /**
-     * 选中仓库是否都已收到过分支快照。
-     * 有快照才谈得上"该仓库没有当前分支"; 未收到快照的仓库仍可能带回当前分支, 必须继续等。
-     */
-    private hasAllSelectedSnapshots(): boolean {
-        const snapshotPaths = new Set(
-            this.totalBranchWatcher.getRepositorySnapshots().map(snapshot => snapshot.repository.path),
-        );
-        return this.repositories.every(repository => snapshotPaths.has(repository.path));
+    private hasAllSelectedCompleteSnapshots(): boolean {
+        return this.repositories.every(repository => this.totalBranchWatcher.isRepositorySnapshotComplete(repository));
     }
 
     /**
@@ -197,10 +189,10 @@ export class GitBranchesController implements vscode.Disposable {
         // A branch snapshot can begin with HEAD and later expand to the complete refs list.
         const defaulted = this.ensureDefaultSelection();
         this.fireBranches();
-        // Empty repositories may never trigger headChanged/defaulted. Close selection once all
-        // snapshots arrive so downstream commit reads do not remain loading indefinitely.
-        if (headChanged || defaulted
-            || (this.pendingSelectionDelivery && this.hasAllSelectedSnapshots())) {
+        // Publish the early HEAD snapshot for first paint. A later complete snapshot only
+        // causes a reload when it actually adds refs; same-branch selections are de-duplicated
+        // by GitCommitController.selectBranches().
+        if (headChanged || defaulted || this.hasAllSelectedCompleteSnapshots()) {
             this.fireSelected();
         }
     }
@@ -279,7 +271,6 @@ export class GitBranchesController implements vscode.Disposable {
     }
 
     private fireSelected(): void {
-        this.pendingSelectionDelivery = false;
         const snapshot = new Map<GitRepositoryOption, GitBranchOption[]>();
         for (const branch of this.selectedBranches) {
             const branches = snapshot.get(branch.repoOption);

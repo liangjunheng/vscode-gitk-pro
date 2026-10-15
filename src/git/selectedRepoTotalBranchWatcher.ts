@@ -30,6 +30,9 @@ function repositoryKey(repositoryPath: string): string {
 export class SelectedRepoTotalBranchWatcher implements vscode.Disposable {
     private readonly repositories = new Map<string, GitRepositoryOption>();
     private readonly totalBranches = new Map<string, GitBranchOption[]>();
+    // A cached HEAD lets the selector render promptly, but is not yet a complete refs snapshot.
+    // Consumers that need the default all-branch selection must wait for the full read.
+    private readonly completeSnapshots = new Set<string>();
     private readonly repoWatchers = new Map<string, vscode.Disposable>();
     private readonly refreshSlots = new Map<string, RefreshSlot>();
     private readonly snapshotEmitter = new vscode.EventEmitter<BranchSnapshot>();
@@ -67,6 +70,10 @@ export class SelectedRepoTotalBranchWatcher implements vscode.Disposable {
         });
     }
 
+    isRepositorySnapshotComplete(repository: GitRepositoryOption): boolean {
+        return this.completeSnapshots.has(repositoryKey(repository.path));
+    }
+
     refreshSelectedRepositories(): void {
         for (const repository of this.repositories.values()) {
             void this.enqueueRefresh(repository, true);
@@ -81,6 +88,7 @@ export class SelectedRepoTotalBranchWatcher implements vscode.Disposable {
         this.refreshSlots.clear();
         this.repositories.clear();
         this.totalBranches.clear();
+        this.completeSnapshots.clear();
         this.snapshotEmitter.dispose();
         this.loadingEmitter.dispose();
     }
@@ -94,6 +102,7 @@ export class SelectedRepoTotalBranchWatcher implements vscode.Disposable {
             this.repositories.delete(key);
             this.refreshSlots.delete(key);
             this.totalBranches.delete(key);
+            this.completeSnapshots.delete(key);
         }
         for (const [key, repository] of nextByKey) {
             const previousRepository = this.repositories.get(key);
@@ -105,6 +114,7 @@ export class SelectedRepoTotalBranchWatcher implements vscode.Disposable {
                 if (cachedHead) {
                     const initialBranches = [cachedHead];
                     this.totalBranches.set(key, initialBranches);
+                    this.completeSnapshots.delete(key);
                     this.snapshotEmitter.fire({ repository, branches: initialBranches, headChanged: true });
                 }
             } else if (!previousRepository || !repository.equals(previousRepository)) {
@@ -212,10 +222,12 @@ export class SelectedRepoTotalBranchWatcher implements vscode.Disposable {
                 const normalized = branches.filter(branch => branch.kind !== 'current').map(branch => new GitBranchOption({ ...branch, repoOption: repository }));
                 const complete = head ? [head, ...normalized] : normalized;
                 const previous = this.totalBranches.get(key);
-                if (previous && this.sameBranches(previous, complete)) { continue; }
+                const wasComplete = this.completeSnapshots.has(key);
+                if (previous && this.sameBranches(previous, complete) && wasComplete) { continue; }
                 const previousHead = previous?.find(branch => branch.kind === 'current');
                 const nextHead = complete.find(branch => branch.kind === 'current');
                 this.totalBranches.set(key, complete);
+                this.completeSnapshots.add(key);
                 this.snapshotEmitter.fire({
                     repository,
                     branches: [...complete],

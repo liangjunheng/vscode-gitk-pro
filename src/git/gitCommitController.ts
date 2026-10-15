@@ -351,7 +351,13 @@ export class GitCommitController implements vscode.Disposable {
         this.hasMoreCommits = false;
         this.commitPageError = '';
         this._isLoading = true;
-        this.reloadKind = 'rebuild';
+        const automaticBranchExpansion = !this.branchesController.hasManualBranchSelection
+            && this.branches.length > 0
+            && branches.length > this.branches.length
+            && this.branches.every(previous => branches.some(next => next.equals(previous)));
+        // The initial HEAD page is already visible. Expanding the automatic default to all
+        // refs should refresh it in place instead of hiding it behind the rebuild overlay.
+        this.reloadKind = automaticBranchExpansion ? 'refresh' : 'rebuild';
         this.branches = [...branches];
         this.branchRepositorySelectionGeneration = this.repositorySelectionGeneration;
         void this.syncWorkingTreeForCurrentBranch();
