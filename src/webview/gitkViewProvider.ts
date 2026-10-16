@@ -1419,7 +1419,28 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             : undefined;
         const currentBranch = this.commitController.selectedBranches.find(branch => branch.kind === 'current');
         const workingTreeRows = this.buildWorkingTreeRows(currentBranch, changes);
-        const selectedBranch = this.commitController.selectedCommit?.gitBranchOption;
+        const selectedCommit = this.commitController.selectedCommit;
+        const selectedBranch = selectedCommit?.gitBranchOption;
+        if (isWorkingTreeHash(this.currentHash)
+            && selectedCommit
+            && isWorkingTreeHash(selectedCommit.hash)
+            && selectedBranch
+            && selectedBranch.repoOption.path === currentBranch?.repoOption.path
+            && changes.staged.length === 0
+            && changes.changes.length === 0) {
+            // The virtual row is now disabled. Do not leave it selected: move the
+            // foreground back to this repository's newest history entry.
+            const latest = this.commitController.totalCommitList.find(commit =>
+                commit.gitBranchOption?.repoOption.path === selectedBranch.repoOption.path,
+            ) ?? this.commitController.searchedCommitList.find(commit =>
+                commit.gitBranchOption?.repoOption.path === selectedBranch.repoOption.path,
+            );
+            if (latest) {
+                this.commitController.selectCommit(latest);
+                store.setState({ workingTreeRows });
+                return Promise.resolve();
+            }
+        }
         if (!isWorkingTreeHash(this.currentHash)
             || !selectedBranch
             || selectedBranch.repoOption.path !== currentBranch?.repoOption.path) {
