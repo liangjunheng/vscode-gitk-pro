@@ -2633,12 +2633,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             }
             repositoryBranches.set(repositoryPath, [repositoryBranch]);
         }
-        const confirmed = await confirmPush([
-            pullBeforePush ? '推送前会先拉取并更新本地分支。' : '',
-            ...[...repositoryBranches.entries()].flatMap(([repositoryPath, branchesToPush]) =>
-                branchesToPush.map(repositoryBranch =>
-                    `${path.basename(repositoryPath)}：本地分支：${repositoryBranch.name} → 远程分支：${repositoryBranch.upstreamName}`)),
-        ].filter(Boolean).join('\n'));
+        const targets = [...repositoryBranches.values()].flatMap(branchesToPush =>
+            branchesToPush.map(repositoryBranch => `$(device-desktop)${repositoryBranch.name}->$(cloud)${repositoryBranch.upstreamName}`));
+        const confirmed = await confirmPush(targets.join('\n'));
         if (!confirmed) { return; }
         const pushResults: Array<{ repositoryPath: string; branch: PushBranchOption; result: NativePushResult }> = [];
         try {
