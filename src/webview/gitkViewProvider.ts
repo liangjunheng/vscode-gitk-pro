@@ -141,6 +141,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private commitFilesAbortController?: AbortController;
     private commitPanelDiffAbortController?: AbortController;
     private repositoryChangesSelectionAbortController?: AbortController;
+    // A repository-card click may change the global selection before its final card content is ready.
+    // Keep that card's previous presentation stable until a completed commit snapshot arrives.
+    private readonly repositoryCardDisplayLocks = new Set<string>();
     private pendingRepositoryChangesDefaultPath?: string;
     private commitFilesGeneration = 0;
     // 等待 Diff 渲染完成后再显示 Changed Files 列表的代次标记。
@@ -445,6 +448,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 showCommitLanes: searchKeywords.length === 0,
                 workingTreeRows,
                 uncommittedRepositoryCount: this.countUncommittedRepositories(s.commitRepositories),
+                repositoryCardDisplayLocks: this.repositoryCardDisplayLocks ? [...this.repositoryCardDisplayLocks] : [],
                 repositoryChanges: this.repositories.map(repository => {
                     const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
                         .find(candidate => candidate.repoOption.path === repository.path);
@@ -1781,15 +1785,21 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             }
             if (input.type === 'repositoryChangesAction' && input.action === 'focus') {
                 this.repositoryChangesSelectionAbortController?.abort();
+                (this.repositoryCardDisplayLocks ?? new Set<string>()).add(input.repositoryPath);
+                this.schedulePushState();
                 await this.selectRepositoryChangesDefault(input.repositoryPath);
                 return;
             }
             if (input.type === 'repositoryChangesFile') {
                 if (typeof input.path !== 'string' || !['conflict', 'staged', 'unstaged'].includes(input.section)) { return; }
+                this.repositoryCardDisplayLocks?.delete(input.repositoryPath);
+                this.schedulePushState();
                 await this.openCommitPanelWorkingTreeDiff(input.repositoryPath, input.section, input.path);
                 return;
             }
             if (input.action === 'worktree') {
+                this.repositoryCardDisplayLocks?.delete(input.repositoryPath);
+                this.schedulePushState();
                 await this.selectRepositoryChangesWorktree(input.repositoryPath);
                 return;
             }
@@ -3263,6 +3273,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 diffProgress: { completed: 0, total: metadata.length },
                 selectedPath,
             });
+            // A completed historical snapshot is the only acknowledgement that may replace
+            // the presentation held during a card-click selection transition.
+            if (!isWorkingTreeHash(hash) && repositoryPath) {
+                this.repositoryCardDisplayLocks?.delete(repositoryPath);
+            }
             if (metadata.length === 0) { return; }
             if (revealDiff && this.canShowMultiDiff() && this.view?.visible) {
                 this.openDiff(selectedPath);

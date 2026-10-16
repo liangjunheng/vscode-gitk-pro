@@ -38,6 +38,7 @@ export const REPOSITORY_CHANGES_STYLES = `
   .repo-commit-details { box-sizing: border-box; display: block; width: 100%; min-height: 36px; max-height: calc(7.5em + 18px); resize: none; overflow-y: auto; overflow-x: hidden; margin-bottom: 4px; padding: 8px 9px; border: 1px solid var(--vscode-input-border, var(--vscode-widget-border)); border-radius: 5px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); font: inherit; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; }
   .repo-commit-details:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .repo-message-box[hidden], .repo-commit-actions[hidden], .repo-commit-details[hidden] { display: none !important; }
+  .repo-changes.transitioning .repo-message-box, .repo-changes.transitioning .repo-commit-actions { display: none !important; }
   .repo-changes-body[hidden], .repo-group[hidden], .repo-group-files[hidden], .repo-commit-menu[hidden] { display: none !important; }
   .repo-message-box { position: relative; display: flex; flex-direction: column; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-editorGroup-border))); border-radius: 5px; overflow: hidden; }
   .repo-message-box:focus-within { border-color: var(--vscode-focusBorder); }
@@ -90,6 +91,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
   let highlightedRepositoryFileRow = null;
   const repositoryChangesNodes = new Map();
   const repositoryDisplaySnapshots = new Map();
+  let repositoryCardDisplayLocks = new Set();
   const repositoryChangesCollapsed = new Set();
   const repositoryChangesInitialized = new Set();
   const repositoryGroupsCollapsed = new Set();
@@ -125,8 +127,14 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
   }
   function focusRepositoryChanges(repositoryPath) {
     if (repositoryChangesCollapsed.has(repositoryPath) || focusedRepositoryChangesPath === repositoryPath) return;
+    // Hide Commit controls in the same event turn as expansion; the host later confirms
+    // the lock and preserves it until a complete historical snapshot is available.
+    repositoryCardDisplayLocks.add(repositoryPath);
     focusedRepositoryChangesPath = repositoryPath;
-    repositoryChangesNodes.forEach(function(node, path) { node.card.classList.toggle('focused', path === repositoryPath); });
+    repositoryChangesNodes.forEach(function(node, path) {
+      node.card.classList.toggle('focused', path === repositoryPath);
+      if (path === repositoryPath) node.card.classList.add('transitioning');
+    });
     vscode.postMessage({ type: 'repositoryChangesAction', action: 'focus', repositoryPath: repositoryPath });
   }
   function repoChangesIcon(action, icon, title) {
@@ -222,6 +230,9 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     const repository = repositoryChanges.find(function(item) { return item.repositoryPath === commit.repositoryPath; });
     if (!repository) return;
     if (isWorkingTreeHash(commit.hash)) {
+      // A card-click may temporarily select the remembered worktree identity. The host owns
+      // the display lock and only explicit worktree/file actions are allowed to replace it.
+      if (repositoryCardDisplayLocks.has(commit.repositoryPath)) return;
       repositoryDisplaySnapshots.set(commit.repositoryPath, { kind: 'worktree' });
       return;
     }
@@ -392,10 +403,16 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       node.input.title = '提交到 ' + (repository.headLabel || repository.repositoryLabel);
       const snapshot = currentRepositorySnapshot(node, repository);
       const historical = snapshot.kind === 'commit';
+      const commitControlsLocked = repositoryCardDisplayLocks.has(repository.repositoryPath);
+      node.card.classList.toggle('transitioning', commitControlsLocked);
       const messageBox = node.card.querySelector('.repo-message-box');
       const actions = node.card.querySelector('.repo-commit-actions');
       const details = node.card.querySelector('.repo-commit-details');
-      messageBox.hidden = Boolean(historical); actions.hidden = Boolean(historical); details.hidden = !historical;
+      // Card focus keeps its existing selection flow, but it must not reinterpret an
+      // asynchronous uncommitted selection as a request to reveal Commit controls.
+      messageBox.hidden = Boolean(historical || commitControlsLocked);
+      actions.hidden = Boolean(historical || commitControlsLocked);
+      details.hidden = !historical;
       if (historical) {
         const metadata = snapshot.commit || {};
         if (details.dataset.commitHash !== metadata.hash) details.scrollTop = 0;
@@ -416,7 +433,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       const displayRepository = snapshot.kind === 'worktree' ? { ...repository, staged: snapshot.staged || [], unstaged: snapshot.unstaged || [] } : repository;
       const conflicts = repoChangesSections(displayRepository)[0].files.length > 0;
       const displayHasStagedChanges = (displayRepository.staged || []).length > 0;
-      const disabled = historical || conflicts || repository.committing || !node.input.value.trim() || !displayHasStagedChanges;
+      const disabled = historical || commitControlsLocked || conflicts || repository.committing || !node.input.value.trim() || !displayHasStagedChanges;
       node.card.querySelectorAll('.repo-commit-main, .repo-commit-menu button').forEach(function(button) { button.disabled = Boolean(disabled); });
       const commitButton = node.card.querySelector('.repo-commit-main');
       commitButton.title = conflicts ? '请先解决合并冲突' : 'Commit (Ctrl / ⌘ + Enter)';
@@ -536,6 +553,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     if (action === 'menu') { const menu = card.querySelector('.repo-commit-menu'); menu.hidden = !menu.hidden; return; }
     if (['commit', 'amend', 'push', 'syncCommit'].includes(action)) { postRepositoryCommit(card, action); return; }
     if (action === 'worktree') {
+      card.classList.remove('transitioning');
       repositoryChangesCollapsed.delete(repositoryPath);
       focusedRepositoryChangesPath = repositoryPath;
       repositoryChangesNodes.forEach(function(node, path) { node.card.classList.toggle('focused', path === repositoryPath); });
@@ -548,6 +566,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     const group = button.closest('.repo-group'); const section = group.dataset.section;
     const fileRow = button.closest('.repo-file-row'); const filePath = fileRow && fileRow.dataset.filePath;
     if (action === 'file') {
+      card.classList.remove('transitioning');
       const diffKey = fileRow.dataset.diffKey;
       pendingRepositoryFileSelection = { repositoryPath: repositoryPath, diffKey: diffKey };
       pendingLocalFileSelectionPath = diffKey;
