@@ -163,9 +163,9 @@ export class GitActionRunner {
                 const defaultBranch = branches.find(candidate => candidate.isCurrent) ?? branches[0];
                 selectedPushBranches = await pickPushBranches(branches, [defaultBranch], defaultBranch.name);
                 if (!selectedPushBranches || selectedPushBranches.length === 0) { return; }
-                const confirmed = await confirmPush({
-                    targets: selectedPushBranches.map(branch => `${branch.name} → ${branch.upstreamName}`),
-                });
+                const confirmed = await confirmPush(selectedPushBranches
+                    .map(branch => `本地分支：${branch.name} → 远程分支：${branch.upstreamName}`)
+                    .join('\n'));
                 if (!confirmed) { return; }
             }
             await vscode.window.withProgress({

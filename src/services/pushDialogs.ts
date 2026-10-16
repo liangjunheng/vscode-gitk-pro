@@ -57,45 +57,27 @@ export function pickPushBranches(
     });
 }
 
-type PushConfirmItem = vscode.QuickPickItem & { readonly action?: 'push' | 'cancel' };
+type PushConfirmItem = vscode.QuickPickItem & { readonly action: 'push' | 'cancel' };
 
-export interface PushConfirmOptions {
-    readonly targets: readonly string[];
-    readonly pullBeforePush?: boolean;
-}
-
-/** 使用独立信息行展示每个 Push 目标，避免 QuickPick 的单行 detail 折叠换行。 */
-export function confirmPush(options: PushConfirmOptions): Promise<boolean> {
+/** 使用 QuickPick 弹窗确认 Push, 不依赖通知或 VS Code 的系统 OK/Cancel 文案。 */
+export function confirmPush(detail: string): Promise<boolean> {
     const quickPick = vscode.window.createQuickPick<PushConfirmItem>();
-    const pushItem: PushConfirmItem = {
-        label: '$(cloud-upload) 推送',
-        description: `${options.targets.length} 个推送目标`,
-        action: 'push',
-    };
-    const informationItems: PushConfirmItem[] = [
-        ...(options.pullBeforePush ? [{
-            label: '$(sync) 推送前先拉取并更新本地分支',
-            detail: '每个目标会先更新本地分支，再执行推送',
-        }] : []),
-        ...options.targets.map(target => ({
-            label: `$(arrow-right) ${target}`,
-            detail: '推送目标',
-        })),
+    const items: PushConfirmItem[] = [
+        {
+            label: '$(cloud-upload) 推送',
+            detail,
+            action: 'push',
+        },
+        {
+            label: '$(close) 取消',
+            detail: '放弃本次远程推送',
+            action: 'cancel',
+        },
     ];
-    const cancelItem: PushConfirmItem = {
-        label: '$(close) 取消',
-        description: '放弃本次远程推送',
-        action: 'cancel',
-    };
     quickPick.title = '确认推送';
     quickPick.placeholder = '请选择操作；按 Esc 也可以取消';
-    quickPick.keepScrollPosition = true;
-    quickPick.items = [pushItem, ...informationItems, cancelItem];
-    quickPick.activeItems = [pushItem];
-    quickPick.onDidChangeActive(activeItems => {
-        const active = activeItems[0];
-        if (active && !active.action) { quickPick.activeItems = [pushItem]; }
-    });
+    quickPick.items = items;
+    quickPick.activeItems = [items[0]];
     return new Promise(resolve => {
         let settled = false;
         const finish = (value: boolean) => {
@@ -106,8 +88,7 @@ export function confirmPush(options: PushConfirmOptions): Promise<boolean> {
             resolve(value);
         };
         quickPick.onDidAccept(() => {
-            const action = quickPick.activeItems[0]?.action;
-            if (action) { finish(action === 'push'); }
+            finish(quickPick.activeItems[0]?.action === 'push');
         });
         quickPick.onDidHide(() => finish(false));
         quickPick.show();
