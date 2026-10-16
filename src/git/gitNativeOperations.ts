@@ -140,7 +140,8 @@ export function push(
     const cliArgs = ['push', '--no-verify'];
     if (remote) { cliArgs.push(remote); }
     if (localBranch) {
-        cliArgs.push(remoteBranch ? `${localBranch}:${remoteBranch}` : localBranch);
+        // Push the current checkout's HEAD rather than resolving a local branch ref.
+        cliArgs.push(remoteBranch ? `HEAD:${remoteBranch}` : 'HEAD');
     }
     const requestedTarget: NativePushResult = { remote, localBranch, remoteBranch };
     return withHttpTransportFallback(

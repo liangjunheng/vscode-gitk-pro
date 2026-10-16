@@ -150,9 +150,13 @@ pub fn push(payload: &Value) -> NativeResult<Value> {
         .map(str::to_owned)
         .unwrap_or_else(|| configured_upstream_branch(&repo, &local_branch));
     let mut remote = repo.find_remote(&remote_name).map_err(format_git_error)?;
-    let local_ref = format!("refs/heads/{local_branch}");
     let remote_ref = format!("refs/heads/{remote_branch}");
-    let local_oid = repo.refname_to_id(&local_ref).map_err(format_git_error)?;
+    let local_oid = repo
+        .head()
+        .map_err(format_git_error)?
+        .peel_to_commit()
+        .map_err(format_git_error)?
+        .id();
     let remote_tracking = format!("refs/remotes/{remote_name}/{remote_branch}");
     let remote_oid = repo
         .refname_to_id(&remote_tracking)
@@ -164,7 +168,7 @@ pub fn push(payload: &Value) -> NativeResult<Value> {
         .or_else(|| remote.url().ok())
         .unwrap_or_default()
         .to_owned();
-    let hook_input = format!("{local_ref} {local_oid} {remote_ref} {remote_oid}\n");
+    let hook_input = format!("HEAD {local_oid} {remote_ref} {remote_oid}\n");
     crate::hooks::run_hook(
         &repo,
         "pre-push",
@@ -176,7 +180,7 @@ pub fn push(payload: &Value) -> NativeResult<Value> {
     let mut proxy = ProxyOptions::new();
     proxy.auto();
     options.proxy_options(proxy).packbuilder_parallelism(0);
-    let refspec = format!("refs/heads/{local_branch}:refs/heads/{remote_branch}");
+    let refspec = format!("{local_oid}:{remote_ref}");
     remote
         .push(&[refspec.as_str()], Some(&mut options))
         .map_err(format_git_error)?;
