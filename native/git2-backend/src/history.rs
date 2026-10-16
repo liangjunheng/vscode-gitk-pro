@@ -404,14 +404,24 @@ pub fn push_branches(payload: &Value) -> NativeResult<Value> {
         if name.ends_with("/HEAD") {
             continue;
         }
-        if let Some(target) = branch.get().target() {
+        let target = branch.get().target();
+        if let Some(target) = target {
             remote_targets.push(target);
         }
+        let tip_timestamp = target
+            .and_then(|target| repo.find_commit(target).ok())
+            .map(|commit| commit.time().seconds())
+            .unwrap_or_default();
         let mut parts = name.splitn(2, '/');
         let remote = parts.next().unwrap_or_default();
         let branch_name = parts.next().unwrap_or_default();
         if !remote.is_empty() && !branch_name.is_empty() {
-            remotes.push((remote.to_owned(), branch_name.to_owned(), name.to_owned()));
+            remotes.push((
+                remote.to_owned(),
+                branch_name.to_owned(),
+                name.to_owned(),
+                tip_timestamp,
+            ));
         }
     }
     let mut result = Vec::new();
@@ -432,18 +442,10 @@ pub fn push_branches(payload: &Value) -> NativeResult<Value> {
             .and_then(|value| value.name().ok().flatten())
             .unwrap_or_default()
             .to_owned();
-        let preferred = if !upstream_name.is_empty() {
-            let mut parts = upstream_name.splitn(2, '/');
-            let remote = parts.next().unwrap_or_default().to_owned();
-            let branch_name = parts.next().unwrap_or_default().to_owned();
-            if !remote.is_empty() && !branch_name.is_empty() {
-                Some((remote, branch_name, upstream_name.clone()))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        let preferred = remotes
+            .iter()
+            .find(|remote| remote.2 == upstream_name)
+            .cloned();
         let mut targets = Vec::new();
         if let Some(value) = preferred.clone() {
             targets.push(value);
@@ -470,13 +472,16 @@ pub fn push_branches(payload: &Value) -> NativeResult<Value> {
                 recent.push(json!({ "subject": commit.summary().unwrap_or_default(), "timestamp": commit.time().seconds() }));
             }
         }
-        for (remote, remote_branch, label) in targets {
+        for (remote, remote_branch, label, tip_timestamp) in targets {
+            let is_upstream = !upstream_name.is_empty() && label == upstream_name;
             result.push(json!({
                 "name": name,
                 "upstreamName": label,
                 "upstreamRemote": remote,
                 "upstreamBranch": remote_branch,
                 "isCurrent": current.as_deref() == Some(name),
+                "isUpstream": is_upstream,
+                "tipTimestamp": tip_timestamp,
                 "recentUnpushedCommits": recent,
             }));
         }
@@ -490,8 +495,27 @@ pub fn push_branches(payload: &Value) -> NativeResult<Value> {
             .get("isCurrent")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        right_current
-            .cmp(&left_current)
+        let left_upstream = left
+            .get("isUpstream")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let right_upstream = right
+            .get("isUpstream")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let left_default = left_current && left_upstream;
+        let right_default = right_current && right_upstream;
+        let left_timestamp = left
+            .get("tipTimestamp")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        let right_timestamp = right
+            .get("tipTimestamp")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        right_default
+            .cmp(&left_default)
+            .then_with(|| right_timestamp.cmp(&left_timestamp))
             .then_with(|| {
                 left.get("name")
                     .and_then(Value::as_str)

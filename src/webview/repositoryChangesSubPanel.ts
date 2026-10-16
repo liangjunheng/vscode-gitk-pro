@@ -26,6 +26,10 @@ export const REPOSITORY_CHANGES_STYLES = `
   .repo-changes-branch:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .repo-changes-head { min-width: 0; }
   .repo-changes-header .toolbar-icon { flex: 0 0 22px; width: 22px; height: 24px; border: 0; border-radius: 3px; cursor: pointer; }
+  .repo-changes-header .repo-sync { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: auto; min-width: 22px; padding: 0 3px; gap: 2px; color: var(--vscode-descriptionForeground); font: inherit; font-size: 11px; }
+  .repo-changes-header .repo-sync:hover { color: var(--vscode-foreground); }
+  .repo-sync-count { white-space: nowrap; line-height: 1; }
+  .repo-sync-count[hidden] { display: none; }
   .repo-changes-toggle:hover, .repo-file:hover { background: var(--vscode-list-hoverBackground); }
   .repo-changes-toggle:focus-visible, .repo-file:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .repo-changes-header { border-radius: 5px; }
@@ -216,7 +220,10 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     details.readOnly = true; details.rows = 1; details.spellcheck = false;
     details.setAttribute('aria-label', '提交标题与描述');
     card.querySelector('.repo-changes-body').insertBefore(details, card.querySelector('.repo-message-box'));
-    header.append(repoChangesIcon('syncRefresh', 'sync', '同步此仓库'));
+    const sync = repoChangesIcon('syncRefresh', 'sync', '同步此仓库');
+    sync.classList.add('repo-sync');
+    const syncCount = document.createElement('span'); syncCount.className = 'repo-sync-count'; sync.appendChild(syncCount);
+    header.append(sync);
     header.append(repoChangesIcon('terminal', 'terminal', '在终端中打开此仓库'));
     const menu = card.querySelector('.repo-commit-menu');
     [['commit', 'Commit'], ['amend', 'Commit (Amend)'], ['push', 'Commit & Push'], ['syncCommit', 'Commit & Sync']].forEach(function(item) {
@@ -393,6 +400,17 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       badge.title = '查看 ' + changeCount + ' 个未提交变更文件';
       badge.setAttribute('aria-label', repository.repositoryLabel + '：' + changeCount + ' 个未提交变更文件');
       node.card.querySelector('.repo-changes-head').textContent = repository.headLabel || 'HEAD';
+      const behindCount = Number.isFinite(repository.behindCount) ? Math.max(0, repository.behindCount) : 0;
+      const aheadCount = Number.isFinite(repository.aheadCount) ? Math.max(0, repository.aheadCount) : 0;
+      const sync = node.card.querySelector('[data-repo-action="syncRefresh"]');
+      const syncCount = sync.querySelector('.repo-sync-count');
+      const syncClean = behindCount === 0 && aheadCount === 0;
+      syncCount.hidden = syncClean;
+      syncCount.textContent = syncClean ? '' : String(behindCount) + '↓' + String(aheadCount) + '↑';
+      sync.title = syncClean ? '同步此仓库' : '同步此仓库（拉取 ' + behindCount + '，推送 ' + aheadCount + '）';
+      sync.setAttribute('aria-label', syncClean
+        ? repository.repositoryLabel + '：同步此仓库'
+        : repository.repositoryLabel + '：拉取 ' + behindCount + ' 个提交，推送 ' + aheadCount + ' 个提交');
       node.card.querySelector('.repo-changes-branch').title = '切换分支：' + (repository.headLabel || 'HEAD');
       node.card.querySelector('.repo-changes-branch').setAttribute('aria-label', repository.repositoryLabel + '：切换分支');
       node.card.querySelector('.repo-changes-title').title = repository.repositoryPath;

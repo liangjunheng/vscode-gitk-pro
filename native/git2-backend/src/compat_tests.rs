@@ -343,6 +343,49 @@ fn pull_must_not_overwrite_local_changes_to_same_file() {
 }
 
 #[test]
+fn push_branches_marks_and_prioritizes_the_configured_upstream() {
+    let origin = tempfile::tempdir().unwrap();
+    Repository::init_bare(origin.path()).unwrap();
+    let fork = tempfile::tempdir().unwrap();
+    Repository::init_bare(fork.path()).unwrap();
+    let f = Fixture::new();
+    f.seed();
+    let branch = f.git(&["branch", "--show-current"]).trim().to_owned();
+    f.git(&["remote", "add", "fork", &fork.path().to_string_lossy()]);
+    f.git(&["remote", "add", "origin", &origin.path().to_string_lossy()]);
+    f.git(&["push", "fork", &format!("HEAD:refs/heads/{branch}")]);
+    f.git(&["push", "origin", &format!("HEAD:refs/heads/{branch}")]);
+    f.git(&["branch", &format!("--set-upstream-to=origin/{branch}")]);
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    f.write("recent.gkt", "recent remote target\n");
+    f.git(&["add", "recent.gkt"]);
+    f.git(&["commit", "-m", "recent remote target"]);
+    f.git(&["push", "fork", "HEAD:refs/heads/recent"]);
+
+    let targets = history::push_branches(&f.payload()).unwrap();
+    let current_targets: Vec<&Value> = targets
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|target| target["isCurrent"] == true)
+        .collect();
+    assert_eq!(current_targets.len(), 3);
+    assert_eq!(
+        current_targets[0]["upstreamName"],
+        format!("origin/{branch}")
+    );
+    assert_eq!(current_targets[0]["isUpstream"], true);
+    assert_eq!(current_targets[1]["upstreamName"], "fork/recent");
+    assert_eq!(current_targets[1]["isUpstream"], false);
+    assert_eq!(current_targets[2]["upstreamName"], format!("fork/{branch}"));
+    assert_eq!(current_targets[2]["isUpstream"], false);
+    assert!(
+        current_targets[1]["tipTimestamp"].as_i64().unwrap()
+            > current_targets[2]["tipTimestamp"].as_i64().unwrap()
+    );
+}
+
+#[test]
 fn fast_forward_merge_preserves_local_edits_and_rejects_conflicting_index() {
     let f = Fixture::new();
     let first = f.seed();

@@ -45,8 +45,18 @@ async function main() {
       files: [{ path: 'historic.cpp', status: 'M' }], stagedFiles: [], unstagedFiles: [], filesLoading: false,
       selectedCommit: { hash: '12345678', repositoryPath: repositories[0].repositoryPath }, filesMode: 'flat' };
     const publish = async () => page.evaluate(state => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state } })), state);
+    repositories[0].aheadCount = 4;
+    repositories[0].behindCount = 0;
     await publish();
     await assertCount(page.locator('.repo-changes'), 6);
+    const rootSync = page.locator('.repo-changes').first().locator('[data-repo-action="syncRefresh"]');
+    assert.equal(await rootSync.locator('.repo-sync-count').textContent(), '0↓4↑', 'repository sync matches the VS Code behind/ahead indicator');
+    assert.match(await rootSync.getAttribute('title'), /拉取 0.*推送 4/);
+    repositories[0].aheadCount = 0; await publish();
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await rootSync.locator('.repo-sync-count').textContent(), '', 'zero behind/ahead removes the count and keeps only the sync icon');
+    assert.equal(await rootSync.getAttribute('title'), '同步此仓库');
+    repositories[0].aheadCount = 4; await publish();
     repositories[1].message = 'unstaged-only draft'; await publish();
     assert.equal(await page.locator('.repo-changes').nth(1).locator('.repo-commit-main').isDisabled(), true, 'a repository with only unstaged changes cannot be committed');
     repositories[1].message = ''; await publish();
@@ -991,8 +1001,13 @@ async function verifyProvider() {
   // Host selection routing and stale MultiDiff feedback are tested below with the actual methods.
   const load = Module._load;
   const branchReads = [], checkouts = [], headRefreshes = [], remoteCheckouts = [];
-  let pickedIndex = 1, options, branchItems;
+  let pickedIndex = 1, options, branchItems, pushBranchDefaults;
   const terminals = []; let terminalShows = 0;
+  const pushBranchFixture = [
+    { name: 'main', upstreamName: 'fork/main', upstreamRemote: 'fork', upstreamBranch: 'main', isCurrent: true, isUpstream: false, recentUnpushedCommits: [] },
+    { name: 'main', upstreamName: 'origin/main', upstreamRemote: 'origin', upstreamBranch: 'main', isCurrent: true, isUpstream: true, recentUnpushedCommits: [] },
+    { name: 'topic', upstreamName: 'origin/topic', upstreamRemote: 'origin', upstreamBranch: 'topic', isCurrent: false, isUpstream: true, recentUnpushedCommits: [] },
+  ];
   const branchFixture = [
     { name: 'refs/heads/main', label: 'main', kind: 'current', hash: 'a'.repeat(40) },
     { name: 'refs/heads/main', label: 'main', kind: 'local', hash: 'a'.repeat(40) },
@@ -1019,6 +1034,12 @@ async function verifyProvider() {
       if (name === '../git/gitLogProvider') return {
         ...load.call(this, name, ...args),
         getGitBranches: async uri => { branchReads.push(uri.toString()); return branchFixture; },
+        getGitAheadBehind: async () => ({ ahead: 4, behind: 2 }),
+        getPushBranches: async () => pushBranchFixture,
+      };
+      if (name === '../services/pushDialogs') return {
+        ...load.call(this, name, ...args),
+        pickPushBranches: async (_branches, defaultBranches) => { pushBranchDefaults = defaultBranches; return undefined; },
       };
       if (name === '../git/gitNativeOperations') return {
         ...load.call(this, name, ...args),
@@ -1042,6 +1063,12 @@ async function verifyProvider() {
     view: { webview: { postMessage: value => { published = value; } } },
     changedFileSummaryCache: new WeakMap(), selectedBranchesMap: new Map(),
     commitMessageByRepo: new Map([[repositories[1].path, 'child draft']]), commitCommittingByRepo: new Set(),
+    pushBranchByRepository: new Map(), lastPushedBranchByRepository: new Map(),
+    unpushedCommitCountByRepository: new Map([[repositories[1].path, 4]]),
+    behindCommitCountByRepository: new Map([[repositories[1].path, 0]]),
+    repositorySyncKeyByRepository: new Map(), repositorySyncStateLoadingByHead: new Set(),
+    loadRepositorySyncState: async () => {},
+    schedulePushState: () => {}, commitPanel: { isVisible: () => false },
     repoSubmoduleWatcher: {
       findSubmoduleRepository: (_parent, file) => file === 'leaf-link' ? repositories[2] : file === 'parent-link' ? repositories[0] : undefined,
     },
@@ -1049,7 +1076,7 @@ async function verifyProvider() {
     commitController: { isLoading: false, searchedCommitList: [], displayedSearchKeywords: [], totalCommitList: [],
       selectCommit: commit => { provider.commitController.selectedCommit = commit; return true; } },
     uncommittedFilesWatcher: {
-      listCurrentHeadBranches: () => repositories.map(repoOption => ({ repoOption, label: 'deadbeef', kind: 'current', hash: 'd'.repeat(40) })),
+      listCurrentHeadBranches: () => repositories.map(repoOption => ({ repoOption, name: 'refs/heads/main', label: 'deadbeef', kind: 'current', hash: 'd'.repeat(40) })),
       getUncommittedFilesByHeadBranch: async branch => branch.repoOption.path === repositories[1].path
         ? { staged: [], changes: [{ path: 'same.cpp', status: 'M' }] } : { staged: [], changes: [] },
     },
@@ -1070,6 +1097,14 @@ async function verifyProvider() {
   assert.deepEqual(published.state.repositoryChanges.map(repository => repository.hasSubmodules), [true, true, false]);
   assert.deepEqual(published.state.repositoryChanges.map(repository => repository.isSubmodule), [false, true, true]);
   assert.equal(published.state.repositoryChanges[1].message, 'child draft');
+  assert.equal(published.state.repositoryChanges[1].behindCount, 0);
+  assert.equal(published.state.repositoryChanges[1].aheadCount, 4);
+  delete provider.loadRepositorySyncState;
+  provider.unpushedCommitCountByRepository.clear(); provider.behindCommitCountByRepository.clear();
+  await provider.loadRepositorySyncState(repositories[1].path);
+  assert.equal(provider.behindCommitCountByRepository.get(repositories[1].path), 2, 'sync state loads commits behind the configured upstream');
+  assert.equal(provider.unpushedCommitCountByRepository.get(repositories[1].path), 4, 'sync state loads commits ahead of the configured upstream');
+  provider.loadRepositorySyncState = async () => {};
     assert.equal(published.state.repositoryChanges[1].headLabel, 'deadbeef');
   assert.equal(published.state.repositoryChanges[1].unstaged[0].path, 'same.cpp');
   assert.equal(published.state.repositoryChanges[1].unstaged[1].gitlinkHasSubmodules, false, 'leaf Gitlink inherits the target repository topology');
@@ -1187,12 +1222,16 @@ async function verifyProvider() {
   releaseWorktree({ staged: [], changes: [] });
   await pendingWorktree;
   assert.equal(selectedWorktrees.length, 1, 'a stale badge read cannot reselect a child after focus moves elsewhere');
+  provider.pushBranchByRepository.set(repositories[1].path, pushBranchFixture[0]);
+  provider.lastPushedBranchByRepository.set(repositories[1].path, pushBranchFixture[0]);
+  await provider.runCommitPanelPush([repositories[1].path], true, false, true);
+  assert.equal(pushBranchDefaults[0].upstreamName, 'origin/main', 'repository card sync defaults to the current branch configured upstream, not cached or first remote');
   const syncSteps = [];
   provider.runCommitPanelPush = async (...args) => syncSteps.push(['sync', ...args]);
   provider.uncommittedFilesWatcher.refreshHeadBranch = async value => syncSteps.push(['head', value]);
   provider.uncommittedFilesWatcher.refreshUncommittedFilesByHeadBranch = async branch => syncSteps.push(['status', branch.repoOption.path]);
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', action: 'syncRefresh', repositoryPath: repositories[1].path });
-  assert.deepEqual(syncSteps, [['sync', [repositories[1].path], true, false]], 'card sync no longer runs the manual workspace/history refresh');
+  assert.deepEqual(syncSteps, [['sync', [repositories[1].path], true, false, true]], 'card sync uses the current branch configured upstream and no longer runs the manual workspace/history refresh');
   await verifyFocusedRefresh(GitkViewProvider, repositories);
   await verifyGitlinkNavigation(GitkViewProvider, store);
   await verifyMultiDiffHostSelection(GitkViewProvider, store, repositories);

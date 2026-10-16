@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { type AppState, type ChangeSetMode, type ChangedFile, GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
-import { getCommitFiles, getGitAheadCount, getGitBranches, getGitlinkPathsInCommit, getPushBranches, type PushBranchOption, readCurrentCommitMessage } from '../git/gitLogProvider';
+import { getCommitFiles, getGitAheadBehind, getGitAheadCount, getGitBranches, getGitlinkPathsInCommit, getPushBranches, type PushBranchOption, readCurrentCommitMessage } from '../git/gitLogProvider';
 import { checkoutBranch, checkoutRemoteBranch, commitDetails, hasConflicts, indexGitlink, pull, push, rangeCommits, resolveRevision, restoreAll, restoreSubmodule, trackedPaths, type NativeCommitDetails, type NativePushResult } from '../git/gitNativeOperations';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { readMergeOperation, runMergeOperation, type MergeOperation } from '../git/mergeOperation';
@@ -94,6 +94,12 @@ function workingTreeChangeCount(changes: WorkingTreeChanges): number {
         ...changes.staged.map(change => change.path),
         ...changes.changes.map(change => change.path),
     ]).size;
+}
+
+function defaultPushBranch(branches: readonly PushBranchOption[]): PushBranchOption | undefined {
+    return branches.find(branch => branch.isCurrent && branch.isUpstream)
+        ?? branches.find(branch => branch.isCurrent)
+        ?? branches[0];
 }
 
 async function pickPushBranch(
@@ -188,6 +194,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private readonly amendCommittedFilesByHead = new Map<string, readonly CommitFile[]>();
     private readonly amendCommittedFilesLoading = new Set<string>();
     private readonly unpushedCommitCountByRepository = new Map<string, number>();
+    private readonly behindCommitCountByRepository = new Map<string, number>();
+    private readonly repositorySyncKeyByRepository = new Map<string, string>();
+    private readonly repositorySyncStateLoadingByHead = new Set<string>();
     private readonly unpushedStateLoadedByHead = new Set<string>();
     private readonly unpushedStateLoadingByHead = new Set<string>();
     private readonly commitGitlinkPathsByHead = new Map<string, readonly string[]>();
@@ -460,6 +469,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                         isSubmodule: (repository.ancestry?.length ?? 0) > 0,
                         isMainRepository: repository.path === this.repositories.find(candidate => (candidate.ancestry?.length ?? 0) === 0)?.path,
                         headLabel: branch?.label ?? '',
+                        behindCount: this.behindCommitCountByRepository.get(repository.path) ?? 0,
+                        aheadCount: this.unpushedCommitCountByRepository.get(repository.path) ?? 0,
                         message: this.commitMessageByRepo.get(repository.path) ?? '',
                         committing: this.commitCommittingByRepo.has(repository.path),
                         mergeOperation: this.mergeOperations?.get(repository.path),
@@ -496,6 +507,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 loadingMessage: commitListLoadingMessage,
             },
         });
+        this.repositories.forEach(repository => { void this.loadRepositorySyncState(repository.path); });
     }
 
     private get selectedRepositoryPath(): string | undefined {
@@ -1829,7 +1841,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 .find(candidate => candidate.repoOption.path === input.repositoryPath);
             if (!branch) { return; }
             if (input.action === 'syncRefresh') {
-                await this.runCommitPanelPush([input.repositoryPath], true, false);
+                await this.runCommitPanelPush([input.repositoryPath], true, false, true);
                 return;
             }
             if (!['stage', 'unstage', 'discard'].includes(input.action)
@@ -2436,6 +2448,31 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         await this.refreshCommitPanel();
     }
 
+    private async loadRepositorySyncState(repositoryPath: string): Promise<void> {
+        const rootUri = this.getRepoRootUri(repositoryPath);
+        const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+            .find(currentBranch => currentBranch.repoOption.path === repositoryPath);
+        if (!rootUri || !branch) { return; }
+        const branchKey = `${branch.name}\u0000${branch.hash}`;
+        if (this.repositorySyncKeyByRepository.get(repositoryPath) === branchKey) { return; }
+        const headKey = `${repositoryPath}\u0000${branchKey}`;
+        if (this.repositorySyncStateLoadingByHead.has(headKey)) { return; }
+        this.repositorySyncStateLoadingByHead.add(headKey);
+        try {
+            const syncState = await getGitAheadBehind(rootUri);
+            const currentBranch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+                .find(candidate => candidate.repoOption.path === repositoryPath);
+            if (currentBranch?.name !== branch.name || currentBranch.hash !== branch.hash) { return; }
+            this.unpushedCommitCountByRepository.set(repositoryPath, syncState.ahead);
+            this.behindCommitCountByRepository.set(repositoryPath, syncState.behind);
+            this.repositorySyncKeyByRepository.set(repositoryPath, branchKey);
+            this.schedulePushState();
+            if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
+        } finally {
+            this.repositorySyncStateLoadingByHead.delete(headKey);
+        }
+    }
+
     private async loadAmendCommittedFiles(repositoryPath: string): Promise<void> {
         const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
             .find(currentBranch => currentBranch.repoOption.path === repositoryPath);
@@ -2519,7 +2556,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const rootUri = this.getRepoRootUri(repositoryPath);
         if (!rootUri) { return; }
         const branches = await getPushBranches(rootUri);
-        const branch = branches[0];
+        const branch = defaultPushBranch(branches);
         if (!branch) { return; }
         this.pushBranchByRepository.set(repositoryPath, branch);
         if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
@@ -2534,8 +2571,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             return;
         }
         const defaultBranch = this.pushBranchByRepository.get(repositoryPath)
-            ?? branches.find(branch => branch.isCurrent)
-            ?? branches[0];
+            ?? defaultPushBranch(branches);
+        if (!defaultBranch) { return; }
         const picked = await pickPushBranch(branches, defaultBranch);
         if (!picked) { return; }
         this.pushBranchByRepository.set(repositoryPath, picked);
@@ -2546,6 +2583,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         repositoryPaths: readonly string[],
         pullBeforePush: boolean,
         focusCommitPanel = true,
+        preferCurrentUpstream = false,
     ): Promise<void> {
         const rootRepositoryPath = repositoryPaths.at(-1);
         if (!rootRepositoryPath) { return; }
@@ -2556,10 +2594,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             void vscode.window.showInformationMessage('当前仓库没有配置 upstream 的本地分支。');
             return;
         }
-        const defaultBranch = this.lastPushedBranchByRepository.get(rootRepositoryPath)
-            ?? this.pushBranchByRepository.get(rootRepositoryPath)
-            ?? branches.find(candidate => candidate.isCurrent)
-            ?? branches[0];
+        const currentBranchDefault = defaultPushBranch(branches);
+        if (!currentBranchDefault) { return; }
+        const defaultBranch = preferCurrentUpstream
+            ? currentBranchDefault
+            : this.lastPushedBranchByRepository.get(rootRepositoryPath)
+                ?? this.pushBranchByRepository.get(rootRepositoryPath)
+                ?? currentBranchDefault;
         const selectedBranches = await pickPushBranches(branches, [defaultBranch], defaultBranch.name);
         if (!selectedBranches || selectedBranches.length === 0) { return; }
         const lastSelectedBranch = selectedBranches.at(-1) ?? selectedBranches[0];
@@ -2588,12 +2629,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             }
             repositoryBranches.set(repositoryPath, [repositoryBranch]);
         }
-        const confirmed = await confirmPush([
-            pullBeforePush ? '推送前会先拉取并更新本地分支。' : '',
-            ...[...repositoryBranches.entries()].flatMap(([repositoryPath, branchesToPush]) =>
+        const confirmed = await confirmPush({
+            pullBeforePush,
+            targets: [...repositoryBranches.entries()].flatMap(([repositoryPath, branchesToPush]) =>
                 branchesToPush.map(repositoryBranch =>
-                    `${path.basename(repositoryPath)}：本地分支：${repositoryBranch.name} → 远程分支：${repositoryBranch.upstreamName}`)),
-        ].filter(Boolean).join('\n'));
+                    `${path.basename(repositoryPath)}：${repositoryBranch.name} → ${repositoryBranch.upstreamName}`)),
+        });
         if (!confirmed) { return; }
         const pushResults: Array<{ repositoryPath: string; branch: PushBranchOption; result: NativePushResult }> = [];
         try {
@@ -2634,6 +2675,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
             for (const repositoryPath of orderedRepositoryPaths) {
                 this.unpushedCommitCountByRepository.delete(repositoryPath);
+                this.behindCommitCountByRepository.delete(repositoryPath);
+                this.repositorySyncKeyByRepository.delete(repositoryPath);
                 for (const headKey of this.unpushedStateLoadedByHead) {
                     if (headKey.startsWith(`${repositoryPath}\u0000`)) {
                         this.unpushedStateLoadedByHead.delete(headKey);

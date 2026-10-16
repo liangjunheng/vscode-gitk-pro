@@ -184,6 +184,7 @@ export interface PushBranchOption {
     upstreamRemote: string;
     upstreamBranch: string;
     isCurrent: boolean;
+    isUpstream: boolean;
     recentUnpushedCommits: readonly { subject: string; timestamp: number }[];
 }
 
@@ -412,13 +413,16 @@ export async function readCommitHistoryMessages(rootUri: vscode.Uri): Promise<Co
     }));
 }
 
-export async function getGitAheadCount(rootUri: vscode.Uri): Promise<number> {
+export async function getGitAheadBehind(rootUri: vscode.Uri): Promise<{ ahead: number; behind: number }> {
     try {
-        const result = await invokeNativeGit<{ ahead: number }>('aheadBehind', { rootPath: rootUri.fsPath });
-        return result.ahead;
+        return await invokeNativeGit<{ ahead: number; behind: number }>('aheadBehind', { rootPath: rootUri.fsPath });
     } catch {
-        return 0;
+        return { ahead: 0, behind: 0 };
     }
+}
+
+export async function getGitAheadCount(rootUri: vscode.Uri): Promise<number> {
+    return (await getGitAheadBehind(rootUri)).ahead;
 }
 
 async function readCommitsFromNative(rootUri: vscode.Uri, limit: number, refs: readonly string[], skip: number, signal?: AbortSignal): Promise<CommitMetadata[]> {
