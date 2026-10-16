@@ -154,10 +154,14 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
             };
             // 根仓库已识别即可发布；子模块扫描继续进行，不能阻塞初始化默认选择。
             publishIntermediate();
-            await Promise.all(roots.filter((root): root is GitRepositoryOption => Boolean(root)).map(async root => {
+            // Scan roots serially so each root's complete subtree stays together in
+            // the published order. scanSubmodules applies the same depth-first rule
+            // to children within each .gitmodules file.
+            for (const root of roots) {
+                if (!root) { continue; }
                 const rootPath = vscode.Uri.parse(root.path).fsPath;
                 await this.scanSubmodules(rootPath, found, localParents, publishIntermediate);
-            }));
+            }
             if (isFull) {
                 // 本轮完整扫描结束，父子关系与列表都以最终结果为准，清理已不存在的仓库。
                 this.parentByRepository.clear();
@@ -219,6 +223,9 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
             }
             return ancestry;
         };
+        // Preserve the order in which the scan discovered repositories. The caller
+        // publishes this list directly to repository cards and selectors; sorting here
+        // changes the user-visible scan order to an unrelated label order.
         return repositories.map(repository => {
             const key = repoKey(vscode.Uri.parse(repository.path).fsPath);
             return new GitRepositoryOption({
@@ -228,10 +235,6 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
                 hasSubmodules: parentKeys.has(key),
                 ancestry: ancestryFor(key),
             });
-        }).sort((left, right) => {
-            const leftSub = left.description === 'subrepo';
-            const rightSub = right.description === 'subrepo';
-            return Number(leftSub) - Number(rightSub) || left.label.localeCompare(right.label);
         });
     }
 
@@ -285,24 +288,19 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
         publish: () => void,
     ): Promise<void> {
         const declaredPaths = await this.readDeclaredSubmodulePaths(parentPath);
-        // 同层子模块必须并发：串行会让每个仓库的 HEAD 校验与仓库信息读取依次排队，
-        // 下游的未提交状态刷新也随之被逐个错开，仓库越多徽标出现越晚。
         const initializedPaths = await this.filterInitializedSubmodules(declaredPaths);
-        const created = await Promise.all(initializedPaths.map(async modulePath => ({
-            modulePath,
-            option: await this.createRepositoryOption(modulePath, 'subrepo'),
-        })));
-        for (const { modulePath, option } of created) {
+        // Keep .gitmodules order and finish each child's complete subtree before
+        // moving to the next sibling: parent -> child -> grandchild, then sibling.
+        for (const modulePath of initializedPaths) {
+            const option = await this.createRepositoryOption(modulePath, 'subrepo');
             if (!option) { continue; }
             const moduleKey = repoKey(modulePath);
             if (found.has(moduleKey)) { continue; }
             parents.set(moduleKey, repoKey(parentPath));
             found.set(moduleKey, option);
             publish();
+            await this.scanSubmodules(modulePath, found, parents, publish);
         }
-        await Promise.all(initializedPaths.map(modulePath =>
-            this.scanSubmodules(modulePath, found, parents, publish),
-        ));
     }
 
     /** 并发校验 HEAD，一次性筛出已初始化的子模块。 */
