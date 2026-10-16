@@ -109,7 +109,7 @@ async function pickPushBranch(
     const quickPick = vscode.window.createQuickPick<PushBranchQuickPickItem>();
     quickPick.items = branches.map(branch => ({
         label: branch.upstreamName,
-        description: `本地分支：${branch.name}`,
+        description: `将推送提交：${branch.sourceHash}`,
         detail: `未推送提交：${branch.unpushedCommitCount}`,
         branch,
     }));
@@ -2634,7 +2634,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             repositoryBranches.set(repositoryPath, [repositoryBranch]);
         }
         const targets = [...repositoryBranches.values()].flatMap(branchesToPush =>
-            branchesToPush.map(repositoryBranch => `$(device-desktop)${repositoryBranch.name}->$(cloud)${repositoryBranch.upstreamName}`));
+            branchesToPush.map(repositoryBranch => `$(git-commit)${repositoryBranch.sourceHash}->$(cloud)${repositoryBranch.upstreamName}`));
         const confirmed = await confirmPush(targets.join('\n'));
         if (!confirmed) { return; }
         const pushResults: Array<{ repositoryPath: string; branch: PushBranchOption; result: NativePushResult }> = [];
@@ -2652,7 +2652,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                         throw new Error(`仓库未选择可推送分支：${repositoryPath}`);
                     }
                     for (const repositoryBranch of branchesToPush) {
-                        progress.report({ message: `正在推送：${repositoryBranch.name} → ${repositoryBranch.upstreamName}` });
+                        progress.report({ message: `正在推送：${repositoryBranch.sourceHash} → ${repositoryBranch.upstreamName}` });
                         const pushResult = await push(
                             repositoryUri,
                             repositoryBranch.upstreamRemote,
@@ -2683,7 +2683,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             await this.commitController.forceRefreshCurrentSelection();
             const detail = pushResults.map(({ repositoryPath, branch: target, result }) => {
                 const response = result.output ?? 'Git 未返回额外信息。';
-                return `${path.basename(repositoryPath)}：${target.name} → ${target.upstreamName}\n${response}`;
+                return `${path.basename(repositoryPath)}：${target.sourceHash} → ${target.upstreamName}\n${response}`;
             }).join('\n\n');
             await showPushResult(
                 'Git Push 已完成',

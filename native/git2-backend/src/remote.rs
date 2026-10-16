@@ -185,18 +185,19 @@ pub fn push(payload: &Value) -> NativeResult<Value> {
         .push(&[refspec.as_str()], Some(&mut options))
         .map_err(format_git_error)?;
     let output = if remote_oid == local_oid {
-        format!("Everything up-to-date: {local_branch} -> {remote_branch}")
+        format!("Everything up-to-date: {local_oid} -> {remote_branch}")
     } else if remote_oid == git2::Oid::ZERO_SHA1 {
-        format!("[new branch] {local_branch} -> {remote_branch}")
+        format!("[new branch] {local_oid} -> {remote_branch}")
     } else {
         format!(
-            "{}..{} {local_branch} -> {remote_branch}",
+            "{}..{} {local_oid} -> {remote_branch}",
             remote_oid, local_oid
         )
     };
     Ok(json!({
         "remote": remote_name,
         "localBranch": local_branch,
+        "sourceHash": local_oid.to_string(),
         "remoteBranch": remote_branch,
         "output": output,
     }))

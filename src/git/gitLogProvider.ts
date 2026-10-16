@@ -179,6 +179,8 @@ export function buildDetachedHeadBranch(rootUri: vscode.Uri, headHash: string, r
 }
 
 export interface PushBranchOption {
+    /** 当前 checkout 将要推送的 HEAD commit。 */
+    sourceHash: string;
     name: string;
     upstreamName: string;
     upstreamRemote: string;
@@ -200,10 +202,13 @@ export interface PushBranchOption {
  * 绑定关系以本地分支配置的 upstream 为准, 时间取远程分支 tip 的提交时间。
  */
 export async function getPushBranches(rootUri: vscode.Uri, commitLimit = 8): Promise<PushBranchOption[]> {
-    const targets = await invokeNativeGit<PushBranchOption[]>('pushBranches', {
-        rootPath: rootUri.fsPath,
-        limit: commitLimit,
-    });
+    const [targets, sourceHash] = await Promise.all([
+        invokeNativeGit<PushBranchOption[]>('pushBranches', {
+            rootPath: rootUri.fsPath,
+            limit: commitLimit,
+        }),
+        getCurrentGitHeadHash(rootUri),
+    ]);
     if (targets.length === 0) { return targets; }
     const [refs, remoteTipTimestamps, unpushedCounts] = await Promise.all([
         readBranchRefsFromCli(rootUri).catch(() => undefined),
@@ -217,6 +222,7 @@ export async function getPushBranches(rootUri: vscode.Uri, commitLimit = 8): Pro
     );
     return targets.map(target => ({
         ...target,
+        sourceHash: sourceHash ?? target.sourceHash,
         isUpstream: typeof target.isUpstream === 'boolean'
             ? target.isUpstream
             : configuredUpstreamByLocalBranch.get(target.name) === target.upstreamName,

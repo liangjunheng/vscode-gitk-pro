@@ -126,16 +126,21 @@ export function pull(
 export interface NativePushResult {
     readonly remote?: string;
     readonly localBranch?: string;
+    readonly sourceHash?: string;
     readonly remoteBranch?: string;
     readonly output?: string;
 }
 
-export function push(
+export async function push(
     rootUri: vscode.Uri,
     remote?: string,
     localBranch?: string,
     remoteBranch?: string,
 ): Promise<NativePushResult> {
+    const sourceHash = (await invokeNativeGit<string[]>('resolveRevision', {
+        rootPath: rootUri.fsPath,
+        specs: ['HEAD^{}'],
+    }))[0];
     // libgit2 已在进入网络传输前执行 pre-push；回退时使用 --no-verify，避免同一 hook 执行两次。
     const cliArgs = ['push', '--no-verify'];
     if (remote) { cliArgs.push(remote); }
@@ -143,17 +148,19 @@ export function push(
         // Push the current checkout's HEAD rather than resolving a local branch ref.
         cliArgs.push(remoteBranch ? `HEAD:${remoteBranch}` : 'HEAD');
     }
-    const requestedTarget: NativePushResult = { remote, localBranch, remoteBranch };
+    const requestedTarget: NativePushResult = { remote, localBranch, sourceHash, remoteBranch };
     return withHttpTransportFallback(
         rootUri,
         'push',
-        () => invokeNativeGit<NativePushResult>('push', { rootPath: rootUri.fsPath, remote, localBranch, remoteBranch }),
+        async () => {
+            const result = await invokeNativeGit<NativePushResult>('push', { rootPath: rootUri.fsPath, remote, localBranch, remoteBranch });
+            return { ...result, sourceHash: result.sourceHash ?? sourceHash };
+        },
         cliArgs,
         requestedTarget,
         output => ({ ...requestedTarget, output }),
     );
 }
-
 export function updateSubmodules(rootUri: vscode.Uri, paths: readonly string[] = []): Promise<void> {
     return withHttpTransportFallback(
         rootUri,

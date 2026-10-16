@@ -10,7 +10,7 @@ function formatPushResultDetail(results: readonly NativePushResult[] | undefined
         const target = result.remote && result.remoteBranch
             ? `${result.remote}/${result.remoteBranch}`
             : result.remoteBranch ?? '远程分支';
-        const source = result.localBranch ?? '本地分支';
+        const source = result.sourceHash ?? result.localBranch ?? '当前提交';
         return `${source} → ${target}\n${result.output ?? 'Git 未返回额外信息。'}`;
     }).join('\n\n');
 }
@@ -163,7 +163,7 @@ export class GitActionRunner {
                 const defaultBranch = branches.find(candidate => candidate.isCurrent) ?? branches[0];
                 selectedPushBranches = await pickPushBranches(branches, [defaultBranch], defaultBranch.name);
                 if (!selectedPushBranches || selectedPushBranches.length === 0) { return; }
-                const targets = selectedPushBranches.map(branch => `$(device-desktop)${branch.name}->$(cloud)${branch.upstreamName}`);
+                const targets = selectedPushBranches.map(branch => `$(git-commit)${branch.sourceHash}->$(cloud)${branch.upstreamName}`);
                 const confirmed = await confirmPush(targets.join('\n'));
                 if (!confirmed) { return; }
             }
