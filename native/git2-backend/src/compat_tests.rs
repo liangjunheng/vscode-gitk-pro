@@ -379,6 +379,27 @@ fn push_branches_marks_and_prioritizes_the_configured_upstream() {
     assert_eq!(current_targets[1]["isUpstream"], false);
     assert_eq!(current_targets[2]["upstreamName"], format!("fork/{branch}"));
     assert_eq!(current_targets[2]["isUpstream"], false);
+    assert_eq!(
+        current_targets[0]["recentUnpushedCommits"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        current_targets[1]["recentUnpushedCommits"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(
+        current_targets[2]["recentUnpushedCommits"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     assert!(
         current_targets[1]["tipTimestamp"].as_i64().unwrap()
             > current_targets[2]["tipTimestamp"].as_i64().unwrap()

@@ -8,7 +8,8 @@ function branchKey(branch: PushBranchOption): string {
 }
 
 /**
- * 选择一个或多个 Push 目标。上次成功 Push 的目标默认勾选并显示在列表顶部。
+ * 选择一个或多个 Push 目标。当前分支绑定的 upstream 始终排在第一位,
+ * 其余远程分支按最新提交时间倒序; 默认目标只影响勾选, 不改变顺序。
  */
 export function pickPushBranches(
     branches: readonly PushBranchOption[],
@@ -16,19 +17,33 @@ export function pickPushBranches(
     localBranchLabel: string,
 ): Promise<PushBranchOption[] | undefined> {
     const quickPick = vscode.window.createQuickPick<PushBranchQuickPickItem>();
-    const baseItems: PushBranchQuickPickItem[] = branches.map(branch => ({
-        label: branch.upstreamName,
+    const currentBranchNames = new Set(branches.filter(branch => branch.isCurrent).map(branch => branch.name));
+    const candidates = branches.filter(branch => currentBranchNames.size === 0 || currentBranchNames.has(branch.name));
+    const uniqueBranches = new Map<string, PushBranchOption>();
+    for (const branch of candidates) {
+        const key = `${branch.upstreamRemote}\u0000${branch.upstreamBranch}`;
+        const existing = uniqueBranches.get(key);
+        if (!existing || (branch.isCurrent && !existing.isCurrent) || (branch.isUpstream && !existing.isUpstream)) {
+            uniqueBranches.set(key, branch);
+        }
+    }
+    const orderedBranches = [...uniqueBranches.values()].sort((left, right) => {
+        const leftDefault = left.isCurrent && left.isUpstream;
+        const rightDefault = right.isCurrent && right.isUpstream;
+        return Number(rightDefault) - Number(leftDefault)
+            || right.tipTimestamp - left.tipTimestamp
+            || left.upstreamName.localeCompare(right.upstreamName);
+    });
+    const baseItems: PushBranchQuickPickItem[] = orderedBranches.map(branch => ({
+        label: `$(cloud) ${branch.upstreamName}`,
         detail: `未推送提交：${branch.recentUnpushedCommits.length}`,
         branch,
     }));
     const defaultKeys = new Set(defaultBranches.map(branchKey));
     const initialSelected = baseItems.filter(item => defaultKeys.has(branchKey(item.branch)));
-    const initialSelectedKeys = new Set(initialSelected.map(item => branchKey(item.branch)));
-    const orderedItems = [
-        ...initialSelected,
-        ...baseItems.filter(item => !initialSelectedKeys.has(branchKey(item.branch))),
-    ];
-
+    // 列表顺序只由排序规则决定: 当前分支绑定的 upstream 始终第一, 其余按远程最新提交时间倒序。
+    // 默认勾选项不再置顶, 否则缓存目标会把绑定的 upstream 挤下去。
+    const orderedItems = baseItems;
 
     quickPick.title = `${localBranchLabel} 要推送的远程分支`;
     quickPick.placeholder = '勾选后按 Enter 提交，按 Esc 取消';
@@ -95,29 +110,12 @@ export function confirmPush(detail: string): Promise<boolean> {
     });
 }
 
-/** 使用 QuickPick 展示 Push 完成/失败信息, 不依赖 VS Code 的系统 OK/Cancel 文案。 */
+/** 使用 VS Code 通知展示 Push 完成或失败信息，不再打开需要手工关闭的 QuickPick。 */
 export function showPushResult(title: string, detail: string): Promise<void> {
-    const quickPick = vscode.window.createQuickPick<vscode.QuickPickItem>();
-    const item = {
-        label: '$(check) 关闭',
-        description: detail.split(/\r?\n/, 1)[0] || 'Git Push 已结束',
-        detail,
-    };
-    quickPick.title = title;
-    quickPick.placeholder = '按 Enter 或 Esc 关闭';
-    quickPick.items = [item];
-    quickPick.activeItems = [item];
-    return new Promise(resolve => {
-        const state = { settled: false };
-        const finish = () => {
-            if (state.settled) { return; }
-            state.settled = true;
-            quickPick.hide();
-            quickPick.dispose();
-            resolve();
-        };
-        quickPick.onDidAccept(finish);
-        quickPick.onDidHide(finish);
-        quickPick.show();
-    });
+    const normalizedDetail = detail.trim().replace(/\s*\r?\n\s*/g, '；');
+    const message = normalizedDetail ? `${title}：${normalizedDetail}` : title;
+    const notification = title.includes('失败')
+        ? vscode.window.showErrorMessage(message)
+        : vscode.window.showInformationMessage(message);
+    return Promise.resolve(notification).then(() => undefined);
 }

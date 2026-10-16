@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { type AppState, type ChangeSetMode, type ChangedFile, GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
 import { getCommitFiles, getGitAheadBehind, getGitAheadCount, getGitBranches, getGitlinkPathsInCommit, getPushBranches, type PushBranchOption, readCurrentCommitMessage } from '../git/gitLogProvider';
-import { checkoutBranch, checkoutRemoteBranch, commitDetails, hasConflicts, indexGitlink, pull, push, rangeCommits, resolveRevision, restoreAll, restoreSubmodule, trackedPaths, type NativeCommitDetails, type NativePushResult } from '../git/gitNativeOperations';
+import { checkoutBranch, checkoutRemoteBranch, commitDetails, hasConflicts, indexGitlink, push, rangeCommits, resolveRevision, restoreAll, restoreSubmodule, trackedPaths, type NativeCommitDetails, type NativePushResult } from '../git/gitNativeOperations';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { readMergeOperation, runMergeOperation, type MergeOperation } from '../git/mergeOperation';
 import { MergeEditorSessions } from './mergeEditorSessions';
@@ -2600,7 +2600,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
         const currentBranchDefault = defaultPushBranch(branches);
         if (!currentBranchDefault) { return; }
-        const defaultBranch = preferCurrentUpstream
+        const defaultBranch = preferCurrentUpstream || pullBeforePush
             ? currentBranchDefault
             : this.lastPushedBranchByRepository.get(rootRepositoryPath)
                 ?? this.pushBranchByRepository.get(rootRepositoryPath)
@@ -2652,11 +2652,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                         throw new Error(`仓库未选择可推送分支：${repositoryPath}`);
                     }
                     for (const repositoryBranch of branchesToPush) {
-                        if (pullBeforePush) {
-                            progress.report({ message: `正在切换并拉取：${repositoryBranch.name}` });
-                            await checkoutBranch(repositoryUri, repositoryBranch.name);
-                            await pull(repositoryUri, repositoryBranch.upstreamRemote, repositoryBranch.upstreamBranch, repositoryBranch.name);
-                        }
                         progress.report({ message: `正在推送：${repositoryBranch.name} → ${repositoryBranch.upstreamName}` });
                         const pushResult = await push(
                             repositoryUri,

@@ -391,7 +391,6 @@ pub fn push_branches(payload: &Value) -> NativeResult<Value> {
         .head()
         .ok()
         .and_then(|head| head.shorthand().ok().map(str::to_owned));
-    let mut remote_targets = Vec::new();
     let mut remotes = Vec::new();
     for entry in repo
         .branches(Some(BranchType::Remote))
@@ -405,9 +404,6 @@ pub fn push_branches(payload: &Value) -> NativeResult<Value> {
             continue;
         }
         let target = branch.get().target();
-        if let Some(target) = target {
-            remote_targets.push(target);
-        }
         let tip_timestamp = target
             .and_then(|target| repo.find_commit(target).ok())
             .map(|commit| commit.time().seconds())
@@ -459,20 +455,20 @@ pub fn push_branches(payload: &Value) -> NativeResult<Value> {
             }
             targets.push(remote.clone());
         }
-        let mut walk = repo.revwalk().map_err(format_git_error)?;
-        walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)
-            .map_err(format_git_error)?;
-        walk.push(local_oid).map_err(format_git_error)?;
-        for oid in &remote_targets {
-            let _ = walk.hide(*oid);
-        }
-        let mut recent = Vec::new();
-        for oid in walk.filter_map(Result::ok).take(limit) {
-            if let Ok(commit) = repo.find_commit(oid) {
-                recent.push(json!({ "subject": commit.summary().unwrap_or_default(), "timestamp": commit.time().seconds() }));
-            }
-        }
         for (remote, remote_branch, label, tip_timestamp) in targets {
+            let mut walk = repo.revwalk().map_err(format_git_error)?;
+            walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)
+                .map_err(format_git_error)?;
+            walk.push(local_oid).map_err(format_git_error)?;
+            if let Ok(target) = repo.refname_to_id(&format!("refs/remotes/{label}")) {
+                let _ = walk.hide(target);
+            }
+            let mut recent = Vec::new();
+            for oid in walk.filter_map(Result::ok).take(limit) {
+                if let Ok(commit) = repo.find_commit(oid) {
+                    recent.push(json!({ "subject": commit.summary().unwrap_or_default(), "timestamp": commit.time().seconds() }));
+                }
+            }
             let is_upstream = !upstream_name.is_empty() && label == upstream_name;
             result.push(json!({
                 "name": name,

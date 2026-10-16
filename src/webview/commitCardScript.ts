@@ -40,7 +40,6 @@ export const COMMIT_CARD_SCRIPT = `
             '</span>'+
             '<span class="action-group submodule-group">'+
               '<button class="push-btn"><span>push</span><span class="push-target-label"></span></button>'+
-              '<label class="pull-option"><input class="pull-before-push-checkbox" type="checkbox" checked><span>pull</span></label>'+
               '<span class="submodule-selector push-submodule-selector"></span>'+
             '</span>'+
           '</div>'+
@@ -51,7 +50,6 @@ export const COMMIT_CARD_SCRIPT = `
     const messageInput=el.querySelector('.message-input');
     const commitBtn=el.querySelector('.commit-btn');
     const pushBtn=el.querySelector('.push-btn');
-    const pullBeforePushCheckbox=el.querySelector('.pull-before-push-checkbox');
     const amendCheckbox=el.querySelector('.amend-checkbox');
     const historyBtn=el.querySelector('.history-btn');
     historyBtn.type='button';
@@ -86,7 +84,7 @@ export const COMMIT_CARD_SCRIPT = `
 
     amendCheckbox.addEventListener('change',function(){vscode.postMessage({type:'toggleAmend',repositoryPath:repo,message:messageInput.value})});
     pushBtn.addEventListener('click',function(){
-      vscode.postMessage({type:'gitSync',action:'push',repositoryPaths:[...(el._card.selectedPushSubmoduleRepositoryPaths||[]),repo],pullBeforePush:pullBeforePushCheckbox.checked});
+      vscode.postMessage({type:'gitSync',action:'push',repositoryPaths:[...(el._card.selectedPushSubmoduleRepositoryPaths||[]),repo],pullBeforePush:false});
     });
     historyBtn.addEventListener('click',function(){vscode.postMessage({type:'history',repositoryPath:repo})});
     el.querySelectorAll('.section-actions .icon-btn[data-action]').forEach(function(button){
@@ -114,7 +112,6 @@ export const COMMIT_CARD_SCRIPT = `
       vscode.postMessage({type:'commit',repositoryPath:repo,repositoryPaths:[...(el._card.selectedCommitSubmoduleRepositoryPaths||[]),repo],message:messageInput.value,amend:el._amend===true});
     });
     messageInput.addEventListener('input',function(){if(!commitBtn.disabled)hint.textContent='';resizeMessageInput(messageInput);vscode.postMessage({type:'updateCardState',repositoryPath:repo,patch:{message:messageInput.value}})});
-    pullBeforePushCheckbox.addEventListener('change',function(){vscode.postMessage({type:'updateCardState',repositoryPath:repo,patch:{pullBeforePush:pullBeforePushCheckbox.checked}})});
     resizeMessageInput(messageInput);
     messageInput.addEventListener('keydown',function(event){
       if((event.ctrlKey||event.metaKey)&&event.key==='Enter'){event.preventDefault();commitBtn.click()}
@@ -279,7 +276,6 @@ export const COMMIT_CARD_SCRIPT = `
     // 输入框处于焦点时不用后端快照覆盖本地输入, 否则快速在中间插入文字时会把光标重置到末尾。
     const messageInputFocused=document.activeElement===refs.messageInput;
     if(!messageInputFocused&&refs.messageInput.value!==card.message){refs.messageInput.value=card.message;resizeMessageInput(refs.messageInput)}
-    el.querySelector('.pull-before-push-checkbox').checked=card.pullBeforePush;
     refs.commitBtn.textContent=card.amend?'amend':'commit';
     const selectedCommitPaths=new Set([...(card.selectedCommitSubmoduleRepositoryPaths||[]),card.repositoryPath]);
     const hasSelectedConflicts=currentCards.some(function(candidate){return selectedCommitPaths.has(candidate.repositoryPath)&&(candidate.conflictFiles||[]).length>0});

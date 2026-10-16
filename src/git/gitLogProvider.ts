@@ -185,19 +185,58 @@ export interface PushBranchOption {
     upstreamBranch: string;
     isCurrent: boolean;
     isUpstream: boolean;
+    tipTimestamp: number;
     recentUnpushedCommits: readonly { subject: string; timestamp: number }[];
 }
 
 /**
  * 读取 Push 分支选择器所需的最小数据集：分支 upstream 与最近未推送提交。
  * 工作区状态由 UncommittedFilesWatcher 独占维护, 这里不再重复执行 git status。
- * 不按分支循环执行 Git 命令，始终只进行两次只读查询。
+ *
+ * isUpstream/tipTimestamp 在此补齐, 不依赖原生返回: 旧版原生模块不返回这两个字段,
+ * 一旦缺失, 选择器的“绑定 upstream 优先 + 最新提交时间倒序”排序会整体失效。
+ * 绑定关系以本地分支配置的 upstream 为准, 时间取远程分支 tip 的提交时间。
  */
 export async function getPushBranches(rootUri: vscode.Uri, commitLimit = 8): Promise<PushBranchOption[]> {
-    return invokeNativeGit<PushBranchOption[]>('pushBranches', {
+    const targets = await invokeNativeGit<PushBranchOption[]>('pushBranches', {
         rootPath: rootUri.fsPath,
         limit: commitLimit,
     });
+    if (targets.length === 0) { return targets; }
+    const [refs, remoteTipTimestamps] = await Promise.all([
+        readBranchRefsFromCli(rootUri).catch(() => undefined),
+        readRemoteTipTimestamps(rootUri).catch(() => new Map<string, number>()),
+    ]);
+    const configuredUpstreamByLocalBranch = new Map(
+        (refs?.local ?? [])
+            .filter(ref => Boolean(ref.upstreamName))
+            .map(ref => [ref.label, ref.upstreamName as string]),
+    );
+    return targets.map(target => ({
+        ...target,
+        isUpstream: typeof target.isUpstream === 'boolean'
+            ? target.isUpstream
+            : configuredUpstreamByLocalBranch.get(target.name) === target.upstreamName,
+        tipTimestamp: Number.isFinite(target.tipTimestamp)
+            ? target.tipTimestamp
+            : remoteTipTimestamps.get(target.upstreamName) ?? 0,
+    }));
+}
+
+/** 远程分支 tip 的提交时间(秒), 用于 Push 目标按最新修改排序。 */
+async function readRemoteTipTimestamps(rootUri: vscode.Uri): Promise<Map<string, number>> {
+    const { remote } = await readBranchRefsFromCli(rootUri);
+    const hashes = [...new Set(remote.map(ref => ref.hash))];
+    if (hashes.length === 0) { return new Map(); }
+    const commits = await invokeNativeGit<Array<{ hash: string; authorDate: string }>>('commitDetails', {
+        rootPath: rootUri.fsPath,
+        hashes,
+    });
+    const secondsByHash = new Map(commits.map(commit => {
+        const parsed = Date.parse(commit.authorDate);
+        return [commit.hash, Number.isNaN(parsed) ? 0 : Math.floor(parsed / 1000)] as const;
+    }));
+    return new Map(remote.map(ref => [ref.label, secondsByHash.get(ref.hash) ?? 0]));
 }
 
 export async function getGitBranches(rootUri: vscode.Uri, signal?: AbortSignal): Promise<GitBranchOption[]> {

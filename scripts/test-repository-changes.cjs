@@ -1090,16 +1090,70 @@ async function verifyMultiDiffLinkage(page, state, publish, repositories) {
   await root.locator('.repo-message').fill('');
 }
 async function lastMessage(page) { return page.evaluate(() => window.messages.at(-1)); }
+// 旧版原生模块的 pushBranches 不返回 isUpstream/tipTimestamp; 缺失时排序会整体失效,
+// 因此 getPushBranches 必须在 TS 侧补齐这两个字段。
+async function verifyPushBranchEnrichment() {
+  const load = Module._load;
+  const rootUri = { fsPath: 'C:/fixture', toString: () => 'file:///fixture' };
+  const nativeCalls = [];
+  let getPushBranches;
+  try {
+    const bindingPath = require.resolve('../out/git/nativeGitBinding');
+    delete require.cache[require.resolve('../out/git/gitLogProvider')];
+    delete require.cache[bindingPath];
+    Module._load = function(name, ...args) {
+      if (name === 'vscode') return { Uri: { parse: value => ({ toString: () => value, fsPath: value }) } };
+      if (name === './nativeGitBinding' || name === bindingPath) return {
+        invokeNativeGit: async (operation) => {
+          nativeCalls.push(operation);
+          if (operation === 'pushBranches') return [
+            { name: 'master', upstreamName: 'origin/ink_dev', upstreamRemote: 'origin', upstreamBranch: 'ink_dev', isCurrent: true, recentUnpushedCommits: [] },
+            { name: 'master', upstreamName: 'origin/master', upstreamRemote: 'origin', upstreamBranch: 'master', isCurrent: true, recentUnpushedCommits: [] },
+          ];
+          if (operation === 'branches') return {
+            currentBranch: 'refs/heads/master',
+            local: [{ hash: 'a'.repeat(40), name: 'refs/heads/master', label: 'master', upstreamName: 'origin/master' }],
+            remote: [
+              { hash: 'b'.repeat(40), name: 'refs/remotes/origin/ink_dev', label: 'origin/ink_dev', upstreamName: null },
+              { hash: 'c'.repeat(40), name: 'refs/remotes/origin/master', label: 'origin/master', upstreamName: null },
+            ],
+          };
+          if (operation === 'commitDetails') return [
+            { hash: 'b'.repeat(40), authorDate: '2026-09-02T14:16:25+08:00' },
+            { hash: 'c'.repeat(40), authorDate: '2026-10-12T10:57:46+08:00' },
+          ];
+          throw new Error('unexpected native operation: ' + operation);
+        },
+      };
+      return load.call(this, name, ...args);
+    };
+    ({ getPushBranches } = require('../out/git/gitLogProvider'));
+  } finally {
+    Module._load = load;
+    delete require.cache[require.resolve('../out/git/gitLogProvider')];
+    delete require.cache[require.resolve('../out/git/nativeGitBinding')];
+  }
+  const targets = await getPushBranches(rootUri);
+  assert.deepEqual(targets.map(target => target.isUpstream), [false, true], 'the configured upstream is derived from branch refs when the native module omits isUpstream');
+  assert.deepEqual(targets.map(target => target.tipTimestamp), [1788329785, 1791773866], 'remote tip timestamps are derived from commit dates when the native module omits tipTimestamp');
+  assert.ok(nativeCalls.includes('branches') && nativeCalls.includes('commitDetails'), 'enrichment reads branch refs and commit dates');
+}
 async function verifyProvider() {
   // Host selection routing and stale MultiDiff feedback are tested below with the actual methods.
   const load = Module._load;
-  const branchReads = [], checkouts = [], headRefreshes = [], remoteCheckouts = [];
-  let pickedIndex = 1, options, branchItems, pushBranchDefaults;
-  const terminals = []; let terminalShows = 0;
+  const branchReads = [], checkouts = [], pulls = [], pushes = [], headRefreshes = [], remoteCheckouts = [];
+  let pickedIndex = 1, options, branchItems, pushBranchDefaults, pushQuickPick, selectedPushBranchesResult;
+  const terminals = [], informationMessages = [], errorMessages = []; let terminalShows = 0;
   const pushBranchFixture = [
     { name: 'main', upstreamName: 'fork/main', upstreamRemote: 'fork', upstreamBranch: 'main', isCurrent: true, isUpstream: false, recentUnpushedCommits: [] },
     { name: 'main', upstreamName: 'origin/main', upstreamRemote: 'origin', upstreamBranch: 'main', isCurrent: true, isUpstream: true, recentUnpushedCommits: [] },
     { name: 'topic', upstreamName: 'origin/topic', upstreamRemote: 'origin', upstreamBranch: 'topic', isCurrent: false, isUpstream: true, recentUnpushedCommits: [] },
+  ];
+  const pushDialogFixture = [
+    { name: 'ink_dev', upstreamName: 'origin/ink_master', upstreamRemote: 'origin', upstreamBranch: 'ink_master', isCurrent: true, isUpstream: true, tipTimestamp: 100, recentUnpushedCommits: [] },
+    { name: 'topic-a', upstreamName: 'origin/ink_master', upstreamRemote: 'origin', upstreamBranch: 'ink_master', isCurrent: false, isUpstream: true, tipTimestamp: 100, recentUnpushedCommits: [] },
+    { name: 'topic-b', upstreamName: 'origin/ink_master', upstreamRemote: 'origin', upstreamBranch: 'ink_master', isCurrent: false, isUpstream: true, tipTimestamp: 100, recentUnpushedCommits: [] },
+    { name: 'ink_dev', upstreamName: 'upstream/develop', upstreamRemote: 'upstream', upstreamBranch: 'develop', isCurrent: true, isUpstream: false, tipTimestamp: 200, recentUnpushedCommits: [{ subject: 'unpushed', timestamp: 1 }] },
   ];
   const branchFixture = [
     { name: 'refs/heads/main', label: 'main', kind: 'current', hash: 'a'.repeat(40) },
@@ -1110,16 +1164,31 @@ async function verifyProvider() {
     { name: 'd'.repeat(40), label: 'detached', kind: 'current', hash: 'd'.repeat(40) },
   ];
   const vscode = {
+    ThemeIcon: class ThemeIcon { constructor(id) { this.id = id; } },
+    ProgressLocation: { Notification: 1 },
     QuickPickItemKind: { Separator: -1 },
     Uri: { parse: value => ({ toString: () => value, fsPath: value }) },
     window: {
       showQuickPick: async (items, opts) => { options = opts; branchItems = items; return pickedIndex === null ? undefined : items.filter(item => item.branch)[pickedIndex]; },
       showInputBox: async opts => { assert.equal(opts.value, 'remote'); assert.equal(opts.validateInput('main'), '本地分支已存在，请使用其他名称'); return opts.value; },
-      showInformationMessage() {},
-      showErrorMessage() {},
+      showInformationMessage(message) { informationMessages.push(message); },
+      showErrorMessage(message) { errorMessages.push(message); },
       createTerminal: options => { terminals.push(options); return { show: () => terminalShows++ }; },
+      withProgress: async (_options, task) => task({ report() {} }),
+      createQuickPick: () => {
+        const quickPick = {
+          items: [], selectedItems: [], activeItems: [], buttons: [],
+          onDidAccept(listener) { this.accept = listener; return { dispose() {} }; },
+          onDidTriggerButton() { return { dispose() {} }; },
+          onDidHide() { return { dispose() {} }; },
+          show() {}, hide() {}, dispose() {},
+        };
+        pushQuickPick = quickPick;
+        return quickPick;
+      },
     },
   };
+  let pickPushBranches, showPushResult;
   let GitkViewProvider, store;
   try {
     Module._load = function(name, ...args) {
@@ -1132,18 +1201,34 @@ async function verifyProvider() {
       };
       if (name === '../services/pushDialogs') return {
         ...load.call(this, name, ...args),
-        pickPushBranches: async (_branches, defaultBranches) => { pushBranchDefaults = defaultBranches; return undefined; },
+        pickPushBranches: async (_branches, defaultBranches) => { pushBranchDefaults = defaultBranches; return selectedPushBranchesResult; },
+        confirmPush: async () => true,
+        showPushResult: async () => {},
       };
       if (name === '../git/gitNativeOperations') return {
         ...load.call(this, name, ...args),
         checkoutBranch: async (uri, branch) => { checkouts.push([uri.toString(), branch]); },
         checkoutRemoteBranch: async (uri, ref, localName) => remoteCheckouts.push([uri.toString(), ref, localName]),
+        pull: async (uri, remote, remoteBranch, localBranch) => { pulls.push([uri.toString(), remote, remoteBranch, localBranch]); },
+        push: async (uri, remote, localBranch, remoteBranch) => { pushes.push([uri.toString(), remote, localBranch, remoteBranch]); throw new Error('stop after push'); },
       };
       return load.call(this, name, ...args);
     };
     ({ GitkViewProvider } = require('../out/webview/gitkViewProvider'));
+    ({ pickPushBranches, showPushResult } = require('../out/services/pushDialogs'));
     ({ store } = require('../out/state/store'));
   } finally { Module._load = load; }
+  void pickPushBranches(pushDialogFixture, [pushDialogFixture[0]], 'ink_dev');
+  assert.deepEqual(pushQuickPick.items.map(item => item.label), ['$(cloud) origin/ink_master', '$(cloud) upstream/develop'], 'bound upstream stays first even when another remote has a newer tip');
+  assert.deepEqual(pushQuickPick.selectedItems.map(item => item.branch.upstreamName), ['origin/ink_master']);
+  void pickPushBranches(pushDialogFixture, [pushDialogFixture[3]], 'ink_dev');
+  assert.deepEqual(pushQuickPick.items.map(item => item.label), ['$(cloud) origin/ink_master', '$(cloud) upstream/develop'], 'a cached default target is checked but never reordered above the bound upstream');
+  assert.deepEqual(pushQuickPick.selectedItems.map(item => item.branch.upstreamName), ['upstream/develop']);
+  await verifyPushBranchEnrichment();
+  await showPushResult('Git Push 已完成', 'child：main → origin/main\n已推送');
+  assert.equal(informationMessages.at(-1), 'Git Push 已完成：child：main → origin/main；已推送', 'successful push uses an information notification');
+  await showPushResult('Git Push 失败', 'network unavailable');
+  assert.equal(errorMessages.at(-1), 'Git Push 失败：network unavailable', 'failed push uses an error notification');
   const repositories = ['parent', 'child', 'clean'].map((repositoryLabel, index) => ({ path: 'file:///fixture/' + repositoryLabel, label: repositoryLabel, hasSubmodules: index < 2, ancestry: index ? ['file:///fixture/parent'] : [] }));
   let published;
   const provider = Object.create(GitkViewProvider.prototype);
@@ -1164,6 +1249,7 @@ async function verifyProvider() {
     schedulePushState: () => {}, commitPanel: { isVisible: () => false },
     repoSubmoduleWatcher: {
       findSubmoduleRepository: (_parent, file) => file === 'leaf-link' ? repositories[2] : file === 'parent-link' ? repositories[0] : undefined,
+      getRepositoryAncestry: () => [],
     },
     commitPanelViewTitleController: { update() {} },
     commitController: { isLoading: false, searchedCommitList: [], displayedSearchKeywords: [], totalCommitList: [],
@@ -1317,8 +1403,17 @@ async function verifyProvider() {
   assert.equal(selectedWorktrees.length, 1, 'a stale badge read cannot reselect a child after focus moves elsewhere');
   provider.pushBranchByRepository.set(repositories[1].path, pushBranchFixture[0]);
   provider.lastPushedBranchByRepository.set(repositories[1].path, pushBranchFixture[0]);
-  await provider.runCommitPanelPush([repositories[1].path], true, false, true);
-  assert.equal(pushBranchDefaults[0].upstreamName, 'origin/main', 'repository card sync defaults to the current branch configured upstream, not cached or first remote');
+  await provider.runCommitPanelPush([repositories[1].path], true, false);
+  assert.equal(pushBranchDefaults[0].upstreamName, 'origin/main', 'sync defaults to the current branch configured upstream, not cached or first remote');
+  await provider.runCommitPanelPush([repositories[1].path], false, false);
+  assert.equal(pushBranchDefaults[0].upstreamName, 'fork/main', 'plain push keeps the cached target');
+  const checkoutCountBeforePush = checkouts.length;
+  selectedPushBranchesResult = [pushBranchFixture[1]];
+  await provider.runCommitPanelPush([repositories[1].path], true, false);
+  selectedPushBranchesResult = undefined;
+  assert.equal(checkouts.length, checkoutCountBeforePush, 'push does not switch branches');
+  assert.deepEqual(pulls, [], 'push does not pull before sending the current branch commit');
+  assert.deepEqual(pushes.at(-1), [repositories[1].path, 'origin', 'main', 'main'], 'push sends the current local branch commit directly to the selected remote branch');
   const syncSteps = [];
   provider.runCommitPanelPush = async (...args) => syncSteps.push(['sync', ...args]);
   provider.uncommittedFilesWatcher.refreshHeadBranch = async value => syncSteps.push(['head', value]);

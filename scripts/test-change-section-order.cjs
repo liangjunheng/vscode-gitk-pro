@@ -20,6 +20,9 @@ async function main() {
             amend: false, committedFiles: [], committedFilesLoading: false, latestCommitSubmodulePaths: [], hasUnpushedCommits: false,
             unpushedCommitCount: 0, changedSubmoduleRepositoryPaths: [], conflictFiles: [conflict], stagedFiles: [staged], unstagedFiles: [unstaged], committing: false };
         await page.setContent(renderCommitPanelHtml('icons.css', 'test', '', JSON.stringify({ cards: [card], displayMode: 'flat' })));
+        assert.equal(await page.locator('.pull-before-push-checkbox').count(), 0, 'push no longer offers a pull-before-push mode');
+        await page.locator('.push-btn').click();
+        assert.deepEqual(await page.evaluate(() => window.messages.at(-1)), { type: 'gitSync', action: 'push', repositoryPaths: [repositoryPath], pullBeforePush: false });
         assert.deepEqual(await page.locator('.section:not([hidden]) .section-title .left > span:nth-child(2)').allTextContents(), ['Merge Changes', 'Unstaged Changes', 'Staged Changes']);
         await page.locator('.stage-all').click();
         assert.deepEqual(await page.evaluate(() => window.messages.at(-1).paths), ['unstaged.cpp']);
