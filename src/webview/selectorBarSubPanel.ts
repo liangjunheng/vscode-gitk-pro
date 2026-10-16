@@ -24,7 +24,7 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   #filesActions .uncommitted-repo-group:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
   .uncommitted-repo-group .codicon { display: flex; align-items: center; font-size: 11px; line-height: 1; }
   .dropdown { position: relative; flex: 0 1 auto; min-width: 0; }
-  #branchDropdown { width: 20ch; }
+  #branchDropdown { width: 20ch; --branch-menu-font-family: var(--vscode-font-family, sans-serif); --branch-menu-font-size: var(--vscode-font-size, 13px); --branch-menu-line-height: normal; }
   #repositoryDisplay { display: flex; align-items: center; gap: 0; flex: 0 1 20ch; min-width: 0; height: 26px; color: var(--vscode-dropdown-foreground, var(--vscode-foreground)); font: inherit; cursor: default; }
   #repositoryDisplay .dropdown-label { gap: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #repositoryDisplay .repository-icon { margin-right: 0; }
@@ -51,11 +51,13 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   .dropdown-chevron { margin-left: auto; display: inline-flex; align-items: center; color: var(--vscode-descriptionForeground); }
   .dropdown-chevron svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
   .dropdown.open .dropdown-chevron { transform: rotate(180deg); }
-  .dropdown-menu { position: absolute; top: calc(100% + 3px); left: 0; z-index: 20; display: none; flex-direction: column; width: max(100%, 190px); padding: 5px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: var(--vscode-menu-background, var(--vscode-editorWidget-background)); border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border)); border-radius: 5px; box-shadow: 0 4px 14px rgba(0, 0, 0, .28); }
+  .dropdown-menu { position: absolute; top: calc(100% + 3px); left: 0; z-index: 20; display: none; flex-direction: column; width: max-content; min-width: 100%; max-width: calc(100vw - 20px); padding: 0; box-sizing: border-box; overflow: hidden; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: var(--vscode-menu-background, var(--vscode-editorWidget-background)); border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border)); border-radius: 5px; box-shadow: 0 2px 4px rgba(0, 0, 0, .24), 0 8px 18px rgba(0, 0, 0, .36); }
   .dropdown.open .dropdown-menu { display: flex; }
-  .dropdown-filter { width: 100%; height: 25px; flex: 0 0 auto; margin-bottom: 4px; padding: 0 6px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); border-radius: 3px; font: inherit; }
+  .dropdown-filter { width: calc(100% - 10px); height: 25px; flex: 0 0 auto; margin: 5px 5px 4px; padding: 0 6px; box-sizing: border-box; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); border-radius: 3px; font: inherit; }
   .dropdown-filter:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
-  .dropdown-options { min-height: 0; flex: 1 1 auto; overflow-y: auto; }
+  #branchDropdown .branch-options-viewport { position: relative; min-height: 0; flex: 0 0 auto; overflow: hidden; }
+  #branchDropdown .branch-options-viewport > .dropdown-options { height: 100%; min-height: 0; padding: 0 5px; overflow-y: auto; }
+  #branchDropdown .branch-options-viewport > .overlay-scroll-track.vertical { opacity: 1; pointer-events: auto; }
   .dropdown-progress { position: absolute; top: 0; right: 0; left: 0; z-index: 2; height: 2px; overflow: hidden; background: var(--vscode-editorWidget-border, var(--vscode-panel-border)); }
   .dropdown-progress::before { content: ''; display: block; width: 35%; height: 100%; background: var(--vscode-progressBar-background); animation: dropdown-progress 1.1s ease-in-out infinite; }
   @keyframes dropdown-progress { from { transform: translateX(-110%); } to { transform: translateX(310%); } }
@@ -63,26 +65,26 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   .dropdown-option { color: inherit; background: transparent; cursor: pointer; }
   .dropdown-option:hover, .dropdown-option:focus-visible { color: var(--vscode-menu-selectionForeground); background: var(--vscode-menu-selectionBackground); outline: none; }
   .dropdown-option.selected::before { content: '✓'; display: inline-block; width: 14px; color: var(--vscode-menu-selectionForeground, var(--vscode-textLink-foreground)); }
-  #branchDropdown .dropdown-option { display: flex; align-items: center; gap: 6px; }
+  #branchDropdown .dropdown-option { display: flex; align-items: center; gap: 6px; font-family: var(--branch-menu-font-family); font-size: var(--branch-menu-font-size); font-style: normal; font-weight: 400; line-height: var(--branch-menu-line-height); }
   #branchDropdown .dropdown-option.selected::before { display: none; }
   #branchDropdown .dropdown-option input { flex: 0 0 auto; margin: 0; accent-color: var(--vscode-checkbox-selectBackground, var(--vscode-focusBorder)); }
-  .dropdown-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 2px 1px; border-top: 1px solid var(--vscode-menu-separatorBackground, var(--vscode-panel-border)); }
+  .dropdown-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 42px; margin: 0; padding: 8px 7px; box-sizing: border-box; border-top: 1px solid var(--vscode-menu-separatorBackground, var(--vscode-panel-border)); }
   .dropdown-actions-right { display: flex; align-items: center; gap: 6px; }
-  .dropdown-actions button { min-width: 52px; height: 26px; padding: 0 10px; color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); background: var(--vscode-button-secondaryBackground, var(--vscode-toolbar-hoverBackground)); border: 1px solid transparent; border-radius: 6px; cursor: pointer; font: inherit; transition: background-color 120ms ease, border-color 120ms ease; }
+  #branchDropdown .dropdown-actions button { min-width: 52px; height: 26px; padding: 0 10px; color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); background: var(--vscode-button-secondaryBackground, var(--vscode-toolbar-hoverBackground)); border: 1px solid transparent; border-radius: 6px; cursor: pointer; font-family: var(--branch-menu-font-family); font-size: var(--branch-menu-font-size); font-style: normal; font-weight: 400; line-height: var(--branch-menu-line-height); transition: background-color 120ms ease, border-color 120ms ease; }
   .dropdown-actions button:hover { background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground)); }
   .dropdown-actions button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
   .dropdown-actions .toggle-all { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 0; padding: 0 7px; background: transparent; }
   .dropdown-actions .toggle-all:hover, .dropdown-actions .toggle-all:active { background: transparent; }
   .dropdown-actions .toggle-all input { width: 13px; height: 13px; margin: 0; accent-color: var(--vscode-checkbox-selectBackground, var(--vscode-focusBorder)); pointer-events: none; }
-  .dropdown-actions .confirm-selection, .dropdown-actions .cancel-selection { min-width: 35px; height: 18px; padding: 0 6px; border-radius: 5px; }
-  .dropdown-actions .confirm-selection { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
-  .dropdown-actions .confirm-selection:hover { background: var(--vscode-button-hoverBackground); }
-  .dropdown-group { padding-bottom: 1px; color: var(--vscode-descriptionForeground); font-weight: 600; cursor: default; }
-  #branchDropdown .dropdown-group { display: flex; align-items: center; gap: 6px; position: sticky; top: 0; z-index: 1; min-height: 28px; margin-top: 5px; padding: 5px 7px; border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 0; background: var(--vscode-menu-background, var(--vscode-editor-background)); }
+  #branchDropdown .dropdown-actions .confirm-selection { min-width: 46px; height: 24px; padding: 0 8px; border-color: var(--vscode-button-border, transparent); border-radius: 3px; color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
+  #branchDropdown .dropdown-actions .confirm-selection:hover { background: var(--vscode-button-hoverBackground); }
+  #branchDropdown .dropdown-actions .cancel-selection { min-width: 0; height: 24px; padding: 0 4px; border-radius: 3px; color: var(--vscode-foreground); background: transparent; }
+  #branchDropdown .dropdown-actions .cancel-selection:hover { background: var(--vscode-toolbar-hoverBackground); }
+  .dropdown-group { padding-bottom: 1px; color: var(--vscode-descriptionForeground); cursor: default; }
+  #branchDropdown .dropdown-group { display: flex; align-items: center; gap: 6px; position: sticky; top: 0; z-index: 1; min-height: 28px; margin-top: 5px; padding: 5px 7px; border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 0; background: var(--vscode-menu-background, var(--vscode-editor-background)); font-family: var(--branch-menu-font-family); font-size: var(--branch-menu-font-size); font-style: normal; font-weight: 400; line-height: var(--branch-menu-line-height); }
   #branchDropdown .dropdown-group:first-child { margin-top: 0; }
   #branchDropdown .dropdown-group[hidden], #branchDropdown .dropdown-option[hidden] { display: none; }
   .branch-group-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .branch-group-count { flex: 0 0 auto; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); text-align: center; }
   #branchDropdown .dropdown-option { min-height: 28px; padding: 4px 8px; }
   .branch-option-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .branch-current-marker { flex: 0 0 auto; padding: 1px 5px; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 3px; color: var(--vscode-descriptionForeground); }
@@ -95,7 +97,7 @@ export const SELECTOR_BAR_SUB_PANEL_MARKUP = `
     <div class="selector-row">
       <div class="selector-group" id="branchSelector"><div class="dropdown" id="branchDropdown">
         <button class="dropdown-current" type="button" title="切换分支" aria-expanded="false" disabled><span class="dropdown-label"><span class="dropdown-spinner" hidden aria-hidden="true"></span>加载分支...</span><span class="dropdown-chevron" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></span></button>
-        <div class="dropdown-menu" role="menu"><input class="dropdown-filter" type="text" placeholder="筛选分支" aria-label="筛选分支"><div class="dropdown-options"></div><div class="dropdown-actions"><button type="button" class="toggle-all" aria-pressed="false"><input type="checkbox" tabindex="-1" aria-hidden="true"><span>全选</span></button><div class="dropdown-actions-right"><button type="button" class="confirm-selection">确定</button><button type="button" class="cancel-selection">取消</button></div></div></div>
+        <div class="dropdown-menu" role="menu"><input class="dropdown-filter" type="text" placeholder="筛选分支" aria-label="筛选分支"><div class="branch-options-viewport overlay-scroll-viewport"><div class="dropdown-options" id="branchOptions"></div><div class="overlay-scroll-track vertical" id="branchOptionsScrollbar" role="scrollbar" aria-label="滚动分支列表" aria-controls="branchOptions" aria-orientation="vertical" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" tabindex="0" hidden><div class="overlay-scroll-thumb"></div></div></div><div class="dropdown-actions"><button type="button" class="toggle-all" aria-pressed="false"><input type="checkbox" tabindex="-1" aria-hidden="true"><span>全选</span></button><div class="dropdown-actions-right"><button type="button" class="confirm-selection">确定</button><button type="button" class="cancel-selection">取消</button></div></div></div>
       </div></div>
       <span class="selector-separator" aria-hidden="true">@</span>
       <div id="repositoryDisplay" title="未选择仓库"><span class="dropdown-label">未选择仓库</span></div>
@@ -189,8 +191,6 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
           if (sibling.classList.contains('dropdown-option') && !sibling.hidden) count++;
         }
         group.hidden = count === 0;
-        const badge = group.querySelector('.branch-group-count');
-        if (badge) badge.textContent = String(count);
       });
       let empty = options.querySelector('.dropdown-empty');
       if (!visibleOptions) {
@@ -198,6 +198,7 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
       } else if (empty) {
         empty.remove();
       }
+      if (id === 'branchDropdown') updateDropdownHeight(branchDropdown);
     });
     return dropdown;
   }
@@ -207,7 +208,42 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
     const commitHeight = commitSection
       ? commitSection.getBoundingClientRect().height
       : Math.max(document.documentElement.clientHeight, document.body.clientHeight);
-    dropdown.menu.style.maxHeight = Math.floor(commitHeight * 2 / 3) + 'px';
+    const maximumMenuHeight = Math.floor(commitHeight * 2 / 3);
+    dropdown.menu.style.maxHeight = maximumMenuHeight + 'px';
+    if (dropdown.root.id !== 'branchDropdown') return;
+
+    const viewport = dropdown.root.querySelector('.branch-options-viewport');
+    const actions = dropdown.menu.querySelector('.dropdown-actions');
+    if (!viewport || !actions) return;
+
+    // The flex container has no intrinsic vertical budget. Give the option viewport an
+    // explicit height so an overflowing list always has a real scroll range.
+    viewport.style.height = 'auto';
+    const filterStyle = getComputedStyle(dropdown.filter);
+    const filterOuterHeight = dropdown.filter.offsetHeight + parseFloat(filterStyle.marginTop) + parseFloat(filterStyle.marginBottom);
+    const availableOptionsHeight = Math.max(84, maximumMenuHeight - filterOuterHeight - actions.offsetHeight - 2);
+    const optionHeight = Math.min(dropdown.options.scrollHeight, availableOptionsHeight);
+    viewport.style.height = optionHeight + 'px';
+
+    // Size to the widest actual menu label and action row, never below the trigger
+    // and never beyond the viewport. This avoids width: max-content being defeated
+    // by the flex labels' width: 100% rules.
+    const probe = document.createElement('span');
+    probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;pointer-events:none;font:' + getComputedStyle(dropdown.options).font;
+    document.body.appendChild(probe);
+    let widestText = 0;
+    dropdown.options.querySelectorAll('.branch-option-label, .branch-group-label').forEach(function(label) {
+      probe.textContent = label.textContent || '';
+      widestText = Math.max(widestText, probe.getBoundingClientRect().width);
+    });
+    probe.textContent = dropdown.filter.placeholder || '';
+    widestText = Math.max(widestText, probe.getBoundingClientRect().width);
+    probe.remove();
+    const optionWidth = widestText + 72;
+    const actionWidth = actions.scrollWidth + 14;
+    const triggerWidth = dropdown.current.getBoundingClientRect().width;
+    const viewportLimit = Math.max(triggerWidth, document.documentElement.clientWidth - 20);
+    dropdown.menu.style.width = Math.min(viewportLimit, Math.max(triggerWidth, optionWidth, actionWidth)) + 'px';
   }
 
   function updateOpenDropdownHeights() {
@@ -231,6 +267,9 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
 
   const repositoryDisplay = document.getElementById('repositoryDisplay');
   const branchDropdown = createDropdown('branchDropdown', function() {});
+  const branchOptionsViewport = document.querySelector('#branchDropdown .branch-options-viewport');
+  const branchOptionsScrollbar = document.getElementById('branchOptionsScrollbar');
+  if (branchOptionsViewport && branchOptionsScrollbar) installOverlayScrollbars(branchOptionsViewport, branchDropdown.options, [branchOptionsScrollbar]);
   const commitSectionResizeTarget = document.getElementById('commitSection');
   if (commitSectionResizeTarget && typeof ResizeObserver !== 'undefined') {
     const dropdownHeightObserver = new ResizeObserver(updateOpenDropdownHeights);
@@ -371,7 +410,7 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
       if (entry.group) {
         const group = document.createElement('div');
         group.className = 'dropdown-group';
-        group.innerHTML = '<span class="codicon codicon-' + (entry.remoteName ? 'cloud' : 'git-branch') + '" aria-hidden="true"></span><span class="branch-group-label">' + escapeHtml(entry.group) + '</span><span class="branch-group-count">' + entry.count + '</span>';
+        group.innerHTML = '<span class="codicon codicon-' + (entry.remoteName ? 'cloud' : 'git-branch') + '" aria-hidden="true"></span><span class="branch-group-label">' + escapeHtml(entry.group) + '</span>';
         branchDropdown.options.appendChild(group);
         return;
       }

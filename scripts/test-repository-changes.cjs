@@ -539,6 +539,32 @@ async function verifyBranchDropdown(page, state, publish) {
   assert.equal(branchSelectorAlignment.labelGap, '2px');
   assert.equal(branchSelectorAlignment.iconTransform, 'none');
   await dropdown.locator('.dropdown-current').click();
+  const branchScrollbar = page.locator('#branchOptionsScrollbar');
+  await assertCount(branchScrollbar, 1);
+  const branchScrollbarFixture = await page.evaluate(() => {
+    const viewport = document.querySelector('#branchDropdown .branch-options-viewport');
+    const options = document.querySelector('#branchOptions');
+    viewport.style.height = '84px';
+    const viewportStyle = getComputedStyle(viewport);
+    const menuStyle = getComputedStyle(document.querySelector('#branchDropdown .dropdown-menu'));
+    return { nativeScrollbarWidth: getComputedStyle(options).scrollbarWidth, viewportClass: viewport.className, viewportOverflow: viewportStyle.overflow, menuOverflow: menuStyle.overflow };
+  });
+  assert.equal(branchScrollbarFixture.nativeScrollbarWidth, 'none', 'branch options hide the native scrollbar');
+  assert.match(branchScrollbarFixture.viewportClass, /overlay-scrollbar/, 'branch options use the shared overlay scrollbar component');
+  assert.equal(branchScrollbarFixture.viewportOverflow, 'hidden', 'branch options clip overflowing rows inside the popup');
+  assert.equal(branchScrollbarFixture.menuOverflow, 'hidden', 'branch menu clips content to its rounded boundary');
+  await page.waitForFunction(() => !document.getElementById('branchOptionsScrollbar').hidden);
+  const branchScrollbarSync = await page.evaluate(() => {
+    const options = document.querySelector('#branchOptions');
+    const thumb = document.querySelector('#branchOptionsScrollbar .overlay-scroll-thumb');
+    const before = getComputedStyle(thumb).transform;
+    options.scrollTop = options.scrollHeight;
+    return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve({ before, after: getComputedStyle(thumb).transform, scrollTop: options.scrollTop }))));
+  });
+  assert.ok(branchScrollbarSync.scrollTop > 0, 'branch options can scroll through their overlay viewport');
+  assert.notEqual(branchScrollbarSync.after, branchScrollbarSync.before, 'branch overlay thumb follows the option scroll position');
+  assert.equal(await branchScrollbar.evaluate(track => getComputedStyle(track).opacity), '1', 'branch overlay scrollbar remains visible while its options overflow');
+  await page.evaluate(() => { const viewport = document.querySelector('#branchDropdown .branch-options-viewport'); viewport.style.height = ''; });
   const branchMenuLayout = await page.evaluate(() => {
     const button = document.querySelector('#branchDropdown .dropdown-current').getBoundingClientRect();
     const menu = document.querySelector('#branchDropdown .dropdown-menu').getBoundingClientRect();
@@ -558,20 +584,69 @@ async function verifyBranchDropdown(page, state, publish) {
       options: styles('#branchDropdown .dropdown-option'),
       groups: styles('#branchDropdown .dropdown-group'),
       actions: styles('#branchDropdown .dropdown-actions button'),
-      markers: styles('#branchDropdown .branch-current-marker, #branchDropdown .branch-group-count'),
+      branchNames: styles('#branchDropdown .branch-option-label'),
+      actionTypography: styles('#branchDropdown .toggle-all, #branchDropdown .confirm-selection, #branchDropdown .cancel-selection'),
+      menuShadow: getComputedStyle(document.querySelector('#branchDropdown .dropdown-menu')).boxShadow,
+      menuWidth: menu.width,
+      buttonWidth: button.width,
+      viewportWidth: window.innerWidth,
+      optionsHeight: document.querySelector('#branchDropdown .branch-options-viewport').getBoundingClientRect().height,
+      optionsScrollHeight: document.querySelector('#branchOptions').scrollHeight,
+      actionsHeight: document.querySelector('#branchDropdown .dropdown-actions').getBoundingClientRect().height,
+      actionsPadding: (() => {
+        const computed = getComputedStyle(document.querySelector('#branchDropdown .dropdown-actions'));
+        return { top: computed.paddingTop, bottom: computed.paddingBottom };
+      })(),
+      menuContentLayout: (() => {
+        const menuElement = document.querySelector('#branchDropdown .dropdown-menu');
+        const filterElement = document.querySelector('#branchDropdown .dropdown-filter');
+        const actionsElement = document.querySelector('#branchDropdown .dropdown-actions');
+        const menuRect = menuElement.getBoundingClientRect();
+        const filterRect = filterElement.getBoundingClientRect();
+        const actionsRect = actionsElement.getBoundingClientRect();
+        const menuStyle = getComputedStyle(menuElement);
+        return {
+          menuPadding: { top: menuStyle.paddingTop, right: menuStyle.paddingRight, bottom: menuStyle.paddingBottom, left: menuStyle.paddingLeft },
+          filterTopGap: filterRect.top - menuRect.top,
+          filterSideGap: filterRect.left - menuRect.left,
+          actionBottomGap: menuRect.bottom - actionsRect.bottom,
+        };
+      })(),
+      confirm: (() => {
+        const button = document.querySelector('#branchDropdown .confirm-selection');
+        const computed = getComputedStyle(button);
+        const rect = button.getBoundingClientRect();
+        return { height: rect.height, minWidth: computed.minWidth, borderRadius: computed.borderRadius, fontWeight: computed.fontWeight, background: computed.backgroundColor };
+      })(),
+      cancel: (() => {
+        const button = document.querySelector('#branchDropdown .cancel-selection');
+        const computed = getComputedStyle(button);
+        const rect = button.getBoundingClientRect();
+        return { height: rect.height, background: computed.backgroundColor };
+      })(),
     };
   });
   assert.equal(branchMenuLayout.menuTop, branchMenuLayout.buttonBottom + 3, 'branch menu stays directly below its selector button');
   assert.ok(Number(branchMenuLayout.menuZIndex) > Number(branchMenuLayout.searchZIndex), 'branch menu stacks above the commit search row');
-  [branchMenuLayout.filter, branchMenuLayout.options, branchMenuLayout.actions, branchMenuLayout.markers].flat().forEach(style => {
+  [branchMenuLayout.filter, branchMenuLayout.options, branchMenuLayout.actions, branchMenuLayout.groups].flat().forEach(style => {
     assert.deepEqual(style, branchMenuLayout.card, 'branch menu text matches the repository card title typography');
   });
-  branchMenuLayout.groups.forEach(style => {
-    assert.equal(style.fontFamily, branchMenuLayout.card.fontFamily);
-    assert.equal(style.fontSize, branchMenuLayout.card.fontSize);
-    assert.equal(style.fontStyle, branchMenuLayout.card.fontStyle);
-    assert.equal(style.lineHeight, branchMenuLayout.card.lineHeight);
+  assert.equal(await dropdown.locator('.branch-group-count').count(), 0, 'branch menu does not render count badges');
+  branchMenuLayout.actionTypography.forEach(style => {
+    assert.deepEqual(style, branchMenuLayout.branchNames[0], 'branch actions use the same typography as branch names');
   });
+  assert.equal(branchMenuLayout.actionsHeight, 42, 'branch menu action bar has deliberate vertical space');
+  assert.ok(branchMenuLayout.menuWidth >= branchMenuLayout.buttonWidth, 'branch menu never narrows below its selector button');
+  assert.ok(branchMenuLayout.menuWidth <= branchMenuLayout.viewportWidth - 20, 'branch menu stays within the webview viewport');
+  assert.ok(branchMenuLayout.optionsHeight <= branchMenuLayout.optionsScrollHeight, 'branch options receive an explicit bounded scroll viewport');
+  assert.deepEqual(branchMenuLayout.actionsPadding, { top: '8px', bottom: '8px' }, 'branch menu action bar uses symmetric vertical padding');
+  assert.deepEqual(branchMenuLayout.menuContentLayout.menuPadding, { top: '0px', right: '0px', bottom: '0px', left: '0px' }, 'branch menu has no extra outer padding');
+  assert.equal(branchMenuLayout.menuContentLayout.filterTopGap, 6, 'filter owns the menu top inset');
+  assert.equal(branchMenuLayout.menuContentLayout.filterSideGap, 6, 'filter owns the menu side inset');
+  assert.equal(branchMenuLayout.menuContentLayout.actionBottomGap, 1, 'action bar reaches the menu bottom without an extra outer gap');
+  assert.match(branchMenuLayout.menuShadow, /rgba\(0, 0, 0, 0\.24\).*rgba\(0, 0, 0, 0\.36\)/, 'branch menu uses a layered elevation shadow');
+  assert.deepEqual(branchMenuLayout.confirm, { height: 24, minWidth: '46px', borderRadius: '3px', fontWeight: '400', background: 'rgb(23, 108, 139)' }, 'confirm is a compact primary action');
+  assert.deepEqual(branchMenuLayout.cancel, { height: 24, background: 'rgba(0, 0, 0, 0)' }, 'cancel remains a lighter secondary action');
   const branchMenuIconAlignment = await page.evaluate(() => {
     const metrics = selector => Array.from(document.querySelectorAll(selector), element => {
       const rect = element.getBoundingClientRect();
@@ -601,7 +676,6 @@ async function verifyBranchDropdown(page, state, publish) {
     assert.equal(icon.transform, 'none');
   });
   assert.deepEqual(await dropdown.locator('.branch-group-label').allTextContents(), ['本地分支', '远程分支 · origin', '远程分支 · upstream']);
-  assert.deepEqual(await dropdown.locator('.branch-group-count').allTextContents(), ['2', '2', '1']);
   await assertCount(dropdown.locator('.dropdown-option'), 5);
   await assertCount(dropdown.locator('.branch-current-marker'), 1);
   const featureCheckbox = dropdown.locator('input[value="refs/heads/feature/ui"]');
@@ -616,7 +690,6 @@ async function verifyBranchDropdown(page, state, publish) {
   await assertCount(dropdown.locator('.dropdown-option:visible'), 2);
   await assertCount(dropdown.locator('.dropdown-group:visible'), 1);
   await filter.fill('team/topic');
-  assert.equal(await dropdown.locator('.branch-group-count:visible').textContent(), '1');
   await dropdown.locator('.dropdown-option:visible').click();
   await sendBranches();
   await assertCount(dropdown.locator('.dropdown-option:visible'), 1);
@@ -1096,6 +1169,7 @@ async function verifyPushBranchEnrichment() {
   const load = Module._load;
   const rootUri = { fsPath: 'C:/fixture', toString: () => 'file:///fixture' };
   const nativeCalls = [];
+  const rangeRequests = [];
   let getPushBranches;
   try {
     const bindingPath = require.resolve('../out/git/nativeGitBinding');
@@ -1104,12 +1178,16 @@ async function verifyPushBranchEnrichment() {
     Module._load = function(name, ...args) {
       if (name === 'vscode') return { Uri: { parse: value => ({ toString: () => value, fsPath: value }) } };
       if (name === './nativeGitBinding' || name === bindingPath) return {
-        invokeNativeGit: async (operation) => {
+        invokeNativeGit: async (operation, payload) => {
           nativeCalls.push(operation);
-          if (operation === 'pushBranches') return [
-            { name: 'master', upstreamName: 'origin/ink_dev', upstreamRemote: 'origin', upstreamBranch: 'ink_dev', isCurrent: true, recentUnpushedCommits: [] },
-            { name: 'master', upstreamName: 'origin/master', upstreamRemote: 'origin', upstreamBranch: 'master', isCurrent: true, recentUnpushedCommits: [] },
-          ];
+          if (operation === 'pushBranches') {
+            // 原生样本被 limit 截断成同样长度, 真实未推送数必须单独统计。
+            const sample = Array.from({ length: 8 }, (_value, index) => ({ subject: 'c' + index, timestamp: index }));
+            return [
+              { name: 'master', upstreamName: 'origin/ink_dev', upstreamRemote: 'origin', upstreamBranch: 'ink_dev', isCurrent: true, recentUnpushedCommits: sample },
+              { name: 'master', upstreamName: 'origin/master', upstreamRemote: 'origin', upstreamBranch: 'master', isCurrent: true, recentUnpushedCommits: sample },
+            ];
+          }
           if (operation === 'branches') return {
             currentBranch: 'refs/heads/master',
             local: [{ hash: 'a'.repeat(40), name: 'refs/heads/master', label: 'master', upstreamName: 'origin/master' }],
@@ -1122,6 +1200,12 @@ async function verifyPushBranchEnrichment() {
             { hash: 'b'.repeat(40), authorDate: '2026-09-02T14:16:25+08:00' },
             { hash: 'c'.repeat(40), authorDate: '2026-10-12T10:57:46+08:00' },
           ];
+          if (operation === 'rangeCommits') {
+            rangeRequests.push(payload.from);
+            // 每个远程分支的未推送数量不同; limit 截断的样本长度不能当作总数。
+            const total = payload.from === 'origin/ink_dev' ? 146 : 64;
+            return Array.from({ length: total }, (_value, index) => ({ hash: String(index).padStart(40, '0') }));
+          }
           throw new Error('unexpected native operation: ' + operation);
         },
       };
@@ -1137,6 +1221,9 @@ async function verifyPushBranchEnrichment() {
   assert.deepEqual(targets.map(target => target.isUpstream), [false, true], 'the configured upstream is derived from branch refs when the native module omits isUpstream');
   assert.deepEqual(targets.map(target => target.tipTimestamp), [1788329785, 1791773866], 'remote tip timestamps are derived from commit dates when the native module omits tipTimestamp');
   assert.ok(nativeCalls.includes('branches') && nativeCalls.includes('commitDetails'), 'enrichment reads branch refs and commit dates');
+  assert.deepEqual(targets.map(target => target.unpushedCommitCount), [146, 64], 'each remote target reports its own unpushed total instead of the limit-truncated sample length');
+  assert.deepEqual(targets.map(target => target.recentUnpushedCommits.length), [8, 8], 'the native sample stays truncated by limit');
+  assert.deepEqual(rangeRequests, ['origin/ink_dev', 'origin/master'], 'unpushed totals are counted per remote branch');
 }
 async function verifyProvider() {
   // Host selection routing and stale MultiDiff feedback are tested below with the actual methods.
