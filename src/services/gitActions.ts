@@ -180,8 +180,22 @@ export class GitActionRunner {
                         message => progress.report({ message }),
                         selectedPushBranches,
                     );
+                    let submodulesUpdated = false;
                     if (action === 'pull' && result.submodulesNeedUpdate) {
-                        await updateGitSubmodules(rootUri, result.submodulePaths, message => progress.report({ message }));
+                        progress.report({ message: '检测到需要更新的子模块，等待确认...' });
+                        const choice = await vscode.window.showWarningMessage(
+                            `代码拉取完成，但检测到 ${result.submodulePaths.length} 个子模块版本不一致。是否立即更新子模块？`,
+                            {
+                                modal: true,
+                                detail: result.submodulePaths.map(submodulePath => `• ${submodulePath}`).join('\n'),
+                            },
+                            '更新子模块',
+                            '暂不更新',
+                        );
+                        if (choice === '更新子模块') {
+                            await updateGitSubmodules(rootUri, result.submodulePaths, message => progress.report({ message }));
+                            submodulesUpdated = true;
+                        }
                     }
                     if (result.submoduleTopologyChanged) {
                         // 仓库集合变化由调用方转交 GitRepoController 重扫。
@@ -203,9 +217,15 @@ export class GitActionRunner {
                             result.summary ?? `Git ${operation}操作已完成。`,
                             ...(result.details ?? []),
                             ...(action === 'pull' && result.submodulesNeedUpdate
-                                ? [`已更新 ${result.submodulePaths.length} 个 Submodule`] : []),
+                                ? [submodulesUpdated
+                                    ? `已更新 ${result.submodulePaths.length} 个子模块`
+                                    : `有 ${result.submodulePaths.length} 个子模块暂未更新`]
+                                : []),
                         ];
-                        void vscode.window.showInformationMessage(details.join('；'));
+                        const message = action === 'pull'
+                            ? `${details.map(detail => detail.replace(/[。；]+$/u, '')).join('；')}。`
+                            : details.join('；');
+                        void vscode.window.showInformationMessage(message);
                     }
                 } catch (error) {
                     const reason = error instanceof Error ? error.message : String(error);

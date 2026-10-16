@@ -292,6 +292,19 @@ interface GitlinkChange {
     path: string;
 }
 
+interface NativeSubmoduleState {
+    path: string;
+    indexId?: string | null;
+    workdirId?: string | null;
+}
+
+async function getSubmodulePathsNeedingUpdate(rootUri: vscode.Uri): Promise<string[]> {
+    const modules = await invokeNativeGit<NativeSubmoduleState[]>('submodules', { rootPath: rootUri.fsPath });
+    return modules
+        .filter(module => Boolean(module.indexId) && module.indexId !== module.workdirId)
+        .map(module => module.path);
+}
+
 async function getGitlinkChanges(rootUri: vscode.Uri, beforeHead: string, afterHead: string): Promise<GitlinkChange[]> {
     return invokeNativeGit<GitlinkChange[]>('gitlinkChanges', {
         rootPath: rootUri.fsPath,
@@ -336,27 +349,32 @@ export async function runGitSync(
         const afterHead = await getCurrentGitHeadHash(rootUri);
         const changes = describeRemoteBranchChanges(before, await readRemoteBranchHashes(rootUri));
         const headChanged = Boolean(beforeHead && afterHead && beforeHead !== afterHead);
-        const details = [
-            !beforeHead || !afterHead ? '无法读取拉取前后的 HEAD。'
-                : headChanged ? `本地 HEAD：${beforeHead.slice(0, 8)} → ${afterHead.slice(0, 8)}`
-                    : `本地 HEAD 未变化（${afterHead.slice(0, 8)}）。`,
-            ...(changes.length ? changes.map(change => `远程分支：${change}`) : ['远程分支无变化（标签等其他引用未列出）。']),
-        ];
-        if (!beforeHead || !afterHead || beforeHead === afterHead) {
-            return {
-                headChanged: false, submodulesNeedUpdate: false, submoduleTopologyChanged: false, submodulePaths: [],
-                summary: beforeHead && afterHead ? 'Pull 完成：本地 HEAD 未变化' : 'Pull 完成：无法确认本地 HEAD 变化',
-                details,
-            };
+        const details = changes.map(change => change === '无法读取远程分支变化。'
+            ? '远程跟踪分支变化无法确认'
+            : `远程跟踪分支：${change}`);
+        let submoduleTopologyChanged = false;
+        if (beforeHead && afterHead && beforeHead !== afterHead) {
+            const gitlinkChanges = await getGitlinkChanges(rootUri, beforeHead, afterHead);
+            submoduleTopologyChanged = gitlinkChanges.some(change => change.status === 'A' || change.status === 'D');
         }
-        const gitlinkChanges = await getGitlinkChanges(rootUri, beforeHead, afterHead);
-        const submodulePaths = gitlinkChanges.filter(change => change.status !== 'D').map(change => change.path);
+        onProgress?.('正在检查子模块是否需要更新...');
+        let submodulePaths: string[] = [];
+        try {
+            submodulePaths = await getSubmodulePathsNeedingUpdate(rootUri);
+        } catch (error) {
+            details.push(`子模块状态检查失败：${error instanceof Error ? error.message : String(error)}`);
+        }
+        const summary = !beforeHead || !afterHead
+            ? '代码拉取完成，但无法确认本地提交是否变化'
+            : headChanged
+                ? `代码拉取完成：本地代码已更新（${beforeHead.slice(0, 8)} → ${afterHead.slice(0, 8)}）`
+                : `代码拉取完成：当前分支已是最新状态（${afterHead.slice(0, 8)}）`;
         return {
-            headChanged: true,
+            headChanged,
             submodulesNeedUpdate: submodulePaths.length > 0,
-            submoduleTopologyChanged: gitlinkChanges.some(change => change.status === 'A' || change.status === 'D'),
+            submoduleTopologyChanged,
             submodulePaths,
-            summary: `Pull 完成：本地 HEAD ${beforeHead.slice(0, 8)} → ${afterHead.slice(0, 8)}`,
+            summary,
             details,
         };
     }
@@ -379,8 +397,12 @@ export async function updateGitSubmodules(
     submodulePaths: readonly string[],
     onProgress?: (message: string) => void,
 ): Promise<void> {
-    onProgress?.(`正在通过 libgit2 初始化并更新 ${submodulePaths.length} 个 Submodule 模块...`);
-    await updateSubmodulesNative(rootUri, submodulePaths);
+    for (let index = 0; index < submodulePaths.length; index++) {
+        const submodulePath = submodulePaths[index];
+        onProgress?.(`正在更新子模块（${index + 1}/${submodulePaths.length}）：${submodulePath}`);
+        await updateSubmodulesNative(rootUri, [submodulePath]);
+        onProgress?.(`子模块更新完成（${index + 1}/${submodulePaths.length}）：${submodulePath}`);
+    }
 }
 export interface CommitHistoryMessage {
     readonly shortHash: string;
