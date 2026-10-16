@@ -36,7 +36,7 @@ export function pickPushBranches(
     });
     const baseItems: PushBranchQuickPickItem[] = orderedBranches.map(branch => ({
         label: `$(cloud) ${branch.upstreamName}`,
-        detail: `未推送提交：${branch.recentUnpushedCommits.length}`,
+        detail: `未推送提交：${branch.unpushedCommitCount}`,
         branch,
     }));
     const defaultKeys = new Set(defaultBranches.map(branchKey));

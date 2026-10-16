@@ -110,7 +110,7 @@ async function pickPushBranch(
     quickPick.items = branches.map(branch => ({
         label: branch.upstreamName,
         description: `本地分支：${branch.name}`,
-        detail: `未推送提交：${branch.recentUnpushedCommits.length}`,
+        detail: `未推送提交：${branch.unpushedCommitCount}`,
         branch,
     }));
     quickPick.title = '选择要推送的远程分支';

@@ -186,6 +186,8 @@ export interface PushBranchOption {
     isCurrent: boolean;
     isUpstream: boolean;
     tipTimestamp: number;
+    /** 相对该远程分支的未推送提交总数; recentUnpushedCommits 只是受 limit 截断的样本。 */
+    unpushedCommitCount: number;
     recentUnpushedCommits: readonly { subject: string; timestamp: number }[];
 }
 
@@ -203,9 +205,10 @@ export async function getPushBranches(rootUri: vscode.Uri, commitLimit = 8): Pro
         limit: commitLimit,
     });
     if (targets.length === 0) { return targets; }
-    const [refs, remoteTipTimestamps] = await Promise.all([
+    const [refs, remoteTipTimestamps, unpushedCounts] = await Promise.all([
         readBranchRefsFromCli(rootUri).catch(() => undefined),
         readRemoteTipTimestamps(rootUri).catch(() => new Map<string, number>()),
+        readUnpushedCommitCounts(rootUri, targets).catch(() => new Map<string, number>()),
     ]);
     const configuredUpstreamByLocalBranch = new Map(
         (refs?.local ?? [])
@@ -220,7 +223,34 @@ export async function getPushBranches(rootUri: vscode.Uri, commitLimit = 8): Pro
         tipTimestamp: Number.isFinite(target.tipTimestamp)
             ? target.tipTimestamp
             : remoteTipTimestamps.get(target.upstreamName) ?? 0,
+        unpushedCommitCount: unpushedCounts.get(target.upstreamName)
+            ?? target.recentUnpushedCommits.length,
     }));
+}
+
+/**
+ * 每个远程分支的未推送提交总数。recentUnpushedCommits 受 limit 截断, 直接取其长度会把
+ * 所有超过上限的分支显示成同一个数字, 因此这里按 <remote>..HEAD 单独统计真实数量。
+ */
+async function readUnpushedCommitCounts(
+    rootUri: vscode.Uri,
+    targets: readonly PushBranchOption[],
+): Promise<Map<string, number>> {
+    const remoteNames = [...new Set(targets.map(target => target.upstreamName).filter(Boolean))];
+    const counted = await Promise.all(remoteNames.map(async remoteName => {
+        try {
+            const commits = await invokeNativeGit<Array<{ hash: string }>>('rangeCommits', {
+                rootPath: rootUri.fsPath,
+                from: remoteName,
+                to: 'HEAD',
+            });
+            return [remoteName, commits.length] as const;
+        } catch {
+            // 远程分支缺失或无法比较时退回样本长度, 不让计数失败阻断选择器。
+            return undefined;
+        }
+    }));
+    return new Map(counted.filter((entry): entry is readonly [string, number] => entry !== undefined));
 }
 
 /** 远程分支 tip 的提交时间(秒), 用于 Push 目标按最新修改排序。 */
