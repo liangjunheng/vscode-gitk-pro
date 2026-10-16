@@ -287,6 +287,18 @@ async function main() {
     await page.locator('#repositoryDisplay').click();
     assert.equal(await page.evaluate(() => window.messages.length), beforeDisplayClick, 'history repository name is display-only');
     assert.match(await page.locator('#repositoryDisplay').textContent(), /inkengine/);
+    const selectorTypography = await page.evaluate(() => {
+      const branch = getComputedStyle(document.querySelector('#branchDropdown .dropdown-value'));
+      const repository = getComputedStyle(document.querySelector('#repositoryDisplay .dropdown-value'));
+      const card = getComputedStyle(document.querySelector('.repo-changes-label'));
+      return {
+        branch: { fontFamily: branch.fontFamily, fontSize: branch.fontSize, fontStyle: branch.fontStyle, fontWeight: branch.fontWeight, lineHeight: branch.lineHeight },
+        repository: { fontFamily: repository.fontFamily, fontSize: repository.fontSize, fontStyle: repository.fontStyle, fontWeight: repository.fontWeight, lineHeight: repository.lineHeight },
+        card: { fontFamily: card.fontFamily, fontSize: card.fontSize, fontStyle: card.fontStyle, fontWeight: card.fontWeight, lineHeight: card.lineHeight }
+      };
+    });
+    assert.deepEqual(selectorTypography.branch, selectorTypography.card, 'branch label matches the repository card title typography');
+    assert.deepEqual(selectorTypography.repository, selectorTypography.card, 'repository name after @ matches the repository card title typography');
     const repositoryLabelGap = await page.locator('#repositoryDisplay').evaluate(display => {
       const icon = display.querySelector('.repository-icon').getBoundingClientRect();
       const label = display.querySelector('.dropdown-value').getBoundingClientRect();
@@ -510,7 +522,84 @@ async function verifyBranchDropdown(page, state, publish) {
   }, refs);
   state.selectedBranches = ['refs/heads/main']; await publish(); await sendBranches();
   const dropdown = page.locator('#branchDropdown');
+  const branchSelectorAlignment = await page.evaluate(() => {
+    const icon = document.querySelector('#branchDropdown .branch-icon').getBoundingClientRect();
+    const value = document.querySelector('#branchDropdown .dropdown-value').getBoundingClientRect();
+    const label = document.querySelector('#branchDropdown .dropdown-label');
+    return {
+      iconCenter: icon.top + icon.height / 2,
+      valueCenter: value.top + value.height / 2,
+      gap: value.left - icon.right,
+      iconTransform: getComputedStyle(document.querySelector('#branchDropdown .branch-icon')).transform,
+      labelGap: getComputedStyle(label).gap,
+    };
+  });
+  assert.equal(branchSelectorAlignment.iconCenter, branchSelectorAlignment.valueCenter, 'branch icon and label share a vertical centerline');
+  assert.equal(branchSelectorAlignment.gap, 2, 'branch icon keeps a 2px gap before its label');
+  assert.equal(branchSelectorAlignment.labelGap, '2px');
+  assert.equal(branchSelectorAlignment.iconTransform, 'none');
   await dropdown.locator('.dropdown-current').click();
+  const branchMenuLayout = await page.evaluate(() => {
+    const button = document.querySelector('#branchDropdown .dropdown-current').getBoundingClientRect();
+    const menu = document.querySelector('#branchDropdown .dropdown-menu').getBoundingClientRect();
+    const search = document.getElementById('commitSearchRow').getBoundingClientRect();
+    const card = getComputedStyle(document.querySelector('.repo-changes-label'));
+    const styles = selector => Array.from(document.querySelectorAll(selector), element => {
+      const computed = getComputedStyle(element);
+      return { fontFamily: computed.fontFamily, fontSize: computed.fontSize, fontStyle: computed.fontStyle, fontWeight: computed.fontWeight, lineHeight: computed.lineHeight };
+    });
+    return {
+      menuTop: menu.top,
+      buttonBottom: button.bottom,
+      menuZIndex: getComputedStyle(document.getElementById('commitSelectors')).zIndex,
+      searchZIndex: getComputedStyle(document.getElementById('commitSearchRow')).zIndex,
+      card: { fontFamily: card.fontFamily, fontSize: card.fontSize, fontStyle: card.fontStyle, fontWeight: card.fontWeight, lineHeight: card.lineHeight },
+      filter: styles('#branchDropdown .dropdown-filter'),
+      options: styles('#branchDropdown .dropdown-option'),
+      groups: styles('#branchDropdown .dropdown-group'),
+      actions: styles('#branchDropdown .dropdown-actions button'),
+      markers: styles('#branchDropdown .branch-current-marker, #branchDropdown .branch-group-count'),
+    };
+  });
+  assert.equal(branchMenuLayout.menuTop, branchMenuLayout.buttonBottom + 3, 'branch menu stays directly below its selector button');
+  assert.ok(Number(branchMenuLayout.menuZIndex) > Number(branchMenuLayout.searchZIndex), 'branch menu stacks above the commit search row');
+  [branchMenuLayout.filter, branchMenuLayout.options, branchMenuLayout.actions, branchMenuLayout.markers].flat().forEach(style => {
+    assert.deepEqual(style, branchMenuLayout.card, 'branch menu text matches the repository card title typography');
+  });
+  branchMenuLayout.groups.forEach(style => {
+    assert.equal(style.fontFamily, branchMenuLayout.card.fontFamily);
+    assert.equal(style.fontSize, branchMenuLayout.card.fontSize);
+    assert.equal(style.fontStyle, branchMenuLayout.card.fontStyle);
+    assert.equal(style.lineHeight, branchMenuLayout.card.lineHeight);
+  });
+  const branchMenuIconAlignment = await page.evaluate(() => {
+    const metrics = selector => Array.from(document.querySelectorAll(selector), element => {
+      const rect = element.getBoundingClientRect();
+      return { center: rect.top + rect.height / 2, transform: getComputedStyle(element).transform };
+    });
+    const rowCenters = Array.from(document.querySelectorAll('#branchDropdown .dropdown-option'), option => {
+      const rect = option.getBoundingClientRect();
+      return rect.top + rect.height / 2;
+    });
+    const groupCenters = Array.from(document.querySelectorAll('#branchDropdown .dropdown-group'), group => {
+      const rect = group.getBoundingClientRect();
+      return rect.top + rect.height / 2;
+    });
+    return {
+      optionIcons: metrics('#branchDropdown .dropdown-option > .branch-icon'),
+      groupIcons: metrics('#branchDropdown .dropdown-group > .codicon'),
+      rowCenters,
+      groupCenters,
+    };
+  });
+  branchMenuIconAlignment.optionIcons.forEach((icon, index) => {
+    assert.equal(icon.center, branchMenuIconAlignment.rowCenters[index], 'branch row icon is vertically centered');
+    assert.equal(icon.transform, 'none');
+  });
+  branchMenuIconAlignment.groupIcons.forEach((icon, index) => {
+    assert.equal(icon.center, branchMenuIconAlignment.groupCenters[index], 'branch group icon is vertically centered');
+    assert.equal(icon.transform, 'none');
+  });
   assert.deepEqual(await dropdown.locator('.branch-group-label').allTextContents(), ['本地分支', '远程分支 · origin', '远程分支 · upstream']);
   assert.deepEqual(await dropdown.locator('.branch-group-count').allTextContents(), ['2', '2', '1']);
   await assertCount(dropdown.locator('.dropdown-option'), 5);

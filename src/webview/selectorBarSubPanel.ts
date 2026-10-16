@@ -7,7 +7,7 @@
 /** 选择器栏子面板的样式片段。 */
 export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   /* 仓库/分支选择器与提交列表标题合成一块, 合并为单行, 统一使用标题栏底色。 */
-  #commitSelectors { display: flex; flex-direction: column; flex: 0 0 auto; position: sticky; top: 30px; left: 0; z-index: 2; min-width: 0; background: var(--commit-title-background); }
+  #commitSelectors { display: flex; flex-direction: column; flex: 0 0 auto; position: sticky; top: 30px; left: 0; z-index: 4; min-width: 0; background: var(--commit-title-background); }
   .selector-row { display: flex; align-items: center; gap: 2px; min-width: 0; padding: 3px 10px; background: var(--commit-title-background); }
   #commitSelectors { border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); }
   #commitSelectors button { border: none; cursor: pointer; border-radius: 2px; }
@@ -25,24 +25,24 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   .uncommitted-repo-group .codicon { display: flex; align-items: center; font-size: 11px; line-height: 1; }
   .dropdown { position: relative; flex: 0 1 auto; min-width: 0; }
   #branchDropdown { width: 20ch; }
-  #repositoryDisplay { display: flex; align-items: center; gap: 0; flex: 0 1 20ch; min-width: 0; height: 26px; color: var(--vscode-descriptionForeground); font-size: 11px; cursor: default; }
+  #repositoryDisplay { display: flex; align-items: center; gap: 0; flex: 0 1 20ch; min-width: 0; height: 26px; color: var(--vscode-dropdown-foreground, var(--vscode-foreground)); font: inherit; cursor: default; }
   #repositoryDisplay .dropdown-label { gap: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #repositoryDisplay .repository-icon { margin-right: 0; }
-  .dropdown-current { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 26px; padding: 0 7px; color: var(--vscode-dropdown-foreground, var(--vscode-foreground)); background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent); border: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent); border-radius: 4px; box-shadow: none; font: inherit; font-size: 11px; text-align: left; cursor: pointer; }
+  .dropdown-current { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 26px; padding: 0 7px; color: var(--vscode-dropdown-foreground, var(--vscode-foreground)); background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent); border: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent); border-radius: 4px; box-shadow: none; font: inherit; text-align: left; cursor: pointer; }
   .dropdown-current:has(.dropdown-spinner) { gap: 2px; }
-  .dropdown-label:has(.dropdown-spinner) { display: inline-flex; align-items: center; flex: 1 1 auto; gap: 4px; }
-  .branch-icon { display: inline-flex; align-self: center; align-items: center; justify-content: center; flex: 0 0 14px; width: 14px; height: 14px; margin: 0; font-size: 13px; line-height: 1; color: var(--vscode-icon-foreground); }
-  .branch-icon.codicon-target { color: var(--vscode-gitDecoration-modifiedResourceForeground, var(--vscode-icon-foreground)); font-size: 12px; }
+  .dropdown-label:has(.dropdown-spinner:not([hidden])) { display: inline-flex; align-items: center; flex: 1 1 auto; gap: 2px; }
+  #branchDropdown .branch-icon, #branchDropdown .dropdown-group > .codicon { display: inline-flex; align-self: center; align-items: center; justify-content: center; flex: 0 0 var(--vscode-font-size, 13px); width: var(--vscode-font-size, 13px); height: var(--vscode-font-size, 13px); margin: 0; font-size: var(--vscode-font-size, 13px); line-height: var(--vscode-font-size, 13px); color: var(--vscode-icon-foreground); }
+  .branch-icon.codicon-target { color: var(--vscode-gitDecoration-modifiedResourceForeground, var(--vscode-icon-foreground)); }
   .branch-icon.codicon-cloud { color: var(--vscode-gitDecoration-untrackedResourceForeground, var(--vscode-icon-foreground)); }
-  .branch-icon.codicon-device-desktop { color: var(--vscode-gitDecoration-modifiedResourceForeground, var(--vscode-icon-foreground)); font-size: 12px; }
+  .branch-icon.codicon-device-desktop { color: var(--vscode-gitDecoration-modifiedResourceForeground, var(--vscode-icon-foreground)); }
   .dropdown-current:hover:not(:disabled), .dropdown.open .dropdown-current { background: var(--vscode-toolbar-hoverBackground); border-color: var(--vscode-focusBorder); }
   .dropdown-current:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .dropdown-current:disabled { cursor: default; opacity: .6; }
   .dropdown-current[data-loading="true"] .dropdown-spinner { display: inline-block; }
   .dropdown-spinner { display: inline-block; width: 10px; height: 10px; flex: 0 0 auto; margin-right: 4px; border: 1.5px solid var(--vscode-progressBar-background); border-top-color: transparent; border-radius: 50%; animation: dropdown-spin .8s linear infinite; vertical-align: -1px; }
   @keyframes dropdown-spin { to { transform: rotate(360deg); } }
-  .dropdown-label { display: flex; align-items: center; flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; }
-  .dropdown-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dropdown-label { display: flex; align-items: center; gap: 2px; flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; }
+  .dropdown-value { min-width: 0; overflow: hidden; font: inherit; line-height: inherit; text-overflow: ellipsis; white-space: nowrap; }
   .dropdown-label .dropdown-spinner { display: inline-block; flex: 0 0 10px; width: 10px; height: 10px; margin-left: 4px; margin-right: 0; }
   .dropdown-label .dropdown-spinner[hidden] { display: none; }
   .repository-icon { display: inline-flex; align-self: center; flex: 0 0 auto; align-items: center; justify-content: center; width: 16px; height: 16px; margin: 0 4px 0 0; vertical-align: middle; color: var(--vscode-icon-foreground, currentColor); }
@@ -53,13 +53,13 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   .dropdown.open .dropdown-chevron { transform: rotate(180deg); }
   .dropdown-menu { position: absolute; top: calc(100% + 3px); left: 0; z-index: 20; display: none; flex-direction: column; width: max(100%, 190px); padding: 5px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: var(--vscode-menu-background, var(--vscode-editorWidget-background)); border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border)); border-radius: 5px; box-shadow: 0 4px 14px rgba(0, 0, 0, .28); }
   .dropdown.open .dropdown-menu { display: flex; }
-  .dropdown-filter { width: 100%; height: 25px; flex: 0 0 auto; margin-bottom: 4px; padding: 0 6px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); border-radius: 3px; font: inherit; font-size: 11px; }
+  .dropdown-filter { width: 100%; height: 25px; flex: 0 0 auto; margin-bottom: 4px; padding: 0 6px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); border-radius: 3px; font: inherit; }
   .dropdown-filter:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .dropdown-options { min-height: 0; flex: 1 1 auto; overflow-y: auto; }
   .dropdown-progress { position: absolute; top: 0; right: 0; left: 0; z-index: 2; height: 2px; overflow: hidden; background: var(--vscode-editorWidget-border, var(--vscode-panel-border)); }
   .dropdown-progress::before { content: ''; display: block; width: 35%; height: 100%; background: var(--vscode-progressBar-background); animation: dropdown-progress 1.1s ease-in-out infinite; }
   @keyframes dropdown-progress { from { transform: translateX(-110%); } to { transform: translateX(310%); } }
-  .dropdown-option, .dropdown-group { width: 100%; min-height: 24px; padding: 4px 7px; overflow: hidden; border: 0; border-radius: 3px; font: inherit; font-size: 11px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+  .dropdown-option, .dropdown-group { width: 100%; min-height: 24px; padding: 4px 7px; overflow: hidden; border: 0; border-radius: 3px; font: inherit; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
   .dropdown-option { color: inherit; background: transparent; cursor: pointer; }
   .dropdown-option:hover, .dropdown-option:focus-visible { color: var(--vscode-menu-selectionForeground); background: var(--vscode-menu-selectionBackground); outline: none; }
   .dropdown-option.selected::before { content: '✓'; display: inline-block; width: 14px; color: var(--vscode-menu-selectionForeground, var(--vscode-textLink-foreground)); }
@@ -68,25 +68,25 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   #branchDropdown .dropdown-option input { flex: 0 0 auto; margin: 0; accent-color: var(--vscode-checkbox-selectBackground, var(--vscode-focusBorder)); }
   .dropdown-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 2px 1px; border-top: 1px solid var(--vscode-menu-separatorBackground, var(--vscode-panel-border)); }
   .dropdown-actions-right { display: flex; align-items: center; gap: 6px; }
-  .dropdown-actions button { min-width: 52px; height: 26px; padding: 0 10px; color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); background: var(--vscode-button-secondaryBackground, var(--vscode-toolbar-hoverBackground)); border: 1px solid transparent; border-radius: 6px; cursor: pointer; font: inherit; font-size: 11px; transition: background-color 120ms ease, border-color 120ms ease; }
+  .dropdown-actions button { min-width: 52px; height: 26px; padding: 0 10px; color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); background: var(--vscode-button-secondaryBackground, var(--vscode-toolbar-hoverBackground)); border: 1px solid transparent; border-radius: 6px; cursor: pointer; font: inherit; transition: background-color 120ms ease, border-color 120ms ease; }
   .dropdown-actions button:hover { background: var(--vscode-button-secondaryHoverBackground, var(--vscode-toolbar-hoverBackground)); }
   .dropdown-actions button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
   .dropdown-actions .toggle-all { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 0; padding: 0 7px; background: transparent; }
   .dropdown-actions .toggle-all:hover, .dropdown-actions .toggle-all:active { background: transparent; }
   .dropdown-actions .toggle-all input { width: 13px; height: 13px; margin: 0; accent-color: var(--vscode-checkbox-selectBackground, var(--vscode-focusBorder)); pointer-events: none; }
-  .dropdown-actions .confirm-selection, .dropdown-actions .cancel-selection { min-width: 35px; height: 18px; padding: 0 6px; border-radius: 5px; font-size: 10px; }
+  .dropdown-actions .confirm-selection, .dropdown-actions .cancel-selection { min-width: 35px; height: 18px; padding: 0 6px; border-radius: 5px; }
   .dropdown-actions .confirm-selection { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
   .dropdown-actions .confirm-selection:hover { background: var(--vscode-button-hoverBackground); }
-  .dropdown-group { padding-bottom: 1px; color: var(--vscode-descriptionForeground); font-size: 10px; font-weight: 600; cursor: default; }
-  #branchDropdown .dropdown-group { display: flex; align-items: center; gap: 6px; position: sticky; top: 0; z-index: 1; min-height: 28px; margin-top: 5px; padding: 5px 7px; border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 0; background: var(--vscode-menu-background, var(--vscode-editor-background)); font-size: 11px; }
+  .dropdown-group { padding-bottom: 1px; color: var(--vscode-descriptionForeground); font-weight: 600; cursor: default; }
+  #branchDropdown .dropdown-group { display: flex; align-items: center; gap: 6px; position: sticky; top: 0; z-index: 1; min-height: 28px; margin-top: 5px; padding: 5px 7px; border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 0; background: var(--vscode-menu-background, var(--vscode-editor-background)); }
   #branchDropdown .dropdown-group:first-child { margin-top: 0; }
   #branchDropdown .dropdown-group[hidden], #branchDropdown .dropdown-option[hidden] { display: none; }
   .branch-group-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .branch-group-count { flex: 0 0 auto; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); font-size: 10px; text-align: center; }
+  .branch-group-count { flex: 0 0 auto; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); text-align: center; }
   #branchDropdown .dropdown-option { min-height: 28px; padding: 4px 8px; }
   .branch-option-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .branch-current-marker { flex: 0 0 auto; padding: 1px 5px; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 3px; color: var(--vscode-descriptionForeground); font-size: 10px; }
-  .dropdown-empty { padding: 8px 7px; color: var(--vscode-descriptionForeground); font-size: 11px; }
+  .branch-current-marker { flex: 0 0 auto; padding: 1px 5px; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); border-radius: 3px; color: var(--vscode-descriptionForeground); }
+  .dropdown-empty { padding: 8px 7px; color: var(--vscode-descriptionForeground); }
 `;
 
 /** 选择器栏子面板的结构片段。 */
