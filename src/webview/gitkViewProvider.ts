@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { type AppState, type ChangeSetMode, type ChangedFile, GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
-import { getCommitFiles, getGitAheadBehind, getGitAheadCount, getGitBranches, getGitlinkPathsInCommit, getPushBranches, type PushBranchOption, readCurrentCommitMessage } from '../git/gitLogProvider';
+import { defaultPushTarget, getCommitFiles, getGitAheadBehind, getGitAheadCount, getGitBranches, getGitlinkPathsInCommit, getPushPlan, type PushSourceBranch, type PushTargetOption, readCurrentCommitMessage } from '../git/gitLogProvider';
 import { checkoutBranch, checkoutRemoteBranch, commitDetails, hasConflicts, indexGitlink, push, rangeCommits, resolveRevision, restoreAll, restoreSubmodule, trackedPaths, type NativeCommitDetails, type NativePushResult } from '../git/gitNativeOperations';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { readMergeOperation, runMergeOperation, type MergeOperation } from '../git/mergeOperation';
@@ -15,7 +15,7 @@ import { DiffReader } from '../git/diffReader';
 import { LibGit2Backend } from '../git/libGit2Backend';
 import { GitCommitEditMsgEditor } from './gitCommitEditMsgEditor';
 import { GitActionRunner } from '../services/gitActions';
-import { confirmPush, pickPushBranches, showPushResult } from '../services/pushDialogs';
+import { confirmPush, describePushRow, pickPushTarget, pickPushTargets, showPushResult, type PushConfirmRow } from '../services/pushDialogs';
 import { RepoSubmoduleWatcher } from '../git/gitRepoSubmoduleWatcher';
 import { GitRepoController } from '../git/gitRepoController';
 import { RepoHeadBranchWatcher } from '../git/eachRepoHeadBranchWatcher';
@@ -70,8 +70,6 @@ function normalizeEol(text: string): string {
 // 子模块提交摘要属于元数据读取；避免大量 gitlink 同时启动子模块 Git 操作，但不限制普通 Diff 正文的可视批次。
 const GITLINK_METADATA_READ_CONCURRENCY = 16;
 
-type PushBranchQuickPickItem = vscode.QuickPickItem & { readonly branch: PushBranchOption };
-
 type GitlinkParentNavigation = {
     readonly commit: CommitMetadata;
     readonly revealPath?: string;
@@ -96,45 +94,8 @@ function workingTreeChangeCount(changes: WorkingTreeChanges): number {
     ]).size;
 }
 
-function defaultPushBranch(branches: readonly PushBranchOption[]): PushBranchOption | undefined {
-    return branches.find(branch => branch.isCurrent && branch.isUpstream)
-        ?? branches.find(branch => branch.isCurrent)
-        ?? branches[0];
-}
-
-async function pickPushBranch(
-    branches: readonly PushBranchOption[],
-    defaultBranch: PushBranchOption,
-): Promise<PushBranchOption | undefined> {
-    const quickPick = vscode.window.createQuickPick<PushBranchQuickPickItem>();
-    quickPick.items = branches.map(branch => ({
-        label: branch.upstreamName,
-        description: `将推送提交：${branch.sourceHash}`,
-        detail: `未推送提交：${branch.unpushedCommitCount}`,
-        branch,
-    }));
-    quickPick.title = '选择要推送的远程分支';
-    quickPick.placeholder = '选择要推送的远程分支';
-    const activeItem = quickPick.items.find(item =>
-        item.branch.name === defaultBranch.name
-        && item.branch.upstreamRemote === defaultBranch.upstreamRemote
-        && item.branch.upstreamBranch === defaultBranch.upstreamBranch,
-    );
-    if (activeItem) { quickPick.activeItems = [activeItem]; }
-    return new Promise(resolve => {
-        let settled = false;
-        const finish = (value: PushBranchOption | undefined) => {
-            if (settled) { return; }
-            settled = true;
-            quickPick.hide();
-            quickPick.dispose();
-            resolve(value);
-        };
-        quickPick.onDidAccept(() => finish(quickPick.activeItems[0]?.branch));
-        quickPick.onDidHide(() => finish(undefined));
-        quickPick.show();
-    });
-}
+/** 每个仓库记录的推送目标; 源分支随每次读取的 HEAD 变化, 不缓存。 */
+type StoredPushTarget = PushTargetOption;
 
 // Webview 视图提供器: 渲染 gitk 风格的提交图 (div flex 布局, 避免 table 高度塌陷)
 export class GitkViewProvider implements vscode.WebviewViewProvider {
@@ -206,8 +167,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private readonly selectedCommitSubmodulesByRepo = new Map<string, readonly string[]>();
     private readonly selectedPushSubmodulesByRepo = new Map<string, readonly string[]>();
     private readonly pullBeforePushByRepo = new Map<string, boolean>();
-    private readonly pushBranchByRepository = new Map<string, Awaited<ReturnType<typeof getPushBranches>>[number]>();
-    private readonly lastPushedBranchByRepository = new Map<string, Awaited<ReturnType<typeof getPushBranches>>[number]>();
+    /** 每个仓库当前选中的推送目标(远程分支); 推送源始终按 HEAD 现场读取, 不缓存。 */
+    private readonly pushTargetByRepository = new Map<string, StoredPushTarget>();
+    private readonly lastPushedTargetByRepository = new Map<string, StoredPushTarget>();
     private readonly gitBackend = new LibGit2Backend();
     private readonly diffReader: DiffReader;
     // 用户点击跳转使用独立读取器，不排队等待可视缓存批次；新点击会使上一次优先读取结果失效。
@@ -523,8 +485,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         commitEditMsgEditor: GitCommitEditMsgEditor,
     ) {
         this.displayMode = vscode.workspace.getConfiguration('vscode-gitk').get<'tree' | 'flat'>('changedFilesDisplayMode', 'flat');
-        for (const [repositoryPath, branch] of Object.entries(this.context.workspaceState.get<Record<string, PushBranchOption>>('lastPushedBranches', {}))) {
-            this.lastPushedBranchByRepository.set(repositoryPath, branch);
+        for (const [repositoryPath, target] of Object.entries(this.context.workspaceState.get<Record<string, StoredPushTarget>>('lastPushedTargets', {}))) {
+            this.lastPushedTargetByRepository.set(repositoryPath, target);
         }
         // 订阅顺序是有意设计：仓库显示必须先于分支/提交刷新，避免下游监听器的同步前置逻辑阻塞 UI 更新。
         this.selectedRepoSubscription = this.repoController.onSelectedRepoListChanged(selected => this.onSelectedRepoListChanged(selected));
@@ -572,7 +534,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             onMergeOperation: (repositoryPath, action) => void this.handleMergeOperation(repositoryPath, action),
             onCommit: (repositoryPath, repositoryPaths, message, amend) => void this.runCommit(repositoryPath, repositoryPaths, message, amend),
             onPush: (repositoryPaths, pullBeforePush) => void this.runCommitPanelPush(repositoryPaths, pullBeforePush),
-            onPickPushBranch: repositoryPath => void this.pickCommitPanelPushBranch(repositoryPath),
+            onPickPushBranch: repositoryPath => void this.pickCommitPanelPushTarget(repositoryPath),
             onUpdateCardState: (repositoryPath, patch) => this.updateCommitCardState(repositoryPath, patch),
             onToggleDisplayMode: () => this.dispatchIntent({ type: 'toggleFilesMode' }),
             onToggleAmend: (repositoryPath, message) => void this.toggleCommitAmend(repositoryPath, message),
@@ -2172,7 +2134,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.repoController.totalRepoList.forEach(repository => {
                     if (repository.hasSubmodules) {
                         void this.loadUnpushedCommitState(repository.path);
-                        void this.loadDefaultPushBranch(repository.path);
+                        void this.loadDefaultPushTarget(repository.path);
                     }
                 });
                 break;
@@ -2207,7 +2169,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             // 打开时展示所有仓库卡片, 并定位到触发提交的那个仓库。
             this.commitPanel.show(this.buildCommitSnapshot(), repositoryPath);
             this.repoController.totalRepoList.forEach(repository => {
-                if (repository.hasSubmodules) { void this.loadDefaultPushBranch(repository.path); }
+                if (repository.hasSubmodules) { void this.loadDefaultPushTarget(repository.path); }
             });
         } finally {
             store.setState({ commitEditorLoading: false });
@@ -2388,8 +2350,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 selectedCommitSubmoduleRepositoryPaths: this.selectedCommitSubmodulesByRepo.get(repo.repositoryPath) ?? [],
                 selectedPushSubmoduleRepositoryPaths: this.selectedPushSubmodulesByRepo.get(repo.repositoryPath) ?? [],
                 pullBeforePush: this.pullBeforePushByRepo.get(repo.repositoryPath) ?? true,
-                pushTargetLabel: (this.lastPushedBranchByRepository.get(repo.repositoryPath)
-                    ?? this.pushBranchByRepository.get(repo.repositoryPath))?.upstreamName,
+                pushTargetLabel: (this.lastPushedTargetByRepository.get(repo.repositoryPath)
+                    ?? this.pushTargetByRepository.get(repo.repositoryPath))?.remoteName,
                 amend,
                 committedFiles: committedFiles.map(file => ({ path: file.path, status: file.status, isUntracked: file.isUntracked, isSubmodule: file.isGitlink || file.oldMode === '160000' || file.newMode === '160000' })),
                 committedFilesLoading: amend && this.amendCommittedFilesLoading.has(headKey),
@@ -2555,31 +2517,30 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async loadDefaultPushBranch(repositoryPath: string): Promise<void> {
-        if (this.pushBranchByRepository.has(repositoryPath)) { return; }
+    private async loadDefaultPushTarget(repositoryPath: string): Promise<void> {
+        if (this.pushTargetByRepository.has(repositoryPath)) { return; }
         const rootUri = this.getRepoRootUri(repositoryPath);
         if (!rootUri) { return; }
-        const branches = await getPushBranches(rootUri);
-        const branch = defaultPushBranch(branches);
-        if (!branch) { return; }
-        this.pushBranchByRepository.set(repositoryPath, branch);
+        const plan = await getPushPlan(rootUri);
+        const target = plan ? defaultPushTarget(plan) : undefined;
+        if (!target) { return; }
+        this.pushTargetByRepository.set(repositoryPath, target);
         if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
     }
 
-    private async pickCommitPanelPushBranch(repositoryPath: string): Promise<void> {
+    private async pickCommitPanelPushTarget(repositoryPath: string): Promise<void> {
         const rootUri = this.getRepoRootUri(repositoryPath);
         if (!rootUri) { return; }
-        const branches = await getPushBranches(rootUri);
-        if (branches.length === 0) {
-            void vscode.window.showInformationMessage('当前仓库没有配置 upstream 的本地分支。');
+        const plan = await getPushPlan(rootUri);
+        if (!plan || plan.targets.length === 0) {
+            void vscode.window.showInformationMessage('当前仓库没有可推送的远程分支。');
             return;
         }
-        const defaultBranch = this.pushBranchByRepository.get(repositoryPath)
-            ?? defaultPushBranch(branches);
-        if (!defaultBranch) { return; }
-        const picked = await pickPushBranch(branches, defaultBranch);
+        const defaultTarget = this.pushTargetByRepository.get(repositoryPath)
+            ?? defaultPushTarget(plan);
+        const picked = await pickPushTarget(plan, defaultTarget);
         if (!picked) { return; }
-        this.pushBranchByRepository.set(repositoryPath, picked);
+        this.pushTargetByRepository.set(repositoryPath, picked);
         if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
     }
 
@@ -2593,22 +2554,21 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (!rootRepositoryPath) { return; }
         const rootUri = this.getRepoRootUri(rootRepositoryPath);
         if (!rootUri) { return; }
-        const branches = await getPushBranches(rootUri);
-        if (branches.length === 0) {
-            void vscode.window.showInformationMessage('当前仓库没有配置 upstream 的本地分支。');
+        const rootPlan = await getPushPlan(rootUri);
+        if (!rootPlan || rootPlan.targets.length === 0) {
+            void vscode.window.showInformationMessage('当前仓库没有可推送的远程分支。');
             return;
         }
-        const currentBranchDefault = defaultPushBranch(branches);
-        if (!currentBranchDefault) { return; }
-        const defaultBranch = preferCurrentUpstream || pullBeforePush
-            ? currentBranchDefault
-            : this.lastPushedBranchByRepository.get(rootRepositoryPath)
-                ?? this.pushBranchByRepository.get(rootRepositoryPath)
-                ?? currentBranchDefault;
-        const selectedBranches = await pickPushBranches(branches, [defaultBranch], defaultBranch.name);
-        if (!selectedBranches || selectedBranches.length === 0) { return; }
-        const lastSelectedBranch = selectedBranches.at(-1) ?? selectedBranches[0];
-        this.pushBranchByRepository.set(rootRepositoryPath, lastSelectedBranch);
+        const upstreamTarget = defaultPushTarget(rootPlan);
+        // 卡片同步与 pull-before-push 始终回到当前分支绑定的 upstream; 普通 Push 沿用上次目标。
+        const cachedTarget = this.lastPushedTargetByRepository.get(rootRepositoryPath)
+            ?? this.pushTargetByRepository.get(rootRepositoryPath);
+        const defaultTarget = preferCurrentUpstream || pullBeforePush
+            ? upstreamTarget
+            : cachedTarget ?? upstreamTarget;
+        const selectedTargets = await pickPushTargets(rootPlan, defaultTarget ? [defaultTarget] : []);
+        if (!selectedTargets || selectedTargets.length === 0) { return; }
+        this.pushTargetByRepository.set(rootRepositoryPath, selectedTargets.at(-1) ?? selectedTargets[0]);
         if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
         const orderedRepositoryPaths = [...new Set(repositoryPaths)]
             .map((repositoryPath, index) => ({
@@ -2618,56 +2578,67 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             }))
             .sort((left, right) => right.depth - left.depth || left.index - right.index)
             .map(item => item.repositoryPath);
-        const pushedBranchByRepository = new Map<string, Awaited<ReturnType<typeof getPushBranches>>[number]>([
-            [rootRepositoryPath, lastSelectedBranch],
-        ]);
-        const repositoryBranches = new Map<string, readonly PushBranchOption[]>([
-            [rootRepositoryPath, selectedBranches],
+        // 每个仓库各自的源(本地分支+HEAD)与目标远程分支; 子模块目标来自卡片上已选的分支。
+        const plansByRepository = new Map<string, { readonly source: PushSourceBranch; readonly targets: readonly PushTargetOption[] }>([
+            [rootRepositoryPath, { source: rootPlan.source, targets: selectedTargets }],
         ]);
         for (const repositoryPath of orderedRepositoryPaths) {
             if (repositoryPath === rootRepositoryPath) { continue; }
-            const repositoryBranch = this.pushBranchByRepository.get(repositoryPath);
-            if (!repositoryBranch) {
-                void vscode.window.showWarningMessage(`仓库未选择可推送分支：${repositoryPath}`);
+            const target = this.pushTargetByRepository.get(repositoryPath);
+            const repositoryUri = this.getRepoRootUri(repositoryPath);
+            const plan = repositoryUri ? await getPushPlan(repositoryUri) : undefined;
+            if (!target || !plan) {
+                void vscode.window.showWarningMessage(`仓库未选择可推送的远程分支：${repositoryPath}`);
                 return;
             }
-            repositoryBranches.set(repositoryPath, [repositoryBranch]);
+            plansByRepository.set(repositoryPath, { source: plan.source, targets: [target] });
         }
-        const targets = [...repositoryBranches.values()].flatMap(branchesToPush =>
-            branchesToPush.map(repositoryBranch => `$(git-commit)${repositoryBranch.sourceHash}->$(cloud)${repositoryBranch.upstreamName}`));
-        const confirmed = await confirmPush(targets.join('\n'));
+        const multiRepository = plansByRepository.size > 1;
+        const confirmRows: PushConfirmRow[] = [...plansByRepository.entries()].flatMap(([repositoryPath, plan]) =>
+            plan.targets.map(target => ({
+                source: plan.source,
+                target,
+                repositoryLabel: multiRepository ? path.basename(vscode.Uri.parse(repositoryPath).fsPath) : undefined,
+            })));
+        const confirmed = await confirmPush(confirmRows);
         if (!confirmed) { return; }
-        const pushResults: Array<{ repositoryPath: string; branch: PushBranchOption; result: NativePushResult }> = [];
+        const pushResults: Array<{ repositoryPath: string; row: PushConfirmRow; result: NativePushResult }> = [];
+        const pushedTargetByRepository = new Map<string, PushTargetOption>();
         try {
             await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
-                title: `推送 ${selectedBranches.map(branch => branch.name).join(", ")}`,
+                title: `推送 ${rootPlan.source.branchName ?? rootPlan.source.hash.slice(0, 8)}`,
                 cancellable: false,
             }, async progress => {
                 for (const repositoryPath of orderedRepositoryPaths) {
                     const repositoryUri = this.getRepoRootUri(repositoryPath);
                     if (!repositoryUri) { continue; }
-                    const branchesToPush = repositoryBranches.get(repositoryPath);
-                    if (!branchesToPush || branchesToPush.length === 0) {
-                        throw new Error(`仓库未选择可推送分支：${repositoryPath}`);
+                    const plan = plansByRepository.get(repositoryPath);
+                    if (!plan || plan.targets.length === 0) {
+                        throw new Error(`仓库未选择可推送的远程分支：${repositoryPath}`);
                     }
-                    for (const repositoryBranch of branchesToPush) {
-                        progress.report({ message: `正在推送：${repositoryBranch.sourceHash} → ${repositoryBranch.upstreamName}` });
-                        const pushResult = await push(
-                            repositoryUri,
-                            repositoryBranch.upstreamRemote,
-                            repositoryBranch.name,
-                            repositoryBranch.upstreamBranch,
-                        );
-                        pushResults.push({ repositoryPath, branch: repositoryBranch, result: pushResult });
-                        pushedBranchByRepository.set(repositoryPath, repositoryBranch);
+                    for (const target of plan.targets) {
+                        const row: PushConfirmRow = {
+                            source: plan.source,
+                            target,
+                            repositoryLabel: multiRepository ? path.basename(vscode.Uri.parse(repositoryPath).fsPath) : undefined,
+                        };
+                        progress.report({ message: `正在推送：${describePushRow(row)}` });
+                        const pushResult = await push(repositoryUri, {
+                            remote: target.remote,
+                            remoteBranch: target.branch,
+                            sourceBranchName: plan.source.branchName,
+                            sourceHash: plan.source.hash,
+                        });
+                        pushResults.push({ repositoryPath, row, result: pushResult });
+                        pushedTargetByRepository.set(repositoryPath, target);
                     }
                 }
             });
-            pushedBranchByRepository.forEach((branch, repositoryPath) => {
-                this.lastPushedBranchByRepository.set(repositoryPath, branch);
+            pushedTargetByRepository.forEach((target, repositoryPath) => {
+                this.lastPushedTargetByRepository.set(repositoryPath, target);
             });
-            await this.context.workspaceState.update('lastPushedBranches', Object.fromEntries(this.lastPushedBranchByRepository));
+            await this.context.workspaceState.update('lastPushedTargets', Object.fromEntries(this.lastPushedTargetByRepository));
             if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
             for (const repositoryPath of orderedRepositoryPaths) {
                 this.unpushedCommitCountByRepository.delete(repositoryPath);
@@ -2681,9 +2652,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 }
             }
             await this.commitController.forceRefreshCurrentSelection();
-            const detail = pushResults.map(({ repositoryPath, branch: target, result }) => {
+            const detail = pushResults.map(({ row, result }) => {
                 const response = result.output ?? 'Git 未返回额外信息。';
-                return `${path.basename(repositoryPath)}：${target.sourceHash} → ${target.upstreamName}\n${response}`;
+                return `${describePushRow(row)}\n${response}`;
             }).join('\n\n');
             await showPushResult(
                 'Git Push 已完成',

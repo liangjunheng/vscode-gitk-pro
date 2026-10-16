@@ -178,60 +178,112 @@ export function buildDetachedHeadBranch(rootUri: vscode.Uri, headHash: string, r
     });
 }
 
-export interface PushBranchOption {
-    /** 当前 checkout 将要推送的 HEAD commit。 */
-    sourceHash: string;
-    name: string;
-    upstreamName: string;
-    upstreamRemote: string;
-    upstreamBranch: string;
-    isCurrent: boolean;
-    isUpstream: boolean;
-    tipTimestamp: number;
-    /** 相对该远程分支的未推送提交总数; recentUnpushedCommits 只是受 limit 截断的样本。 */
-    unpushedCommitCount: number;
-    recentUnpushedCommits: readonly { subject: string; timestamp: number }[];
+/** 推送源: 当前 checkout 的本地分支名与它指向的提交; 两者永不互相替代。 */
+export interface PushSourceBranch {
+    /** 本地分支名(仓库卡片显示的名字); detached HEAD 时为 undefined。 */
+    readonly branchName?: string;
+    /** 该分支当前指向的提交(完整 hash)。 */
+    readonly hash: string;
+}
+
+/** 推送目标: 一个远程分支。 */
+export interface PushTargetOption {
+    /** 远程名, 例如 origin。 */
+    readonly remote: string;
+    /** 远程分支名(不含远程前缀), 例如 master。 */
+    readonly branch: string;
+    /** 远程分支的完整显示名, 例如 origin/master。 */
+    readonly remoteName: string;
+    /** 该远程分支是否为当前本地分支配置的 upstream。 */
+    readonly isUpstream: boolean;
+    /** 远程分支 tip 的提交时间(秒), 用于按最新修改排序。 */
+    readonly tipTimestamp: number;
+    /** 当前 HEAD 相对该远程分支的未推送提交总数。 */
+    readonly unpushedCommitCount: number;
+}
+
+/** 一次 Push 的完整计划: 一个源, 多个候选远程分支。 */
+export interface PushPlan {
+    readonly source: PushSourceBranch;
+    readonly targets: readonly PushTargetOption[];
+}
+
+/** 原生 pushBranches 的单条记录; 它按“本地分支 x 远程分支”展开, 需要在 TS 侧收敛成远程分支列表。 */
+interface NativePushBranchRecord {
+    readonly name: string;
+    readonly upstreamName: string;
+    readonly upstreamRemote: string;
+    readonly upstreamBranch: string;
+    readonly isCurrent: boolean;
+    readonly isUpstream?: boolean;
+    readonly tipTimestamp?: number;
+    readonly recentUnpushedCommits: readonly { readonly subject: string; readonly timestamp: number }[];
 }
 
 /**
- * 读取 Push 分支选择器所需的最小数据集：分支 upstream 与最近未推送提交。
- * 工作区状态由 UncommittedFilesWatcher 独占维护, 这里不再重复执行 git status。
+ * 读取一次 Push 所需的最小数据集: 当前分支(源) + 可选远程分支(目标)。
+ *
+ * 原生 pushBranches 返回的是本地分支与远程分支的笛卡尔展开, 这里只保留当前 checkout
+ * 对应的记录, 再按 remote/branch 去重成远程分支列表; 源分支名与 HEAD hash 由 head 操作提供,
+ * 两者分别存放, 避免上层用 hash 冒充分支名。
  *
  * isUpstream/tipTimestamp 在此补齐, 不依赖原生返回: 旧版原生模块不返回这两个字段,
- * 一旦缺失, 选择器的“绑定 upstream 优先 + 最新提交时间倒序”排序会整体失效。
- * 绑定关系以本地分支配置的 upstream 为准, 时间取远程分支 tip 的提交时间。
+ * 一旦缺失, 目标排序的“绑定 upstream 优先 + 最新提交时间倒序”会整体失效。
  */
-export async function getPushBranches(rootUri: vscode.Uri, commitLimit = 8): Promise<PushBranchOption[]> {
-    const [targets, sourceHash] = await Promise.all([
-        invokeNativeGit<PushBranchOption[]>('pushBranches', {
+export async function getPushPlan(rootUri: vscode.Uri, commitLimit = 8): Promise<PushPlan | undefined> {
+    const [records, head] = await Promise.all([
+        invokeNativeGit<NativePushBranchRecord[]>('pushBranches', {
             rootPath: rootUri.fsPath,
             limit: commitLimit,
         }),
-        getCurrentGitHeadHash(rootUri),
+        invokeNativeGit<{ hash?: string; branch?: string } | null>('head', { rootPath: rootUri.fsPath })
+            .catch(() => undefined),
     ]);
-    if (targets.length === 0) { return targets; }
+    if (!head?.hash) { return undefined; }
+    const source: PushSourceBranch = { branchName: head.branch ?? undefined, hash: head.hash };
+    if (records.length === 0) { return { source, targets: [] }; }
     const [refs, remoteTipTimestamps, unpushedCounts] = await Promise.all([
         readBranchRefsFromCli(rootUri).catch(() => undefined),
         readRemoteTipTimestamps(rootUri).catch(() => new Map<string, number>()),
-        readUnpushedCommitCounts(rootUri, targets).catch(() => new Map<string, number>()),
+        readUnpushedCommitCounts(rootUri, records).catch(() => new Map<string, number>()),
     ]);
-    const configuredUpstreamByLocalBranch = new Map(
-        (refs?.local ?? [])
-            .filter(ref => Boolean(ref.upstreamName))
-            .map(ref => [ref.label, ref.upstreamName as string]),
-    );
-    return targets.map(target => ({
-        ...target,
-        sourceHash: sourceHash ?? target.sourceHash,
-        isUpstream: typeof target.isUpstream === 'boolean'
-            ? target.isUpstream
-            : configuredUpstreamByLocalBranch.get(target.name) === target.upstreamName,
-        tipTimestamp: Number.isFinite(target.tipTimestamp)
-            ? target.tipTimestamp
-            : remoteTipTimestamps.get(target.upstreamName) ?? 0,
-        unpushedCommitCount: unpushedCounts.get(target.upstreamName)
-            ?? target.recentUnpushedCommits.length,
-    }));
+    const configuredUpstream = (refs?.local ?? [])
+        .find(ref => ref.label === source.branchName)?.upstreamName;
+    // 源分支确定后, 其他本地分支的记录与本次推送无关: 它们只会重复同一组远程分支。
+    const relevant = source.branchName
+        ? records.filter(record => record.name === source.branchName)
+        : records.filter(record => record.isCurrent);
+    const candidates = relevant.length > 0 ? relevant : records;
+    const targetsByKey = new Map<string, PushTargetOption>();
+    for (const record of candidates) {
+        if (!record.upstreamRemote || !record.upstreamBranch) { continue; }
+        const key = `${record.upstreamRemote}\u0000${record.upstreamBranch}`;
+        if (targetsByKey.has(key)) { continue; }
+        targetsByKey.set(key, {
+            remote: record.upstreamRemote,
+            branch: record.upstreamBranch,
+            remoteName: record.upstreamName,
+            isUpstream: configuredUpstream
+                ? configuredUpstream === record.upstreamName
+                : record.isUpstream === true,
+            tipTimestamp: Number.isFinite(record.tipTimestamp)
+                ? record.tipTimestamp as number
+                : remoteTipTimestamps.get(record.upstreamName) ?? 0,
+            unpushedCommitCount: unpushedCounts.get(record.upstreamName)
+                ?? record.recentUnpushedCommits.length,
+        });
+    }
+    // 绑定的 upstream 永远第一, 其余按远程 tip 时间倒序; 同时间按名称稳定排序。
+    const targets = [...targetsByKey.values()].sort((left, right) =>
+        Number(right.isUpstream) - Number(left.isUpstream)
+        || right.tipTimestamp - left.tipTimestamp
+        || left.remoteName.localeCompare(right.remoteName));
+    return { source, targets };
+}
+
+/** 当前分支配置的 upstream; 没有配置时退回第一个目标。 */
+export function defaultPushTarget(plan: PushPlan): PushTargetOption | undefined {
+    return plan.targets.find(target => target.isUpstream) ?? plan.targets[0];
 }
 
 /**
@@ -240,9 +292,9 @@ export async function getPushBranches(rootUri: vscode.Uri, commitLimit = 8): Pro
  */
 async function readUnpushedCommitCounts(
     rootUri: vscode.Uri,
-    targets: readonly PushBranchOption[],
+    records: readonly NativePushBranchRecord[],
 ): Promise<Map<string, number>> {
-    const remoteNames = [...new Set(targets.map(target => target.upstreamName).filter(Boolean))];
+    const remoteNames = [...new Set(records.map(record => record.upstreamName).filter(Boolean))];
     const counted = await Promise.all(remoteNames.map(async remoteName => {
         try {
             const commits = await invokeNativeGit<Array<{ hash: string }>>('rangeCommits', {
@@ -392,7 +444,7 @@ export async function runGitSync(
     rootUri: vscode.Uri,
     action: 'fetch' | 'pull' | 'push',
     onProgress?: (message: string) => void,
-    pushTargets?: readonly Pick<PushBranchOption, 'name' | 'upstreamRemote' | 'upstreamBranch'>[],
+    pushTargets?: readonly PushTargetOption[],
 ): Promise<GitSyncResult> {
     if (action === 'fetch') {
         const before = await readRemoteBranchHashes(rootUri);
@@ -454,15 +506,20 @@ export async function runGitSync(
         };
     }
     onProgress?.('正在通过 libgit2 推送本地提交...');
-    const targets = pushTargets && pushTargets.length > 0 ? pushTargets : [undefined];
+    const plan = await getPushPlan(rootUri);
+    const fallbackTarget = plan ? defaultPushTarget(plan) : undefined;
+    const targets = pushTargets && pushTargets.length > 0
+        ? pushTargets
+        : fallbackTarget ? [fallbackTarget] : [];
+    if (targets.length === 0) { throw new Error('当前仓库没有可推送的远程分支。'); }
     const pushResults: NativePushResult[] = [];
     for (const target of targets) {
-        pushResults.push(await pushNative(
-            rootUri,
-            target?.upstreamRemote,
-            target?.name,
-            target?.upstreamBranch,
-        ));
+        pushResults.push(await pushNative(rootUri, {
+            remote: target.remote,
+            remoteBranch: target.branch,
+            sourceBranchName: plan?.source.branchName,
+            sourceHash: plan?.source.hash,
+        }));
     }
     return { headChanged: false, submodulesNeedUpdate: false, submoduleTopologyChanged: false, submodulePaths: [], pushResults };
 }

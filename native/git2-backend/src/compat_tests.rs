@@ -457,12 +457,46 @@ fn fetch_and_push_match_cli_on_local_remote() {
     f.git(&["remote", "add", "origin", &origin.path().to_string_lossy()]);
     let push_result = remote::push(&json!({"rootPath": f.root(), "remote": "origin"})).unwrap();
     assert_eq!(push_result["remote"], "origin");
-    assert!(
-        push_result["output"]
-            .as_str()
-            .is_some_and(|value| value.contains("->"))
+    let seed_branch = f.git(&["branch", "--show-current"]).trim().to_owned();
+    // 分支名与提交 hash 分属两个字段, 输出左侧必须是分支名而不是 hash。
+    assert_eq!(push_result["localBranch"], seed_branch);
+    assert_eq!(push_result["remoteBranch"], seed_branch);
+    assert_eq!(push_result["sourceHash"], first);
+    assert_eq!(
+        push_result["output"],
+        format!("[new branch] {seed_branch} -> {seed_branch}")
     );
-    let branch = f.git(&["branch", "--show-current"]).trim().to_owned();
+    // 已是最新状态时同样按分支名描述。
+    let repeat = remote::push(&json!({"rootPath": f.root(), "remote": "origin"})).unwrap();
+    assert_eq!(
+        repeat["output"],
+        format!("Everything up-to-date: {seed_branch} -> {seed_branch}")
+    );
+    // detached HEAD 没有分支名: 必须显式指定远程分支, 且源分支名为空而非回退成 hash。
+    // 推往独立的 bare 远程, 避免给 origin 增加分支而影响后续的远程分支断言。
+    let detached_origin = tempfile::tempdir().unwrap();
+    Repository::init_bare(detached_origin.path()).unwrap();
+    f.git(&[
+        "remote",
+        "add",
+        "detached",
+        &detached_origin.path().to_string_lossy(),
+    ]);
+    f.git(&["checkout", "--detach", "HEAD"]);
+    let detached = remote::push(
+        &json!({"rootPath": f.root(), "remote": "detached", "remoteBranch": "detached-target"}),
+    )
+    .unwrap();
+    assert!(detached["localBranch"].is_null());
+    assert_eq!(detached["sourceHash"], first);
+    assert_eq!(
+        detached["output"],
+        "[new branch] HEAD -> detached-target".to_owned()
+    );
+    assert!(remote::push(&json!({"rootPath": f.root(), "remote": "detached"})).is_err());
+    f.git(&["checkout", &seed_branch]);
+    f.git(&["remote", "remove", "detached"]);
+    let branch = seed_branch;
     cli(
         origin.path(),
         &["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")],

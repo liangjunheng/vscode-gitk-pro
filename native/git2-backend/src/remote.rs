@@ -134,21 +134,32 @@ pub fn fetch(payload: &Value) -> NativeResult<Value> {
 
 pub fn push(payload: &Value) -> NativeResult<Value> {
     let repo = open_repository(string_arg(payload, "rootPath")?)?;
+    // 推送源的本地分支名只用于补全未显式传入的 remote/upstream 配置与结果展示;
+    // 实际推送内容始终是当前 HEAD, 因此 detached HEAD 下它可以缺失。
     let local_branch = payload
         .get("localBranch")
         .and_then(Value::as_str)
         .map(str::to_owned)
-        .unwrap_or(current_branch(&repo)?);
+        .or_else(|| current_branch(&repo).ok());
     let remote_name = payload
         .get("remote")
         .and_then(Value::as_str)
         .map(str::to_owned)
-        .unwrap_or_else(|| configured_remote(&repo, &local_branch));
-    let remote_branch = payload
-        .get("remoteBranch")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .unwrap_or_else(|| configured_upstream_branch(&repo, &local_branch));
+        .or_else(|| {
+            local_branch
+                .as_deref()
+                .map(|branch| configured_remote(&repo, branch))
+        })
+        .unwrap_or_else(|| "origin".to_owned());
+    let remote_branch = match payload.get("remoteBranch").and_then(Value::as_str) {
+        Some(value) => value.to_owned(),
+        None => {
+            let branch = local_branch
+                .as_deref()
+                .ok_or_else(|| "当前 HEAD 处于分离状态，必须显式指定远程分支".to_owned())?;
+            configured_upstream_branch(&repo, branch)
+        }
+    };
     let mut remote = repo.find_remote(&remote_name).map_err(format_git_error)?;
     let remote_ref = format!("refs/heads/{remote_branch}");
     let local_oid = repo
@@ -184,15 +195,14 @@ pub fn push(payload: &Value) -> NativeResult<Value> {
     remote
         .push(&[refspec.as_str()], Some(&mut options))
         .map_err(format_git_error)?;
+    // 与 git CLI 的输出形状一致: 左侧是分支名, 提交 hash 只出现在范围里。
+    let source_label = local_branch.as_deref().unwrap_or("HEAD");
     let output = if remote_oid == local_oid {
-        format!("Everything up-to-date: {local_oid} -> {remote_branch}")
+        format!("Everything up-to-date: {source_label} -> {remote_branch}")
     } else if remote_oid == git2::Oid::ZERO_SHA1 {
-        format!("[new branch] {local_oid} -> {remote_branch}")
+        format!("[new branch] {source_label} -> {remote_branch}")
     } else {
-        format!(
-            "{}..{} {local_oid} -> {remote_branch}",
-            remote_oid, local_oid
-        )
+        format!("{remote_oid}..{local_oid} {source_label} -> {remote_branch}")
     };
     Ok(json!({
         "remote": remote_name,

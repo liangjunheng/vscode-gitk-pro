@@ -1,17 +1,19 @@
 import * as vscode from 'vscode';
-import { getPushBranches, runGitSync, updateGitSubmodules, type PushBranchOption } from '../git/gitLogProvider';
+import { defaultPushTarget, getPushPlan, runGitSync, updateGitSubmodules, type PushTargetOption } from '../git/gitLogProvider';
 import { checkout, cherryPick, createBranch, createTag, merge, rebase, reset, revertCommit, stageAll, statusSummary, type NativePushResult } from '../git/gitNativeOperations';
 import { GitCommitEditMsgEditor } from '../webview/gitCommitEditMsgEditor';
-import { confirmPush, pickPushBranches, showPushResult } from './pushDialogs';
+import { confirmPush, pickPushTargets, showPushResult } from './pushDialogs';
 
+/** 推送结果说明: 分支名 → 远程分支名, 提交 hash 单独标注, 两者不互换。 */
 function formatPushResultDetail(results: readonly NativePushResult[] | undefined): string {
     if (!results || results.length === 0) { return 'Git 已完成推送，但没有返回详细信息。'; }
     return results.map(result => {
         const target = result.remote && result.remoteBranch
             ? `${result.remote}/${result.remoteBranch}`
             : result.remoteBranch ?? '远程分支';
-        const source = result.sourceHash ?? result.localBranch ?? '当前提交';
-        return `${source} → ${target}\n${result.output ?? 'Git 未返回额外信息。'}`;
+        const source = result.sourceBranchName ?? '游离 HEAD';
+        const commit = result.sourceHash ? `（提交 ${result.sourceHash.slice(0, 8)}）` : '';
+        return `${source} → ${target}${commit}\n${result.output ?? 'Git 未返回额外信息。'}`;
     }).join('\n\n');
 }
 
@@ -153,18 +155,17 @@ export class GitActionRunner {
         this.syncInProgress = true;
         try {
             const operation = action === 'fetch' ? '获取' : action === 'pull' ? '拉取' : '推送';
-            let selectedPushBranches: PushBranchOption[] | undefined;
+            let selectedPushTargets: PushTargetOption[] | undefined;
             if (action === 'push') {
-                const branches = await getPushBranches(rootUri);
-                if (branches.length === 0) {
+                const plan = await getPushPlan(rootUri);
+                if (!plan || plan.targets.length === 0) {
                     void vscode.window.showWarningMessage('当前仓库没有可推送的远程分支。');
                     return;
                 }
-                const defaultBranch = branches.find(candidate => candidate.isCurrent) ?? branches[0];
-                selectedPushBranches = await pickPushBranches(branches, [defaultBranch], defaultBranch.name);
-                if (!selectedPushBranches || selectedPushBranches.length === 0) { return; }
-                const targets = selectedPushBranches.map(branch => `$(git-commit)${branch.sourceHash}->$(cloud)${branch.upstreamName}`);
-                const confirmed = await confirmPush(targets.join('\n'));
+                const defaultTarget = defaultPushTarget(plan);
+                selectedPushTargets = await pickPushTargets(plan, defaultTarget ? [defaultTarget] : []);
+                if (!selectedPushTargets || selectedPushTargets.length === 0) { return; }
+                const confirmed = await confirmPush(selectedPushTargets.map(target => ({ source: plan.source, target })));
                 if (!confirmed) { return; }
             }
             await vscode.window.withProgress({
@@ -178,7 +179,7 @@ export class GitActionRunner {
                         rootUri,
                         action,
                         message => progress.report({ message }),
-                        selectedPushBranches,
+                        selectedPushTargets,
                     );
                     let submodulesUpdated = false;
                     if (action === 'pull' && result.submodulesNeedUpdate) {

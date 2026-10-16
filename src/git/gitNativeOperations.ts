@@ -123,44 +123,77 @@ export function pull(
     );
 }
 
+/** 一次 Push 请求: 推送源(当前 HEAD)与目标远程分支分开描述。 */
+export interface NativePushRequest {
+    /** 远程名, 例如 origin。 */
+    readonly remote: string;
+    /** 远程分支名(不含远程前缀), 例如 master。 */
+    readonly remoteBranch: string;
+    /** 推送源的本地分支名; detached HEAD 时为 undefined。仅用于远程/upstream 的配置回退与结果展示。 */
+    readonly sourceBranchName?: string;
+    /** 推送源提交(完整 hash); 实际推送内容始终是当前 HEAD。 */
+    readonly sourceHash?: string;
+}
+
 export interface NativePushResult {
     readonly remote?: string;
-    readonly localBranch?: string;
+    /** 推送源的本地分支名(由请求透传或原生返回)。 */
+    readonly sourceBranchName?: string;
+    /** 实际推送的提交(完整 hash)。 */
     readonly sourceHash?: string;
     readonly remoteBranch?: string;
     readonly output?: string;
 }
 
-export async function push(
-    rootUri: vscode.Uri,
-    remote?: string,
-    localBranch?: string,
-    remoteBranch?: string,
-): Promise<NativePushResult> {
-    const sourceHash = (await invokeNativeGit<string[]>('resolveRevision', {
-        rootPath: rootUri.fsPath,
-        specs: ['HEAD^{}'],
-    }))[0];
+/**
+ * 推送当前 checkout 的 HEAD 到指定远程分支。
+ * 分支名与提交 hash 在结果里分列两个字段, 调用方不得互相替代。
+ */
+export async function push(rootUri: vscode.Uri, request: NativePushRequest): Promise<NativePushResult> {
+    const sourceHash = request.sourceHash
+        ?? (await invokeNativeGit<string[]>('resolveRevision', {
+            rootPath: rootUri.fsPath,
+            specs: ['HEAD^{}'],
+        }))[0];
     // libgit2 已在进入网络传输前执行 pre-push；回退时使用 --no-verify，避免同一 hook 执行两次。
-    const cliArgs = ['push', '--no-verify'];
-    if (remote) { cliArgs.push(remote); }
-    if (localBranch) {
-        // Push the current checkout's HEAD rather than resolving a local branch ref.
-        cliArgs.push(remoteBranch ? `HEAD:${remoteBranch}` : 'HEAD');
-    }
-    const requestedTarget: NativePushResult = { remote, localBranch, sourceHash, remoteBranch };
+    const cliArgs = ['push', '--no-verify', request.remote, `HEAD:${request.remoteBranch}`];
+    const requestedTarget: NativePushResult = {
+        remote: request.remote,
+        remoteBranch: request.remoteBranch,
+        sourceBranchName: request.sourceBranchName,
+        sourceHash,
+    };
     return withHttpTransportFallback(
         rootUri,
         'push',
         async () => {
-            const result = await invokeNativeGit<NativePushResult>('push', { rootPath: rootUri.fsPath, remote, localBranch, remoteBranch });
-            return { ...result, sourceHash: result.sourceHash ?? sourceHash };
+            // 原生协议字段名保持 localBranch: 它只用于补全未指定的 remote/upstream 配置。
+            const result = await invokeNativeGit<{
+                remote?: string;
+                localBranch?: string;
+                sourceHash?: string;
+                remoteBranch?: string;
+                output?: string;
+            }>('push', {
+                rootPath: rootUri.fsPath,
+                remote: request.remote,
+                localBranch: request.sourceBranchName,
+                remoteBranch: request.remoteBranch,
+            });
+            return {
+                remote: result.remote ?? request.remote,
+                remoteBranch: result.remoteBranch ?? request.remoteBranch,
+                sourceBranchName: request.sourceBranchName ?? result.localBranch,
+                sourceHash: result.sourceHash ?? sourceHash,
+                output: result.output,
+            };
         },
         cliArgs,
         requestedTarget,
         output => ({ ...requestedTarget, output }),
     );
 }
+
 export function updateSubmodules(rootUri: vscode.Uri, paths: readonly string[] = []): Promise<void> {
     return withHttpTransportFallback(
         rootUri,

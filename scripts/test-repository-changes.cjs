@@ -1164,13 +1164,13 @@ async function verifyMultiDiffLinkage(page, state, publish, repositories) {
 }
 async function lastMessage(page) { return page.evaluate(() => window.messages.at(-1)); }
 // 旧版原生模块的 pushBranches 不返回 isUpstream/tipTimestamp; 缺失时排序会整体失效,
-// 因此 getPushBranches 必须在 TS 侧补齐这两个字段。
-async function verifyPushBranchEnrichment() {
+// 因此 getPushPlan 必须在 TS 侧补齐这两个字段, 并把推送源与远程目标分成两组数据。
+async function verifyPushPlanEnrichment() {
   const load = Module._load;
   const rootUri = { fsPath: 'C:/fixture', toString: () => 'file:///fixture' };
   const nativeCalls = [];
   const rangeRequests = [];
-  let getPushBranches;
+  let getPushPlan;
   try {
     const bindingPath = require.resolve('../out/git/nativeGitBinding');
     delete require.cache[require.resolve('../out/git/gitLogProvider')];
@@ -1188,6 +1188,7 @@ async function verifyPushBranchEnrichment() {
               { name: 'master', upstreamName: 'origin/master', upstreamRemote: 'origin', upstreamBranch: 'master', isCurrent: true, recentUnpushedCommits: sample },
             ];
           }
+          if (operation === 'head') return { hash: 'a'.repeat(40), branch: 'master', detached: false };
           if (operation === 'branches') return {
             currentBranch: 'refs/heads/master',
             local: [{ hash: 'a'.repeat(40), name: 'refs/heads/master', label: 'master', upstreamName: 'origin/master' }],
@@ -1211,37 +1212,45 @@ async function verifyPushBranchEnrichment() {
       };
       return load.call(this, name, ...args);
     };
-    ({ getPushBranches } = require('../out/git/gitLogProvider'));
+    ({ getPushPlan } = require('../out/git/gitLogProvider'));
   } finally {
     Module._load = load;
     delete require.cache[require.resolve('../out/git/gitLogProvider')];
     delete require.cache[require.resolve('../out/git/nativeGitBinding')];
   }
-  const targets = await getPushBranches(rootUri);
-  assert.deepEqual(targets.map(target => target.isUpstream), [false, true], 'the configured upstream is derived from branch refs when the native module omits isUpstream');
-  assert.deepEqual(targets.map(target => target.tipTimestamp), [1788329785, 1791773866], 'remote tip timestamps are derived from commit dates when the native module omits tipTimestamp');
+  const plan = await getPushPlan(rootUri);
+  // 推送源: 分支名取自 HEAD 的分支, hash 取自 HEAD 指向的提交; 两者分开存放。
+  assert.deepEqual(plan.source, { branchName: 'master', hash: 'a'.repeat(40) }, 'the push source keeps the branch name and the commit hash in separate fields');
+  const targets = plan.targets;
+  assert.deepEqual(targets.map(target => target.remoteName), ['origin/master', 'origin/ink_dev'], 'the configured upstream is ordered first');
+  assert.deepEqual(targets.map(target => target.remote), ['origin', 'origin']);
+  assert.deepEqual(targets.map(target => target.branch), ['master', 'ink_dev'], 'the remote branch name never carries the remote prefix');
+  assert.deepEqual(targets.map(target => target.isUpstream), [true, false], 'the configured upstream is derived from branch refs when the native module omits isUpstream');
+  assert.deepEqual(targets.map(target => target.tipTimestamp), [1791773866, 1788329785], 'remote tip timestamps are derived from commit dates when the native module omits tipTimestamp');
   assert.ok(nativeCalls.includes('branches') && nativeCalls.includes('commitDetails'), 'enrichment reads branch refs and commit dates');
-  assert.deepEqual(targets.map(target => target.unpushedCommitCount), [146, 64], 'each remote target reports its own unpushed total instead of the limit-truncated sample length');
-  assert.deepEqual(targets.map(target => target.recentUnpushedCommits.length), [8, 8], 'the native sample stays truncated by limit');
+  assert.deepEqual(targets.map(target => target.unpushedCommitCount), [64, 146], 'each remote target reports its own unpushed total instead of the limit-truncated sample length');
   assert.deepEqual(rangeRequests, ['origin/ink_dev', 'origin/master'], 'unpushed totals are counted per remote branch');
 }
 async function verifyProvider() {
   // Host selection routing and stale MultiDiff feedback are tested below with the actual methods.
   const load = Module._load;
   const branchReads = [], checkouts = [], pulls = [], pushes = [], headRefreshes = [], remoteCheckouts = [];
-  let pickedIndex = 1, options, branchItems, pushBranchDefaults, pushQuickPick, selectedPushBranchesResult;
+  let pickedIndex = 1, options, branchItems, pushTargetDefaults, pushQuickPick, selectedPushTargetsResult, confirmRows;
   const terminals = [], informationMessages = [], errorMessages = []; let terminalShows = 0;
-  const pushBranchFixture = [
-    { name: 'main', upstreamName: 'fork/main', upstreamRemote: 'fork', upstreamBranch: 'main', isCurrent: true, isUpstream: false, recentUnpushedCommits: [] },
-    { name: 'main', upstreamName: 'origin/main', upstreamRemote: 'origin', upstreamBranch: 'main', isCurrent: true, isUpstream: true, recentUnpushedCommits: [] },
-    { name: 'topic', upstreamName: 'origin/topic', upstreamRemote: 'origin', upstreamBranch: 'topic', isCurrent: false, isUpstream: true, recentUnpushedCommits: [] },
+  // 推送目标只描述远程分支; 本地分支名与 HEAD hash 属于 plan.source。
+  const pushTargetFixture = [
+    { remote: 'fork', branch: 'main', remoteName: 'fork/main', isUpstream: false, tipTimestamp: 200, unpushedCommitCount: 1 },
+    { remote: 'origin', branch: 'main', remoteName: 'origin/main', isUpstream: true, tipTimestamp: 100, unpushedCommitCount: 2 },
   ];
-  const pushDialogFixture = [
-    { name: 'ink_dev', upstreamName: 'origin/ink_master', upstreamRemote: 'origin', upstreamBranch: 'ink_master', isCurrent: true, isUpstream: true, tipTimestamp: 100, recentUnpushedCommits: [] },
-    { name: 'topic-a', upstreamName: 'origin/ink_master', upstreamRemote: 'origin', upstreamBranch: 'ink_master', isCurrent: false, isUpstream: true, tipTimestamp: 100, recentUnpushedCommits: [] },
-    { name: 'topic-b', upstreamName: 'origin/ink_master', upstreamRemote: 'origin', upstreamBranch: 'ink_master', isCurrent: false, isUpstream: true, tipTimestamp: 100, recentUnpushedCommits: [] },
-    { name: 'ink_dev', upstreamName: 'upstream/develop', upstreamRemote: 'upstream', upstreamBranch: 'develop', isCurrent: true, isUpstream: false, tipTimestamp: 200, recentUnpushedCommits: [{ subject: 'unpushed', timestamp: 1 }] },
-  ];
+  const pushPlanFixture = { source: { branchName: 'main', hash: 'a'.repeat(40) }, targets: pushTargetFixture };
+  const pushDialogPlan = {
+    source: { branchName: 'ink_dev', hash: 'f'.repeat(40) },
+    targets: [
+      { remote: 'origin', branch: 'ink_master', remoteName: 'origin/ink_master', isUpstream: true, tipTimestamp: 100, unpushedCommitCount: 0 },
+      { remote: 'upstream', branch: 'develop', remoteName: 'upstream/develop', isUpstream: false, tipTimestamp: 200, unpushedCommitCount: 1 },
+    ],
+  };
+  const detachedPlan = { source: { hash: 'd'.repeat(40) }, targets: pushDialogPlan.targets };
   const branchFixture = [
     { name: 'refs/heads/main', label: 'main', kind: 'current', hash: 'a'.repeat(40) },
     { name: 'refs/heads/main', label: 'main', kind: 'local', hash: 'a'.repeat(40) },
@@ -1275,7 +1284,7 @@ async function verifyProvider() {
       },
     },
   };
-  let pickPushBranches, showPushResult;
+  let pickPushTargets, confirmPush, describePushRow, showPushResult;
   let GitkViewProvider, store;
   try {
     Module._load = function(name, ...args) {
@@ -1284,12 +1293,12 @@ async function verifyProvider() {
         ...load.call(this, name, ...args),
         getGitBranches: async uri => { branchReads.push(uri.toString()); return branchFixture; },
         getGitAheadBehind: async () => ({ ahead: 4, behind: 2 }),
-        getPushBranches: async () => pushBranchFixture,
+        getPushPlan: async () => pushPlanFixture,
       };
       if (name === '../services/pushDialogs') return {
         ...load.call(this, name, ...args),
-        pickPushBranches: async (_branches, defaultBranches) => { pushBranchDefaults = defaultBranches; return selectedPushBranchesResult; },
-        confirmPush: async () => true,
+        pickPushTargets: async (_plan, defaultTargets) => { pushTargetDefaults = defaultTargets; return selectedPushTargetsResult; },
+        confirmPush: async rows => { confirmRows = rows; return true; },
         showPushResult: async () => {},
       };
       if (name === '../git/gitNativeOperations') return {
@@ -1297,21 +1306,42 @@ async function verifyProvider() {
         checkoutBranch: async (uri, branch) => { checkouts.push([uri.toString(), branch]); },
         checkoutRemoteBranch: async (uri, ref, localName) => remoteCheckouts.push([uri.toString(), ref, localName]),
         pull: async (uri, remote, remoteBranch, localBranch) => { pulls.push([uri.toString(), remote, remoteBranch, localBranch]); },
-        push: async (uri, remote, localBranch, remoteBranch) => { pushes.push([uri.toString(), remote, localBranch, remoteBranch]); throw new Error('stop after push'); },
+        push: async (uri, request) => { pushes.push([uri.toString(), request.remote, request.remoteBranch, request.sourceBranchName, request.sourceHash]); throw new Error('stop after push'); },
       };
       return load.call(this, name, ...args);
     };
     ({ GitkViewProvider } = require('../out/webview/gitkViewProvider'));
-    ({ pickPushBranches, showPushResult } = require('../out/services/pushDialogs'));
+    ({ pickPushTargets, confirmPush, describePushRow, showPushResult } = require('../out/services/pushDialogs'));
     ({ store } = require('../out/state/store'));
   } finally { Module._load = load; }
-  void pickPushBranches(pushDialogFixture, [pushDialogFixture[0]], 'ink_dev');
+  // 目标选择弹窗: 标题栏显示仓库卡片上的本地分支名, 列表只显示远程分支, hash 不参与。
+  void pickPushTargets(pushDialogPlan, [pushDialogPlan.targets[0]]);
+  assert.equal(pushQuickPick.title, 'ink_dev 要推送的远程分支', 'the dialog title shows the repository card branch name, not a hash');
   assert.deepEqual(pushQuickPick.items.map(item => item.label), ['$(cloud) origin/ink_master', '$(cloud) upstream/develop'], 'bound upstream stays first even when another remote has a newer tip');
-  assert.deepEqual(pushQuickPick.selectedItems.map(item => item.branch.upstreamName), ['origin/ink_master']);
-  void pickPushBranches(pushDialogFixture, [pushDialogFixture[3]], 'ink_dev');
+  assert.deepEqual(pushQuickPick.items.map(item => item.detail), ['分支 ink_dev（提交 ffffffff） → origin/ink_master', '分支 ink_dev（提交 ffffffff） → upstream/develop'], 'each row names the branch and annotates the commit separately');
+  assert.deepEqual(pushQuickPick.selectedItems.map(item => item.target.remoteName), ['origin/ink_master']);
+  void pickPushTargets(pushDialogPlan, [pushDialogPlan.targets[1]]);
   assert.deepEqual(pushQuickPick.items.map(item => item.label), ['$(cloud) origin/ink_master', '$(cloud) upstream/develop'], 'a cached default target is checked but never reordered above the bound upstream');
-  assert.deepEqual(pushQuickPick.selectedItems.map(item => item.branch.upstreamName), ['upstream/develop']);
-  await verifyPushBranchEnrichment();
+  assert.deepEqual(pushQuickPick.selectedItems.map(item => item.target.remoteName), ['upstream/develop']);
+  // detached HEAD 没有分支名: 标题与行文本退回短 hash, 且明确标注游离状态。
+  void pickPushTargets(detachedPlan, []);
+  assert.equal(pushQuickPick.title, '游离 HEAD dddddddd 要推送的远程分支');
+  // 确认弹窗: 推送按钮下面逐行显示 本地分支名 -> 远程分支名, hash 只在 detail 里。
+  void confirmPush([
+    { source: pushDialogPlan.source, target: pushDialogPlan.targets[0] },
+    { source: pushDialogPlan.source, target: pushDialogPlan.targets[1], repositoryLabel: 'child' },
+  ]);
+  assert.deepEqual(pushQuickPick.items.map(item => item.label), [
+    '$(cloud-upload) 推送',
+    '$(git-branch) ink_dev $(arrow-right) $(cloud) origin/ink_master',
+    '$(git-branch) ink_dev $(arrow-right) $(cloud) upstream/develop',
+    '$(close) 取消',
+  ], 'the confirm dialog lists branch names on both sides of the arrow');
+  assert.deepEqual(pushQuickPick.items.map(item => item.detail), ['推送下面 2 个远程分支', '提交 ffffffff', '提交 ffffffff', '放弃本次远程推送'], 'the commit hash is annotated per row instead of replacing a branch name');
+  assert.deepEqual(pushQuickPick.items.map(item => item.action), ['push', 'push', 'push', 'cancel'], 'target rows confirm the push rather than acting as inert separators');
+  assert.equal(describePushRow({ source: pushDialogPlan.source, target: pushDialogPlan.targets[0], repositoryLabel: 'child' }), 'child：ink_dev → origin/ink_master（提交 ffffffff）');
+  assert.equal(describePushRow({ source: detachedPlan.source, target: detachedPlan.targets[0] }), '游离 HEAD dddddddd → origin/ink_master（提交 dddddddd）');
+  await verifyPushPlanEnrichment();
   await showPushResult('Git Push 已完成', 'child：main → origin/main\n已推送');
   assert.equal(informationMessages.at(-1), 'Git Push 已完成：child：main → origin/main；已推送', 'successful push uses an information notification');
   await showPushResult('Git Push 失败', 'network unavailable');
@@ -1328,7 +1358,7 @@ async function verifyProvider() {
     view: { webview: { postMessage: value => { published = value; } } },
     changedFileSummaryCache: new WeakMap(), selectedBranchesMap: new Map(),
     commitMessageByRepo: new Map([[repositories[1].path, 'child draft']]), commitCommittingByRepo: new Set(),
-    pushBranchByRepository: new Map(), lastPushedBranchByRepository: new Map(),
+    pushTargetByRepository: new Map(), lastPushedTargetByRepository: new Map(),
     unpushedCommitCountByRepository: new Map([[repositories[1].path, 4]]),
     behindCommitCountByRepository: new Map([[repositories[1].path, 0]]),
     repositorySyncKeyByRepository: new Map(), repositorySyncStateLoadingByHead: new Set(),
@@ -1488,19 +1518,21 @@ async function verifyProvider() {
   releaseWorktree({ staged: [], changes: [] });
   await pendingWorktree;
   assert.equal(selectedWorktrees.length, 1, 'a stale badge read cannot reselect a child after focus moves elsewhere');
-  provider.pushBranchByRepository.set(repositories[1].path, pushBranchFixture[0]);
-  provider.lastPushedBranchByRepository.set(repositories[1].path, pushBranchFixture[0]);
+  provider.pushTargetByRepository.set(repositories[1].path, pushTargetFixture[0]);
+  provider.lastPushedTargetByRepository.set(repositories[1].path, pushTargetFixture[0]);
   await provider.runCommitPanelPush([repositories[1].path], true, false);
-  assert.equal(pushBranchDefaults[0].upstreamName, 'origin/main', 'sync defaults to the current branch configured upstream, not cached or first remote');
+  assert.equal(pushTargetDefaults[0].remoteName, 'origin/main', 'sync defaults to the current branch configured upstream, not cached or first remote');
   await provider.runCommitPanelPush([repositories[1].path], false, false);
-  assert.equal(pushBranchDefaults[0].upstreamName, 'fork/main', 'plain push keeps the cached target');
+  assert.equal(pushTargetDefaults[0].remoteName, 'fork/main', 'plain push keeps the cached target');
   const checkoutCountBeforePush = checkouts.length;
-  selectedPushBranchesResult = [pushBranchFixture[1]];
+  selectedPushTargetsResult = [pushTargetFixture[1]];
   await provider.runCommitPanelPush([repositories[1].path], true, false);
-  selectedPushBranchesResult = undefined;
+  // 确认行用的是 HEAD 现场读到的分支名与 hash, 而不是目标里的任何字段。
+  assert.deepEqual(confirmRows.map(row => [row.source.branchName, row.source.hash, row.target.remoteName]), [['main', 'a'.repeat(40), 'origin/main']]);
+  selectedPushTargetsResult = undefined;
   assert.equal(checkouts.length, checkoutCountBeforePush, 'push does not switch branches');
   assert.deepEqual(pulls, [], 'push does not pull before sending the current branch commit');
-  assert.deepEqual(pushes.at(-1), [repositories[1].path, 'origin', 'main', 'main'], 'push sends the current local branch commit directly to the selected remote branch');
+  assert.deepEqual(pushes.at(-1), [repositories[1].path, 'origin', 'main', 'main', 'a'.repeat(40)], 'push sends the current HEAD to the selected remote branch, carrying branch name and hash in separate fields');
   const syncSteps = [];
   provider.runCommitPanelPush = async (...args) => syncSteps.push(['sync', ...args]);
   provider.uncommittedFilesWatcher.refreshHeadBranch = async value => syncSteps.push(['head', value]);
