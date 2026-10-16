@@ -36,6 +36,7 @@ export function pickPushBranches(
     });
     const baseItems: PushBranchQuickPickItem[] = orderedBranches.map(branch => ({
         label: `$(cloud) ${branch.upstreamName}`,
+        description: `将推送提交：${branch.sourceHash}`,
         detail: `未推送提交：${branch.unpushedCommitCount}`,
         branch,
     }));
