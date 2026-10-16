@@ -465,6 +465,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     return {
                         repositoryPath: repository.path,
                         repositoryLabel: repository.label,
+                        repositoryAncestry: (repository.ancestry ?? []).map(ancestor => ({
+                            path: ancestor.path,
+                            label: ancestor.label,
+                        })),
                         hasSubmodules: Boolean(repository.hasSubmodules),
                         isSubmodule: (repository.ancestry?.length ?? 0) > 0,
                         isMainRepository: repository.path === this.repositories.find(candidate => (candidate.ancestry?.length ?? 0) === 0)?.path,

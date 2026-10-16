@@ -21,6 +21,7 @@ export const REPOSITORY_CHANGES_STYLES = `
   .repo-changes-badge:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
   .repo-changes-label, .repo-changes-head { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .repo-changes-label { flex: 0 1 auto; }
+  .repo-changes-ancestry { flex: 0 1 auto; min-width: 0; margin-left: 4px; color: var(--vscode-descriptionForeground); font-size: 11px; font-weight: 400; opacity: .9; }
   .repo-changes-branch { display: flex; align-items: center; gap: 0; flex: 0 1 auto; min-width: 0; max-width: 45%; height: 24px; padding: 0 4px; border: 0; border-radius: 3px; color: var(--vscode-descriptionForeground); background: transparent; font: inherit; font-size: 11px; cursor: pointer; }
   .repo-changes-branch:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); }
   .repo-changes-branch:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
@@ -214,7 +215,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
   }
   function createRepositoryChangesNode(repository) {
     const card = document.createElement('section'); card.className = 'repo-changes'; card.dataset.repositoryPath = repository.repositoryPath; card.tabIndex = -1;
-    card.innerHTML = '<div class="repo-changes-header"><button type="button" class="repo-changes-toggle" data-repo-action="toggle"><span class="codicon codicon-chevron-down repo-chevron"></span></button><div class="repo-changes-title"><span class="repo-changes-icon"></span><span class="repo-changes-label"></span><button type="button" class="repo-changes-badge" data-repo-action="worktree" hidden></button></div><button type="button" class="repo-changes-branch" data-repo-action="branch"><span class="codicon codicon-source-control"></span><span class="repo-changes-head"></span></button></div><div class="repo-changes-body"><div class="repo-message-box"><textarea class="repo-message" rows="1" spellcheck="false"></textarea></div><div class="repo-commit-actions"><button type="button" class="repo-commit-main" data-repo-action="commit"><span class="repo-commit-label">Commit</span></button><button type="button" class="repo-commit-more" data-repo-action="menu" title="更多提交操作" aria-label="更多提交操作"><span class="codicon codicon-chevron-down"></span></button><div class="repo-commit-menu" hidden></div></div><div class="repo-file-groups"></div></div>';
+    card.innerHTML = '<div class="repo-changes-header"><button type="button" class="repo-changes-toggle" data-repo-action="toggle"><span class="codicon codicon-chevron-down repo-chevron"></span></button><div class="repo-changes-title"><span class="repo-changes-icon"></span><span class="repo-changes-label"></span><span class="repo-changes-ancestry" hidden></span><button type="button" class="repo-changes-badge" data-repo-action="worktree" hidden></button></div><button type="button" class="repo-changes-branch" data-repo-action="branch"><span class="codicon codicon-source-control"></span><span class="repo-changes-head"></span></button></div><div class="repo-changes-body"><div class="repo-message-box"><textarea class="repo-message" rows="1" spellcheck="false"></textarea></div><div class="repo-commit-actions"><button type="button" class="repo-commit-main" data-repo-action="commit"><span class="repo-commit-label">Commit</span></button><button type="button" class="repo-commit-more" data-repo-action="menu" title="更多提交操作" aria-label="更多提交操作"><span class="codicon codicon-chevron-down"></span></button><div class="repo-commit-menu" hidden></div></div><div class="repo-file-groups"></div></div>';
     const header = card.querySelector('.repo-changes-header');
     const details = document.createElement('textarea'); details.className = 'repo-commit-details'; details.hidden = true;
     details.readOnly = true; details.rows = 1; details.spellcheck = false;
@@ -230,6 +231,11 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       const button = document.createElement('button'); button.type = 'button'; button.dataset.repoAction = item[0]; button.textContent = item[1]; menu.appendChild(button);
     });
     return { card: card, input: card.querySelector('.repo-message'), groups: card.querySelector('.repo-file-groups'), groupsKey: '', rowsByDiffKey: new Map(), message: undefined };
+  }
+  function repositoryAncestryLabel(ancestry) {
+    const labels = (ancestry || []).map(function(ancestor) { return ancestor && ancestor.label; }).filter(Boolean);
+    if (labels.length <= 2) return labels.join('/');
+    return labels[0] + '/.../' + labels[labels.length - 1];
   }
   function updateRepositoryDisplaySnapshot(state) {
     const commit = state.selectedCommit;
@@ -386,6 +392,11 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       let node = repositoryChangesNodes.get(repository.repositoryPath);
       if (!node) { node = createRepositoryChangesNode(repository); repositoryChangesNodes.set(repository.repositoryPath, node); }
       node.card.querySelector('.repo-changes-label').textContent = repository.repositoryLabel;
+      const ancestry = node.card.querySelector('.repo-changes-ancestry');
+      const ancestryLabel = repositoryAncestryLabel(repository.repositoryAncestry);
+      ancestry.hidden = !ancestryLabel;
+      ancestry.textContent = ancestryLabel;
+      ancestry.title = ancestryLabel;
       const icon = node.card.querySelector('.repo-changes-icon');
       const iconKey = String(Boolean(repository.hasSubmodules)) + ':' + String(Boolean(repository.isSubmodule));
       if (icon.dataset.kind !== iconKey) {

@@ -36,6 +36,7 @@ async function main() {
     await page.setContent(html);
     const repositories = ['inkengine', 'ink-predict-sdk', 'ink-algorithm', 'ink-render', 'ink-common', 'ink-gfx'].map((name, index) => ({
       repositoryPath: 'file:///fixture/' + name, repositoryLabel: name, isMainRepository: index === 0,
+      repositoryAncestry: index === 1 ? [{ label: 'inkengine' }] : index === 2 ? [{ label: 'inkengine' }, { label: 'ink-predict-sdk' }, { label: 'ink-algorithm-parent' }] : [],
       hasSubmodules: index === 0 || index === 3, isSubmodule: index !== 0 && index !== 4,
       headLabel: index ? 'd3eed0b4' : 'ink_dev', message: '', committing: false,
       staged: index === 0 ? [{ path: 'same.cpp', status: 'M' }] : [],
@@ -49,6 +50,9 @@ async function main() {
     repositories[0].behindCount = 0;
     await publish();
     await assertCount(page.locator('.repo-changes'), 6);
+    assert.equal(await page.locator('.repo-changes').nth(1).locator('.repo-changes-ancestry').textContent(), 'inkengine', 'direct child shows its parent repository');
+    assert.equal(await page.locator('.repo-changes').nth(2).locator('.repo-changes-ancestry').textContent(), 'inkengine/.../ink-algorithm-parent', 'nested child compresses the recursive parent path');
+    assert.equal(await page.locator('.repo-changes').first().locator('.repo-changes-ancestry').isHidden(), true, 'root repository has no parent path');
     const rootSync = page.locator('.repo-changes').first().locator('[data-repo-action="syncRefresh"]');
     assert.equal(await rootSync.locator('.repo-sync-count').textContent(), '0↓4↑', 'repository sync matches the VS Code behind/ahead indicator');
     assert.match(await rootSync.getAttribute('title'), /拉取 0.*推送 4/);
