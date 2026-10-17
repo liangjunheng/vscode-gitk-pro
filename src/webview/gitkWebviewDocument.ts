@@ -148,6 +148,9 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR
       hasMoreCommits = Boolean(state.hasMoreCommits);
       isLoadingMoreCommits = Boolean(state.isLoadingMoreCommits);
       commitPageError = state.commitPageError || '';
+      if (commits.length > commitLoadRequestCount || !hasMoreCommits || commitPageError) {
+        commitLoadRequestPending = false;
+      }
       files = state.files || [];
       stagedFiles = state.stagedFiles || [];
       unstagedFiles = state.unstagedFiles || [];

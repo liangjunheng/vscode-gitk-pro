@@ -243,6 +243,8 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
   let isLoadingMoreCommits = false;
   let commitPageError = '';
   let isCommitLoading = false;
+  let commitLoadRequestPending = false;
+  let commitLoadRequestCount = 0;
   // 加载态呈现方式, 由后端每轮快照下发:
   //   'bar'     —— 已选列表不变、就地重读, 只亮顶部进度条;
   //   'overlay' —— 选择变化要重建列表, 用全屏蒙版。
@@ -270,6 +272,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
 
     const ROW_H = 26;
     const COMMIT_OVERSCAN = 50;
+    const COMMIT_LOAD_THRESHOLD = 20;
     const LANE_W = 12;
     const expandedCommits = new Set();
     const expandedCommitRowHeights = new Map();
@@ -431,20 +434,27 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
       return;
     }
     footer.textContent = '继续滚动以加载更多提交';
-    if ('IntersectionObserver' in window) {
-      var triggerIndex = Math.max(0, commits.length - COMMIT_OVERSCAN);
-      var graph = document.getElementById('graph');
-      var triggerRow = graph.querySelector('.commit-row[data-row="' + triggerIndex + '"]');
-      if (!triggerRow) return;
-      commitLoadObserver = new IntersectionObserver(function(entries) {
-        if (entries.some(function(entry) { return entry.isIntersecting; })) {
-          vscode.postMessage({ type: 'loadMoreCommits' });
-        }
-      }, { root: document.getElementById('graph') });
-      commitLoadObserver.observe(triggerRow);
-    }
+    requestLoadMoreIfNeeded();
   }
 
+  function requestLoadMoreIfNeeded() {
+    if (!hasMoreCommits || isLoadingMoreCommits || commitLoadRequestPending) return;
+    var graph = document.getElementById('graph');
+    var topSpacer = document.getElementById('commitVirtualTop');
+    if (!graph || !topSpacer || !commits.length) return;
+    if (commitLayoutDirty) rebuildCommitLayout();
+    var graphRect = graph.getBoundingClientRect();
+    var regionTop = topSpacer.getBoundingClientRect().top - graphRect.top + graph.scrollTop;
+    var stickyHeight = document.getElementById('commitHeader').offsetHeight
+      + document.getElementById('commitSearchRow').offsetHeight;
+    var viewportBottom = Math.max(0, graph.scrollTop + graph.clientHeight - regionTop);
+    var lastExclusive = Math.max(1, commitUpperBound(Math.max(stickyHeight, viewportBottom)));
+    var lastVisibleIndex = Math.min(commits.length - 1, lastExclusive - 1);
+    if (lastVisibleIndex < commits.length - COMMIT_LOAD_THRESHOLD) return;
+    commitLoadRequestPending = true;
+    commitLoadRequestCount = commits.length;
+    vscode.postMessage({ type: 'loadMoreCommits' });
+  }
   // 标签和轨道共用官方泳道索引，确保横线始终从当前提交点向右连接。
   function rowMaxSwimlane(c) {
     var inputCount = (c.inputSwimlanes || []).length;
@@ -904,6 +914,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
 
   document.getElementById('graph').addEventListener('scroll', function() {
     scheduleCommitVirtualWindow();
+    requestLoadMoreIfNeeded();
   }, { passive: true });
 
   function captureVisibleCommitAnchor(graph, list) {
