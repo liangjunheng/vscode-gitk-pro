@@ -1557,6 +1557,8 @@ async function verifyProvider() {
 async function verifyFocusedRefresh(Provider, repositories) {
   const provider = Object.create(Provider.prototype);
   const steps = [];
+  const fetches = [];
+  const historyRefreshModes = [];
   const progressSnapshots = [];
   let releaseHead, releaseHistory;
   const child = repositories[1].path;
@@ -1573,7 +1575,13 @@ async function verifyFocusedRefresh(Provider, repositories) {
       refreshUncommittedFilesByHeadBranch: async branch => steps.push(['status', branch.repoOption.path]),
     },
     selectedRepoTotalBranchWatcher: { refreshSelectedRepositories: () => steps.push(['branches']) },
-    commitController: { forceRefreshCurrentSelection: async () => {
+    fetchRepositories: async repositoryPaths => {
+      fetches.push([...repositoryPaths]);
+      await new Promise(resolve => { provider.releaseFetch = resolve; });
+      return repositoryPaths.map(() => true);
+    },
+    commitController: { forceRefreshCurrentSelection: async worktreeAlreadyRefreshed => {
+      historyRefreshModes.push(worktreeAlreadyRefreshed);
       steps.push(['history']);
       await new Promise(resolve => { releaseHistory = resolve; });
     } },
@@ -1587,17 +1595,21 @@ async function verifyFocusedRefresh(Provider, repositories) {
   const pending = provider.refreshCurrentViewData();
   assert.equal(provider.refreshCurrentViewData(), pending, 'repeated refresh clicks share the in-flight operation');
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(steps.filter(step => step[0] !== 'publish').slice(0, 6), [['head', child], ['head', repositories[0].path], ['head', repositories[2].path], ['history'], ['branches'], ['scan']], 'focused task is created first, but all repositories and history start without waiting');
+  assert.deepEqual(steps.filter(step => step[0] !== 'publish').slice(0, 5), [['head', child], ['head', repositories[0].path], ['head', repositories[2].path], ['history'], ['scan']], 'local refresh, history, fetch, and repository scan start independently');
   assert.deepEqual(steps.filter(step => step[0] === 'status'), [['status', repositories[0].path], ['status', repositories[2].path]], 'other repositories publish while focused HEAD and history are still pending');
   assert.deepEqual(progressSnapshots, [{ completed: 0, total: 4 }, { completed: 1, total: 4 }, { completed: 2, total: 4 }], 'progress starts immediately and advances per completed repository');
   releaseHead(); await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(steps.slice(-2), [['status', child], ['publish']], 'focused data also publishes without waiting for history');
+  assert.deepEqual(steps.at(-1), ['publish'], 'local refresh completes without waiting for remote fetch');
+  provider.releaseFetch();
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(provider.refreshCurrentViewData(), pending, 'refresh lock remains held while history is pending');
   releaseHistory(); await pending;
-  assert.equal(steps.at(-1)[0], 'publish', 'history publishes when it completes');
+  assert.equal(steps.at(-1)[0], 'publish', 'history completion publishes the final state');
   assert.equal(provider.viewDataRefresh, undefined, 'refresh lock is released');
   assert.deepEqual(progressSnapshots.slice(-3), [{ completed: 3, total: 4 }, { completed: 4, total: 4 }, undefined], 'progress completes and is cleared after all tasks settle');
   assert.deepEqual(provider.selectedRepositoryPaths, [child], 'refresh preserves focus');
+  assert.deepEqual(fetches, [repositories.map(repository => repository.path)], 'refresh fetches every known repository in parallel');
+  assert.deepEqual(historyRefreshModes, [true], 'manual refresh performs one history refresh and reuses worktree reads');
   const failure = new Error('history failed');
   provider.commitController.forceRefreshCurrentSelection = async () => { throw failure; };
   provider.uncommittedFilesWatcher.refreshHeadBranch = async () => {};

@@ -368,7 +368,7 @@ export class GitCommitController implements vscode.Disposable {
      * 手动刷新: 重读当前已确认选择的提交列表与当前分支未提交变更。
      * 无已确认选择时交由生命周期加载, 不打断在途读取; 同选择刷新在途时不重复启动。
      */
-    async forceRefreshCurrentSelection(): Promise<void> {
+    async forceRefreshCurrentSelection(worktreeAlreadyRefreshed = false): Promise<void> {
         // 尚无确认的分支选择, 由初始化/选择事件链负责首次加载。
         if (this.branches.length === 0) { return; }
         // 同一选择的刷新已在途, 复用它避免重复 git log。
@@ -381,10 +381,12 @@ export class GitCommitController implements vscode.Disposable {
         this.reloadKind = 'refresh';
         try {
             // 提交列表与工作区状态都由本控制器负责; 后者内部已吸收 rejection。
-            await Promise.all([
-                this.refresh(true),
-                this.syncWorkingTreeForCurrentBranch(true),
-            ]);
+            const historyRefresh = this.refresh(true);
+            if (worktreeAlreadyRefreshed) {
+                await historyRefresh;
+            } else {
+                await Promise.all([historyRefresh, this.syncWorkingTreeForCurrentBranch(true)]);
+            }
         } finally {
             this.reloadKind = 'rebuild';
         }

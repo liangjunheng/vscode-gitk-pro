@@ -102,7 +102,9 @@ export class GitBranchesController implements vscode.Disposable {
         // page while the complete refs list continues loading in the background.
         const defaulted = this.ensureDefaultSelection();
         this.fireBranches();
-        if (defaulted || this.hasAllSelectedCompleteSnapshots()) { this.fireSelected(); }
+        if (defaulted) {
+            this.fireSelected();
+        }
     }
 
     /**
@@ -121,10 +123,6 @@ export class GitBranchesController implements vscode.Disposable {
             changed = true;
         }
         return changed;
-    }
-
-    private hasAllSelectedCompleteSnapshots(): boolean {
-        return this.repositories.every(repository => this.totalBranchWatcher.isRepositorySnapshotComplete(repository));
     }
 
     /**
@@ -192,7 +190,7 @@ export class GitBranchesController implements vscode.Disposable {
         // Publish the early HEAD snapshot for first paint. A later complete snapshot only
         // causes a reload when it actually adds refs; same-branch selections are de-duplicated
         // by GitCommitController.selectBranches().
-        if (headChanged || defaulted || this.hasAllSelectedCompleteSnapshots()) {
+        if (headChanged || defaulted) {
             this.fireSelected();
         }
     }
