@@ -54,12 +54,16 @@ async function main() {
     assert.equal(await page.locator('.repo-changes').nth(2).locator('.repo-changes-ancestry').textContent(), 'inkengine/.../ink-algorithm-parent', 'nested child compresses the recursive parent path');
     assert.equal(await page.locator('.repo-changes').first().locator('.repo-changes-ancestry').isHidden(), true, 'root repository has no parent path');
     const rootSync = page.locator('.repo-changes').first().locator('[data-repo-action="syncRefresh"]');
-    assert.equal(await rootSync.locator('.repo-sync-count').textContent(), '0↓4↑', 'repository sync matches the VS Code behind/ahead indicator');
-    assert.match(await rootSync.getAttribute('title'), /拉取 0.*推送 4/);
+    assert.equal(await rootSync.locator('.repo-sync-count').textContent(), '↓0↑4∼2', 'sync prefixes commit counts with arrows and appends deduplicated changes without spaces');
+    assert.match(await rootSync.getAttribute('title'), /拉取 0.*推送 4.*2 个未提交变更文件/);
     repositories[0].aheadCount = 0; await publish();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    assert.equal(await rootSync.locator('.repo-sync-count').textContent(), '', 'zero behind/ahead removes the count and keeps only the sync icon');
-    assert.equal(await rootSync.getAttribute('title'), '同步此仓库');
+    assert.equal(await rootSync.locator('.repo-sync-count').textContent(), '∼2', 'local changes remain visible when behind/ahead are zero');
+    assert.match(await rootSync.getAttribute('title'), /2 个未提交变更文件/);
+    const cleanSync = page.locator('.repo-changes').nth(1).locator('[data-repo-action="syncRefresh"]');
+    assert.equal(await cleanSync.locator('.repo-sync-count').isHidden(), true, 'fully clean repositories show only the sync icon');
+    assert.equal(await cleanSync.locator('.repo-sync-count').textContent(), '');
+    assert.equal(await cleanSync.getAttribute('title'), '同步此仓库');
     repositories[0].aheadCount = 4; await publish();
     repositories[1].message = 'unstaged-only draft'; await publish();
     assert.equal(await page.locator('.repo-changes').nth(1).locator('.repo-commit-main').isDisabled(), true, 'a repository with only unstaged changes cannot be committed');
@@ -241,7 +245,7 @@ async function main() {
     assert.equal(await page.locator('.repo-changes').first().locator('.repo-commit-details').inputValue(), '历史提交\n\n提交说明', 'root historical card does not fall back to Uncommitted Changes');
     assert.equal(await page.locator('.repo-changes').first().locator('.repo-commit-main').isVisible(), false);
     for (const header of await page.locator('.repo-changes-header').all()) {
-      assert.deepEqual(await header.locator('[data-repo-action]').evaluateAll(buttons => buttons.map(button => button.dataset.repoAction)), ['toggle', 'worktree', 'branch', 'syncRefresh', 'terminal'], 'terminal follows the repository sync control');
+      assert.deepEqual(await header.locator('[data-repo-action]').evaluateAll(buttons => buttons.map(button => button.dataset.repoAction)), ['toggle', 'branch', 'syncRefresh', 'terminal'], 'header removes the worktree badge and keeps terminal after sync');
     }
     await page.locator('.repo-changes-label').first().click();
     await assertCount(page.locator('.repo-changes-body:visible'), 6);
@@ -320,13 +324,9 @@ async function main() {
     repositories[0].staged = [{ path: 'same.cpp', status: 'M' }];
     repositories[0].unstaged = [{ path: 'same.cpp', status: 'M' }, { path: 'other.cpp', status: 'M' }];
     state.repositoryChanges = repositories; await publish();
-    assert.equal(await page.locator('.repo-changes-badge').first().textContent(), '2', 'badge deduplicates staged and unstaged paths');
-    await assertCount(page.locator('.repo-changes-badge:visible'), 1);
-    const badgeStyle = await page.locator('.repo-changes-badge').first().evaluate(node => ({ radius: getComputedStyle(node).borderRadius, color: getComputedStyle(node).backgroundColor, width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height }));
-    assert.equal(badgeStyle.radius, '50%'); assert.equal(badgeStyle.width, badgeStyle.height); assert.equal(badgeStyle.color, 'rgb(0, 122, 204)');
-    await page.locator('.repo-changes-badge').first().click();
-    assert.deepEqual(await lastMessage(page), { type: 'repositoryChangesAction', action: 'worktree', repositoryPath: repositories[0].repositoryPath });
-    await page.locator('.repo-changes').first().locator('[data-repo-action="syncRefresh"]').click();
+    await assertCount(page.locator('.repo-changes-badge'), 0);
+    assert.equal(await rootSync.locator('.repo-sync-count').textContent(), '↓0↑4∼2', 'sync count deduplicates staged and unstaged paths');
+    await rootSync.locator('.repo-sync-count').click();
     assert.deepEqual(await lastMessage(page), { type: 'repositoryChangesAction', action: 'syncRefresh', repositoryPath: repositories[0].repositoryPath });
     assert.equal(await mainCard.locator('.repo-changes-body').isVisible(), true, 'sync control does not toggle its card');
     const beforeCollapse = await page.evaluate(() => window.messages.length);

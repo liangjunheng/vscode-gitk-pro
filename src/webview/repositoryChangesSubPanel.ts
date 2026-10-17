@@ -15,10 +15,6 @@ export const REPOSITORY_CHANGES_STYLES = `
   .repo-changes-title { display: flex; align-items: center; flex: 1; min-width: 0; gap: 0; cursor: pointer; }
   .repo-changes-icon { position: relative; display: inline-flex; align-items: center; flex: 0 0 16px; width: 16px; height: 20px; }
   .repo-changes-icon .repository-icon { margin: 0; }
-  .repo-changes-badge { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 20px; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: #007acc; color: #ffffff; font: inherit; font-size: 10px; cursor: pointer; }
-  .repo-changes-badge[hidden] { display: none; }
-  .repo-changes-badge:hover { background: #0090e8; }
-  .repo-changes-badge:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
   .repo-changes-label, .repo-changes-head { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .repo-changes-label { flex: 0 1 auto; }
   .repo-changes-ancestry { flex: 0 1 auto; min-width: 0; margin-left: 4px; color: var(--vscode-descriptionForeground); font-size: 11px; font-weight: 400; opacity: .9; }
@@ -215,7 +211,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
   }
   function createRepositoryChangesNode(repository) {
     const card = document.createElement('section'); card.className = 'repo-changes'; card.dataset.repositoryPath = repository.repositoryPath; card.tabIndex = -1;
-    card.innerHTML = '<div class="repo-changes-header"><button type="button" class="repo-changes-toggle" data-repo-action="toggle"><span class="codicon codicon-chevron-down repo-chevron"></span></button><div class="repo-changes-title"><span class="repo-changes-icon"></span><span class="repo-changes-label"></span><span class="repo-changes-ancestry" hidden></span><button type="button" class="repo-changes-badge" data-repo-action="worktree" hidden></button></div><button type="button" class="repo-changes-branch" data-repo-action="branch"><span class="codicon codicon-source-control"></span><span class="repo-changes-head"></span></button></div><div class="repo-changes-body"><div class="repo-message-box"><textarea class="repo-message" rows="1" spellcheck="false"></textarea></div><div class="repo-commit-actions"><button type="button" class="repo-commit-main" data-repo-action="commit"><span class="repo-commit-label">Commit</span></button><button type="button" class="repo-commit-more" data-repo-action="menu" title="更多提交操作" aria-label="更多提交操作"><span class="codicon codicon-chevron-down"></span></button><div class="repo-commit-menu" hidden></div></div><div class="repo-file-groups"></div></div>';
+    card.innerHTML = '<div class="repo-changes-header"><button type="button" class="repo-changes-toggle" data-repo-action="toggle"><span class="codicon codicon-chevron-down repo-chevron"></span></button><div class="repo-changes-title"><span class="repo-changes-icon"></span><span class="repo-changes-label"></span><span class="repo-changes-ancestry" hidden></span></div><button type="button" class="repo-changes-branch" data-repo-action="branch"><span class="codicon codicon-source-control"></span><span class="repo-changes-head"></span></button></div><div class="repo-changes-body"><div class="repo-message-box"><textarea class="repo-message" rows="1" spellcheck="false"></textarea></div><div class="repo-commit-actions"><button type="button" class="repo-commit-main" data-repo-action="commit"><span class="repo-commit-label">Commit</span></button><button type="button" class="repo-commit-more" data-repo-action="menu" title="更多提交操作" aria-label="更多提交操作"><span class="codicon codicon-chevron-down"></span></button><div class="repo-commit-menu" hidden></div></div><div class="repo-file-groups"></div></div>';
     const header = card.querySelector('.repo-changes-header');
     const details = document.createElement('textarea'); details.className = 'repo-commit-details'; details.hidden = true;
     details.readOnly = true; details.rows = 1; details.spellcheck = false;
@@ -405,23 +401,19 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       }
       icon.title = repository.hasSubmodules ? '包含子仓库' : repository.isSubmodule ? '子仓库（无下级子仓库）' : '独立仓库（无子仓库）';
       const changeCount = new Set((repository.staged || []).concat(repository.unstaged || []).map(function(file) { return file.path; })).size;
-      const badge = node.card.querySelector('.repo-changes-badge');
-      badge.hidden = changeCount === 0;
-      badge.textContent = String(changeCount);
-      badge.title = '查看 ' + changeCount + ' 个未提交变更文件';
-      badge.setAttribute('aria-label', repository.repositoryLabel + '：' + changeCount + ' 个未提交变更文件');
       node.card.querySelector('.repo-changes-head').textContent = repository.headLabel || 'HEAD';
       const behindCount = Number.isFinite(repository.behindCount) ? Math.max(0, repository.behindCount) : 0;
       const aheadCount = Number.isFinite(repository.aheadCount) ? Math.max(0, repository.aheadCount) : 0;
       const sync = node.card.querySelector('[data-repo-action="syncRefresh"]');
       const syncCount = sync.querySelector('.repo-sync-count');
       const syncClean = behindCount === 0 && aheadCount === 0;
-      syncCount.hidden = syncClean;
-      syncCount.textContent = syncClean ? '' : String(behindCount) + '↓' + String(aheadCount) + '↑';
-      sync.title = syncClean ? '同步此仓库' : '同步此仓库（拉取 ' + behindCount + '，推送 ' + aheadCount + '）';
-      sync.setAttribute('aria-label', syncClean
+      const allClean = syncClean && changeCount === 0;
+      syncCount.hidden = allClean;
+      syncCount.textContent = (syncClean ? '' : '↓' + behindCount + '↑' + aheadCount) + (changeCount ? '∼' + changeCount : '');
+      sync.title = allClean ? '同步此仓库' : '同步此仓库（拉取 ' + behindCount + '，推送 ' + aheadCount + '，' + changeCount + ' 个未提交变更文件）';
+      sync.setAttribute('aria-label', allClean
         ? repository.repositoryLabel + '：同步此仓库'
-        : repository.repositoryLabel + '：拉取 ' + behindCount + ' 个提交，推送 ' + aheadCount + ' 个提交');
+        : repository.repositoryLabel + '：拉取 ' + behindCount + ' 个提交，推送 ' + aheadCount + ' 个提交，' + changeCount + ' 个未提交变更文件');
       node.card.querySelector('.repo-changes-branch').title = '切换分支：' + (repository.headLabel || 'HEAD');
       node.card.querySelector('.repo-changes-branch').setAttribute('aria-label', repository.repositoryLabel + '：切换分支');
       node.card.querySelector('.repo-changes-title').title = repository.repositoryPath;
