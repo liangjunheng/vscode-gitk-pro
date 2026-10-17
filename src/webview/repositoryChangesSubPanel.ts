@@ -406,14 +406,13 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       const aheadCount = Number.isFinite(repository.aheadCount) ? Math.max(0, repository.aheadCount) : 0;
       const sync = node.card.querySelector('[data-repo-action="syncRefresh"]');
       const syncCount = sync.querySelector('.repo-sync-count');
-      const syncClean = behindCount === 0 && aheadCount === 0;
-      const allClean = syncClean && changeCount === 0;
-      syncCount.hidden = allClean;
-      syncCount.textContent = (syncClean ? '' : '↓' + behindCount + '↑' + aheadCount) + (changeCount ? '∼' + changeCount : '');
-      sync.title = allClean ? '同步此仓库' : '同步此仓库（拉取 ' + behindCount + '，推送 ' + aheadCount + '，' + changeCount + ' 个未提交变更文件）';
-      sync.setAttribute('aria-label', allClean
-        ? repository.repositoryLabel + '：同步此仓库'
-        : repository.repositoryLabel + '：拉取 ' + behindCount + ' 个提交，推送 ' + aheadCount + ' 个提交，' + changeCount + ' 个未提交变更文件');
+      const hasSyncStatus = behindCount !== 0 || aheadCount !== 0 || changeCount !== 0;
+      syncCount.hidden = !hasSyncStatus;
+      syncCount.textContent = hasSyncStatus ? '↓' + behindCount + '↑' + aheadCount + '∼' + changeCount : '';
+      sync.title = hasSyncStatus ? '同步此仓库（拉取 ' + behindCount + '，推送 ' + aheadCount + '，' + changeCount + ' 个未提交变更文件）' : '同步此仓库';
+      sync.setAttribute('aria-label', hasSyncStatus
+        ? repository.repositoryLabel + '：拉取 ' + behindCount + ' 个提交，推送 ' + aheadCount + ' 个提交，' + changeCount + ' 个未提交变更文件'
+        : repository.repositoryLabel + '：同步此仓库');
       node.card.querySelector('.repo-changes-branch').title = '切换分支：' + (repository.headLabel || 'HEAD');
       node.card.querySelector('.repo-changes-branch').setAttribute('aria-label', repository.repositoryLabel + '：切换分支');
       node.card.querySelector('.repo-changes-title').title = repository.repositoryPath;

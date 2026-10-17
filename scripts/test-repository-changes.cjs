@@ -58,7 +58,7 @@ async function main() {
     assert.match(await rootSync.getAttribute('title'), /拉取 0.*推送 4.*2 个未提交变更文件/);
     repositories[0].aheadCount = 0; await publish();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    assert.equal(await rootSync.locator('.repo-sync-count').textContent(), '∼2', 'local changes remain visible when behind/ahead are zero');
+    assert.equal(await rootSync.locator('.repo-sync-count').textContent(), '↓0↑0∼2', 'local changes keep the complete sync status group visible');
     assert.match(await rootSync.getAttribute('title'), /2 个未提交变更文件/);
     const cleanSync = page.locator('.repo-changes').nth(1).locator('[data-repo-action="syncRefresh"]');
     assert.equal(await cleanSync.locator('.repo-sync-count').isHidden(), true, 'fully clean repositories show only the sync icon');

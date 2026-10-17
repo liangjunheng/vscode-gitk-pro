@@ -36,8 +36,8 @@ async function main() {
     const sync = page.locator('.repo-changes [data-repo-action="syncRefresh"]');
     const count = sync.locator('.repo-sync-count');
     const cases = [
-      [2, 3, true, '↓2↑3∼5'], [0, 3, true, '↓0↑3∼5'], [2, 0, true, '↓2↑0∼5'], [0, 0, true, '∼5'],
-      [2, 3, false, '↓2↑3'], [0, 3, false, '↓0↑3'], [2, 0, false, '↓2↑0'], [0, 0, false, ''],
+      [2, 3, true, '↓2↑3∼5'], [0, 3, true, '↓0↑3∼5'], [2, 0, true, '↓2↑0∼5'], [0, 0, true, '↓0↑0∼5'],
+      [2, 3, false, '↓2↑3∼0'], [0, 3, false, '↓0↑3∼0'], [2, 0, false, '↓2↑0∼0'], [0, 0, false, ''],
     ];
     const staged = repository.staged, unstaged = repository.unstaged;
     for (const [behind, ahead, dirty, expected] of cases) {
