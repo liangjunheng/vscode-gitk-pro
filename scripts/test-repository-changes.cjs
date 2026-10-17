@@ -1236,7 +1236,8 @@ async function verifyProvider() {
   const load = Module._load;
   const branchReads = [], checkouts = [], pulls = [], pushes = [], headRefreshes = [], remoteCheckouts = [];
   let pickedIndex = 1, options, branchItems, pushTargetDefaults, pushQuickPick, selectedPushTargetsResult, confirmRows;
-  const terminals = [], informationMessages = [], errorMessages = []; let terminalShows = 0;
+  const terminals = [], informationMessages = [], errorMessages = [], confirmationDialogs = [];
+  let terminalShows = 0, confirmationChoice = '推送';
   // 推送目标只描述远程分支; 本地分支名与 HEAD hash 属于 plan.source。
   const pushTargetFixture = [
     { remote: 'fork', branch: 'main', remoteName: 'fork/main', isUpstream: false, tipTimestamp: 200, unpushedCommitCount: 1 },
@@ -1267,7 +1268,13 @@ async function verifyProvider() {
     window: {
       showQuickPick: async (items, opts) => { options = opts; branchItems = items; return pickedIndex === null ? undefined : items.filter(item => item.branch)[pickedIndex]; },
       showInputBox: async opts => { assert.equal(opts.value, 'remote'); assert.equal(opts.validateInput('main'), '本地分支已存在，请使用其他名称'); return opts.value; },
-      showInformationMessage(message) { informationMessages.push(message); },
+      showInformationMessage(message, options, ...items) {
+        if (options?.modal) {
+          confirmationDialogs.push({ message, options, items });
+          return Promise.resolve(items.find(item => item.title === confirmationChoice));
+        }
+        informationMessages.push(message);
+      },
       showErrorMessage(message) { errorMessages.push(message); },
       createTerminal: options => { terminals.push(options); return { show: () => terminalShows++ }; },
       withProgress: async (_options, task) => task({ report() {} }),
@@ -1314,11 +1321,12 @@ async function verifyProvider() {
     ({ pickPushTargets, confirmPush, describePushRow, showPushResult } = require('../out/services/pushDialogs'));
     ({ store } = require('../out/state/store'));
   } finally { Module._load = load; }
-  // 目标选择弹窗: 标题栏显示仓库卡片上的本地分支名, 列表只显示远程分支, hash 不参与。
+  // 目标选择弹窗: 标题显示本地分支名, detail 只显示未推送提交数。
   void pickPushTargets(pushDialogPlan, [pushDialogPlan.targets[0]]);
   assert.equal(pushQuickPick.title, 'ink_dev 要推送的远程分支', 'the dialog title shows the repository card branch name, not a hash');
   assert.deepEqual(pushQuickPick.items.map(item => item.label), ['$(cloud) origin/ink_master', '$(cloud) upstream/develop'], 'bound upstream stays first even when another remote has a newer tip');
-  assert.deepEqual(pushQuickPick.items.map(item => item.detail), ['分支 ink_dev（提交 ffffffff） → origin/ink_master', '分支 ink_dev（提交 ffffffff） → upstream/develop'], 'each row names the branch and annotates the commit separately');
+  assert.deepEqual(pushQuickPick.items.map(item => item.description), [undefined, undefined], 'unpush counts are no longer rendered as descriptions');
+  assert.deepEqual(pushQuickPick.items.map(item => item.detail), ['未推送提交：0', '未推送提交：1'], 'target detail contains only the unpushed count');
   assert.deepEqual(pushQuickPick.selectedItems.map(item => item.target.remoteName), ['origin/ink_master']);
   void pickPushTargets(pushDialogPlan, [pushDialogPlan.targets[1]]);
   assert.deepEqual(pushQuickPick.items.map(item => item.label), ['$(cloud) origin/ink_master', '$(cloud) upstream/develop'], 'a cached default target is checked but never reordered above the bound upstream');
@@ -1326,19 +1334,22 @@ async function verifyProvider() {
   // detached HEAD 没有分支名: 标题与行文本退回短 hash, 且明确标注游离状态。
   void pickPushTargets(detachedPlan, []);
   assert.equal(pushQuickPick.title, '游离 HEAD dddddddd 要推送的远程分支');
-  // 确认弹窗: 推送按钮下面逐行显示 本地分支名 -> 远程分支名, hash 只在 detail 里。
-  void confirmPush([
+  // 原生确认弹窗: 只有推送和取消, 分支列表在模态正文中逐行显示。
+  assert.equal(await confirmPush([
     { source: pushDialogPlan.source, target: pushDialogPlan.targets[0] },
     { source: pushDialogPlan.source, target: pushDialogPlan.targets[1], repositoryLabel: 'child' },
-  ]);
-  assert.deepEqual(pushQuickPick.items.map(item => item.label), [
-    '$(cloud-upload) 推送',
-    '$(git-branch) ink_dev $(arrow-right) $(cloud) origin/ink_master',
-    '$(git-branch) ink_dev $(arrow-right) $(cloud) upstream/develop',
-    '$(close) 取消',
-  ], 'the confirm dialog lists branch names on both sides of the arrow');
-  assert.deepEqual(pushQuickPick.items.map(item => item.detail), ['推送下面 2 个远程分支', '提交 ffffffff', '提交 ffffffff', '放弃本次远程推送'], 'the commit hash is annotated per row instead of replacing a branch name');
-  assert.deepEqual(pushQuickPick.items.map(item => item.action), ['push', 'push', 'push', 'cancel'], 'target rows confirm the push rather than acting as inert separators');
+  ]), true);
+  const confirmation = confirmationDialogs.at(-1);
+  assert.equal(confirmation.message, '确认推送');
+  assert.deepEqual(confirmation.items, [{ title: '推送' }, { title: '取消', isCloseAffordance: true }], 'exactly two plain-text actions, with cancel handling dialog close');
+  assert.deepEqual(confirmation.options, {
+    modal: true,
+    detail: '需要推送的分支：\nink_dev → origin/ink_master\nchild：ink_dev → upstream/develop',
+  }, 'modal detail lists each branch on its own line');
+  confirmationChoice = '取消';
+  assert.equal(await confirmPush([{ source: pushDialogPlan.source, target: pushDialogPlan.targets[0] }]), false);
+  confirmationChoice = undefined;
+  assert.equal(await confirmPush([{ source: detachedPlan.source, target: detachedPlan.targets[0] }]), false, 'closing the dialog never pushes');
   assert.equal(describePushRow({ source: pushDialogPlan.source, target: pushDialogPlan.targets[0], repositoryLabel: 'child' }), 'child：ink_dev → origin/ink_master（提交 ffffffff）');
   assert.equal(describePushRow({ source: detachedPlan.source, target: detachedPlan.targets[0] }), '游离 HEAD dddddddd → origin/ink_master（提交 dddddddd）');
   await verifyPushPlanEnrichment();

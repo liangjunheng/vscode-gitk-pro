@@ -27,8 +27,7 @@ function describeSourceLabel(source: PushSourceBranch): string {
 function buildTargetItems(plan: PushPlan): PushTargetQuickPickItem[] {
     return plan.targets.map(target => ({
         label: `$(cloud) ${target.remoteName}`,
-        description: `未推送提交：${target.unpushedCommitCount}`,
-        detail: `${describePushSource(plan.source)} → ${target.remoteName}`,
+        detail: `未推送提交：${target.unpushedCommitCount}`,
         target,
     }));
 }
@@ -108,57 +107,29 @@ export interface PushConfirmRow {
     readonly repositoryLabel?: string;
 }
 
-type PushConfirmItem = vscode.QuickPickItem & { readonly action: 'push' | 'cancel' };
-
 /** 一行推送目标的纯文本形式, 供通知与进度复用。 */
 export function describePushRow(row: PushConfirmRow): string {
     const prefix = row.repositoryLabel ? `${row.repositoryLabel}：` : '';
     return `${prefix}${describeSourceLabel(row.source)} → ${row.target.remoteName}（提交 ${shortHash(row.source.hash)}）`;
 }
 
-/**
- * 使用 QuickPick 弹窗确认 Push, 不依赖通知或 VS Code 的系统 OK/Cancel 文案。
- * 推送按钮下面逐行列出目标: 左边是仓库卡片上的本地分支名, 右边是远程分支名,
- * 提交 hash 放在该行的 detail 里, 不与分支名互换。
- */
-export function confirmPush(rows: readonly PushConfirmRow[]): Promise<boolean> {
-    const quickPick = vscode.window.createQuickPick<PushConfirmItem>();
-    const pushItem: PushConfirmItem = {
-        label: '$(cloud-upload) 推送',
-        detail: rows.length === 1 ? '推送下面 1 个远程分支' : `推送下面 ${rows.length} 个远程分支`,
-        action: 'push',
-    };
-    // 目标行也归属 push 动作: 它们是确认内容, 点中任意一行等同于确认整个推送计划。
-    const targetItems: PushConfirmItem[] = rows.map(row => ({
-        label: `$(git-branch) ${describeSourceLabel(row.source)} $(arrow-right) $(cloud) ${row.target.remoteName}`,
-        description: row.repositoryLabel,
-        detail: `提交 ${shortHash(row.source.hash)}`,
-        action: 'push',
-    }));
-    const cancelItem: PushConfirmItem = {
-        label: '$(close) 取消',
-        detail: '放弃本次远程推送',
-        action: 'cancel',
-    };
-    quickPick.title = '确认推送';
-    quickPick.placeholder = '请选择操作；按 Esc 也可以取消';
-    quickPick.items = [pushItem, ...targetItems, cancelItem];
-    quickPick.activeItems = [pushItem];
-    return new Promise(resolve => {
-        let settled = false;
-        const finish = (value: boolean) => {
-            if (settled) { return; }
-            settled = true;
-            quickPick.hide();
-            quickPick.dispose();
-            resolve(value);
-        };
-        quickPick.onDidAccept(() => {
-            finish(quickPick.activeItems[0]?.action === 'push');
-        });
-        quickPick.onDidHide(() => finish(false));
-        quickPick.show();
-    });
+/** 确认弹窗里的推送目标, 不展示提交 hash。 */
+function describePushConfirmationRow(row: PushConfirmRow): string {
+    const prefix = row.repositoryLabel ? `${row.repositoryLabel}：` : '';
+    return `${prefix}${describeSourceLabel(row.source)} → ${row.target.remoteName}`;
+}
+
+/** 原生模态弹窗逐行展示推送分支, 显式取消项同时承接 Esc 和关闭操作。 */
+export async function confirmPush(rows: readonly PushConfirmRow[]): Promise<boolean> {
+    const pushItem: vscode.MessageItem = { title: '推送' };
+    const cancelItem: vscode.MessageItem = { title: '取消', isCloseAffordance: true };
+    const choice = await vscode.window.showInformationMessage(
+        '确认推送',
+        { modal: true, detail: `需要推送的分支：\n${rows.map(describePushConfirmationRow).join('\n')}` },
+        pushItem,
+        cancelItem,
+    );
+    return choice === pushItem;
 }
 
 /** 使用 VS Code 通知展示 Push 完成或失败信息，不再打开需要手工关闭的 QuickPick。 */
