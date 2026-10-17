@@ -154,13 +154,20 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
             };
             // 根仓库已识别即可发布；子模块扫描继续进行，不能阻塞初始化默认选择。
             publishIntermediate();
-            // Scan roots serially so each root's complete subtree stays together in
-            // the published order. scanSubmodules applies the same depth-first rule
-            // to children within each .gitmodules file.
-            for (const root of roots) {
-                if (!root) { continue; }
-                const rootPath = vscode.Uri.parse(root.path).fsPath;
-                await this.scanSubmodules(rootPath, found, localParents, publishIntermediate);
+            // Read all root subtrees concurrently; scanSubmodules returns a stable
+            // depth-first result, so merge completion order never changes card order.
+            const scannedRoots = await Promise.all(roots.map(async root => {
+                if (!root) { return []; }
+                return this.scanSubmodules(vscode.Uri.parse(root.path).fsPath);
+            }));
+            for (const subtree of scannedRoots) {
+                for (const repository of subtree) {
+                    const key = repoKey(repository.path);
+                    if (found.has(key)) { continue; }
+                    found.set(key, repository.option);
+                    localParents.set(key, repository.parentKey);
+                    publishIntermediate();
+                }
             }
             if (isFull) {
                 // 本轮完整扫描结束，父子关系与列表都以最终结果为准，清理已不存在的仓库。
@@ -281,26 +288,23 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
         }
     }
 
-    private async scanSubmodules(
-        parentPath: string,
-        found: Map<string, GitRepositoryOption>,
-        parents: Map<string, string>,
-        publish: () => void,
-    ): Promise<void> {
+    private async scanSubmodules(parentPath: string): Promise<Array<{
+        path: string;
+        option: GitRepositoryOption;
+        parentKey: string;
+    }>> {
         const declaredPaths = await this.readDeclaredSubmodulePaths(parentPath);
         const initializedPaths = await this.filterInitializedSubmodules(declaredPaths);
-        // Keep .gitmodules order and finish each child's complete subtree before
-        // moving to the next sibling: parent -> child -> grandchild, then sibling.
-        for (const modulePath of initializedPaths) {
+        const children = (await Promise.all(initializedPaths.map(async modulePath => {
             const option = await this.createRepositoryOption(modulePath, 'subrepo');
-            if (!option) { continue; }
-            const moduleKey = repoKey(modulePath);
-            if (found.has(moduleKey)) { continue; }
-            parents.set(moduleKey, repoKey(parentPath));
-            found.set(moduleKey, option);
-            publish();
-            await this.scanSubmodules(modulePath, found, parents, publish);
-        }
+            if (!option) { return undefined; }
+            const descendants = await this.scanSubmodules(modulePath);
+            return {
+                entry: { path: modulePath, option, parentKey: repoKey(parentPath) },
+                descendants,
+            };
+        }))).filter((child): child is NonNullable<typeof child> => Boolean(child));
+        return children.flatMap(child => [child.entry, ...child.descendants]);
     }
 
     /** 并发校验 HEAD，一次性筛出已初始化的子模块。 */
