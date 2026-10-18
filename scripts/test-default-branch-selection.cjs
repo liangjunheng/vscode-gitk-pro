@@ -12,6 +12,7 @@ const repository = { path: 'file:///repo', label: 'repo', equals: other => other
 const current = { repoOption: repository, name: 'main', kind: 'current', hash: 'a', equals: other => other === current };
 const local = { repoOption: repository, name: 'topic', kind: 'local', hash: 'b', equals: other => other === local };
 const remote = { repoOption: repository, name: 'refs/remotes/origin/topic', kind: 'remote', hash: 'b', equals: other => other === remote };
+const detached = { repoOption: repository, name: 'c', kind: 'current', hash: 'c', equals: other => other === detached };
 const repoEvents = new Emitter();
 const branchEvents = new Emitter();
 let branches = [current];
@@ -41,7 +42,7 @@ controller.onSelectedBranchesChanged(snapshot => selections.push([...snapshot.va
 
 async function main() {
   repoEvents.fire([repository]);
-  assert.deepEqual(selections.at(-1), ['main'], 'the early HEAD-only snapshot is available for the first commit page');
+  assert.deepEqual(selections.at(-1), ['main'], 'the early HEAD-only snapshot selects only current');
 
   complete = true;
   branchEvents.fire({ repository, branches, headChanged: false });
@@ -49,10 +50,14 @@ async function main() {
 
   branches = [current, local, remote];
   branchEvents.fire({ repository, branches, headChanged: false });
-  assert.deepEqual(selections.at(-1), ['main', 'topic', 'refs/remotes/origin/topic'], 'the completed snapshot defaults to every branch');
+  assert.deepEqual(selections.at(-1), ['main'], 'the complete snapshot keeps only current selected');
+
+  branches = [detached, local, remote];
+  branchEvents.fire({ repository, branches, headChanged: true });
+  assert.deepEqual(selections.at(-1), ['c'], 'detached HEAD replaces the previous current selection');
 
   assert.equal(controller.selectBranches([]), true, 'the user can clear the default selection');
-  branchEvents.fire({ repository, branches, headChanged: true });
+  branchEvents.fire({ repository, branches, headChanged: false });
   assert.deepEqual(selections.at(-1), [], 'a user-cleared selection is not defaulted again');
   controller.dispose();
   console.log('Default branch selection tests passed: all refs publish once after the complete snapshot and user selection remains authoritative.');

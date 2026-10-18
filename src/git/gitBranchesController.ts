@@ -107,16 +107,15 @@ export class GitBranchesController implements vscode.Disposable {
         }
     }
 
-    /**
-     * Default all branches when the user has not manually selected branches.
-     * A snapshot can arrive with only HEAD before the complete refs list, so refresh the
-     * default whenever a new snapshot arrives. Returns whether the default changed.
-     */
+    /** Default each repository to its current branch; detached HEAD is also kind="current". */
     private ensureDefaultSelection(): boolean {
         if (this.hasUserSelection) { return false; }
         let changed = false;
         for (const repository of this.repositories) {
-            const names = new Set(this.totalBranchWatcher.getTotalBranches(repository).map(branch => branch.name));
+            if (this.selectedBranchNamesByRepository.has(repository.path)) { continue; }
+            const current = this.totalBranchWatcher.getTotalBranches(repository).find(branch => branch.kind === 'current');
+            if (!current) { continue; }
+            const names = new Set([current.name]);
             const previous = this.selectedBranchNamesByRepository.get(repository.path);
             if (previous?.size === names.size && [...names].every(name => previous.has(name))) { continue; }
             this.selectedBranchNamesByRepository.set(repository.path, names);
@@ -185,7 +184,9 @@ export class GitBranchesController implements vscode.Disposable {
             this.branchHeadEmitter.fire();
         }
         // A branch snapshot can begin with HEAD and later expand to the complete refs list.
-        const defaulted = this.ensureDefaultSelection();
+        const defaulted = headChanged
+            ? this.replaceCurrentSelection(repository, branches)
+            : this.ensureDefaultSelection();
         this.fireBranches();
         // Publish the early HEAD snapshot for first paint. A later complete snapshot only
         // causes a reload when it actually adds refs; same-branch selections are de-duplicated
@@ -193,6 +194,15 @@ export class GitBranchesController implements vscode.Disposable {
         if (headChanged || defaulted) {
             this.fireSelected();
         }
+    }
+
+    private replaceCurrentSelection(repository: GitRepositoryOption, branches: readonly GitBranchOption[]): boolean {
+        const current = branches.find(branch => branch.kind === 'current');
+        const next = current ? new Set([current.name]) : new Set<string>();
+        const previous = this.selectedBranchNamesByRepository.get(repository.path);
+        if (previous?.size === next.size && [...next].every(name => previous.has(name))) { return false; }
+        this.selectedBranchNamesByRepository.set(repository.path, next);
+        return true;
     }
 
     /** 仓库集合变化时先删除旧仓库的勾选，避免新列表与旧勾选组合成一帧。 */
