@@ -447,21 +447,25 @@ export async function runGitSync(
     pushTargets?: readonly PushTargetOption[],
 ): Promise<GitSyncResult> {
     if (action === 'fetch') {
-        const before = await readRemoteBranchHashes(rootUri);
-        onProgress?.('正在通过 Git 获取所有远程仓库，并清理过期引用...');
-        await fetchRemotes(rootUri);
-        const changes = describeRemoteBranchChanges(before, await readRemoteBranchHashes(rootUri));
         const repositories = await collectSubmoduleRepositories([{ rootPath: rootUri.fsPath }]);
         const submodules = repositories.slice(1);
-        for (let index = 0; index < submodules.length; index++) {
-            const submodule = submodules[index];
-            const submoduleUri = vscode.Uri.file(submodule.rootPath);
-            const submoduleBefore = await readRemoteBranchHashes(submoduleUri);
-            onProgress?.(`正在获取 Submodule 模块（${index + 1}/${submodules.length}）：${submodule.rootPath}`);
-            await fetchRemotes(submoduleUri);
-            const submoduleChanges = describeRemoteBranchChanges(submoduleBefore, await readRemoteBranchHashes(submoduleUri));
-            changes.push(...submoduleChanges.map(change => `${submodule.rootPath}：${change}`));
-        }
+        onProgress?.(`正在并行获取 ${repositories.length} 个仓库（含 ${submodules.length} 个子模块），并清理过期引用...`);
+        let completed = 0;
+        const changeGroups = await Promise.all(repositories.map(async (repository, index) => {
+            const repositoryUri = index === 0 ? rootUri : vscode.Uri.file(repository.rootPath);
+            const before = await readRemoteBranchHashes(repositoryUri);
+            await fetchRemotes(repositoryUri);
+            completed++;
+            onProgress?.(`仓库获取完成（${completed}/${repositories.length}）：${repository.rootPath}`);
+            const repositoryChanges = describeRemoteBranchChanges(
+                before,
+                await readRemoteBranchHashes(repositoryUri),
+            );
+            return index === 0
+                ? repositoryChanges
+                : repositoryChanges.map(change => `${repository.rootPath}：${change}`);
+        }));
+        const changes = changeGroups.flat();
         return {
             headChanged: false, submodulesNeedUpdate: false, submoduleTopologyChanged: false, submodulePaths: [],
             summary: changes.length > 0

@@ -17,6 +17,54 @@ function loadFresh(modulePath, mocks) {
     }
 }
 
+async function testFetchesRootAndSubmodulesInParallel() {
+    const rootPath = 'C:\\fixture';
+    const childPath = 'C:\\fixture\\child';
+    const siblingPath = 'C:\\fixture\\sibling';
+    const nestedPath = 'C:\\fixture\\child\\nested';
+    const submodulesByRepository = new Map([
+        [rootPath, [childPath, siblingPath]],
+        [childPath, [nestedPath]],
+        [siblingPath, []],
+        [nestedPath, []],
+    ]);
+    const progress = [];
+    const fetchStarts = [];
+    const fetchResolvers = [];
+    const invokeNativeGit = async (operation, payload) => {
+        if (operation === 'submodules') {
+            return (submodulesByRepository.get(payload.rootPath) ?? []).map(absolutePath => ({ absolutePath }));
+        }
+        if (operation === 'discover') return { workdir: payload.path };
+        if (operation === 'branches') return { local: [], remote: [] };
+        throw new Error(`Unexpected native operation: ${operation}`);
+    };
+    const provider = loadFresh('../out/git/gitLogProvider', {
+        vscode: { Uri: { file: fsPath => ({ fsPath, toString: () => fsPath }) } },
+        './nativeGitBinding': { invokeNativeGit },
+        './gitNativeOperations': {
+            fetchRemotes: async rootUri => {
+                fetchStarts.push(rootUri.fsPath);
+                await new Promise(resolve => fetchResolvers.push(resolve));
+            },
+            pull: async () => {},
+            push: async () => ({}),
+            updateSubmodules: async () => {},
+        },
+    });
+    const rootUri = { fsPath: rootPath, toString: () => rootPath };
+    const pending = provider.runGitSync(rootUri, 'fetch', message => progress.push(message));
+    await new Promise(resolve => setImmediate(resolve));
+    nodeAssert.deepEqual(fetchStarts, [rootPath, childPath, siblingPath, nestedPath],
+        'root and every initialized nested submodule start fetching before any fetch completes');
+    nodeAssert.equal(fetchResolvers.length, 4, 'all repository fetches are in flight together');
+    fetchResolvers.splice(0).forEach(resolve => resolve());
+    const result = await pending;
+    nodeAssert.equal(result.summary, '获取完成：远程分支无变化，已获取 3 个子模块');
+    nodeAssert.ok(progress[0].includes('正在并行获取 4 个仓库（含 3 个子模块）'));
+    nodeAssert.equal(progress.filter(message => message.startsWith('仓库获取完成（')).length, 4);
+}
+
 async function testPullChecksStaleSubmodulesWithoutHeadChange() {
     const progress = [];
     const updateCalls = [];
@@ -137,9 +185,10 @@ async function testPullPromptsBeforeUpdatingSubmodules() {
 }
 
 async function main() {
+    await testFetchesRootAndSubmodulesInParallel();
     await testPullChecksStaleSubmodulesWithoutHeadChange();
     await testPullPromptsBeforeUpdatingSubmodules();
-    console.log('Pull submodule flow: no-op check, confirmation, per-module progress, updated/skipped copy passed');
+    console.log('Fetch/Pull submodule flow: parallel fetch, no-op check, confirmation, per-module progress, updated/skipped copy passed');
 }
 
 main().catch(error => {

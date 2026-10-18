@@ -61,8 +61,14 @@ async function main() {
         });
         const rootUri = { fsPath: local };
 
-        await operations.fetchRemotes(rootUri, 'origin');
+        const fetch = operations.fetchRemotes(rootUri, 'origin');
+        const overlappingFetch = operations.fetchRemotes(rootUri, 'origin');
+        assert.equal(overlappingFetch, fetch, 'overlapping fetch callers share the same Git process');
+        await fetch;
         assert.equal(git(local, 'rev-parse', 'origin/HEAD'), git(other, 'rev-parse', 'HEAD'));
+        const laterFetch = operations.fetchRemotes(rootUri, 'origin');
+        assert.notEqual(laterFetch, fetch, 'a later fetch is not suppressed after completion');
+        await laterFetch;
 
         await operations.pull(rootUri, 'origin', git(local, 'branch', '--show-current'));
         assert.equal(git(local, 'rev-parse', 'HEAD'), git(other, 'rev-parse', 'HEAD'));
@@ -78,7 +84,7 @@ async function main() {
 
         await operations.updateSubmodules(rootUri);
         assert.deepEqual(nativeOperations, ['resolveRevision']);
-        console.log('Git CLI remote-operation tests passed: fetch, pull, push, and submodule update bypass libgit2.');
+        console.log('Git CLI remote-operation tests passed: fetch single-flight/retry, pull, push, and submodule update bypass libgit2.');
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }

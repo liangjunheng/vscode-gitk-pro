@@ -3,8 +3,9 @@ const Module = require('node:module');
 
 const originalLoad = Module._load;
 
-function loadOperations({ useSystemProxy, vscodeProxy = '' }) {
+function loadOperations({ useSystemProxy, vscodeProxy = '', fetchFailures = 0 }) {
     const calls = [];
+    let remainingFetchFailures = fetchFailures;
     const modulePath = require.resolve('../out/git/gitNativeOperations');
     delete require.cache[modulePath];
     try {
@@ -25,6 +26,11 @@ function loadOperations({ useSystemProxy, vscodeProxy = '' }) {
             if (request === 'child_process') return {
                 execFile: (file, args, options, callback) => {
                     calls.push({ file, args, options });
+                    if (file === 'git' && args.includes('fetch') && remainingFetchFailures > 0) {
+                        remainingFetchFailures--;
+                        callback(new Error('simulated fetch failure'), '', 'simulated fetch failure');
+                        return;
+                    }
                     if (file === 'reg') {
                         const name = args.at(-1);
                         const values = {
@@ -59,6 +65,56 @@ async function testWindowsSystemProxy() {
     assert.equal(git.options.env.NO_PROXY, '*.corp,localhost,127.0.0.1,::1');
 }
 
+async function testConcurrentFetchWaveSharesSystemProxyLookup() {
+    const { operations, calls } = loadOperations({ useSystemProxy: true });
+    await Promise.all(Array.from({ length: 6 }, (_value, index) =>
+        operations.fetchRemotes({ fsPath: `C:/repo-${index}` })));
+    assert.equal(calls.filter(call => call.file === 'reg').length, 5,
+        'a parallel repository wave reads the five Windows proxy values once, not once per repository');
+    assert.equal(calls.filter(call => call.file === 'git' && call.args.includes('config')).length, 6,
+        'repository-specific Git proxy configuration is still checked independently');
+    assert.equal(calls.filter(call => call.file === 'git' && call.args.includes('fetch')).length, 6,
+        'distinct repositories still start independent fetch commands');
+    assert.equal(calls.length, 17, 'six repositories use 17 child processes instead of the previous 42');
+}
+
+async function testOverlappingFetchSharesGitCommand() {
+    const { operations, calls } = loadOperations({ useSystemProxy: true });
+    const first = operations.fetchRemotes({ fsPath: 'C:/same-repo' });
+    const overlapping = operations.fetchRemotes({ fsPath: 'C:/same-repo/' });
+    assert.equal(overlapping, first, 'background and manual fetch share the same in-flight promise');
+    await first;
+    assert.equal(calls.filter(call => call.file === 'git' && call.args.includes('fetch')).length, 1,
+        'overlapping callers launch one real fetch command');
+    assert.equal(calls.length, 7, 'overlapping callers use one config check, one proxy lookup wave, and one fetch');
+
+    const later = operations.fetchRemotes({ fsPath: 'C:/same-repo' });
+    assert.notEqual(later, first, 'a later explicit fetch starts again after the shared task completes');
+    await later;
+    assert.equal(calls.filter(call => call.file === 'git' && call.args.includes('fetch')).length, 2);
+}
+
+async function testDifferentRemotesDoNotShareFetch() {
+    const { operations, calls } = loadOperations({ useSystemProxy: true });
+    const origin = operations.fetchRemotes({ fsPath: 'C:/same-repo' }, 'origin');
+    const upstream = operations.fetchRemotes({ fsPath: 'C:/same-repo' }, 'upstream');
+    assert.notEqual(upstream, origin, 'different remote selections keep independent fetch commands');
+    await Promise.all([origin, upstream]);
+    assert.equal(calls.filter(call => call.file === 'git' && call.args.includes('fetch')).length, 2);
+}
+
+async function testFailedFetchReleasesSingleFlight() {
+    const { operations, calls } = loadOperations({ useSystemProxy: true, fetchFailures: 1 });
+    const failed = operations.fetchRemotes({ fsPath: 'C:/retry-repo' });
+    const overlapping = operations.fetchRemotes({ fsPath: 'C:/retry-repo/' });
+    assert.equal(overlapping, failed, 'overlapping callers share the same failure');
+    await assert.rejects(failed, /simulated fetch failure/);
+    const retry = operations.fetchRemotes({ fsPath: 'C:/retry-repo' });
+    assert.notEqual(retry, failed, 'a failed shared fetch releases its key for retry');
+    await retry;
+    assert.equal(calls.filter(call => call.file === 'git' && call.args.includes('fetch')).length, 2,
+        'the retry starts exactly one new fetch command');
+}
 async function testVscodeProxyTakesPrecedence() {
     const { operations, calls } = loadOperations({ useSystemProxy: true, vscodeProxy: 'vscode-proxy:9000' });
     await operations.fetchRemotes({ fsPath: 'C:/repo' }, 'origin');
@@ -79,9 +135,13 @@ async function testDisabledSystemProxy() {
 
 (async () => {
     await testWindowsSystemProxy();
+    await testConcurrentFetchWaveSharesSystemProxyLookup();
+    await testOverlappingFetchSharesGitCommand();
+    await testDifferentRemotesDoNotShareFetch();
+    await testFailedFetchReleasesSingleFlight();
     await testVscodeProxyTakesPrecedence();
     await testDisabledSystemProxy();
-    console.log('System proxy tests passed: Windows proxy, VS Code override, bypass list, and opt-out.');
+    console.log('Fetch coordination/system proxy tests passed: shared fetch, path normalization, remote isolation, failure retry, one proxy lookup per wave, VS Code override, bypass list, and opt-out.');
 })().catch(error => {
     console.error(error);
     process.exitCode = 1;

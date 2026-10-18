@@ -1,4 +1,5 @@
 import { execFile } from 'child_process';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { invokeNativeGit } from './nativeGitBinding';
 
@@ -7,6 +8,9 @@ interface SystemProxy {
     readonly https?: string;
     readonly noProxy?: string;
 }
+
+let pendingSystemProxyRead: Promise<SystemProxy> | undefined;
+const pendingFetches = new Map<string, Promise<void>>();
 
 function sanitizeGitOutput(output: string): string {
     return output.replace(/(https?:\/\/)([^\s/@]+)@/gi, '$1[credentials]@').trim();
@@ -87,6 +91,15 @@ async function readSystemProxy(): Promise<SystemProxy> {
     return { ...parseWindowsProxyServer(server), noProxy: parseWindowsProxyOverride(override).join(',') || undefined };
 }
 
+function readSystemProxyShared(): Promise<SystemProxy> {
+    if (pendingSystemProxyRead) { return pendingSystemProxyRead; }
+    const task = readSystemProxy().finally(() => {
+        if (pendingSystemProxyRead === task) { pendingSystemProxyRead = undefined; }
+    });
+    pendingSystemProxyRead = task;
+    return task;
+}
+
 function isNetworkCommand(args: readonly string[]): boolean {
     return ['fetch', 'pull', 'push', 'submodule'].includes(args[0] ?? '');
 }
@@ -108,7 +121,7 @@ async function gitCliEnvironment(rootUri: vscode.Uri, args: readonly string[]): 
         || await hasExplicitGitProxy(rootUri)) {
         return environment;
     }
-    const proxy = await readSystemProxy();
+    const proxy = await readSystemProxyShared();
     if (proxy.http && !environment.HTTP_PROXY && !environment.http_proxy) {
         environment.HTTP_PROXY = proxy.http;
         environment.http_proxy = proxy.http;
@@ -188,10 +201,19 @@ export const rebase = (rootUri: vscode.Uri, revision: string): Promise<void> =>
 export const reset = (rootUri: vscode.Uri, revision: string, mode: 'soft' | 'mixed' | 'hard'): Promise<void> =>
     invokeNativeGit<void>('reset', { rootPath: rootUri.fsPath, revision, mode });
 export function fetchRemotes(rootUri: vscode.Uri, remote?: string): Promise<void> {
+    const normalizedRoot = path.resolve(rootUri.fsPath);
+    const repositoryKey = process.platform === 'win32' ? normalizedRoot.toLowerCase() : normalizedRoot;
+    const key = JSON.stringify([repositoryKey, remote ?? null]);
+    const pending = pendingFetches.get(key);
+    if (pending) { return pending; }
     const cliArgs = remote
         ? ['fetch', '--prune', remote]
         : ['fetch', '--all', '--prune'];
-    return runGitCli(rootUri, cliArgs).then(() => undefined);
+    const task = runGitCli(rootUri, cliArgs).then(() => undefined).finally(() => {
+        if (pendingFetches.get(key) === task) { pendingFetches.delete(key); }
+    });
+    pendingFetches.set(key, task);
+    return task;
 }
 
 export function pull(
