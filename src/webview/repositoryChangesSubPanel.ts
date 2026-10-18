@@ -341,7 +341,6 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       group.querySelector('.repo-group-files').hidden = collapsed;
       group.querySelector('.repo-group-toggle .codicon').className = 'codicon codicon-chevron-' + (collapsed ? 'right' : 'down');
     });
-    updateRepositoryPinnedHeaders();
   }
   function syncRepositoryFileSelection(reveal, repositoryPath, diffKey) {
     repositoryPath = repositoryPath === undefined ? selectedCommitRepositoryPath : repositoryPath;
@@ -365,7 +364,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       updateRepositoryFolderVisibility(folder);
     }
     const repository = repositoryChanges.find(function(item) { return item.repositoryPath === repositoryPath; });
-    if (repository) updateRepositoryChangesVisibility(node, repository);
+    if (repository) { updateRepositoryChangesVisibility(node, repository); updateRepositoryPinnedHeaders(); }
     // Scroll only the file-list viewport; MultiDiff feedback must not steal keyboard focus.
     const list = document.getElementById('repositoryChangesList');
     const bounds = list.getBoundingClientRect(); const target = row.getBoundingClientRect();
@@ -473,6 +472,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       revealed.card.focus({ preventScroll: true });
       repositoryChangesRevealPath = '';
     }
+    // Pinning reads every card's layout; batch the visibility updates above and measure once.
     updateRepositoryPinnedHeaders();
   }
   function updateRepositoryPinnedHeaders() {
@@ -547,6 +547,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       repositoryChangesCollapsed.delete(repositoryPath);
       focusRepositoryChanges(repositoryPath);
       updateRepositoryChangesVisibility(node, repository);
+      updateRepositoryPinnedHeaders();
       node.card.focus({ preventScroll: true });
       return;
     }
@@ -563,12 +564,12 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
         vscode.postMessage({ type: 'repositoryChangesAction', action: 'blur', repositoryPath: repositoryPath });
       }
       if (!repositoryChangesCollapsed.has(repositoryPath)) focusRepositoryChanges(repositoryPath);
-      updateRepositoryChangesVisibility(node, repository); return;
+      updateRepositoryChangesVisibility(node, repository); updateRepositoryPinnedHeaders(); return;
     }
     if (action === 'group') {
       const key = repositoryPath + '\u0000' + button.closest('.repo-group').dataset.section;
       if (repositoryGroupsCollapsed.has(key)) repositoryGroupsCollapsed.delete(key); else repositoryGroupsCollapsed.add(key);
-      updateRepositoryChangesVisibility(node, repository); return;
+      updateRepositoryChangesVisibility(node, repository); updateRepositoryPinnedHeaders(); return;
     }
     if (action === 'menu') { const menu = card.querySelector('.repo-commit-menu'); menu.hidden = !menu.hidden; return; }
     if (['commit', 'amend', 'push', 'syncCommit'].includes(action)) { postRepositoryCommit(card, action); return; }
@@ -578,6 +579,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       focusedRepositoryChangesPath = repositoryPath;
       repositoryChangesNodes.forEach(function(node, path) { node.card.classList.toggle('focused', path === repositoryPath); });
       updateRepositoryChangesVisibility(node, repository);
+      updateRepositoryPinnedHeaders();
       vscode.postMessage({ type: 'repositoryChangesAction', action: 'worktree', repositoryPath: repositoryPath });
       return;
     }
