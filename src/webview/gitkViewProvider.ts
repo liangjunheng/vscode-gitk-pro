@@ -1740,13 +1740,16 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 progress.completed++;
                 this.schedulePushState();
             });
-            // Create the focused task first, without waiting before starting the other tasks.
+            // Keep all local status reads and history refresh in the same critical batch so the
+            // refresh button never competes with remote fetches or repository discovery for disk IO.
             const tasks = orderedPaths.map(repositoryPath => track(refreshRepository(repositoryPath)));
-            // Remote probing is deliberately outside the manual-refresh critical path.
-            this.startRemoteFetch(repositoryPaths);
             tasks.push(track(this.commitController.forceRefreshCurrentSelection(true)));
-            this.requestRepositoryScan();
             const results = await Promise.allSettled(tasks);
+            // These operations update secondary selectors/remote metadata and are not needed to
+            // show the refreshed worktree or commit list. Starting them only after the local
+            // batch has drained removes their filesystem/process contention from the button path.
+            this.startRemoteFetch(repositoryPaths);
+            this.requestRepositoryScan();
             const failure = results.find(result => result.status === 'rejected');
             if (failure?.status === 'rejected') { throw failure.reason; }
         }).finally(() => {
