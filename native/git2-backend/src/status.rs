@@ -1,6 +1,6 @@
 use crate::filters::worktree_matches_index;
 use crate::support::{NativeResult, format_git_error, open_repository, string_arg, string_array};
-use git2::{Delta, DiffDelta, FileMode, IndexEntry, Status, StatusOptions};
+use git2::{Delta, DiffDelta, FileMode, IndexEntry, Oid, Repository, Status, StatusOptions};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -74,6 +74,69 @@ fn conflict_entry(entry: &IndexEntry) -> (String, String, String) {
     )
 }
 
+fn selected_path(paths: &[String], path: &str) -> bool {
+    paths.is_empty()
+        || paths
+            .iter()
+            .any(|selected| path == selected || path.starts_with(&format!("{selected}/")))
+}
+
+fn gitlink_pointer_value(path: &str, old: Option<Oid>, new: Option<Oid>) -> Value {
+    let status = match (old, new) {
+        (None, Some(_)) => "A",
+        (Some(_), None) => "D",
+        _ => "M",
+    };
+    json!({
+        "path": path,
+        "status": status,
+        "oldObjectId": old.map(|oid| oid.to_string()).unwrap_or_else(|| zero_oid(40)),
+        "newObjectId": new.map(|oid| oid.to_string()).unwrap_or_else(|| zero_oid(40)),
+        "oldMode": if old.is_some() { "160000" } else { "000000" },
+        "newMode": if new.is_some() { "160000" } else { "000000" },
+        "isGitlink": true,
+        "isConflict": false,
+        "isUntracked": false,
+    })
+}
+
+/// Fast parent-repository mode: do not recurse into child worktrees, but retain
+/// actual Gitlink pointer changes by comparing HEAD, index and child HEAD OIDs.
+fn append_submodule_pointer_changes(
+    repo: &Repository,
+    paths: &[String],
+    staged: &mut Vec<Value>,
+    changes: &mut Vec<Value>,
+) -> NativeResult<()> {
+    for module in repo.submodules().map_err(format_git_error)? {
+        let path = module.path().to_string_lossy().replace('\\', "/");
+        if !selected_path(paths, &path) {
+            continue;
+        }
+        let head = module.head_id();
+        let index = module.index_id();
+        let workdir = module.workdir_id();
+        if head != index
+            && !staged
+                .iter()
+                .any(|file| file.get("path").and_then(Value::as_str) == Some(path.as_str()))
+        {
+            staged.push(gitlink_pointer_value(&path, head, index));
+        }
+        // An uninitialized child has no workdir OID and is not a deletion.
+        if index.is_some()
+            && workdir.is_some()
+            && index != workdir
+            && !changes
+                .iter()
+                .any(|file| file.get("path").and_then(Value::as_str) == Some(path.as_str()))
+        {
+            changes.push(gitlink_pointer_value(&path, index, workdir));
+        }
+    }
+    Ok(())
+}
+
 pub fn status(payload: &Value) -> NativeResult<Value> {
     let root_path = string_arg(payload, "rootPath")?;
     let paths = string_array(payload, "paths")?;
@@ -81,6 +144,10 @@ pub fn status(payload: &Value) -> NativeResult<Value> {
         .get("recurseUntrackedDirs")
         .and_then(Value::as_bool)
         .unwrap_or(true);
+    let skip_submodule_worktrees = payload
+        .get("skipSubmoduleWorktrees")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let repo = open_repository(root_path)?;
     let mut options = StatusOptions::new();
     options
@@ -90,7 +157,7 @@ pub fn status(payload: &Value) -> NativeResult<Value> {
         .include_unmodified(false)
         .renames_head_to_index(true)
         .renames_index_to_workdir(true)
-        .exclude_submodules(false)
+        .exclude_submodules(skip_submodule_worktrees)
         // A read must not rewrite .git/index: the index watcher would start
         // another full reconciliation for this very status request.
         .update_index(false);
@@ -246,6 +313,19 @@ pub fn status(payload: &Value) -> NativeResult<Value> {
             "isGitlink": is_gitlink,
             "isConflict": true,
         }));
+    }
+    let has_gitlink_result = staged.iter().chain(&changes).any(|file| {
+        file.get("isGitlink")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    });
+    let targets_gitlink = paths.iter().any(|path| {
+        index
+            .get_path(std::path::Path::new(path), 0)
+            .is_some_and(|entry| index_mode_text(entry.mode) == "160000")
+    });
+    if skip_submodule_worktrees && (paths.is_empty() || has_gitlink_result || targets_gitlink) {
+        append_submodule_pointer_changes(&repo, &paths, &mut staged, &mut changes)?;
     }
     let by_path = |left: &Value, right: &Value| {
         left.get("path")

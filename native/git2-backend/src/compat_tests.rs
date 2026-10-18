@@ -572,6 +572,38 @@ fn submodule_gitlink_discovery_and_update_match_cli() {
     submodule::update(&json!({"rootPath": f.root(), "paths": ["modules/child"]})).unwrap();
     let child_path = f.dir.path().join("modules/child");
     assert_eq!(cli(&child_path, &["rev-parse", "HEAD"]).trim(), child_head);
+    fs::write(child_path.join("dirty.gkt"), "dirty\n").unwrap();
+    let fast = status::status(&json!({
+        "rootPath": f.root(),
+        "skipSubmoduleWorktrees": true
+    }))
+    .unwrap();
+    assert!(
+        !fast["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|file| file["path"] == "modules/child"),
+        "fast parent status must not recurse into an unchanged child HEAD"
+    );
+    fs::remove_file(child_path.join("dirty.gkt")).unwrap();
+    cli(&child_path, &["config", "user.name", "Gitk Test"]);
+    cli(&child_path, &["config", "user.email", "gitk@example.com"]);
+    fs::write(child_path.join("pointer.gkt"), "next\n").unwrap();
+    cli(&child_path, &["add", "pointer.gkt"]);
+    cli(&child_path, &["commit", "-m", "move child head"]);
+    let fast = status::status(&json!({
+        "rootPath": f.root(),
+        "skipSubmoduleWorktrees": true
+    }))
+    .unwrap();
+    let pointer = fast["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|file| file["path"] == "modules/child")
+        .expect("fast parent status must retain a moved child HEAD");
+    assert_ne!(pointer["oldObjectId"], pointer["newObjectId"]);
     submodule::restore(&json!({"rootPath": child_path.to_string_lossy(), "revision": child_head}))
         .unwrap();
     assert!(

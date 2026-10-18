@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { GitBranchOption, WorkingTreeChanges } from '../types';
+import { CommitFile, GitBranchOption, WorkingTreeChanges } from '../types';
 import type { GitBackend } from './gitBackend';
 import { RepoHeadBranchWatcher } from './eachRepoHeadBranchWatcher';
 import { invokeNativeGit } from './nativeGitBinding';
@@ -38,6 +38,17 @@ function copyChanges(changes: WorkingTreeChanges): WorkingTreeChanges {
         staged: [...changes.staged],
         changes: [...changes.changes],
     });
+}
+
+function childGitlinkPath(parentRepositoryPath: string, childRepositoryPath: string): string | undefined {
+    const parentRoot = vscode.Uri.parse(parentRepositoryPath).fsPath;
+    const childRoot = vscode.Uri.parse(childRepositoryPath).fsPath;
+    const relativePath = path.relative(parentRoot, childRoot);
+    if (!relativePath || relativePath === '..' || path.isAbsolute(relativePath)
+        || relativePath.startsWith(`..${path.sep}`)) {
+        return undefined;
+    }
+    return relativePath.split(path.sep).join('/');
 }
 
 /** 全部仓库当前 HEAD 工作区未提交文件的唯一读取者与目录监听者。 */
@@ -215,8 +226,8 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             return;
         }
         this.ensureRepositoryWatchers(branch);
-        // 子仓库 HEAD 移动不会改写父仓库工作区中的普通文件，父仓库目录监听收不到事件。
-        // 主动刷新父仓库对应的 gitlink 路径，避免 Uncommitted Changes 一直保留旧状态。
+        // A moved child HEAD changes the parent Gitlink pointer. Refresh only
+        // that path; child worktree dirtiness itself is projected from cache.
         if (previous && previous.hash !== branch.hash) {
             this.queueParentGitlinkRefresh(branch);
         }
@@ -327,26 +338,16 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         await this.requestRefresh(repositoryPath);
     }
 
-    /**
-     * 子仓库状态变化时，父仓库只需重读该子仓库对应的 gitlink 路径。
-     * 嵌套子模块会在父仓库状态真正变化后继续逐层向上传播，避免每次事件全量扫描所有祖先仓库。
-     */
     private queueParentGitlinkRefresh(branch: GitBranchOption): void {
         const parent = branch.repoOption.ancestry.at(-1);
         if (!parent) { return; }
         const parentSlot = this.slots.get(parent.path);
         if (!parentSlot?.branch) { return; }
-        const parentRoot = vscode.Uri.parse(parent.path).fsPath;
-        const childRoot = vscode.Uri.parse(branch.repoOption.path).fsPath;
-        const relativePath = path.relative(parentRoot, childRoot);
-        if (!relativePath || relativePath === '..' || path.isAbsolute(relativePath) || relativePath.startsWith(`..${path.sep}`)) { return; }
-        const gitlinkPath = relativePath.split(path.sep).join('/');
+        const gitlinkPath = childGitlinkPath(parent.path, branch.repoOption.path);
+        if (!gitlinkPath) { return; }
         const pendingPaths = parentSlot.pendingPaths ?? new Set<string>();
         pendingPaths.add(gitlinkPath);
         parentSlot.pendingPaths = pendingPaths;
-        const pendingWorkspaceContentPaths = parentSlot.pendingWorkspaceContentPaths ?? new Set<string>();
-        pendingWorkspaceContentPaths.add(gitlinkPath);
-        parentSlot.pendingWorkspaceContentPaths = pendingWorkspaceContentPaths;
         if (parentSlot.mutationDepth === 0) { void this.requestRefresh(parent.path); }
     }
 
@@ -421,16 +422,20 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
                 slot.indexChangedPaths.forEach(filePath => paths.add(filePath));
                 currentIndexChangedPaths.forEach(filePath => paths.add(filePath));
             }
-            const changes = !previous || fullRefresh
-                ? await this.gitBackend.getWorkingTreeStatus(rootUri, signal)
-                : paths.size > 0
-                    ? this.mergePathChanges(
-                        repositoryPath,
-                        branch.hash,
-                        await this.gitBackend.getWorkingTreeStatusForPaths(rootUri, [...paths], signal),
-                        paths,
-                    )
-                    : previous;
+            let changes: WorkingTreeChanges;
+            if (!previous || fullRefresh) {
+                changes = await this.gitBackend.getWorkingTreeStatusWithoutSubmoduleWorktrees(rootUri, signal);
+            } else if (paths.size > 0) {
+                changes = this.mergePathChanges(
+                    repositoryPath,
+                    branch.hash,
+                    await this.gitBackend.getWorkingTreeStatusForPaths(rootUri, [...paths], signal),
+                    paths,
+                );
+            } else {
+                changes = previous;
+            }
+            changes = this.withDirectChildGitlinkStates(repositoryPath, changes);
             if (slot.generation !== generation || slot.branch?.hash !== branch.hash) {
                 return;
             }
@@ -463,9 +468,7 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             changesByHash.set(branch.hash, changes);
             this.changesByRepository.set(repositoryPath, changesByHash);
             this.changesEmitter.fire({ branch, changes: copyChanges(changes), affectedPaths });
-            // 子仓库由“脏”变“净”或反向变化时，父仓库的 gitlink 状态也随之改变。
-            // 初次读取没有旧快照，父仓库自身的初次全量读取已覆盖，无需重复刷新。
-            if (previousChanges) { this.queueParentGitlinkRefresh(branch); }
+            void this.publishParentGitlinkProjection(branch);
         } catch (error: any) {
             if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR') {
                 if (slot.generation === generation && slot.branch?.hash === branch.hash) {
@@ -483,6 +486,76 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             }
             console.warn(`无法读取未提交文件: ${repositoryPath}`, error);
         }
+    }
+
+    private withDirectChildGitlinkStates(
+        repositoryPath: string,
+        source: WorkingTreeChanges,
+    ): WorkingTreeChanges {
+        const children = [...this.slots.values()].flatMap(slot => {
+            const branch = slot.branch;
+            return branch?.repoOption.ancestry.at(-1)?.path === repositoryPath ? [branch] : [];
+        });
+        if (children.length === 0) { return source; }
+        const staged = [...source.staged];
+        let changes = [...source.changes];
+        for (const child of children) {
+            const childChanges = this.changesByRepository.get(child.repoOption.path)?.get(child.hash);
+            if (!childChanges) { continue; }
+            const gitlinkPath = childGitlinkPath(repositoryPath, child.repoOption.path);
+            if (!gitlinkPath) { continue; }
+            const dirtyCount = new Set([
+                ...childChanges.staged.map(file => file.path),
+                ...childChanges.changes.map(file => file.path),
+            ]).size;
+            const existingIndex = changes.findIndex(file => file.path === gitlinkPath && file.isGitlink);
+            const existing = existingIndex >= 0 ? changes[existingIndex] : undefined;
+            const pointerChanged = Boolean(existing?.oldObjectId && existing.newObjectId
+                && existing.oldObjectId !== existing.newObjectId);
+            if (!pointerChanged && dirtyCount === 0) {
+                if (existing?.gitlinkWorktreeDirty && existing.oldObjectId === existing.newObjectId) {
+                    changes.splice(existingIndex, 1);
+                } else if (existing?.gitlinkWorktreeDirty) {
+                    changes[existingIndex] = new CommitFile({
+                        ...existing,
+                        gitlinkWorktreeDirty: false,
+                        gitlinkWorktreeChangeCount: undefined,
+                    });
+                }
+                continue;
+            }
+            const replacement = new CommitFile({
+                ...existing,
+                path: gitlinkPath,
+                status: 'M',
+                oldObjectId: existing?.oldObjectId ?? child.hash,
+                newObjectId: existing?.newObjectId ?? child.hash,
+                oldMode: '160000',
+                newMode: '160000',
+                isGitlink: true,
+                gitlinkWorktreeDirty: dirtyCount > 0,
+                gitlinkWorktreeChangeCount: dirtyCount > 0 ? dirtyCount : undefined,
+            });
+            if (existingIndex >= 0) { changes[existingIndex] = replacement; }
+            else { changes.push(replacement); }
+        }
+        changes = changes.sort((left, right) => left.path.localeCompare(right.path));
+        return new WorkingTreeChanges({ staged, changes });
+    }
+
+    private publishParentGitlinkProjection(branch: GitBranchOption): void {
+        const parent = branch.repoOption.ancestry.at(-1);
+        if (!parent) { return; }
+        const parentSlot = this.slots.get(parent.path);
+        const parentBranch = parentSlot?.branch;
+        if (!parentSlot || !parentBranch) { return; }
+        const current = this.changesByRepository.get(parent.path)?.get(parentBranch.hash);
+        if (!current) { return; }
+        const projected = this.withDirectChildGitlinkStates(parent.path, current);
+        if (parentSlot.branch?.hash !== parentBranch.hash || current.equals(projected)) { return; }
+        this.changesByRepository.get(parent.path)?.set(parentBranch.hash, projected);
+        this.changesEmitter.fire({ branch: parentBranch, changes: copyChanges(projected) });
+        this.publishParentGitlinkProjection(parentBranch);
     }
 
     private mergePathChanges(

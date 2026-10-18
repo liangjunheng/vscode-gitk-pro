@@ -1,11 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { GitBranchOption, type GitRepositoryOption } from '../types';
-import {
-    buildDetachedHeadBranch,
-    getCurrentGitBranch,
-    getCurrentGitHeadHash,
-} from './gitLogProvider';
+import { buildDetachedHeadBranch } from './gitLogProvider';
 import { GitRepoController } from './gitRepoController';
 import { invokeNativeGit } from './nativeGitBinding';
 
@@ -207,10 +203,11 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
 
     private async readHeadBranch(repository: GitRepositoryOption): Promise<GitBranchOption | undefined> {
         const rootUri = vscode.Uri.parse(repository.path);
-        const [branchName, headHash] = await Promise.all([
-            getCurrentGitBranch(rootUri),
-            getCurrentGitHeadHash(rootUri).catch(() => undefined),
-        ]);
+        const head = await invokeNativeGit<{ branch?: string; hash?: string } | null>('head', {
+            rootPath: rootUri.fsPath,
+        }).catch(() => undefined);
+        const branchName = head?.branch;
+        const headHash = head?.hash;
         if (!headHash) { return undefined; }
         const branchRef = branchName && branchName.startsWith('refs/heads/')
             ? branchName

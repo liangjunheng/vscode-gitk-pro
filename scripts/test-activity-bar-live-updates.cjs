@@ -62,6 +62,10 @@ async function main() {
       statusReads.push(root.fsPath);
       return snapshots.get(root.fsPath);
     },
+    getWorkingTreeStatusWithoutSubmoduleWorktrees: async root => {
+      statusReads.push(root.fsPath);
+      return snapshots.get(root.fsPath);
+    },
     getIndexChangedPaths: async root => new Set(snapshots.get(root.fsPath).staged.map(file => file.path)),
     getWorkingTreeStatusForPaths: async (root, paths) => {
       const snapshot = snapshots.get(root.fsPath);
@@ -105,7 +109,7 @@ async function main() {
   try {
     for (const branch of branches) headReadyEvents.fire({ repositoryPath: branch.repoOption.path, headBranch: branch });
     await new Promise(resolve => setImmediate(resolve));
-    assert.deepEqual([...new Set(statusReads)].sort(), [...roots].sort(), 'every discovered repository, including nested submodules, starts full status before history consumers');
+    assert.deepEqual([...new Set(statusReads)].sort(), [...roots].sort(), 'every discovered repository, including nested submodules, starts initial status before history consumers');
     for (const branch of branches) headEvents.fire({ repositoryPath: branch.repoOption.path, headBranch: branch });
     await settle();
     assert.equal(view.badge, undefined);

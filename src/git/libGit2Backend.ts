@@ -57,8 +57,12 @@ export class LibGit2Backend implements GitBackend {
         return this.readStatus(rootUri, [], signal);
     }
 
+    async getWorkingTreeStatusWithoutSubmoduleWorktrees(rootUri: vscode.Uri, signal?: AbortSignal): Promise<WorkingTreeChanges> {
+        return this.readStatus(rootUri, [], signal, true);
+    }
+
     async getWorkingTreeStatusForPaths(rootUri: vscode.Uri, paths: readonly string[], signal?: AbortSignal): Promise<WorkingTreeChanges> {
-        return this.readStatus(rootUri, paths, signal);
+        return this.readStatus(rootUri, paths, signal, true);
     }
 
     async getIndexChangedPaths(rootUri: vscode.Uri, signal?: AbortSignal): Promise<Set<string>> {
@@ -92,12 +96,13 @@ export class LibGit2Backend implements GitBackend {
 
     dispose(): void {}
 
-    private async readStatus(rootUri: vscode.Uri, paths: readonly string[], signal?: AbortSignal): Promise<WorkingTreeChanges> {
+    private async readStatus(rootUri: vscode.Uri, paths: readonly string[], signal?: AbortSignal, skipSubmoduleWorktrees = false): Promise<WorkingTreeChanges> {
         this.throwIfAborted(signal);
         const status = await invokeNativeGit<NativeWorkingTreeChanges>('status', {
             rootPath: rootUri.fsPath,
             paths,
             recurseUntrackedDirs: true,
+            skipSubmoduleWorktrees,
         });
         this.throwIfAborted(signal);
         const staged = status.staged.map(toCommitFile);
