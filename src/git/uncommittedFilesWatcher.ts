@@ -58,8 +58,12 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         private readonly repoHeadBranchWatcher: RepoHeadBranchWatcher,
         private readonly gitBackend: GitBackend,
     ) {
-        // 数据源改为全部仓库 HEAD 监听器, 不再跟随仓库选择, 天然覆盖所有仓库。
-        this.branchSubscription = repoHeadBranchWatcher.onEachRepoHeadBranchChanged(event => {
+        // 每个仓库（含递归已初始化子模块）的 HEAD 一解析完成就先启动完整 status。
+        // 这必须早于分支/提交监听器启动历史读取，避免首次 Uncommitted Changes
+        // 在原生任务队列中被首屏 commit 读取拖后。
+        const onHeadReady = repoHeadBranchWatcher.onEachRepoHeadBranchReady
+            ?? repoHeadBranchWatcher.onEachRepoHeadBranchChanged;
+        this.branchSubscription = onHeadReady(event => {
             this.applyCurrentHeadBranch(event.repositoryPath, event.headBranch);
         });
     }

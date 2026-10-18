@@ -56,8 +56,12 @@ async function main() {
     changes: unstaged.map(filePath => new CommitFile({ path: filePath, status: 'M' })),
   });
   let heldRead;
+  const statusReads = [];
   const backend = {
-    getWorkingTreeStatus: async root => snapshots.get(root.fsPath),
+    getWorkingTreeStatus: async root => {
+      statusReads.push(root.fsPath);
+      return snapshots.get(root.fsPath);
+    },
     getIndexChangedPaths: async root => new Set(snapshots.get(root.fsPath).staged.map(file => file.path)),
     getWorkingTreeStatusForPaths: async (root, paths) => {
       const snapshot = snapshots.get(root.fsPath);
@@ -66,9 +70,17 @@ async function main() {
         changes: snapshot.changes.filter(file => paths.includes(file.path)) });
     },
   };
+  const headReadyEvents = new EventEmitter();
   const headEvents = new EventEmitter();
-  const headWatcher = { onEachRepoHeadBranchChanged: headEvents.event,
-    refreshHeadBranch: async repositoryPath => headEvents.fire({ repositoryPath, headBranch: branches.find(branch => branch.repoOption.path === repositoryPath) }) };
+  const headWatcher = {
+    onEachRepoHeadBranchReady: headReadyEvents.event,
+    onEachRepoHeadBranchChanged: headEvents.event,
+    refreshHeadBranch: async repositoryPath => {
+      const event = { repositoryPath, headBranch: branches.find(branch => branch.repoOption.path === repositoryPath) };
+      headReadyEvents.fire(event);
+      headEvents.fire(event);
+    },
+  };
   const watcher = new UncommittedFilesWatcher(headWatcher, backend);
   const title = new CommitPanelViewTitleController(() => {});
   const view = {};
@@ -91,6 +103,9 @@ async function main() {
     (pattern === 'index' ? path.join(roots[index], '.git') : roots[index]) && item.pattern.pattern === pattern);
   const emitFile = (index, event, filePath) => fsWatcher(index, '**/*')[event].fire(uri(path.join(roots[index], filePath)));
   try {
+    for (const branch of branches) headReadyEvents.fire({ repositoryPath: branch.repoOption.path, headBranch: branch });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual([...new Set(statusReads)].sort(), [...roots].sort(), 'every discovered repository, including nested submodules, starts full status before history consumers');
     for (const branch of branches) headEvents.fire({ repositoryPath: branch.repoOption.path, headBranch: branch });
     await settle();
     assert.equal(view.badge, undefined);
@@ -147,7 +162,7 @@ async function main() {
     assert.equal(view.badge, undefined, 'a clean submodule also clears the parent gitlink count');
     console.log('Activity bar live-update tests passed: filesystem, index, hidden sidebar, other repositories, concurrent events, discard and commit.');
   } finally {
-    subscription.dispose(); watcher.dispose(); title.dispose(); headEvents.dispose();
+    subscription.dispose(); watcher.dispose(); title.dispose(); headReadyEvents.dispose(); headEvents.dispose();
   }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

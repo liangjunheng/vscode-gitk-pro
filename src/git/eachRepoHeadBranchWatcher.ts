@@ -33,11 +33,18 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
     private readonly headBranches = new Map<string, GitBranchOption>();
     private readonly headReadSlots = new Map<string, HeadReadSlot>();
     private readonly repositorySubscription: vscode.Disposable;
+    private readonly headBranchReadyEmitter = new vscode.EventEmitter<RepoHeadBranchChangedEvent>();
     private readonly headBranchEmitter = new vscode.EventEmitter<RepoHeadBranchChangedEvent>();
     private readonly repoController: GitRepoController;
     private syncingRepositories = false;
     private needsRepositorySync = false;
 
+    /**
+     * Fires as soon as HEAD is resolved, before consumers that begin history and
+     * branch work. The worktree watcher uses this to put the full initial status
+     * read into the native queue first for every discovered repository.
+     */
+    readonly onEachRepoHeadBranchReady = this.headBranchReadyEmitter.event;
     readonly onEachRepoHeadBranchChanged = this.headBranchEmitter.event;
 
     constructor(repoController: GitRepoController) {
@@ -83,6 +90,7 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
         this.repositories.clear();
         this.headBranches.clear();
         this.headReadSlots.clear();
+        this.headBranchReadyEmitter.dispose();
         this.headBranchEmitter.dispose();
     }
 
@@ -231,6 +239,9 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
         } else {
             this.headBranches.delete(key);
         }
+        // Start full worktree status before the regular event starts refs/history
+        // work. Keep the established event order for every other consumer.
+        this.headBranchReadyEmitter.fire({ repositoryPath: repository.path, headBranch: next });
         this.headBranchEmitter.fire({ repositoryPath: repository.path, headBranch: next });
     }
 }
