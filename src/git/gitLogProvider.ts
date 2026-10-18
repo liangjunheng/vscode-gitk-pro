@@ -464,7 +464,9 @@ export async function runGitSync(
         }
         return {
             headChanged: false, submodulesNeedUpdate: false, submoduleTopologyChanged: false, submodulePaths: [],
-            summary: `Fetch 完成：${changes.filter(change => !change.includes('无法读取远程分支变化')).length} 项远程分支变化，${submodules.length} 个 Submodule 已获取${changes.some(change => change.includes('无法读取远程分支变化')) ? '（部分变化无法确认）' : ''}`,
+            summary: changes.length > 0
+                ? `获取完成：检测到 ${changes.filter(change => !change.includes('无法读取远程分支变化')).length} 项远程分支变化，已获取 ${submodules.length} 个子模块`
+                : `获取完成：远程分支无变化，已获取 ${submodules.length} 个子模块`,
             details: changes.length ? changes : ['远程分支无变化（标签等其他引用未列出）。'],
         };
     }
@@ -492,10 +494,10 @@ export async function runGitSync(
             details.push(`子模块状态检查失败：${error instanceof Error ? error.message : String(error)}`);
         }
         const summary = !beforeHead || !afterHead
-            ? '代码拉取完成，但无法确认本地提交是否变化'
+            ? '拉取完成，但无法确认本地提交是否变化'
             : headChanged
-                ? `代码拉取完成：本地代码已更新（${beforeHead.slice(0, 8)} → ${afterHead.slice(0, 8)}）`
-                : `代码拉取完成：当前分支已是最新状态（${afterHead.slice(0, 8)}）`;
+                ? `拉取完成：本地提交已更新（${beforeHead.slice(0, 8)} → ${afterHead.slice(0, 8)}）`
+                : `拉取完成：当前分支已是最新（${afterHead.slice(0, 8)}）`;
         return {
             headChanged,
             submodulesNeedUpdate: submodulePaths.length > 0,

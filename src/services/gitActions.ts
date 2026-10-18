@@ -6,14 +6,14 @@ import { confirmPush, pickPushTargets, showPushResult } from './pushDialogs';
 
 /** 推送结果说明: 分支名 → 远程分支名, 提交 hash 单独标注, 两者不互换。 */
 function formatPushResultDetail(results: readonly NativePushResult[] | undefined): string {
-    if (!results || results.length === 0) { return 'Git 已完成推送，但没有返回详细信息。'; }
+    if (!results || results.length === 0) { return '没有返回推送目标信息。'; }
     return results.map(result => {
         const target = result.remote && result.remoteBranch
             ? `${result.remote}/${result.remoteBranch}`
             : result.remoteBranch ?? '远程分支';
         const source = result.sourceBranchName ?? '游离 HEAD';
-        const commit = result.sourceHash ? `（提交 ${result.sourceHash.slice(0, 8)}）` : '';
-        return `${source} → ${target}${commit}\n${result.output ?? 'Git 未返回额外信息。'}`;
+        const commit = result.sourceHash ? `，提交 ${result.sourceHash.slice(0, 8)}` : '';
+        return `${source} → ${target}${commit}`;
     }).join('\n\n');
 }
 
@@ -215,22 +215,19 @@ export class GitActionRunner {
                         await showPushResult('Git Push 已完成', detail);
                     } else {
                         const details = [
-                            result.summary ?? `Git ${operation}操作已完成。`,
-                            ...(result.details ?? []),
+                            result.summary ?? `Git ${operation}已完成。`,
                             ...(action === 'pull' && result.submodulesNeedUpdate
                                 ? [submodulesUpdated
                                     ? `已更新 ${result.submodulePaths.length} 个子模块`
                                     : `有 ${result.submodulePaths.length} 个子模块暂未更新`]
                                 : []),
                         ];
-                        const message = action === 'pull'
-                            ? `${details.map(detail => detail.replace(/[。；]+$/u, '')).join('；')}。`
-                            : details.join('；');
+                        const message = details.map(detail => detail.replace(/[。；]+$/u, '')).join('；') + '。';
                         void vscode.window.showInformationMessage(message);
                     }
                 } catch (error) {
                     const reason = error instanceof Error ? error.message : String(error);
-                    void vscode.window.showErrorMessage(`Git ${operation}操作失败：${reason}`);
+                    void vscode.window.showErrorMessage(`Git ${operation}失败：${reason}`);
                 }
             });
         } finally {

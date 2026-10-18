@@ -1353,8 +1353,8 @@ async function verifyProvider() {
   assert.equal(describePushRow({ source: pushDialogPlan.source, target: pushDialogPlan.targets[0], repositoryLabel: 'child' }), 'child：ink_dev → origin/ink_master（提交 ffffffff）');
   assert.equal(describePushRow({ source: detachedPlan.source, target: detachedPlan.targets[0] }), '游离 HEAD dddddddd → origin/ink_master（提交 dddddddd）');
   await verifyPushPlanEnrichment();
-  await showPushResult('Git Push 已完成', 'child：main → origin/main\n已推送');
-  assert.equal(informationMessages.at(-1), 'Git Push 已完成：child：main → origin/main；已推送', 'successful push uses an information notification');
+  await showPushResult('Git Push 已完成', 'child：main → origin/main，提交 aaaaaaaa');
+  assert.equal(informationMessages.at(-1), 'Git Push 已完成：child：main → origin/main，提交 aaaaaaaa', 'successful push uses a concise information notification');
   await showPushResult('Git Push 失败', 'network unavailable');
   assert.equal(errorMessages.at(-1), 'Git Push 失败：network unavailable', 'failed push uses an error notification');
   const repositories = ['parent', 'child', 'clean'].map((repositoryLabel, index) => ({ path: 'file:///fixture/' + repositoryLabel, label: repositoryLabel, hasSubmodules: index < 2, ancestry: index ? ['file:///fixture/parent'] : [] }));

@@ -46,7 +46,7 @@ async function testPullChecksStaleSubmodulesWithoutHeadChange() {
     nodeAssert.equal(result.headChanged, false);
     nodeAssert.equal(result.submodulesNeedUpdate, true, 'a no-op pull still checks submodule state');
     nodeAssert.deepEqual(result.submodulePaths, ['modules/stale', 'modules/missing']);
-    nodeAssert.equal(result.summary, '代码拉取完成：当前分支已是最新状态（aaaaaaaa）');
+    nodeAssert.equal(result.summary, '拉取完成：当前分支已是最新（aaaaaaaa）');
     nodeAssert.ok(progress.includes('正在检查子模块是否需要更新...'));
 
     const updateProgress = [];
@@ -69,7 +69,7 @@ async function testPullPromptsBeforeUpdatingSubmodules() {
         submodulesNeedUpdate: true,
         submoduleTopologyChanged: false,
         submodulePaths: ['modules/stale', 'modules/missing'],
-        summary: '代码拉取完成：当前分支已是最新状态（aaaaaaaa）',
+        summary: '拉取完成：当前分支已是最新（aaaaaaaa）',
         details: [],
     };
     const vscode = {
@@ -125,14 +125,14 @@ async function testPullPromptsBeforeUpdatingSubmodules() {
     nodeAssert.deepEqual(updateCalls, [['modules/stale', 'modules/missing']]);
     nodeAssert.ok(events.some(event => event[0] === 'progress' && event[1].includes('modules/stale')));
     nodeAssert.ok(events.some(event => event[0] === 'information'
-        && event[1] === '代码拉取完成：当前分支已是最新状态（aaaaaaaa）；已更新 2 个子模块。'));
+        && event[1] === '拉取完成：当前分支已是最新（aaaaaaaa）；已更新 2 个子模块。'));
 
     answer = '暂不更新';
     events = [];
     await runner.syncRepository('pull', '/fixture');
     nodeAssert.equal(updateCalls.length, 1, 'declining the prompt does not update submodules');
     nodeAssert.ok(events.some(event => event[0] === 'information'
-        && event[1] === '代码拉取完成：当前分支已是最新状态（aaaaaaaa）；有 2 个子模块暂未更新。'));
+        && event[1] === '拉取完成：当前分支已是最新（aaaaaaaa）；有 2 个子模块暂未更新。'));
     nodeAssert.equal(mutated.length, 2);
 }
 

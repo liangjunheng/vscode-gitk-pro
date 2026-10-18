@@ -2681,12 +2681,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             }
             await this.commitController.forceRefreshCurrentSelection();
             const detail = pushResults.map(({ row, result }) => {
-                const response = result.output ?? 'Git 未返回额外信息。';
-                return `${describePushRow(row)}\n${response}`;
+                const commit = result.sourceHash ? `，提交 ${result.sourceHash.slice(0, 8)}` : '';
+                return `${describePushRow(row).replace(/（提交 [^)]+）$/u, '')}${commit}`;
             }).join('\n\n');
             await showPushResult(
                 'Git Push 已完成',
-                detail || 'Git 已完成推送，但没有返回详细信息。',
+                detail || '没有返回推送目标信息。',
             );
         } catch (error) {
             const reason = error instanceof Error ? error.message : String(error);
