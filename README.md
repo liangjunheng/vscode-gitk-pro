@@ -89,13 +89,15 @@ Gitk Pro 在 VS Code 底部面板中提供 Gitk 风格的提交图，并将历�
 | 设置项 | 可选值 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `vscode-gitk.changedFilesDisplayMode` | `tree`、`flat` | `flat` | 控制 Changed Files 的布局。工具栏切换操作会写入 VS Code 全局用户设置。 |
+| `vscode-gitk.useSystemProxy` | `true`、`false` | `true` | 远程 Git 操作使用 VS Code `http.proxy`，或 Windows 用户级系统 HTTP/HTTPS 代理及 bypass 列表。 |
 
 ## 运行要求
 
 - VS Code `1.94.0` 或更高版本。
 - 通用原生 VSIX 内置 Windows x64/arm64、Linux x64/arm64/armhf、Alpine x64/arm64、macOS x64/arm64 的 `.node` 二进制文件，并分别放在 `lib/<target>/` 下；安装后会按扩展宿主的系统、架构与 libc 类型加载对应模块。用户不需要额外安装 Node.js、Rust、Zig、libgit2 或 OpenSSL。
 - 浏览器版 VS Code（Web Extension Host）暂不支持；libgit2 原生模块无法在浏览器内运行，需要另行实现 Web 后端。远程开发时，通用 VSIX 会在远程扩展宿主中选择对应的原生模块。
-- 日常运行不要求安装 Git CLI；SSH agent、credential helper、GPG/SSH 签名程序以及自定义 filter/LFS 程序仍按仓库配置调用。若企业安全网关拦截 libgit2 的 HTTP 响应，远程 fetch/pull/push 与子模块更新会在检测到该响应后尝试回退到 Git CLI。
+- 远程 fetch/pull/push 与子模块更新通过系统 Git CLI 执行，以复用 Git Credential Manager、企业网络策略和仓库传输配置；其余本地仓库读取与写入仍由内置 libgit2 原生模块处理。因此运行远程操作时需要 Git CLI 可在扩展宿主的 `PATH` 中找到。
+- 系统代理默认启用。Git 自己已配置的 `http.proxy` 或 `remote.<name>.proxy`、宿主已有的代理环境变量优先于自动发现；Windows 只读取用户级手动代理和 bypass 列表。PAC/WPAD、NTLM/Kerberos 和 SOCKS 等需要系统或 Git 自身支持，扩展不会猜测、执行 PAC 或覆盖已有代理配置。
 - 当前工作区至少包含一个 Git 仓库。
 
 ## 开发

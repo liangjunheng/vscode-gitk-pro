@@ -67,6 +67,12 @@
           "default": true,
           "scope": "application",
           "description": "还原未跟踪文件时移入回收站，而不是永久删除。回收站不可用的环境 (远程、Snap) 将始终永久删除。"
+        },
+        "vscode-gitk.useSystemProxy": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "description": "远程 Git 操作使用 VS Code 或系统配置的 HTTP/HTTPS 代理。"
         }
       }
     },
@@ -250,6 +256,8 @@
     "build": "npm run compile",
     "test:native": "cargo test --manifest-path native/git2-backend/Cargo.toml",
     "test:binding": "node scripts/test-native-binding.cjs",
+    "test:git-cli-remote": "node scripts/test-git-cli-remote-operations.cjs",
+    "test:system-proxy": "node scripts/test-system-proxy.cjs",
     "test:merge-editor": "node scripts/test-merge-editor.cjs && node scripts/test-aggregate-merge.cjs",
     "test:parity": "npm run check:native && npm run test:native && npm run build:native && npm run compile && npm run test:binding",
     "check:native": "cargo fmt --check --manifest-path native/git2-backend/Cargo.toml && cargo clippy --manifest-path native/git2-backend/Cargo.toml --all-targets --all-features -- -D warnings",

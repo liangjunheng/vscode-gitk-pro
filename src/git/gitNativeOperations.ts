@@ -2,21 +2,134 @@ import { execFile } from 'child_process';
 import * as vscode from 'vscode';
 import { invokeNativeGit } from './nativeGitBinding';
 
-function isUnexpectedHttpContentType(error: unknown): boolean {
-    const message = error instanceof Error ? error.message : String(error);
-    return message.includes('unexpected content-type') && message.includes('class=Http');
+interface SystemProxy {
+    readonly http?: string;
+    readonly https?: string;
+    readonly noProxy?: string;
 }
 
 function sanitizeGitOutput(output: string): string {
     return output.replace(/(https?:\/\/)([^\s/@]+)@/gi, '$1[credentials]@').trim();
 }
 
-function runGitCli(rootUri: vscode.Uri, args: readonly string[]): Promise<string> {
+function normalizeProxyUrl(value: string | undefined): string | undefined {
+    const trimmed = value?.trim();
+    if (!trimmed) { return undefined; }
+    return /^[a-z][a-z\d+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+}
+
+function parseWindowsProxyServer(value: string | undefined): Pick<SystemProxy, 'http' | 'https'> {
+    const entries = value?.split(';').map(entry => entry.trim()).filter(Boolean) ?? [];
+    const byScheme = new Map<string, string>();
+    let defaultProxy: string | undefined;
+    for (const entry of entries) {
+        const separator = entry.indexOf('=');
+        if (separator < 0) {
+            defaultProxy ??= entry;
+            continue;
+        }
+        byScheme.set(entry.slice(0, separator).trim().toLowerCase(), entry.slice(separator + 1).trim());
+    }
+    return {
+        http: normalizeProxyUrl(byScheme.get('http') ?? defaultProxy),
+        https: normalizeProxyUrl(byScheme.get('https') ?? defaultProxy),
+    };
+}
+
+function parseWindowsProxyOverride(value: string | undefined): string[] {
+    const entries = value?.split(';').map(entry => entry.trim()).filter(Boolean) ?? [];
+    return entries.flatMap(entry => entry === '<local>' ? ['localhost', '127.0.0.1', '::1'] : [entry]);
+}
+
+function readWindowsRegistryValue(name: string): Promise<string | undefined> {
+    return new Promise(resolve => {
+        execFile('reg', [
+            'query',
+            'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
+            '/v',
+            name,
+        ], { windowsHide: true, encoding: 'utf8' }, (error, stdout) => {
+            if (error) {
+                resolve(undefined);
+                return;
+            }
+            const valueLine = stdout.split(/\r?\n/).find(line => line.trimStart().startsWith(name));
+            const value = valueLine?.trim().match(new RegExp(`^${name}\\s+REG_\\w+\\s+(.+)$`, 'i'))?.[1];
+            resolve(value?.trim());
+        });
+    });
+}
+
+function mergeNoProxy(...values: readonly (string | undefined)[]): string | undefined {
+    const entries = values
+        .flatMap(value => value?.split(',') ?? [])
+        .map(value => value.trim())
+        .filter(Boolean);
+    return entries.length > 0 ? [...new Set(entries)].join(',') : undefined;
+}
+
+async function readSystemProxy(): Promise<SystemProxy> {
+    const vscodeProxy = normalizeProxyUrl(vscode.workspace.getConfiguration('http').get<string>('proxy', ''));
+    if (vscodeProxy) { return { http: vscodeProxy, https: vscodeProxy }; }
+    if (process.platform !== 'win32') { return {}; }
+
+    const [enabled, server, override, autoConfigUrl, autoDetect] = await Promise.all([
+        readWindowsRegistryValue('ProxyEnable'),
+        readWindowsRegistryValue('ProxyServer'),
+        readWindowsRegistryValue('ProxyOverride'),
+        readWindowsRegistryValue('AutoConfigURL'),
+        readWindowsRegistryValue('AutoDetect'),
+    ]);
+    // PAC/WPAD requires Windows' proxy-resolution API. Do not guess a single
+    // manual proxy when the user has selected automatic proxy discovery.
+    if (autoConfigUrl || autoDetect === '1' || /^0x1+$/i.test(autoDetect ?? '')) { return {}; }
+    if (!enabled || /^0x0+$/i.test(enabled) || enabled === '0') { return {}; }
+    return { ...parseWindowsProxyServer(server), noProxy: parseWindowsProxyOverride(override).join(',') || undefined };
+}
+
+function isNetworkCommand(args: readonly string[]): boolean {
+    return ['fetch', 'pull', 'push', 'submodule'].includes(args[0] ?? '');
+}
+
+async function hasExplicitGitProxy(rootUri: vscode.Uri): Promise<boolean> {
+    return new Promise(resolve => {
+        execFile('git', ['-C', rootUri.fsPath, 'config', '--get-regexp', '^(http\\.proxy|remote\\..*\\.proxy)$'], {
+            windowsHide: true,
+            encoding: 'utf8',
+            env: process.env,
+        }, (error, stdout) => resolve(!error && Boolean(stdout.trim())));
+    });
+}
+
+async function gitCliEnvironment(rootUri: vscode.Uri, args: readonly string[]): Promise<NodeJS.ProcessEnv> {
+    const environment = { ...process.env };
+    if (!isNetworkCommand(args)
+        || !vscode.workspace.getConfiguration('vscode-gitk').get<boolean>('useSystemProxy', true)
+        || await hasExplicitGitProxy(rootUri)) {
+        return environment;
+    }
+    const proxy = await readSystemProxy();
+    if (proxy.http && !environment.HTTP_PROXY && !environment.http_proxy) {
+        environment.HTTP_PROXY = proxy.http;
+        environment.http_proxy = proxy.http;
+    }
+    if (proxy.https && !environment.HTTPS_PROXY && !environment.https_proxy) {
+        environment.HTTPS_PROXY = proxy.https;
+        environment.https_proxy = proxy.https;
+    }
+    const noProxy = mergeNoProxy(environment.NO_PROXY, environment.no_proxy, proxy.noProxy);
+    if (noProxy) { environment.NO_PROXY = noProxy; environment.no_proxy = noProxy; }
+    return environment;
+}
+
+async function runGitCli(rootUri: vscode.Uri, args: readonly string[]): Promise<string> {
+    const env = await gitCliEnvironment(rootUri, args);
     return new Promise((resolve, reject) => {
         execFile('git', ['-C', rootUri.fsPath, ...args], {
             windowsHide: true,
             encoding: 'utf8',
             maxBuffer: 64 * 1024 * 1024,
+            env,
         }, (error, stdout, stderr) => {
             const output = sanitizeGitOutput([stdout, stderr].filter(Boolean).join('\n'));
             if (!error) {
@@ -24,27 +137,9 @@ function runGitCli(rootUri: vscode.Uri, args: readonly string[]): Promise<string
                 return;
             }
             const reason = output || error.message;
-            reject(new Error(`Git CLI 回退失败：${reason}`));
+            reject(new Error(`Git CLI 执行失败：${reason}`));
         });
     });
-}
-
-async function withHttpTransportFallback<T>(
-    rootUri: vscode.Uri,
-    operation: string,
-    nativeOperation: () => Promise<T>,
-    cliArgs: readonly string[],
-    fallbackValue: T,
-    fallbackResult?: (output: string) => T,
-): Promise<T> {
-    try {
-        return await nativeOperation();
-    } catch (error) {
-        if (!isUnexpectedHttpContentType(error)) { throw error; }
-        console.warn(`[Gitk][Git] libgit2 ${operation} 收到非 Git HTTP 内容，改用 Git CLI 兼容企业安全网关。`);
-        const output = await runGitCli(rootUri, cliArgs);
-        return fallbackResult ? fallbackResult(output) : fallbackValue;
-    }
 }
 
 export interface NativeStatusSummary { hasStagedChanges: boolean; hasUnstagedChanges: boolean; }
@@ -96,13 +191,7 @@ export function fetchRemotes(rootUri: vscode.Uri, remote?: string): Promise<void
     const cliArgs = remote
         ? ['fetch', '--prune', remote]
         : ['fetch', '--all', '--prune'];
-    return withHttpTransportFallback(
-        rootUri,
-        'fetch',
-        () => invokeNativeGit<void>('fetch', { rootPath: rootUri.fsPath, remote, prune: true }),
-        cliArgs,
-        undefined,
-    );
+    return runGitCli(rootUri, cliArgs).then(() => undefined);
 }
 
 export function pull(
@@ -114,13 +203,7 @@ export function pull(
     const cliArgs = ['pull'];
     if (remote) { cliArgs.push(remote); }
     if (remote && remoteBranch) { cliArgs.push(remoteBranch); }
-    return withHttpTransportFallback(
-        rootUri,
-        'pull',
-        () => invokeNativeGit<NativeSyncResult>('pull', { rootPath: rootUri.fsPath, remote, remoteBranch, localBranch }),
-        cliArgs,
-        {},
-    );
+    return runGitCli(rootUri, cliArgs).then(() => ({}));
 }
 
 /** 一次 Push 请求: 推送源(当前 HEAD)与目标远程分支分开描述。 */
@@ -155,53 +238,21 @@ export async function push(rootUri: vscode.Uri, request: NativePushRequest): Pro
             rootPath: rootUri.fsPath,
             specs: ['HEAD^{}'],
         }))[0];
-    // libgit2 已在进入网络传输前执行 pre-push；回退时使用 --no-verify，避免同一 hook 执行两次。
-    const cliArgs = ['push', '--no-verify', request.remote, `HEAD:${request.remoteBranch}`];
+    const cliArgs = ['push', request.remote, `HEAD:${request.remoteBranch}`];
     const requestedTarget: NativePushResult = {
         remote: request.remote,
         remoteBranch: request.remoteBranch,
         sourceBranchName: request.sourceBranchName,
         sourceHash,
     };
-    return withHttpTransportFallback(
-        rootUri,
-        'push',
-        async () => {
-            // 原生协议字段名保持 localBranch: 它只用于补全未指定的 remote/upstream 配置。
-            const result = await invokeNativeGit<{
-                remote?: string;
-                localBranch?: string;
-                sourceHash?: string;
-                remoteBranch?: string;
-                output?: string;
-            }>('push', {
-                rootPath: rootUri.fsPath,
-                remote: request.remote,
-                localBranch: request.sourceBranchName,
-                remoteBranch: request.remoteBranch,
-            });
-            return {
-                remote: result.remote ?? request.remote,
-                remoteBranch: result.remoteBranch ?? request.remoteBranch,
-                sourceBranchName: request.sourceBranchName ?? result.localBranch,
-                sourceHash: result.sourceHash ?? sourceHash,
-                output: result.output,
-            };
-        },
-        cliArgs,
-        requestedTarget,
-        output => ({ ...requestedTarget, output }),
-    );
+    return runGitCli(rootUri, cliArgs).then(output => ({ ...requestedTarget, output }));
 }
 
 export function updateSubmodules(rootUri: vscode.Uri, paths: readonly string[] = []): Promise<void> {
-    return withHttpTransportFallback(
+    return runGitCli(
         rootUri,
-        'submodule update',
-        () => invokeNativeGit<void>('updateSubmodules', { rootPath: rootUri.fsPath, paths }),
         ['submodule', 'update', '--init', '--recursive', ...(paths.length > 0 ? ['--', ...paths] : [])],
-        undefined,
-    );
+    ).then(() => undefined);
 }
 export const restoreSubmodule = (rootUri: vscode.Uri, revision: string): Promise<void> =>
     invokeNativeGit<void>('restoreSubmodule', { rootPath: rootUri.fsPath, revision });

@@ -448,7 +448,7 @@ export async function runGitSync(
 ): Promise<GitSyncResult> {
     if (action === 'fetch') {
         const before = await readRemoteBranchHashes(rootUri);
-        onProgress?.('正在通过 libgit2 获取所有远程仓库，并清理过期引用...');
+        onProgress?.('正在通过 Git 获取所有远程仓库，并清理过期引用...');
         await fetchRemotes(rootUri);
         const changes = describeRemoteBranchChanges(before, await readRemoteBranchHashes(rootUri));
         const repositories = await collectSubmoduleRepositories([{ rootPath: rootUri.fsPath }]);
@@ -471,7 +471,7 @@ export async function runGitSync(
     if (action === 'pull') {
         const beforeHead = await getCurrentGitHeadHash(rootUri);
         const before = await readRemoteBranchHashes(rootUri);
-        onProgress?.('正在通过 libgit2 拉取远程代码...');
+        onProgress?.('正在通过 Git 拉取远程代码...');
         await pullNative(rootUri);
         const afterHead = await getCurrentGitHeadHash(rootUri);
         const changes = describeRemoteBranchChanges(before, await readRemoteBranchHashes(rootUri));
@@ -505,7 +505,7 @@ export async function runGitSync(
             details,
         };
     }
-    onProgress?.('正在通过 libgit2 推送本地提交...');
+    onProgress?.('正在通过 Git 推送本地提交...');
     const plan = await getPushPlan(rootUri);
     const fallbackTarget = plan ? defaultPushTarget(plan) : undefined;
     const targets = pushTargets && pushTargets.length > 0
