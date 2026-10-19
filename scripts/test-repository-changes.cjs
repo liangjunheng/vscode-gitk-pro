@@ -545,12 +545,21 @@ async function verifyBranchDropdown(page, state, publish) {
   await dropdown.locator('.dropdown-current').click();
   // A branch-list message can arrive before the atomic selection/display snapshot while
   // switching repository cards. Merely opening the popup must not pin that stale selection.
-  state.selectedBranches = ['refs/heads/feature/ui'];
-  state.selectedBranchDisplay = { label: 'feature/ui', kind: 'local', title: 'refs/heads/feature/ui' };
+  const childRefs = [
+    { name: 'refs/heads/child-main', label: 'child-main', kind: 'current' },
+    { name: 'refs/heads/child-topic', label: 'child-topic', kind: 'local' },
+  ];
+  state.branches = childRefs;
+  state.selectedBranches = ['refs/heads/child-topic'];
+  state.selectedBranchDisplay = { label: 'child-topic', kind: 'local', title: 'refs/heads/child-topic' };
   await publish();
-  assert.equal(await dropdown.locator('input[value="refs/heads/feature/ui"]').isChecked(), true, 'a newer state snapshot updates an untouched open popup');
-  assert.equal(await dropdown.locator('input[value="refs/heads/main"]').isChecked(), false, 'the stale checked ref is cleared');
-  assert.match(await dropdown.locator('.dropdown-current').textContent(), /feature\/ui/, 'button label and checked branch use the same snapshot');
+  assert.equal(await dropdown.locator('input[value="refs/heads/child-topic"]').isChecked(), true, 'a newer state snapshot updates an untouched open popup');
+  assert.equal(await dropdown.locator('input[value="refs/heads/main"]').count(), 0, 'the stale repository options are replaced by the state snapshot');
+  assert.match(await dropdown.locator('.dropdown-current').textContent(), /child-topic/, 'button label and checked branch use the same snapshot');
+  await page.evaluate(refs => window.dispatchEvent(new MessageEvent('message', { data: { type: 'totalBranchesListChanged', branches: refs } })), refs);
+  assert.equal(await dropdown.locator('input[value="refs/heads/child-topic"]').isChecked(), true, 'a late list-only message cannot overwrite the atomic snapshot');
+  assert.equal(await dropdown.locator('input[value="refs/heads/main"]').count(), 0, 'late stale options remain ignored after state initialization');
+  state.branches = refs;
   state.selectedBranches = ['refs/heads/main'];
   state.selectedBranchDisplay = { label: 'main', kind: 'current', title: 'refs/heads/main' };
   await publish();

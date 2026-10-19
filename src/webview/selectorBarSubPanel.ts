@@ -114,6 +114,7 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
   let stagedCount = 0;
   let changesCount = 0;
   let selectedRepositoryPaths = [];
+  let hasBranchStateSnapshot = false;
   function updateDropdownLoading(dropdown, loading, ariaLabel) {
     const progress = dropdown.options.querySelector('.dropdown-progress');
     dropdown.current.dataset.loading = loading ? 'true' : 'false';
@@ -450,6 +451,10 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
   }
 
   function updateTotalBranchesList(nextBranches) {
+    // Before the first full state snapshot this seeds the selector during Webview startup.
+    // Afterwards stateUpdate owns branches and selectedBranches as one atomic model; a late
+    // list-only message must not overwrite another repository's options.
+    if (hasBranchStateSnapshot) return;
     totalBranches = nextBranches.slice();
     renderTotalBranchOptions();
   }
@@ -488,8 +493,13 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
   }
 
   function renderSelectorState(msg) {
+    hasBranchStateSnapshot = true;
     selectedRepositoryPaths = msg.selectedRepositoryPaths || [];
     selectedBranches = msg.selectedBranches || [];
+    // stateUpdate contains the current repository's branch list and selection together.
+    // Prefer it over a separately delivered list message so a late message cannot render
+    // old repository options against the new repository's checked selection.
+    totalBranches = Array.isArray(msg.branches) ? msg.branches.slice() : branches.slice();
     renderTotalBranchOptions();
   }
 
