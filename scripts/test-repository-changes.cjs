@@ -53,6 +53,23 @@ async function main() {
     repositories[0].aheadCount = 4;
     repositories[0].behindCount = 0;
     await publish();
+    const historicFile = page.locator('#filesList .file-item').first();
+    await historicFile.click({ button: 'right' });
+    const changedFileMenu = page.locator('#changedFileContextMenu');
+    assert.equal(await changedFileMenu.isVisible(), true, 'right-clicking a normal commit file opens its context menu');
+    assert.equal(await historicFile.evaluate(item => item.classList.contains('selected')), true, 'right-clicking a normal commit file selects it first');
+    assert.deepEqual(await lastMessage(page), { type: 'selectFile', path: 'historic.cpp' }, 'right-clicking a normal commit file updates the diff selection first');
+    assert.deepEqual(await changedFileMenu.locator('button').allTextContents(), ['显示原文件', '通过文件管理器打开文件', '复制文件', '复制文件路径', '复制文件相对路径']);
+    for (const action of ['open', 'reveal', 'copy', 'copyPath', 'copyRelativePath']) {
+      await changedFileMenu.locator('[data-changed-file-action="' + action + '"]').click();
+      assert.deepEqual(await lastMessage(page), { type: 'commitFileAction', action, hash: '12345678', repositoryPath: repositories[0].repositoryPath, path: 'historic.cpp' });
+      if (action !== 'copyRelativePath') await historicFile.click({ button: 'right' });
+    }
+    state.files = [{ path: 'deleted.cpp', status: 'D' }]; await publish();
+    await page.locator('#filesList .file-item').first().click({ button: 'right' });
+    assert.equal(await changedFileMenu.locator('[data-changed-file-action="open"]').isDisabled(), false, 'deleted normal-commit files can open their commit version');
+    assert.equal(await changedFileMenu.locator('[data-changed-file-action="reveal"]').isDisabled(), true, 'deleted normal-commit files cannot be revealed in the file manager');
+    state.files = [{ path: 'historic.cpp', status: 'M' }]; await publish();
     await assertCount(page.locator('.repo-changes'), 6);
     assert.equal(await page.locator('.repo-changes').nth(1).locator('.repo-changes-ancestry').textContent(), 'inkengine', 'direct child shows its parent repository');
     assert.equal(await page.locator('.repo-changes').nth(2).locator('.repo-changes-ancestry').textContent(), 'inkengine/.../ink-algorithm-parent', 'nested child compresses the recursive parent path');
@@ -385,6 +402,24 @@ async function main() {
     assert.equal(message.repositoryPath, repositories[0].repositoryPath);
     assert.equal(message.path, 'other.cpp');
     assert.equal(await mainCard.locator('.repo-changes-body').isVisible(), true, 'file selection does not toggle its card');
+    const contextRow = mainCard.locator('.repo-group[data-section="unstaged"] .repo-file-row').filter({ hasText: 'other.cpp' });
+    await contextRow.click({ button: 'right' });
+    const contextMenu = page.locator('#repositoryFileContextMenu');
+    assert.equal(await contextMenu.isVisible(), true, 'right-clicking a repository file opens its context menu');
+    assert.equal(await contextRow.evaluate(row => row.classList.contains('selected')), true, 'right-clicking a repository file selects it first');
+    assert.deepEqual(await lastMessage(page), { type: 'repositoryChangesFile', repositoryPath: repositories[0].repositoryPath, section: 'unstaged', path: 'other.cpp' }, 'right-clicking a repository file updates the diff selection first');
+    assert.deepEqual(await contextMenu.locator('button').allTextContents(), ['显示原文件', '通过文件管理器打开文件', '复制文件', '复制文件路径', '复制文件相对路径']);
+    for (const action of ['open', 'reveal', 'copy', 'copyPath', 'copyRelativePath']) {
+      await contextMenu.locator('[data-repository-file-action="' + action + '"]').click();
+      message = await lastMessage(page);
+      assert.deepEqual(message, { type: 'repositoryChangesFileAction', action, repositoryPath: repositories[0].repositoryPath, section: 'unstaged', path: 'other.cpp' });
+      if (action !== 'copyRelativePath') await contextRow.click({ button: 'right' });
+    }
+    repositories[0].unstaged = [{ path: 'removed.cpp', status: 'D' }]; await publish();
+    await mainCard.locator('.repo-file-row').click({ button: 'right' });
+    assert.equal(await contextMenu.locator('[data-repository-file-action="open"]').isDisabled(), true, 'deleted files cannot be opened from disk');
+    assert.equal(await contextMenu.locator('[data-repository-file-action="reveal"]').isDisabled(), true, 'deleted files cannot be revealed in the file manager');
+    repositories[0].unstaged = [{ path: 'same.cpp', status: 'M' }, { path: 'other.cpp', status: 'M' }]; await publish();
     const otherCard = page.locator('.repo-changes').nth(3);
     if (!(await otherCard.locator('.repo-changes-body').isVisible())) await otherCard.locator('.repo-changes-label').click();
     await otherCard.locator('.repo-file').click();
@@ -1182,6 +1217,13 @@ async function verifyMultiDiffLinkage(page, state, publish, repositories) {
   assert.equal(await historic.evaluate(row => row.classList.contains('selected')), true);
   await historic.locator('.repo-file').click();
   assert.deepEqual(await lastMessage(page), { type: 'selectFile', path: 'exact-history-key' }, 'history preserves the diff key rather than falling back to display path');
+  await historic.click({ button: 'right' });
+  const historyContextMenu = page.locator('#repositoryFileContextMenu');
+  assert.equal(await historyContextMenu.isVisible(), true, 'right-clicking a repository-card commit file opens the file menu');
+  assert.equal(await historyContextMenu.locator('[data-repository-file-action="open"]').isDisabled(), false, 'historical files open their commit version');
+  assert.deepEqual(await lastMessage(page), { type: 'selectFile', path: 'exact-history-key' }, 'right-clicking a historical file selects it before showing the menu');
+  await historyContextMenu.locator('[data-repository-file-action="open"]').click();
+  assert.deepEqual(await lastMessage(page), { type: 'commitFileAction', action: 'open', hash: 'abcdef12', repositoryPath: repositories[0].repositoryPath, path: 'historic.cpp' }, 'repository-card commit files use the historical commit action');
   repositories[0].unstaged = oldRoot; repositories[1].unstaged = oldChild; repositories[0].staged = oldStaged;
   Object.assign(state, saved); await publish();
   await root.locator('.repo-message').fill('');
@@ -1260,8 +1302,8 @@ async function verifyProvider() {
   const load = Module._load;
   const branchReads = [], commitDetailReads = [], checkouts = [], pulls = [], pushes = [], headRefreshes = [], remoteCheckouts = [];
   let pickedIndex = 2, options, branchItems, pushTargetDefaults, pushQuickPick, selectedPushTargetsResult, confirmRows;
-  const terminals = [], informationMessages = [], errorMessages = [], confirmationDialogs = [];
-  let terminalShows = 0, confirmationChoice = '推送';
+  const terminals = [], informationMessages = [], errorMessages = [], confirmationDialogs = [], clipboardWrites = [], executedCommands = [], openedDocuments = [], shownDocuments = [], readObjectsRequests = [];
+  let terminalShows = 0, confirmationChoice = '推送', failExplorerCopy = false;
   // 推送目标只描述远程分支; 本地分支名与 HEAD hash 属于 plan.source。
   const pushTargetFixture = [
     { remote: 'fork', branch: 'main', remoteName: 'fork/main', isUpstream: false, tipTimestamp: 200, unpushedCommitCount: 1 },
@@ -1288,9 +1330,19 @@ async function verifyProvider() {
   ];
   const vscode = {
     ThemeIcon: class ThemeIcon { constructor(id) { this.id = id; } },
+    ViewColumn: { Active: 1 },
     ProgressLocation: { Notification: 1 },
     QuickPickItemKind: { Separator: -1 },
-    Uri: { parse: value => ({ toString: () => value, fsPath: value }) },
+    Uri: {
+      parse: value => ({ toString: () => value, fsPath: value.replace(/^file:\/\//, '') }),
+      joinPath: (root, ...segments) => ({ fsPath: root.fsPath.replace(/\/$/, '') + '/' + segments.join('/'), toString: () => root.toString() + '/' + segments.join('/') }),
+    },
+    env: { clipboard: { writeText: async value => { clipboardWrites.push(value); } } },
+    commands: { executeCommand: async (...args) => {
+      executedCommands.push(args);
+      if (failExplorerCopy && args[0] === 'filesExplorer.copy') throw new Error('Explorer copy unavailable');
+    } },
+    workspace: { openTextDocument: async uri => { openedDocuments.push(uri); return { uri }; } },
     window: {
       showQuickPick: async (items, opts) => { options = opts; branchItems = items; return pickedIndex === null ? undefined : items.filter(item => item.branch)[pickedIndex]; },
       showInputBox: async opts => { assert.equal(opts.value, 'remote'); assert.equal(opts.validateInput('main'), '本地分支已存在，请使用其他名称'); return opts.value; },
@@ -1302,7 +1354,9 @@ async function verifyProvider() {
         informationMessages.push(message);
       },
       showErrorMessage(message) { errorMessages.push(message); },
+      showWarningMessage(message) { errorMessages.push(message); },
       createTerminal: options => { terminals.push(options); return { show: () => terminalShows++ }; },
+      showTextDocument: async (document, options) => { shownDocuments.push([document, options]); },
       withProgress: async (_options, task) => task({ report() {} }),
       createQuickPick: () => {
         const quickPick = {
@@ -1396,6 +1450,7 @@ async function verifyProvider() {
     commitLoadingMode: { value: 'bar' },
   });
   Object.assign(provider, {
+    gitBackend: { readObjects: async (_root, objects) => { readObjectsRequests.push([...objects]); return new Map(objects.map(object => [object, 'commit snapshot'])); } },
     view: { webview: { postMessage: value => { published = value; } } },
     changedFileSummaryCache: new WeakMap(), selectedBranchesMap: new Map(),
     commitMessageByRepo: new Map([[repositories[1].path, 'child draft']]), commitCommittingByRepo: new Set(),
@@ -1477,6 +1532,52 @@ async function verifyProvider() {
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', action: 'terminal', repositoryPath: 'file:///outside' });
   assert.equal(terminals.length, 2, 'unknown repository cannot open a terminal');
   assert.equal(terminalShows, 2);
+  const repositoryFileAction = action => provider.handleRepositoryChangesIntent({
+    type: 'repositoryChangesFileAction', action, repositoryPath: repositories[1].path, section: 'unstaged', path: 'same.cpp',
+  });
+  await repositoryFileAction('copyRelativePath');
+  await repositoryFileAction('copyPath');
+  await repositoryFileAction('copy');
+  await repositoryFileAction('reveal');
+  await repositoryFileAction('open');
+  assert.deepEqual(clipboardWrites.slice(-2), ['same.cpp', '/fixture/child/same.cpp'], 'repository file paths use the card repository rather than the selected parent');
+  assert.deepEqual(executedCommands.slice(-2).map(([command, uri]) => [command, uri.fsPath]), [
+    ['filesExplorer.copy', '/fixture/child/same.cpp'],
+    ['revealFileInOS', '/fixture/child/same.cpp'],
+  ], 'copy and reveal target the selected card file');
+  assert.equal(openedDocuments.at(-1).fsPath, '/fixture/child/same.cpp');
+  assert.equal(shownDocuments.at(-1)[1].preview, false, 'opening a repository file keeps it visible');
+  failExplorerCopy = true;
+  await repositoryFileAction('copy');
+  failExplorerCopy = false;
+  assert.equal(clipboardWrites.at(-1), '/fixture/child/same.cpp', 'repository file copy falls back to its absolute path when Explorer copy is unavailable');
+  assert.match(errorMessages.at(-1), /已改为复制文件路径/);
+  await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesFileAction', action: 'copyRelativePath', repositoryPath: repositories[1].path, section: 'unstaged', path: '../outside.cpp' });
+  assert.equal(clipboardWrites.at(-1), '/fixture/child/same.cpp', 'path traversal is rejected before clipboard access');
+  await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesFileAction', action: 'copyRelativePath', repositoryPath: repositories[1].path, section: 'unstaged', path: 'folder\\outside.cpp' });
+  assert.equal(clipboardWrites.at(-1), '/fixture/child/same.cpp', 'backslash paths are rejected before URI construction');
+  store.setState({ currentHash: 'commit-file-action', currentRepositoryPath: repositories[1].path, files: [{ path: 'history.cpp', status: 'M' }] });
+  const commitFileAction = action => provider.handleCommitFileAction({
+    type: 'commitFileAction', action, hash: 'commit-file-action', repositoryPath: repositories[1].path, path: 'history.cpp',
+  });
+  await commitFileAction('copyRelativePath');
+  await commitFileAction('copyPath');
+  await commitFileAction('copy');
+  await commitFileAction('reveal');
+  await commitFileAction('open');
+  assert.deepEqual(clipboardWrites.slice(-2), ['history.cpp', '/fixture/child/history.cpp'], 'normal commit paths use the selected commit repository');
+  assert.deepEqual(executedCommands.slice(-2).map(([command, uri]) => [command, uri.fsPath]), [
+    ['filesExplorer.copy', '/fixture/child/history.cpp'],
+    ['revealFileInOS', '/fixture/child/history.cpp'],
+  ], 'normal commit copy and reveal target the selected commit file');
+  assert.deepEqual(openedDocuments.at(-1), { content: 'commit snapshot' }, 'normal commit opens the selected commit object rather than the working-tree file');
+  store.setState({ files: [{ path: 'deleted.cpp', oldPath: 'renamed.cpp', status: 'D' }] });
+  await provider.handleCommitFileAction({ type: 'commitFileAction', action: 'open', hash: 'commit-file-action', repositoryPath: repositories[1].path, path: 'deleted.cpp' });
+  assert.deepEqual(openedDocuments.at(-1), { content: 'commit snapshot' }, 'deleted normal-commit files open their parent-commit object');
+  assert.deepEqual(readObjectsRequests.at(-1), ['commit-file-action^:renamed.cpp'], 'deleted normal-commit files resolve the pre-delete path from the parent commit');
+  await provider.handleCommitFileAction({ type: 'commitFileAction', action: 'copyRelativePath', hash: 'other-commit', repositoryPath: repositories[1].path, path: 'history.cpp' });
+  assert.equal(clipboardWrites.at(-1), '/fixture/child/history.cpp', 'stale normal-commit identity is rejected');
+  assert.match(errorMessages.at(-1), /提交或文件已更新/);
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', repositoryPath: repositories[1].path, action: 'focus' });
   assert.deepEqual(selections, [[repositories[1]]], 'focus uses authoritative selection pipeline that drives commit history');
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', repositoryPath: repositories[1].path, action: 'focus' });

@@ -29,6 +29,12 @@ export const CHANGED_FILES_SUB_PANEL_STYLES = `
   #commitContextMenu button:hover { background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-menu-selectionForeground, var(--vscode-list-hoverForeground)); }
   #commitContextMenu .context-menu-icon { width: 14px; height: 14px; flex: 0 0 14px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
   #commitContextMenu .context-menu-separator { height: 1px; margin: 4px 6px; background: var(--vscode-menu-separatorBackground, var(--vscode-menu-border, var(--vscode-editorWidget-border))); }
+  #changedFileContextMenu { position: fixed; z-index: 20; box-sizing: border-box; width: max-content; min-width: 180px; max-width: calc(100vw - 8px); max-height: calc(100vh - 8px); overflow-y: auto; margin: 0; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border)); border-radius: 5px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 4px 14px rgba(0, 0, 0, .28); }
+  #changedFileContextMenu:not(:popover-open) { display: none; }
+  #changedFileContextMenu button { display: block; box-sizing: border-box; width: 100%; max-width: 100%; padding: 5px 8px; border: 0; border-radius: 3px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: transparent; text-align: left; font: inherit; white-space: normal; overflow-wrap: anywhere; }
+  #changedFileContextMenu button:hover:not(:disabled) { background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-menu-selectionForeground, var(--vscode-list-hoverForeground)); }
+  #changedFileContextMenu button:disabled { opacity: .5; cursor: default; }
+  #changedFileContextMenu .context-menu-separator { height: 1px; margin: 4px 6px; background: var(--vscode-menu-separatorBackground, var(--vscode-menu-border, var(--vscode-editorWidget-border))); }
   .file-item, .folder-item { display: flex; align-items: center; gap: 8px; height: 24px; padding: 0 10px; }
   .file-item { cursor: pointer; }
   .folder-item { cursor: pointer; font-weight: 600; gap: 0; }
@@ -123,21 +129,33 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
   }
   document.addEventListener('click', function(event) {
     if (!event.target.closest('#commitContextMenu')) closeCommitContextMenu();
+    if (!event.target.closest('#changedFileContextMenu')) closeChangedFileContextMenu();
   });
   document.addEventListener('keydown', function(event) {
     if (event.key === 'Escape') closeCommitContextMenu();
+    if (event.key === 'Escape') closeChangedFileContextMenu();
   });
   let files = [];
   let stagedFiles = [];
   let unstagedFiles = [];
   let filesLoading = false;
   let filesMode = 'flat';
+  let changedFileContextTarget = null;
   let selectedPath = '';
   // 记录由变更列表自身发起的选择；Store 回显时只更新高亮，不反向滚动列表。
   let pendingLocalFileSelectionPath = '';
   const collapsedFolders = new Set();
   const collapsedWorkingTreeSections = new Set();
   const selectedWorkingTreeFiles = new Set();
+  const changedFileContextMenu = document.createElement('div');
+  changedFileContextMenu.id = 'changedFileContextMenu';
+  changedFileContextMenu.setAttribute('popover', 'manual');
+  changedFileContextMenu.innerHTML = '<button type="button" data-changed-file-action="open">显示原文件</button><button type="button" data-changed-file-action="reveal">通过文件管理器打开文件</button><div class="context-menu-separator"></div><button type="button" data-changed-file-action="copy">复制文件</button><button type="button" data-changed-file-action="copyPath">复制文件路径</button><button type="button" data-changed-file-action="copyRelativePath">复制文件相对路径</button>';
+  document.body.append(changedFileContextMenu);
+  function closeChangedFileContextMenu() {
+    if (changedFileContextMenu.matches(':popover-open')) changedFileContextMenu.hidePopover();
+    changedFileContextTarget = null;
+  }
   let workingTreeSelectionAnchor = '';
   // 与 commitListModelKey 同一思路: focus/blur 等无关 stateChanged 不应重新渲染文件列表, 否则正在被点击的 .file-item 会被拆掉重建, 导致首击无效。
   let filesModelKey = '';
@@ -158,6 +176,27 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
       vscode.postMessage({ type: 'commitAction', action: action, hash: selectedCommitHash, repositoryPath: selectedCommitRepositoryPath });
     }
     this.hidePopover();
+  });
+  function showChangedFileContextMenu(event, item) {
+    if (!selectedCommitHash || isWorkingTreeHash(selectedCommitHash) || !selectedCommitRepositoryPath) return;
+    const path = item.getAttribute('data-path');
+    const diffKey = item.getAttribute('data-diff-key') || path;
+    const file = files.find(function(candidate) { return (candidate.diffKey || candidate.path) === diffKey; });
+    if (!path || !file) return;
+    event.preventDefault();
+    changedFileContextTarget = { hash: selectedCommitHash, repositoryPath: selectedCommitRepositoryPath, path: path };
+    changedFileContextMenu.querySelector('[data-changed-file-action="open"]').disabled = file.isGitlink;
+    changedFileContextMenu.querySelector('[data-changed-file-action="reveal"]').disabled = file.status === 'D' || file.isGitlink;
+    changedFileContextMenu.showPopover();
+    const bounds = changedFileContextMenu.getBoundingClientRect();
+    changedFileContextMenu.style.left = Math.max(4, Math.min(event.clientX, window.innerWidth - bounds.width - 4)) + 'px';
+    changedFileContextMenu.style.top = Math.max(4, Math.min(event.clientY, window.innerHeight - bounds.height - 4)) + 'px';
+  }
+  changedFileContextMenu.addEventListener('click', function(event) {
+    const button = event.target.closest('[data-changed-file-action]');
+    if (!button || button.disabled || !changedFileContextTarget) return;
+    vscode.postMessage(Object.assign({ type: 'commitFileAction', action: button.dataset.changedFileAction }, changedFileContextTarget));
+    closeChangedFileContextMenu();
   });
   function revealMountedSelectedFile(list) {
     const item = list.querySelector('.file-item.selected');
@@ -542,6 +581,9 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
   }
   function renderFiles() {
     updateFilesModeButton();
+    if (changedFileContextTarget && (changedFileContextTarget.hash !== selectedCommitHash
+      || changedFileContextTarget.repositoryPath !== selectedCommitRepositoryPath
+      || !files.some(function(file) { return file.path === changedFileContextTarget.path; }))) closeChangedFileContextMenu();
     const list = document.getElementById('filesList');
     list.hidden = !selectedCommitHash || isWorkingTreeHash(selectedCommitHash);
     if (list.hidden) return;
@@ -652,6 +694,20 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
       pendingLocalFileSelectionPath = diffKey;
       syncWorkingTreeSelectionClasses(list);
       vscode.postMessage({ type: 'selectFile', path: diffKey });
+    });
+    list.addEventListener('contextmenu', function(event) {
+      const item = event.target.closest('.file-item');
+      if (!item || !list.contains(item) || item.hasAttribute('data-section')) return;
+      const path = item.getAttribute('data-path');
+      const diffKey = item.getAttribute('data-diff-key') || path;
+      if (!path || !diffKey) return;
+      selectedWorkingTreeFiles.clear();
+      workingTreeSelectionAnchor = '';
+      selectedPath = diffKey;
+      pendingLocalFileSelectionPath = diffKey;
+      syncWorkingTreeSelectionClasses(list);
+      vscode.postMessage({ type: 'selectFile', path: diffKey });
+      showChangedFileContextMenu(event, item);
     });
   }
 `;

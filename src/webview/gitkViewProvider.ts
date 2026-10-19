@@ -1757,15 +1757,19 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     private onMessage(message: unknown): void {
         const input = message as GitkIntent;
-        if (input?.type === 'repositoryChangesFile' || input?.type === 'repositoryChangesAction') {
+        if (input?.type === 'repositoryChangesFile' || input?.type === 'repositoryChangesFileAction' || input?.type === 'repositoryChangesAction') {
             void this.handleRepositoryChangesIntent(input);
+            return;
+        }
+        if (input?.type === 'commitFileAction') {
+            void this.handleCommitFileAction(input);
             return;
         }
         if (!this.isGitkIntent(message)) { return; }
         this.dispatchIntent(message);
     }
 
-    private async handleRepositoryChangesIntent(input: Extract<GitkIntent, { type: 'repositoryChangesFile' | 'repositoryChangesAction' }>): Promise<void> {
+    private async handleRepositoryChangesIntent(input: Extract<GitkIntent, { type: 'repositoryChangesFile' | 'repositoryChangesFileAction' | 'repositoryChangesAction' }>): Promise<void> {
         if (typeof input.repositoryPath !== 'string'
             || !this.repositories.some(repository => repository.path === input.repositoryPath)) { return; }
         try {
@@ -1804,6 +1808,33 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 await this.openCommitPanelWorkingTreeDiff(input.repositoryPath, input.section, input.path);
                 return;
             }
+            if (input.type === 'repositoryChangesFileAction') {
+                if (!['conflict', 'staged', 'unstaged'].includes(input.section)
+                    || !['open', 'reveal', 'copy', 'copyPath', 'copyRelativePath'].includes(input.action)
+                    || !this.isRepositoryFilePath(input.path)) { return; }
+                const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+                    .find(candidate => candidate.repoOption.path === input.repositoryPath);
+                if (!branch) { void vscode.window.showWarningMessage('仓库状态已更新，请重新打开文件菜单。'); return; }
+                const snapshot = await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(branch);
+                const candidates = input.section === 'staged' ? snapshot.staged : snapshot.changes;
+                const file = candidates.find(candidate => candidate.path === input.path
+                    && (input.section === 'conflict' ? candidate.isConflict : !candidate.isConflict));
+                if (!file) { void vscode.window.showWarningMessage('仓库文件已更新，请重新打开文件菜单。'); return; }
+                const rootUri = vscode.Uri.parse(input.repositoryPath);
+                const fileUri = vscode.Uri.joinPath(rootUri, ...input.path.split('/'));
+                if (input.action === 'copyRelativePath') {
+                    await vscode.env.clipboard.writeText(input.path);
+                } else if (input.action === 'copyPath') {
+                    await vscode.env.clipboard.writeText(fileUri.fsPath);
+                } else if (input.action === 'copy') {
+                    await this.copyFileResource(fileUri);
+                } else if (input.action === 'reveal') {
+                    if (file.status !== 'D' && !file.isGitlink) await vscode.commands.executeCommand('revealFileInOS', fileUri);
+                } else if (file.status !== 'D' && !file.isGitlink) {
+                    await this.openRepositoryChangesFile(fileUri, input.path);
+                }
+                return;
+            }
             if (input.action === 'worktree') {
                 this.repositoryCardDisplayLocks?.delete(input.repositoryPath);
                 this.schedulePushState();
@@ -1830,6 +1861,80 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 available.filter(file => file.isUntracked).map(file => file.path));
         } catch (error) {
             void vscode.window.showErrorMessage('仓库变更操作失败：' + (error instanceof Error ? error.message : String(error)));
+        }
+    }
+
+    private isRepositoryFilePath(filePath: string): boolean {
+        return filePath.length > 0
+            && !path.isAbsolute(filePath)
+            && !filePath.includes('\\')
+            && !filePath.split('/').some(segment => segment.length === 0 || segment === '.' || segment === '..');
+    }
+
+    private async handleCommitFileAction(input: Extract<GitkIntent, { type: 'commitFileAction' }>): Promise<void> {
+        if (input.hash !== this.currentHash
+            || input.repositoryPath !== this.currentRepositoryPath
+            || !['open', 'reveal', 'copy', 'copyPath', 'copyRelativePath'].includes(input.action)
+            || !this.isRepositoryFilePath(input.path)) {
+            void vscode.window.showWarningMessage('提交或文件已更新，请重新打开文件菜单。');
+            return;
+        }
+        const file = this.files.find(candidate => candidate.path === input.path);
+        if (!file) { void vscode.window.showWarningMessage('提交文件已更新，请重新打开文件菜单。'); return; }
+        try {
+            const rootUri = vscode.Uri.parse(input.repositoryPath);
+            const fileUri = vscode.Uri.joinPath(rootUri, ...input.path.split('/'));
+            if (input.action === 'copyRelativePath') {
+                await vscode.env.clipboard.writeText(input.path);
+            } else if (input.action === 'copyPath') {
+                await vscode.env.clipboard.writeText(fileUri.fsPath);
+            } else if (input.action === 'copy') {
+                await this.copyFileResource(fileUri);
+            } else if (input.action === 'reveal') {
+                if (file.status !== 'D' && !file.isGitlink) await vscode.commands.executeCommand('revealFileInOS', fileUri);
+            } else if (!file.isGitlink) {
+                await this.openCommitFileVersion(rootUri, input.hash, file);
+            }
+        } catch (error) {
+            void vscode.window.showErrorMessage('提交变更文件操作失败：' + (error instanceof Error ? error.message : String(error)));
+        }
+    }
+
+    private async copyFileResource(fileUri: vscode.Uri): Promise<void> {
+        try {
+            await vscode.commands.executeCommand('filesExplorer.copy', fileUri);
+        } catch {
+            await vscode.env.clipboard.writeText(fileUri.fsPath);
+            void vscode.window.showWarningMessage('当前环境不支持复制文件资源，已改为复制文件路径。');
+        }
+    }
+
+    private async openCommitFileVersion(rootUri: vscode.Uri, hash: string, file: ChangedFile): Promise<void> {
+        const object = file.status === 'D'
+            ? `${hash}^:${file.oldPath || file.path}`
+            : `${hash}:${file.path}`;
+        const contents = await this.gitBackend.readObjects(rootUri, [object]);
+        const content = contents.get(object);
+        if (content === undefined) { throw new Error('该提交中没有可显示的文件内容'); }
+        const document = await vscode.workspace.openTextDocument({ content });
+        await vscode.window.showTextDocument(document, {
+            viewColumn: vscode.ViewColumn.Active,
+            preserveFocus: false,
+            preview: false,
+        });
+    }
+
+    private async openRepositoryChangesFile(fileUri: vscode.Uri, filePath: string): Promise<void> {
+        try {
+            const document = await vscode.workspace.openTextDocument(fileUri);
+            await vscode.window.showTextDocument(document, {
+                viewColumn: vscode.ViewColumn.Active,
+                preserveFocus: false,
+                preview: false,
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            void vscode.window.showWarningMessage(`无法打开文件 ${filePath}: ${message}`);
         }
     }
 
