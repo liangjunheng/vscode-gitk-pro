@@ -24,6 +24,7 @@ import { SelectedRepoTotalBranchWatcher } from '../git/selectedRepoTotalBranchWa
 import { GitBranchesController } from '../git/gitBranchesController';
 import { GitCommitController } from '../git/gitCommitController';
 import { store, type StoreEffect } from '../state/store';
+import { resolveWorkingTreeSelection } from './workingTreeSelection';
 
 type SetiIconDefinitions = Record<string, readonly [string, string]>;
 
@@ -1013,8 +1014,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             }
         };
         // 工作区文件列表先发布完整元数据；Diff 正文由 MultiDiff 按可视范围按需请求。
-        const previousSelectedFile = this.files.find(file => (file.diffKey || file.path) === this.selectedPath);
-        const previousDiffsByKey = new Map(this.files
+        const previousFiles = this.files;
+        const previousDiffsByKey = new Map(previousFiles
             .filter((file): file is DiffPayload => file instanceof DiffPayload)
             .map(file => [file.diffKey || file.path, file]));
         const cachedDiffs = this.workingTreeDiffCache.get(workingTreeDiffCacheKey);
@@ -1033,10 +1034,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             return loaded ? new DiffPayload({ ...loaded, ...file, index }) : new CommitFile({ ...file });
         });
         const loadedCount = interimFiles.filter((file): file is DiffPayload => file instanceof DiffPayload).length;
+        const fallbackSelection = resolveWorkingTreeSelection(previousFiles, interimFiles, this.selectedPath);
         const interimSelectedFile = interimFiles.find(file => (file.diffKey || file.path) === preferredPath)
             ?? interimFiles.find(file => file.path === preferredPath)
-            ?? interimFiles.find(file => (file.diffKey || file.path) === this.selectedPath)
-            ?? interimFiles.find(file => file.path === previousSelectedFile?.path)
+            ?? interimFiles.find(file => (file.diffKey || file.path) === fallbackSelection)
             ?? interimFiles[0];
         const rootUri = vscode.Uri.parse(selectedBranch.repoOption.path);
         this.diffReader.stop();
