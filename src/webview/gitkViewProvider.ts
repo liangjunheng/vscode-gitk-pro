@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { type AppState, type ChangeSetMode, type ChangedFile, GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
 import { defaultPushTarget, getCommitFiles, getGitAheadBehind, getGitAheadCount, getGitBranches, getGitlinkPathsInCommit, getPushPlan, type PushSourceBranch, type PushTargetOption, readCurrentCommitMessage } from '../git/gitLogProvider';
-import { checkoutBranch, checkoutRemoteBranch, commitDetails, fetchRemotes, hasConflicts, indexGitlink, push, rangeCommits, resolveRevision, restoreAll, restoreSubmodule, trackedPaths, type NativeCommitDetails, type NativePushResult } from '../git/gitNativeOperations';
+import { checkoutBranch, checkoutRemoteBranch, commitDetails, hasConflicts, indexGitlink, push, rangeCommits, resolveRevision, restoreAll, restoreSubmodule, trackedPaths, type NativeCommitDetails, type NativePushResult } from '../git/gitNativeOperations';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { readMergeOperation, runMergeOperation, type MergeOperation } from '../git/mergeOperation';
 import { MergeEditorSessions } from './mergeEditorSessions';
@@ -104,7 +104,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     // 异步控制 / 内部状态 (不存入 Store)
     private refreshAbortController?: AbortController;
     private viewDataRefresh?: Promise<void>;
-    private remoteFetchRefresh?: Promise<void>;
     private viewDataRefreshProgress?: { completed: number; total: number };
     private commitFilesAbortController?: AbortController;
     private commitPanelDiffAbortController?: AbortController;
@@ -1583,12 +1582,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.viewDisposables = [
             view.webview.onDidReceiveMessage(msg => this.onMessage(msg)),
             view.onDidChangeVisibility(() => {
-                const wasVisible = store.getState().isViewVisible;
                 this.updateViewVisible();
                 this.updateMultiDiffVisibility();
-                if (!wasVisible && view.visible) {
-                    this.startRemoteFetch(this.repositories.map(repository => repository.path));
-                }
             }),
             view.onDidDispose(() => {
                 if (this.view === view) {
@@ -1613,9 +1608,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         try {
             this.initializeGitWatchers();
             if (this.viewGeneration !== viewGeneration || !this.view) { return; }
-            if (this.view.visible) {
-                this.startRemoteFetch(this.repositories.map(repository => repository.path));
-            }
             // Store 已包含上次后台准备的选择器与提交数据时，直接复用快照，不重复读取分支和提交历史。
             if (this.hasPreparedInitialData()) {
                 this.pushStateToWebview();
@@ -1745,10 +1737,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const tasks = orderedPaths.map(repositoryPath => track(refreshRepository(repositoryPath)));
             tasks.push(track(this.commitController.forceRefreshCurrentSelection(true)));
             const results = await Promise.allSettled(tasks);
-            // These operations update secondary selectors/remote metadata and are not needed to
-            // show the refreshed worktree or commit list. Starting them only after the local
-            // batch has drained removes their filesystem/process contention from the button path.
-            this.startRemoteFetch(repositoryPaths);
+            // Refresh topology after the local batch; remote fetch remains an explicit Git action.
             this.requestRepositoryScan();
             const failure = results.find(result => result.status === 'rejected');
             if (failure?.status === 'rejected') { throw failure.reason; }
@@ -1760,25 +1749,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         return this.viewDataRefresh;
     }
 
-    private async fetchRepositories(repositoryPaths: readonly string[]): Promise<void> {
-        await Promise.all(repositoryPaths.map(async repositoryPath => {
-            try {
-                await fetchRemotes(vscode.Uri.parse(repositoryPath));
-            } catch (error) {
-                console.warn(`无法获取远程更新: ${repositoryPath}`, error);
-            }
-        }));
-    }
-
-    private startRemoteFetch(repositoryPaths: readonly string[]): void {
-        if (this.remoteFetchRefresh || repositoryPaths.length === 0) { return; }
-        const task = this.fetchRepositories(repositoryPaths).catch(error => {
-            console.warn('远程更新检查失败', error);
-        }).finally(() => {
-            if (this.remoteFetchRefresh === task) { this.remoteFetchRefresh = undefined; }
-        });
-        this.remoteFetchRefresh = task;
-    }
 
     private onMessage(message: unknown): void {
         const input = message as GitkIntent;

@@ -1239,7 +1239,6 @@ async function verifyProvider() {
   // Host selection routing and stale MultiDiff feedback are tested below with the actual methods.
   const load = Module._load;
   const branchReads = [], checkouts = [], pulls = [], pushes = [], headRefreshes = [], remoteCheckouts = [];
-  const remoteFetchStarts = [], remoteFetchResolvers = [];
   let pickedIndex = 1, options, branchItems, pushTargetDefaults, pushQuickPick, selectedPushTargetsResult, confirmRows;
   const terminals = [], informationMessages = [], errorMessages = [], confirmationDialogs = [];
   let terminalShows = 0, confirmationChoice = '推送';
@@ -1317,10 +1316,6 @@ async function verifyProvider() {
         ...load.call(this, name, ...args),
         checkoutBranch: async (uri, branch) => { checkouts.push([uri.toString(), branch]); },
         checkoutRemoteBranch: async (uri, ref, localName) => remoteCheckouts.push([uri.toString(), ref, localName]),
-        fetchRemotes: async uri => {
-          remoteFetchStarts.push(uri.toString());
-          await new Promise(resolve => remoteFetchResolvers.push(resolve));
-        },
         pull: async (uri, remote, remoteBranch, localBranch) => { pulls.push([uri.toString(), remote, remoteBranch, localBranch]); },
         push: async (uri, request) => { pushes.push([uri.toString(), request.remote, request.remoteBranch, request.sourceBranchName, request.sourceHash]); throw new Error('stop after push'); },
       };
@@ -1560,29 +1555,13 @@ async function verifyProvider() {
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', action: 'syncRefresh', repositoryPath: repositories[1].path });
   assert.deepEqual(syncSteps, [['sync', [repositories[1].path], true, false, true]], 'card sync uses the current branch configured upstream and no longer runs the manual workspace/history refresh');
   await verifyFocusedRefresh(GitkViewProvider, repositories);
-  await verifyVisibilityFetchConcurrency(GitkViewProvider, repositories, remoteFetchStarts, remoteFetchResolvers);
   await verifyGitlinkNavigation(GitkViewProvider, store);
   await verifyMultiDiffHostSelection(GitkViewProvider, store, repositories);
 }
-async function verifyVisibilityFetchConcurrency(Provider, repositories, fetchStarts, fetchResolvers) {
-  const provider = Object.create(Provider.prototype);
-  const repositoryPaths = repositories.map(repository => repository.path);
-  provider.remoteFetchRefresh = undefined;
-  provider.startRemoteFetch(repositoryPaths);
-  const pending = provider.remoteFetchRefresh;
-  await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(fetchStarts, repositoryPaths, 'the hidden-to-visible fetch starts the root and all known submodules together');
-  assert.equal(fetchResolvers.length, repositoryPaths.length, 'every visibility-triggered repository fetch is in flight before completion');
-  assert.equal(provider.remoteFetchRefresh, pending, 'the visibility fetch keeps one shared in-flight task');
-  fetchResolvers.splice(0).forEach(resolve => resolve());
-  await pending;
-  assert.equal(provider.remoteFetchRefresh, undefined, 'the visibility fetch lock clears after every repository finishes');
-}
-
 async function verifyFocusedRefresh(Provider, repositories) {
   const provider = Object.create(Provider.prototype);
   const steps = [];
-  const fetches = [];
+
   const historyRefreshModes = [];
   const progressSnapshots = [];
   let releaseHead, releaseHistory;
@@ -1600,11 +1579,6 @@ async function verifyFocusedRefresh(Provider, repositories) {
       refreshUncommittedFilesByHeadBranch: async branch => steps.push(['status', branch.repoOption.path]),
     },
     selectedRepoTotalBranchWatcher: { refreshSelectedRepositories: () => steps.push(['branches']) },
-    fetchRepositories: async repositoryPaths => {
-      fetches.push([...repositoryPaths]);
-      await new Promise(resolve => { provider.releaseFetch = resolve; });
-      return repositoryPaths.map(() => true);
-    },
     commitController: { forceRefreshCurrentSelection: async worktreeAlreadyRefreshed => {
       historyRefreshModes.push(worktreeAlreadyRefreshed);
       steps.push(['history']);
@@ -1623,21 +1597,17 @@ async function verifyFocusedRefresh(Provider, repositories) {
   assert.deepEqual(steps.filter(step => step[0] !== 'publish').slice(0, 3), [['head', child], ['head', repositories[0].path], ['head', repositories[2].path]], 'focused and non-focused HEAD reads start together');
   assert.deepEqual(steps.filter(step => step[0] === 'history'), [['history']], 'history refresh starts in the local critical batch');
   assert.deepEqual(steps.filter(step => step[0] === 'status'), [['status', repositories[0].path], ['status', repositories[2].path]], 'other repositories publish while focused HEAD and history are still pending');
-  assert.deepEqual(fetches, [], 'remote fetch waits until local refresh is complete');
   assert.equal(steps.some(step => step[0] === 'scan'), false, 'repository scan waits until local refresh is complete');
   assert.deepEqual(progressSnapshots, [{ completed: 0, total: 4 }, { completed: 1, total: 4 }, { completed: 2, total: 4 }], 'progress starts immediately and advances per completed repository');
   releaseHead(); await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(steps.at(-1), ['publish'], 'local refresh completes without waiting for remote fetch');
-  assert.equal(provider.releaseFetch, undefined, 'remote fetch has not started while history is pending');
   assert.equal(provider.refreshCurrentViewData(), pending, 'refresh lock remains held while history is pending');
   releaseHistory(); await pending;
-  assert.deepEqual(fetches, [repositories.map(repository => repository.path)], 'remote fetch starts after local refresh is complete');
   assert.equal(steps.some(step => step[0] === 'scan'), true, 'repository scan starts after local refresh is complete');
   assert.equal(steps.at(-1)[0], 'publish', 'history completion publishes the final state');
   assert.equal(provider.viewDataRefresh, undefined, 'refresh lock is released');
   assert.deepEqual(progressSnapshots.slice(-3), [{ completed: 3, total: 4 }, { completed: 4, total: 4 }, undefined], 'progress completes and is cleared after all tasks settle');
   assert.deepEqual(provider.selectedRepositoryPaths, [child], 'refresh preserves focus');
-  assert.deepEqual(fetches, [repositories.map(repository => repository.path)], 'refresh fetches every known repository in parallel');
   assert.deepEqual(historyRefreshModes, [true], 'manual refresh performs one history refresh and reuses worktree reads');
   const failure = new Error('history failed');
   provider.commitController.forceRefreshCurrentSelection = async () => { throw failure; };
