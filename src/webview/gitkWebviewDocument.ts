@@ -34,7 +34,7 @@ export function renderGitkWebviewHtml(
   #panelResizeHandle { cursor: row-resize; background: var(--vscode-panel-border); }
   #panelResizeHandle:hover, #panelResizeHandle.resizing { background: var(--vscode-focusBorder); }
   /* 下半区固定区域共享 Commit 列表标题底色, 避免选择器/标题/搜索行出现色块断层。 */
-  #commitSection { --commit-title-background: var(--vscode-editorWidget-background, var(--vscode-tab-activeBackground)); display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  #commitSection { --commit-title-background: var(--vscode-editorWidget-background, var(--vscode-tab-activeBackground)); display: flex; flex-direction: column; min-width: 0; min-height: 0; background: color-mix(in srgb, var(--vscode-editor-background) 50%, #000); }
   #commitSection #graph { flex: 1 1 auto; height: auto; min-height: 0; }
   /* 通用图标按钮: 顶部工具栏与 Commit 列表工具条共用, 具体尺寸覆盖写在各自面板里。 */
   .toolbar-icon { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; color: var(--vscode-icon-foreground); background: transparent; }

@@ -6,7 +6,7 @@
 
 /** 变更文件列表子面板的样式片段。 */
 export const CHANGED_FILES_SUB_PANEL_STYLES = `
-  #filesSection { position: relative; width: 100%; height: 100%; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+  #filesSection { position: relative; width: 100%; height: 100%; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: color-mix(in srgb, var(--vscode-editor-background) 50%, #000); }
   #filesRefreshProgress { position: absolute; top: 29px; left: 0; right: 0; height: 1px; z-index: 3; overflow: hidden; background: var(--vscode-panel-border); }
   #filesRefreshProgress[hidden] { display: none; }
   #filesRefreshProgressFill { height: 100%; width: 30%; background: #007acc; }
