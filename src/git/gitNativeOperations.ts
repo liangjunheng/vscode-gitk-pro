@@ -293,6 +293,7 @@ export interface NativeCommitDetails {
     shortHash: string;
     message: string;
     subject?: string;
+    authorDate?: string;
 }
 
 export async function resolveRevision(rootUri: vscode.Uri, spec: string): Promise<string | undefined> {

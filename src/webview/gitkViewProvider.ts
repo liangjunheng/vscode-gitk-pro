@@ -27,6 +27,11 @@ import { store, type StoreEffect } from '../state/store';
 
 type SetiIconDefinitions = Record<string, readonly [string, string]>;
 
+type BranchTip = Readonly<{
+    timestamp: number;
+    authorDate?: string;
+}>;
+
 const SETI_ICON_DEFINITION_IDS: Readonly<Record<string, string>> = {
     default: '_default', c: '_c', cHeader: '_c_1', cpp: '_cpp', cppHeader: '_cpp_1', objectiveC: '_c_2', objectiveCpp: '_cpp_2',
     csharp: '_c-sharp', fsharp: '_f-sharp', kotlin: '_kotlin', java: '_java', groovy: '_grails', gradle: '_gradle', rust: '_rust',
@@ -1915,14 +1920,48 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             return;
         }
         const items: Array<vscode.QuickPickItem & { branch?: GitBranchOption }> = [];
-        const byName = (left: GitBranchOption, right: GitBranchOption) => left.label.localeCompare(right.label);
+        const branchTipByHash = new Map<string, BranchTip>();
+        const branchHashes = [...new Set([...local.values(), ...remote.values()].map(branch => branch.hash))];
+        try {
+            const details = await commitDetails(rootUri, branchHashes);
+            for (const detail of details) {
+                const parsed = Date.parse(detail.authorDate ?? '');
+                branchTipByHash.set(detail.hash, {
+                    timestamp: Number.isNaN(parsed) ? 0 : Math.floor(parsed / 1000),
+                    authorDate: detail.authorDate,
+                });
+            }
+        } catch {
+            // 提交时间只是排序增强信息; 读取失败时仍保留分支切换能力, 并回退到名称排序。
+        }
+        const tipTimestamp = (branch: GitBranchOption): number => branchTipByHash.get(branch.hash)?.timestamp ?? 0;
+        const byLatestTip = (left: GitBranchOption, right: GitBranchOption) =>
+            tipTimestamp(right) - tipTimestamp(left) || left.label.localeCompare(right.label);
+        const formatTipDate = (branch: GitBranchOption): string => {
+            const timestamp = tipTimestamp(branch);
+            if (timestamp <= 0) { return '最新提交时间未知'; }
+            return '最新提交 ' + new Date(timestamp * 1000).toLocaleString(undefined, {
+                year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+            });
+        };
+        const formatHash = (branch: GitBranchOption): string => branch.hash.slice(0, 8);
+        const formatLocalDetail = (branch: GitBranchOption): string => [
+            branch.upstreamName ? '跟踪 ' + branch.upstreamName : undefined,
+            formatTipDate(branch),
+            formatHash(branch),
+        ].filter((value): value is string => Boolean(value)).join('  ·  ');
+        const formatRemoteDetail = (branch: GitBranchOption, remoteName: string): string => [
+            '远程 ' + remoteName,
+            formatTipDate(branch),
+            formatHash(branch),
+        ].join('  ·  ');
         if (local.size > 0) {
-            items.push({ label: '本地分支 · ' + local.size, kind: vscode.QuickPickItemKind.Separator });
+            items.push({ label: '【本地分支】' + local.size + ' 个', kind: vscode.QuickPickItemKind.Separator });
             items.push(...[...local.values()].sort((left, right) =>
-                Number(right.kind === 'current') - Number(left.kind === 'current') || byName(left, right)).map(branch => ({
+                Number(right.kind === 'current') - Number(left.kind === 'current') || byLatestTip(left, right)).map(branch => ({
                 label: (branch.kind === 'current' ? '$(target) ' : '$(git-branch) ') + branch.label,
-                description: branch.kind === 'current' ? '当前分支' : '',
-                detail: (branch.upstreamName ? '跟踪 ' + branch.upstreamName + '  ·  ' : '') + branch.hash.slice(0, 8),
+                description: branch.kind === 'current' ? '本地 · 当前分支' : '本地',
+                detail: formatLocalDetail(branch),
                 branch,
             })));
         }
@@ -1933,12 +1972,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             group.push(branch);
             byRemote.set(remoteName, group);
         }
-        for (const [remoteName, remoteBranches] of [...byRemote].sort(([left], [right]) => left.localeCompare(right))) {
-            items.push({ label: '远程分支 · ' + remoteName + ' · ' + remoteBranches.length, kind: vscode.QuickPickItemKind.Separator });
-            items.push(...remoteBranches.sort(byName).map(branch => ({
+        const latestTip = (branches: readonly GitBranchOption[]): number =>
+            branches.reduce((latest, branch) => Math.max(latest, tipTimestamp(branch)), 0);
+        for (const [remoteName, remoteBranches] of [...byRemote].sort(([leftName, leftBranches], [rightName, rightBranches]) =>
+            latestTip(rightBranches) - latestTip(leftBranches) || leftName.localeCompare(rightName))) {
+            items.push({ label: '【远程分支 / ' + remoteName + '】' + remoteBranches.length + ' 个', kind: vscode.QuickPickItemKind.Separator });
+            items.push(...remoteBranches.sort(byLatestTip).map(branch => ({
                 label: '$(cloud) ' + branch.name.slice(('refs/remotes/' + remoteName + '/').length),
-                description: remoteName,
-                detail: branch.name.slice('refs/remotes/'.length) + '  ·  ' + branch.hash.slice(0, 8),
+                description: '远程 · ' + remoteName,
+                detail: formatRemoteDetail(branch, remoteName),
                 branch,
             })));
         }
