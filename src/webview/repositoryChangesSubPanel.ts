@@ -381,8 +381,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       // Seed only once per repository; refresh and topology reordering preserve the user's choice.
       if (!repositoryChangesInitialized.has(repository.repositoryPath)) {
         repositoryChangesInitialized.add(repository.repositoryPath);
-        const main = repository.isMainRepository === true || (repository.isMainRepository === undefined && index === 0);
-        if (!main && repositoryChangesRevealPath !== repository.repositoryPath) repositoryChangesCollapsed.add(repository.repositoryPath);
+        if (repositoryChangesRevealPath !== repository.repositoryPath) repositoryChangesCollapsed.add(repository.repositoryPath);
       }
       let node = repositoryChangesNodes.get(repository.repositoryPath);
       if (!node) { node = createRepositoryChangesNode(repository); repositoryChangesNodes.set(repository.repositoryPath, node); }

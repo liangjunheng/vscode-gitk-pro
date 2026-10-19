@@ -10,7 +10,6 @@ function repoKey(filePath: string): string {
 export class GitRepoController implements vscode.Disposable {
     private _totalRepoList: GitRepositoryOption[] = [];
     private _selectedRepoPaths: string[] = [];
-    private hasUserSelection = false;
     private readonly totalEmitter = new vscode.EventEmitter<GitRepositoryOption[]>();
     private readonly selectedEmitter = new vscode.EventEmitter<GitRepositoryOption[]>();
     private readonly reposLoadingEmitter = new vscode.EventEmitter<boolean>();
@@ -58,7 +57,6 @@ export class GitRepoController implements vscode.Disposable {
     }
 
     selectRepositories(selected: GitRepositoryOption[]): boolean {
-        this.hasUserSelection = true;
         this.applySelected(selected);
         return true;
     }
@@ -73,11 +71,8 @@ export class GitRepoController implements vscode.Disposable {
 
     /** 按当前总列表解析选择；仅在结果变化时才对外发布。 */
     private reconcileSelection(repositories: readonly GitRepositoryOption[]): void {
-        // 根仓库列表已解析时立即默认选择第一项；后续扫描更新不得覆盖已有选择。
-        if (!this.hasUserSelection && this._selectedRepoPaths.length === 0 && repositories.length > 0) {
-            this.applySelected([repositories[0]]);
-            return;
-        }
+        // 初始化保持未选择状态；仓库卡片显式展开后再建立 Commit/分支上下文。
+        // 后续扫描更新不得覆盖已有的用户选择。
         this.applySelected(this.selectedRepoList);
     }
 
