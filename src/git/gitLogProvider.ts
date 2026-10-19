@@ -332,6 +332,14 @@ export async function getGitBranches(rootUri: vscode.Uri, signal?: AbortSignal):
     try {
         const { currentBranch, detachedHead, local, remote } = await readBranchRefsFromCli(rootUri, signal);
         const branchRefs = [...local, ...remote];
+        // A single detail lookup covers every local/remote ref tip. Sorting remains usable
+        // when the optional enrichment fails, with branch names as its stable fallback.
+        const tipTimestamps = await getCommitAuthorDetails(rootUri, [...new Set(branchRefs.map(ref => ref.hash))])
+            .then(details => new Map([...details].map(([hash, detail]) => {
+                const parsed = Date.parse(detail.date);
+                return [hash, Number.isNaN(parsed) ? 0 : Math.floor(parsed / 1000)] as const;
+            })))
+            .catch(() => new Map<string, number>());
         const currentRef = currentBranch ? local.find(ref => ref.name === currentBranch) : undefined;
         const repository = new GitRepositoryOption({ path: rootUri.toString(), label: rootUri.fsPath });
         const current = currentRef ? [new GitBranchOption({
@@ -341,6 +349,7 @@ export async function getGitBranches(rootUri: vscode.Uri, signal?: AbortSignal):
             hash: currentRef.hash,
             kind: 'current',
             upstreamName: currentRef.upstreamName,
+            tipTimestamp: tipTimestamps.get(currentRef.hash) ?? 0,
         })] : detachedHead ? [buildDetachedHeadBranch(rootUri, detachedHead)] : [];
         const branches = branchRefs.map(ref => new GitBranchOption({
             repoOption: repository,
@@ -349,6 +358,7 @@ export async function getGitBranches(rootUri: vscode.Uri, signal?: AbortSignal):
             hash: ref.hash,
             kind: ref.name.startsWith('refs/remotes/') ? 'remote' : 'local',
             upstreamName: ref.upstreamName,
+            tipTimestamp: tipTimestamps.get(ref.hash) ?? 0,
         })).sort((left, right) => Number(left.kind === 'remote') - Number(right.kind === 'remote') || left.label.localeCompare(right.label));
         return [...current, ...branches];
     } catch (error) {

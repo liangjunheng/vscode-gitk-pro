@@ -130,6 +130,8 @@ export class GitBranchOption {
     readonly hash: string;
     readonly kind: GitBranchKind;
     readonly upstreamName?: string;
+    /** 分支 tip 的提交时间(秒), 用于按最新修改排序。 */
+    readonly tipTimestamp?: number;
 
     constructor(init: {
         repoOption: GitRepositoryOption;
@@ -138,6 +140,7 @@ export class GitBranchOption {
         hash: string;
         kind: GitBranchKind;
         upstreamName?: string;
+        tipTimestamp?: number;
     }) {
         this.repoOption = init.repoOption;
         this.name = init.name;
@@ -145,6 +148,7 @@ export class GitBranchOption {
         this.hash = init.hash;
         this.kind = init.kind;
         this.upstreamName = init.upstreamName;
+        this.tipTimestamp = init.tipTimestamp;
     }
 
     equals(other: GitBranchOption): boolean {
@@ -153,7 +157,8 @@ export class GitBranchOption {
             && this.label === other.label
             && this.hash === other.hash
             && this.kind === other.kind
-            && this.upstreamName === other.upstreamName;
+            && this.upstreamName === other.upstreamName
+            && this.tipTimestamp === other.tipTimestamp;
     }
 }
 

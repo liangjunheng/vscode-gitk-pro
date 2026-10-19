@@ -61,7 +61,7 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   .dropdown-progress { position: absolute; top: 0; right: 0; left: 0; z-index: 2; height: 2px; overflow: hidden; background: var(--vscode-editorWidget-border, var(--vscode-panel-border)); }
   .dropdown-progress::before { content: ''; display: block; width: 35%; height: 100%; background: var(--vscode-progressBar-background); animation: dropdown-progress 1.1s ease-in-out infinite; }
   @keyframes dropdown-progress { from { transform: translateX(-110%); } to { transform: translateX(310%); } }
-  .dropdown-option, .dropdown-group { width: 100%; min-height: 24px; padding: 4px 7px; overflow: hidden; border: 0; border-radius: 3px; font: inherit; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+  .dropdown-option, .dropdown-group { width: 100%; min-height: 24px; padding: 4px 7px; box-sizing: border-box; overflow: hidden; border: 0; border-radius: 3px; font: inherit; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
   .dropdown-option { color: inherit; background: transparent; cursor: pointer; }
   .dropdown-option:hover, .dropdown-option:focus-visible { color: var(--vscode-menu-selectionForeground); background: var(--vscode-menu-selectionBackground); outline: none; }
   .dropdown-option.selected::before { content: '✓'; display: inline-block; width: 14px; color: var(--vscode-menu-selectionForeground, var(--vscode-textLink-foreground)); }
@@ -242,7 +242,13 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
     widestText = Math.max(widestText, probe.getBoundingClientRect().width);
     probe.remove();
     const optionWidth = widestText + 72;
-    const actionWidth = actions.scrollWidth + 14;
+    // The action bar is stretched to the current menu width, so measure a cloned row
+    // off-screen rather than feeding that stretched width back into the next render.
+    const actionProbe = actions.cloneNode(true);
+    actionProbe.style.cssText = 'position:absolute;visibility:hidden;display:inline-flex;width:max-content;pointer-events:none;';
+    document.body.appendChild(actionProbe);
+    const actionWidth = actionProbe.getBoundingClientRect().width;
+    actionProbe.remove();
     const triggerWidth = dropdown.current.getBoundingClientRect().width;
     const viewportLimit = Math.max(triggerWidth, document.documentElement.clientWidth - 20);
     dropdown.menu.style.width = Math.min(viewportLimit, Math.max(triggerWidth, optionWidth, actionWidth)) + 'px';
@@ -475,14 +481,17 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
       remotes.get(remoteName).set(branch.name, branch);
     });
     const branchEntries = [];
+    const tipTimestamp = function(branch) { return Number.isFinite(branch.tipTimestamp) ? branch.tipTimestamp : 0; };
+    const byLatestTip = function(left, right) { return tipTimestamp(right) - tipTimestamp(left) || left.label.localeCompare(right.label); };
     if (local.size) {
       branchEntries.push({ group: '本地分支', count: local.size });
       Array.from(local.values()).sort(function(left, right) {
-        return Number(right.kind === 'current') - Number(left.kind === 'current') || left.label.localeCompare(right.label);
+        return Number(right.kind === 'current') - Number(left.kind === 'current') || byLatestTip(left, right);
       }).forEach(function(branch) { branchEntries.push({ value: branch.name, label: branch.label, title: branch.name, kind: branch.kind }); });
     }
-    Array.from(remotes.keys()).sort().forEach(function(remoteName) {
-      const remoteBranches = Array.from(remotes.get(remoteName).values()).sort(function(left, right) { return left.label.localeCompare(right.label); });
+    const latestTip = function(remoteName) { return Array.from(remotes.get(remoteName).values()).reduce(function(latest, branch) { return Math.max(latest, tipTimestamp(branch)); }, 0); };
+    Array.from(remotes.keys()).sort(function(left, right) { return latestTip(right) - latestTip(left) || left.localeCompare(right); }).forEach(function(remoteName) {
+      const remoteBranches = Array.from(remotes.get(remoteName).values()).sort(byLatestTip);
       branchEntries.push({ group: '远程分支 · ' + remoteName, remoteName: remoteName, count: remoteBranches.length });
       remoteBranches.forEach(function(branch) {
         const label = (branch.name.startsWith('refs/remotes/') ? branch.name.slice('refs/remotes/'.length) : branch.name).slice(remoteName.length + 1);
