@@ -2,7 +2,7 @@
 export const REPOSITORY_CHANGES_STYLES = `
   #filesList { display: none; }
   #repositoryChangesViewport { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; }
-  #repositoryChangesList { width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: auto; padding: 5px 2px 8px; }
+  #repositoryChangesList { width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: auto; padding: 5px 3px 8px 2px; }
   #repositoryChangesList[hidden] { display: none; }
   .repo-changes { width: 100%; min-width: 0; margin-bottom: 12px; border: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); border-radius: 6px; background: var(--vscode-sideBar-background, var(--vscode-editor-background)); cursor: pointer; }
   .repo-changes.focused { border-color: var(--vscode-focusBorder); }

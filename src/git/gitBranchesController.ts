@@ -109,7 +109,8 @@ export class GitBranchesController implements vscode.Disposable {
 
     /** Default each repository to its current branch; detached HEAD is also kind="current". */
     private ensureDefaultSelection(): boolean {
-        if (this.hasUserSelection) { return false; }
+        // 手动选择只锁定已经确认过的仓库; 新切入的仓库仍需默认选中自己的 HEAD。
+        // replaceSelected() 会为用户明确清空的仓库保留空 Set, 因而不会把清空误判成未初始化。
         let changed = false;
         for (const repository of this.repositories) {
             if (this.selectedBranchNamesByRepository.has(repository.path)) { continue; }
@@ -262,6 +263,10 @@ export class GitBranchesController implements vscode.Disposable {
 
     private replaceSelected(branches: readonly GitBranchOption[]): void {
         this.selectedBranchNamesByRepository.clear();
+        // 每个当前仓库都写入一个选择槽位; 空 Set 表示用户明确清空了该仓库的分支。
+        for (const repository of this.repositories) {
+            this.selectedBranchNamesByRepository.set(repository.path, new Set<string>());
+        }
         for (const branch of branches) {
             const names = this.selectedBranchNamesByRepository.get(branch.repoOption.path) ?? new Set<string>();
             names.add(branch.name);

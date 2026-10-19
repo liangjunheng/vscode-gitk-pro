@@ -9,13 +9,16 @@ class Emitter {
 }
 
 const repository = { path: 'file:///repo', label: 'repo', equals: other => other.path === 'file:///repo' };
+const repositoryB = { path: 'file:///repo-b', label: 'repo-b', equals: other => other.path === 'file:///repo-b' };
 const current = { repoOption: repository, name: 'main', kind: 'current', hash: 'a', equals: other => other === current };
+const currentB = { repoOption: repositoryB, name: 'main-b', kind: 'current', hash: 'b', equals: other => other === currentB };
 const local = { repoOption: repository, name: 'topic', kind: 'local', hash: 'b', equals: other => other === local };
 const remote = { repoOption: repository, name: 'refs/remotes/origin/topic', kind: 'remote', hash: 'b', equals: other => other === remote };
 const detached = { repoOption: repository, name: 'c', kind: 'current', hash: 'c', equals: other => other === detached };
 const repoEvents = new Emitter();
 const branchEvents = new Emitter();
 let branches = [current];
+const branchesByRepository = new Map([[repository.path, branches], [repositoryB.path, [currentB]]]);
 let complete = false;
 
 const originalLoad = Module._load;
@@ -34,7 +37,7 @@ const controller = new GitBranchesController({ onSelectedRepoListChanged: repoEv
   onBranchesLoadingChanged: new Emitter().event,
   getRepositorySnapshots: () => [],
   isRepositorySnapshotComplete: () => complete,
-  getTotalBranches: () => branches,
+  getTotalBranches: repositoryOption => branchesByRepository.get(repositoryOption.path) ?? [],
   refreshSelectedRepositories: () => {},
 });
 const selections = [];
@@ -49,17 +52,31 @@ async function main() {
   assert.deepEqual(selections.at(-1), ['main'], 'a complete one-branch snapshot keeps the same selection');
 
   branches = [current, local, remote];
+  branchesByRepository.set(repository.path, branches);
   branchEvents.fire({ repository, branches, headChanged: false });
   assert.deepEqual(selections.at(-1), ['main'], 'the complete snapshot keeps only current selected');
 
   branches = [detached, local, remote];
+  branchesByRepository.set(repository.path, branches);
   branchEvents.fire({ repository, branches, headChanged: true });
   assert.deepEqual(selections.at(-1), ['c'], 'detached HEAD replaces the previous current selection');
 
+  assert.equal(controller.selectBranches([local]), true, 'the user can select a non-current branch');
+  assert.deepEqual(selections.at(-1), ['topic'], 'the manual branch selection is published');
+
+  // A manual branch choice in one repository must not suppress the default HEAD
+  // when the user focuses another repository card.
+  repoEvents.fire([repositoryB]);
+  assert.deepEqual(selections.at(-1), ['main-b'], 'switching repository cards selects the new repository HEAD');
+
+  // Returning to the original repository starts from its current HEAD again;
+  // clearing that selection still remains authoritative on later snapshots.
+  repoEvents.fire([repository]);
+  assert.deepEqual(selections.at(-1), ['c'], 'returning to the repository selects its current HEAD');
   assert.equal(controller.selectBranches([]), true, 'the user can clear the default selection');
   branchEvents.fire({ repository, branches, headChanged: false });
   assert.deepEqual(selections.at(-1), [], 'a user-cleared selection is not defaulted again');
   controller.dispose();
-  console.log('Default branch selection tests passed: all refs publish once after the complete snapshot and user selection remains authoritative.');
+  console.log('Default branch selection tests passed: all refs publish once, user-cleared selection remains authoritative, and switching repositories selects the new repository HEAD.');
 }
 main().catch(error => { controller.dispose(); console.error(error); process.exitCode = 1; });
