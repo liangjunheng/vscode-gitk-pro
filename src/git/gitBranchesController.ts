@@ -96,15 +96,15 @@ export class GitBranchesController implements vscode.Disposable {
     private async selectRepositories(repositories: readonly GitRepositoryOption[]): Promise<void> {
         if (this.sameRepositories(this.repositories, repositories)) { return; }
         this.repositories = [...repositories];
-        const keep = new Set(this.repositories.map(repository => repository.path));
-        this.pruneSelected(keep);
+        // Keep each repository's last branch selection while its card is expanded and the
+        // foreground repository changes. The card-collapse path explicitly clears this cache.
         // Publish a cached/current HEAD immediately so the commit reader can show its first
         // page while the complete refs list continues loading in the background.
-        const defaulted = this.ensureDefaultSelection();
+        this.ensureDefaultSelection();
         this.fireBranches();
-        if (defaulted) {
-            this.fireSelected();
-        }
+        // The selected snapshot is repository-scoped and must be republished even when no
+        // default was added, so switching back restores the cached branch selection.
+        this.fireSelected();
     }
 
     /** Default each repository to its current branch; detached HEAD is also kind="current". */
@@ -131,6 +131,11 @@ export class GitBranchesController implements vscode.Disposable {
      */
     forceRefresh(): void {
         this.totalBranchWatcher.refreshSelectedRepositories();
+    }
+
+    /** 折叠仓库卡片时清除该仓库缓存, 下次展开从当前 HEAD 重新开始。 */
+    clearRepositorySelection(repositoryPath: string): void {
+        this.selectedBranchNamesByRepository.delete(repositoryPath);
     }
 
     /**
@@ -204,18 +209,6 @@ export class GitBranchesController implements vscode.Disposable {
         if (previous?.size === next.size && [...next].every(name => previous.has(name))) { return false; }
         this.selectedBranchNamesByRepository.set(repository.path, next);
         return true;
-    }
-
-    /** 仓库集合变化时先删除旧仓库的勾选，避免新列表与旧勾选组合成一帧。 */
-    private pruneSelected(keep: ReadonlySet<string>): boolean {
-        let changed = false;
-        for (const repositoryPath of this.selectedBranchNamesByRepository.keys()) {
-            if (!keep.has(repositoryPath)) {
-                this.selectedBranchNamesByRepository.delete(repositoryPath);
-                changed = true;
-            }
-        }
-        return changed;
     }
 
     /**

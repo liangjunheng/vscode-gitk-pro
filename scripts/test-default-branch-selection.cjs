@@ -69,10 +69,17 @@ async function main() {
   repoEvents.fire([repositoryB]);
   assert.deepEqual(selections.at(-1), ['main-b'], 'switching repository cards selects the new repository HEAD');
 
-  // Returning to the original repository starts from its current HEAD again;
-  // clearing that selection still remains authoritative on later snapshots.
+  // Expanded cards preserve their repository-scoped branch selection when revisited.
   repoEvents.fire([repository]);
-  assert.deepEqual(selections.at(-1), ['c'], 'returning to the repository selects its current HEAD');
+  assert.deepEqual(selections.at(-1), ['topic'], 'returning to an expanded repository restores its branch selection');
+
+  // Collapsing a card clears its cache; the next visit starts from the current HEAD.
+  controller.clearRepositorySelection(repository.path);
+  repoEvents.fire([repositoryB]);
+  repoEvents.fire([repository]);
+  assert.deepEqual(selections.at(-1), ['c'], 'a collapsed repository resets to its current HEAD');
+
+  // An explicitly empty selection remains authoritative on later snapshots.
   assert.equal(controller.selectBranches([]), true, 'the user can clear the default selection');
   branchEvents.fire({ repository, branches, headChanged: false });
   assert.deepEqual(selections.at(-1), [], 'a user-cleared selection is not defaulted again');

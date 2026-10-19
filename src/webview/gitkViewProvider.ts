@@ -458,6 +458,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 branches: this.branches,
                 selectedRepositoryPaths,
                 selectedBranches: this.selectedBranches,
+                // Keep the trigger label in the same atomic snapshot as the checkbox selection.
+                selectedBranchDisplay: this.selectedBranchDisplaySnapshot,
                 isMultiRepository: selectedRepositoryPaths.length > 1,
                 files,
                 filesIdentity: { hash: s.currentHash, repositoryPath: s.currentRepositoryPath },
@@ -1190,11 +1192,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 names,
                 kind: displayBranch?.kind,
             };
-        this.view?.webview.postMessage({
-            type: 'selectedBranchDisplayChanged',
-            display: this.selectedBranchDisplaySnapshot,
-        });
-        // Coalesce branch, commit, and working-tree events into one state snapshot.
+        // Publish the trigger label together with selectedBranches in one state snapshot;
+        // separate messages could otherwise arrive in opposite order and show mismatched UI.
         this.schedulePushState();
     }
 
@@ -1782,6 +1781,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             if (input.type === 'repositoryChangesAction' && input.action === 'blur') {
                 this.repositoryChangesSelectionAbortController?.abort();
                 this.gitlinkNavigationAbortController?.abort();
+                // 折叠卡片即明确放弃该仓库的分支上下文; 下次展开从当前 HEAD 重建。
+                this.branchesController.clearRepositorySelection(input.repositoryPath);
                 const selected = this.repoController.selectedRepoList;
                 if (selected.length === 1 && selected[0].path === input.repositoryPath) {
                     this.repoController.selectRepositories([]);
@@ -2280,25 +2281,30 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     private selectCommitPanelRepository(branch: GitBranchOption, signal: AbortSignal): Promise<GitBranchOption | undefined> {
         if (signal.aborted) { return Promise.resolve(undefined); }
-        const selected = this.branchesController.getSelectedCurrentBranch();
-        const selectedRepositories = this.repoController.selectedRepoList;
-        if (selectedRepositories.length === 1 && selectedRepositories[0].path === branch.repoOption.path
-            && selected?.repoOption.path === branch.repoOption.path) { return Promise.resolve(selected); }
+        const repositoryPath = branch.repoOption.path;
+        const isTargetRepositorySelected = (): boolean => {
+            const selectedRepositories = this.repoController.selectedRepoList;
+            return selectedRepositories.length === 1 && selectedRepositories[0].path === repositoryPath;
+        };
+        const current = this.branchesController.getCurrentBranch(branch.repoOption);
+        if (isTargetRepositorySelected() && current) { return Promise.resolve(current); }
         return new Promise(resolve => {
+            const subscriptions: vscode.Disposable[] = [];
             const finish = (result?: GitBranchOption): void => {
-                subscription.dispose();
+                subscriptions.forEach(subscription => subscription.dispose());
                 signal.removeEventListener('abort', cancel);
                 resolve(result);
             };
+            const tryFinish = (): void => {
+                const currentBranch = this.branchesController.getCurrentBranch(branch.repoOption);
+                if (currentBranch && isTargetRepositorySelected()) { finish(currentBranch); }
+            };
             const cancel = (): void => finish();
-            const subscription = this.branchesController.onSelectedBranchesChanged(branchesByRepository => {
-                const current = [...branchesByRepository.values()].flat()
-                    .find(candidate => candidate.kind === 'current' && candidate.repoOption.path === branch.repoOption.path);
-                const selectedRepositories = this.repoController.selectedRepoList;
-                if (current && selectedRepositories.length === 1 && selectedRepositories[0].path === branch.repoOption.path) { finish(current); }
-            });
+            subscriptions.push(this.branchesController.onSelectedBranchesChanged(() => tryFinish()));
+            subscriptions.push(this.branchesController.onTotalBranchesListChanged(() => tryFinish()));
             signal.addEventListener('abort', cancel, { once: true });
             this.repoController.selectRepositories([branch.repoOption]);
+            tryFinish();
         });
     }
 

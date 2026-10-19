@@ -543,6 +543,17 @@ async function verifyBranchDropdown(page, state, publish) {
   assert.equal(branchSelectorAlignment.labelGap, '2px');
   assert.equal(branchSelectorAlignment.iconTransform, 'none');
   await dropdown.locator('.dropdown-current').click();
+  // A branch-list message can arrive before the atomic selection/display snapshot while
+  // switching repository cards. Merely opening the popup must not pin that stale selection.
+  state.selectedBranches = ['refs/heads/feature/ui'];
+  state.selectedBranchDisplay = { label: 'feature/ui', kind: 'local', title: 'refs/heads/feature/ui' };
+  await publish();
+  assert.equal(await dropdown.locator('input[value="refs/heads/feature/ui"]').isChecked(), true, 'a newer state snapshot updates an untouched open popup');
+  assert.equal(await dropdown.locator('input[value="refs/heads/main"]').isChecked(), false, 'the stale checked ref is cleared');
+  assert.match(await dropdown.locator('.dropdown-current').textContent(), /feature\/ui/, 'button label and checked branch use the same snapshot');
+  state.selectedBranches = ['refs/heads/main'];
+  state.selectedBranchDisplay = { label: 'main', kind: 'current', title: 'refs/heads/main' };
+  await publish();
   const branchScrollbar = page.locator('#branchOptionsScrollbar');
   await assertCount(branchScrollbar, 1);
   const branchScrollbarFixture = await page.evaluate(() => {
@@ -1390,6 +1401,7 @@ async function verifyProvider() {
       getRepositoryAncestry: () => [],
     },
     commitPanelViewTitleController: { update() {} },
+    branchesController: { clearRepositorySelection: () => {} },
     commitController: { isLoading: false, searchedCommitList: [], displayedSearchKeywords: [], totalCommitList: [],
       selectCommit: commit => { provider.commitController.selectedCommit = commit; return true; } },
     uncommittedFilesWatcher: {
@@ -1712,6 +1724,7 @@ async function verifyGitlinkNavigation(GitkViewProvider, store) {
       getSelectedCurrentBranch: () => selectedBranch,
       getCurrentBranch: repo => branches.find(branch => branch.repoOption.path === repo.path),
       onSelectedBranchesChanged: listener => { listeners.add(listener); return { dispose: () => listeners.delete(listener) }; },
+      onTotalBranchesListChanged: listener => { listeners.add(listener); return { dispose: () => listeners.delete(listener) }; },
     },
     uncommittedFilesWatcher: {
       listCurrentHeadBranches: () => branches,

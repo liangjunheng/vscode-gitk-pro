@@ -164,6 +164,7 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
       if (opening) {
         if (id === 'branchDropdown') {
           branchDropdown.openSelection = true;
+          branchDropdown.selectionDirty = false;
           // 每次打开都以已确认选择重置弹窗草稿。
           const applied = branchDropdown.appliedSelection || new Set();
           branchDropdown.selected.clear();
@@ -257,6 +258,7 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
     if (wasOpen && !dropdown.skipRestore && dropdown.restoreSelection) dropdown.restoreSelection();
     dropdown.skipRestore = false;
     dropdown.openSelection = false;
+    dropdown.selectionDirty = false;
     dropdown.root.classList.remove('open');
     dropdown.current.setAttribute('aria-expanded', 'false');
   }
@@ -346,9 +348,9 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
     const entriesKey = JSON.stringify(entries);
     var canUpdateInPlace = branchDropdown.entriesKey === entriesKey && existingInputs.length === options.length &&
       Array.from(existingInputs).every(function(input, i) { return input.value === options[i].value; });
-    const serverSelection = (selectedValues || []).slice().sort().join('\0');
-    // 弹窗打开期间，无论选项 DOM 是否因状态刷新重建，都保留打开前快照及未确认的选择。
-    const keepPendingSelection = Boolean(branchDropdown.openSelection) || (branchDropdown.pendingSelection && branchDropdown.pendingSelection !== serverSelection);
+    // 单纯打开弹窗不是草稿编辑：总分支列表可能先于最新选择快照到达。
+    // 只有用户实际修改过勾选时才保留草稿，避免按钮和复选框停在不同快照。
+    const keepPendingSelection = Boolean(branchDropdown.openSelection && branchDropdown.selectionDirty);
     if (!keepPendingSelection) {
       selected.clear();
       (selectedValues || []).forEach(function(v) { selected.add(v); });
@@ -377,7 +379,6 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
     branchDropdown.restoreSelection = function() {
       // 非确认关闭时，草稿无条件回到最后一次已应用选择。
       const appliedSelection = Array.from(branchDropdown.appliedSelection || []);
-      branchDropdown.pendingSelection = undefined;
       applySelection(appliedSelection);
     };
     function bindBranchActions() {
@@ -386,13 +387,13 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
       const confirm = branchDropdown.menu.querySelector('.confirm-selection');
       toggleAll.onclick = function() {
         const allSelected = uniqueOptionValues.length > 0 && uniqueOptionValues.every(function(value) { return selected.has(value); });
+        branchDropdown.selectionDirty = true;
         applySelection(allSelected ? [] : uniqueOptionValues);
       };
       cancel.onclick = function() { closeDropdown(branchDropdown); };
       confirm.onclick = function() {
         const confirmedValues = Array.from(selected);
-        branchDropdown.pendingSelection = confirmedValues.sort().join('\0');
-        // Store 状态回传前不更新本地确认快照，避免未被扩展端接受的草稿污染回滚基准。
+        // Store 状态回传前不更新本地确认快照; 关闭后由 authoritative state snapshot 决定最终结果。
         branchDropdown.skipRestore = true;
         closeDropdown(branchDropdown);
         vscode.postMessage({ type: 'selectBranches', names: confirmedValues });
@@ -424,6 +425,7 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
       checkbox.checked = selected.has(entry.value);
       option.addEventListener('click', function(event) {
         if (event.target !== checkbox) event.preventDefault();
+        branchDropdown.selectionDirty = true;
         if (selected.has(entry.value)) selected.delete(entry.value); else selected.add(entry.value);
         updateSelectionUi();
       });

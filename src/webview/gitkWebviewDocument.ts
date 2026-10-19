@@ -193,6 +193,7 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR
       if (state.commitListRevision !== undefined && state.commitListRevision !== commitListRevision) expandedCommits.clear();
       commitListRevision = state.commitListRevision || 0;
       renderSelectorState(state);
+      if (state.selectedBranchDisplay) updateSelectedBranchDisplay(state.selectedBranchDisplay);
       if (shouldRenderCommitList) {
         render();
       }

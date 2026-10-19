@@ -561,6 +561,9 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
         selectedCommitHash = ''; selectedCommitRepositoryPath = ''; isCommitLoading = false;
         hasMoreCommits = false; isLoadingMoreCommits = false;
         render(); hideLoadingProgress(); updateCountLabel();
+      }
+      if (repositoryChangesCollapsed.has(repositoryPath)) {
+        // Any card collapse clears its repository-scoped branch cache, even when another card is focused.
         vscode.postMessage({ type: 'repositoryChangesAction', action: 'blur', repositoryPath: repositoryPath });
       }
       if (!repositoryChangesCollapsed.has(repositoryPath)) focusRepositoryChanges(repositoryPath);
