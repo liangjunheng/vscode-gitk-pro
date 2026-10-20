@@ -25,6 +25,9 @@ async function main() {
     await verifyRepositoryDisplayModes(browser, html);
     await verifyRepositoryHeaderBorderTransitions(browser, html);
     await verifyRepositorySnapshotTransitions(browser, html);
+    await verifyRepositoryCardWorktreeUnlock(browser, html);
+    await verifyRepositoryCardSelectionDrivesCommitControls(browser, html);
+    await verifyNormalCommitFileMenu(browser, html);
     for (const width of [320, 400, 800]) await verifyBottomRepositoryExpansion(browser, html, width);
     const scripts = [...html.matchAll(/<script(?![^>]*type="application\/json")[^>]*>([\s\S]*?)<\/script>/g)].map(match => match[1]);
     scripts.forEach(script => new Function(script));
@@ -53,23 +56,6 @@ async function main() {
     repositories[0].aheadCount = 4;
     repositories[0].behindCount = 0;
     await publish();
-    const historicFile = page.locator('#filesList .file-item').first();
-    await historicFile.click({ button: 'right' });
-    const changedFileMenu = page.locator('#changedFileContextMenu');
-    assert.equal(await changedFileMenu.isVisible(), true, 'right-clicking a normal commit file opens its context menu');
-    assert.equal(await historicFile.evaluate(item => item.classList.contains('selected')), true, 'right-clicking a normal commit file selects it first');
-    assert.deepEqual(await lastMessage(page), { type: 'selectFile', path: 'historic.cpp' }, 'right-clicking a normal commit file updates the diff selection first');
-    assert.deepEqual(await changedFileMenu.locator('button').allTextContents(), ['显示原文件', '通过文件管理器打开文件', '复制文件', '复制文件路径', '复制文件相对路径']);
-    for (const action of ['open', 'reveal', 'copy', 'copyPath', 'copyRelativePath']) {
-      await changedFileMenu.locator('[data-changed-file-action="' + action + '"]').click();
-      assert.deepEqual(await lastMessage(page), { type: 'commitFileAction', action, hash: '12345678', repositoryPath: repositories[0].repositoryPath, path: 'historic.cpp' });
-      if (action !== 'copyRelativePath') await historicFile.click({ button: 'right' });
-    }
-    state.files = [{ path: 'deleted.cpp', status: 'D' }]; await publish();
-    await page.locator('#filesList .file-item').first().click({ button: 'right' });
-    assert.equal(await changedFileMenu.locator('[data-changed-file-action="open"]').isDisabled(), false, 'deleted normal-commit files can open their commit version');
-    assert.equal(await changedFileMenu.locator('[data-changed-file-action="reveal"]').isDisabled(), true, 'deleted normal-commit files cannot be revealed in the file manager');
-    state.files = [{ path: 'historic.cpp', status: 'M' }]; await publish();
     await assertCount(page.locator('.repo-changes'), 6);
     assert.equal(await page.locator('.repo-changes').nth(1).locator('.repo-changes-ancestry').textContent(), 'inkengine', 'direct child shows its parent repository');
     assert.equal(await page.locator('.repo-changes').nth(2).locator('.repo-changes-ancestry').textContent(), 'inkengine/.../ink-algorithm-parent', 'nested child compresses the recursive parent path');
@@ -403,23 +389,45 @@ async function main() {
     assert.equal(message.path, 'other.cpp');
     assert.equal(await mainCard.locator('.repo-changes-body').isVisible(), true, 'file selection does not toggle its card');
     const contextRow = mainCard.locator('.repo-group[data-section="unstaged"] .repo-file-row').filter({ hasText: 'other.cpp' });
+    const repositoryMessagesBeforeContext = await page.evaluate(() => window.messages.length);
     await contextRow.click({ button: 'right' });
-    const contextMenu = page.locator('#repositoryFileContextMenu');
-    assert.equal(await contextMenu.isVisible(), true, 'right-clicking a repository file opens its context menu');
-    assert.equal(await contextRow.evaluate(row => row.classList.contains('selected')), true, 'right-clicking a repository file selects it first');
-    assert.deepEqual(await lastMessage(page), { type: 'repositoryChangesFile', repositoryPath: repositories[0].repositoryPath, section: 'unstaged', path: 'other.cpp' }, 'right-clicking a repository file updates the diff selection first');
-    assert.deepEqual(await contextMenu.locator('button').allTextContents(), ['显示原文件', '通过文件管理器打开文件', '复制文件', '复制文件路径', '复制文件相对路径']);
-    for (const action of ['open', 'reveal', 'copy', 'copyPath', 'copyRelativePath']) {
-      await contextMenu.locator('[data-repository-file-action="' + action + '"]').click();
+    const fileMenu = page.locator('#repositoryFileContextMenu');
+    assert.equal(await contextRow.evaluate(row => row.classList.contains('context-target')), true, 'right-clicking a repository file applies temporary context highlighting');
+    assert.equal(await page.evaluate(() => window.messages.length), repositoryMessagesBeforeContext, 'right-clicking a repository file does not change the real selection');
+    assert.equal(await fileMenu.locator('[data-file-action="openAfter"]').isVisible(), false, 'the after item is really hidden for a worktree file, not just flagged hidden');
+    assert.deepEqual(await fileMenu.locator('button:visible').allTextContents(), ['打开文件', '打开文件 (修改前)', '通过文件管理器显示', '通过资源管理器视图显示', '复制文件', '复制文件路径', '复制文件相对路径'], 'a worktree file has no separate "after": it is the file on disk');
+    for (const action of ['openFile', 'openBefore', 'revealInOS', 'revealInExplorer', 'copy', 'copyPath', 'copyRelativePath']) {
+      await fileMenu.locator('[data-file-action="' + action + '"]').click();
       message = await lastMessage(page);
       assert.deepEqual(message, { type: 'repositoryChangesFileAction', action, repositoryPath: repositories[0].repositoryPath, section: 'unstaged', path: 'other.cpp' });
       if (action !== 'copyRelativePath') await contextRow.click({ button: 'right' });
     }
-    repositories[0].unstaged = [{ path: 'removed.cpp', status: 'D' }]; await publish();
-    await mainCard.locator('.repo-file-row').click({ button: 'right' });
-    assert.equal(await contextMenu.locator('[data-repository-file-action="open"]').isDisabled(), true, 'deleted files cannot be opened from disk');
-    assert.equal(await contextMenu.locator('[data-repository-file-action="reveal"]').isDisabled(), true, 'deleted files cannot be revealed in the file manager');
-    repositories[0].unstaged = [{ path: 'same.cpp', status: 'M' }, { path: 'other.cpp', status: 'M' }]; await publish();
+    assert.equal(await contextRow.evaluate(row => row.classList.contains('context-target')), false, 'closing the repository file menu restores the real selection highlight');
+    const groupMenu = page.locator('#repositoryGroupContextMenu');
+    assert.equal(await groupMenu.isVisible(), false, 'right-clicking a repository file shows no menu');
+    await mainCard.locator('.repo-group[data-section="unstaged"] .repo-group-header').click({ button: 'right' });
+    assert.deepEqual(await groupMenu.locator('button').allTextContents(), ['放弃所有更改', '暂存所有更改']);
+    await groupMenu.locator('[data-repository-group-action="discard"]').click();
+    message = await lastMessage(page);
+    assert.deepEqual(message.paths, ['same.cpp', 'other.cpp']); assert.equal(message.action, 'discard'); assert.equal(message.section, 'unstaged');
+    await mainCard.locator('.repo-group[data-section="unstaged"] .repo-group-header').click({ button: 'right' });
+    await groupMenu.locator('[data-repository-group-action="stage"]').click();
+    message = await lastMessage(page);
+    assert.deepEqual(message.paths, ['same.cpp', 'other.cpp']); assert.equal(message.action, 'stage'); assert.equal(message.section, 'unstaged');
+    await mainCard.locator('.repo-group[data-section="staged"] .repo-group-header').click({ button: 'right' });
+    assert.deepEqual(await groupMenu.locator('button').allTextContents(), ['放弃所有更改']);
+    await groupMenu.locator('[data-repository-group-action="discardStaged"]').click();
+    message = await lastMessage(page);
+    assert.deepEqual(message.paths, ['same.cpp']); assert.equal(message.action, 'discardStaged'); assert.equal(message.section, 'staged');
+    await input.fill('select this draft'); await input.click({ button: 'right' });
+    const messageMenu = page.locator('#repositoryMessageContextMenu');
+    assert.deepEqual(await messageMenu.locator('button').allTextContents(), ['剪切', '复制', '粘贴', '全选']);
+    await messageMenu.locator('[data-repository-message-action="selectAll"]').click();
+    assert.equal(await input.evaluate(node => node.selectionStart === 0 && node.selectionEnd === node.value.length), true, 'message context menu selects all text');
+    await mainCard.locator('.repo-changes-body').click({ button: 'right', position: { x: 2, y: 2 } });
+    assert.equal(await groupMenu.isVisible(), false, 'other repository-card areas show no menu');
+    const filesHeaderMenuSuppressed = await page.locator('#filesHeader').evaluate(node => !node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
+    assert.equal(filesHeaderMenuSuppressed, true, 'changed-files header suppresses the default context menu');
     const otherCard = page.locator('.repo-changes').nth(3);
     if (!(await otherCard.locator('.repo-changes-body').isVisible())) await otherCard.locator('.repo-changes-label').click();
     await otherCard.locator('.repo-file').click();
@@ -489,6 +497,20 @@ async function main() {
     state.commits = [{ hash: '12345678', shortHash: '12345678', key: repositories[0].repositoryPath + ':12345678', parents: [], refs: [], message: 'root history', author: 'tester', authorDateLabel: 'today', gitBranchOption: { repoOption: { path: repositories[0].repositoryPath, label: 'inkengine' }, name: 'refs/heads/main', label: 'main', kind: 'current', hash: '12345678' } }];
     await publish();
     assert.equal(await page.locator('#commitList .commit-row.selected').getAttribute('data-hash'), '12345678', 'parent commit is selected after repository reveal');
+    const searchInput = page.locator('#searchInput');
+    await searchInput.fill('search text');
+    await searchInput.click({ button: 'right' });
+    await page.locator('#repositoryMessageContextMenu [data-repository-message-action="selectAll"]').click();
+    assert.deepEqual(await searchInput.evaluate(input => [input.selectionStart, input.selectionEnd]), [0, 11], 'search context menu selects all text');
+    await page.locator('#commitList .commit-row').first().click({ button: 'right' });
+    const commitMenu = page.locator('#commitContextMenu');
+    assert.equal(await commitMenu.isVisible(), true, 'commit row opens its context menu');
+    assert.equal(await page.locator('#commitList .commit-row').first().evaluate(row => row.classList.contains('context-target')), true, 'commit context menu uses temporary highlighting');
+    assert.deepEqual(await commitMenu.locator('button').first().evaluate(button => [getComputedStyle(button).fontFamily, getComputedStyle(button).fontSize, getComputedStyle(button).fontWeight]), ['"Segoe UI"', '13px', '400']);
+    const suppressed = await page.locator('#commitHeader').evaluate(node => !node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
+    assert.equal(suppressed, true, 'commit header suppresses the default context menu');
+    assert.equal(await commitMenu.isVisible(), false, 'right-clicking the header closes the commit menu');
+    assert.equal(await page.locator('#commitList .commit-row').first().evaluate(row => row.classList.contains('context-target')), false, 'closing the commit menu restores the real commit selection');
     // Navigation to a folded child must expand/select/focus it, without feeding a selection loop back.
     const childCard = page.locator('.repo-changes').nth(1);
     if (await childCard.locator('.repo-changes-body').isVisible()) await childCard.locator('.repo-changes-toggle').click();
@@ -1041,6 +1063,8 @@ async function verifyRepositorySnapshotTransitions(browser, html) {
     const publish = async patch => { Object.assign(state, patch); await page.evaluate(state => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state } })), state); };
     await publish({});
     const a = page.locator('.repo-changes').nth(0), b = page.locator('.repo-changes').nth(1);
+    // Cards start collapsed by default; expand A first so the scenario really starts from "A stays expanded".
+    await a.locator('.repo-changes-label').click();
     await b.locator('.repo-changes-label').click();
     const assertA = async label => {
       assert.equal(await a.locator('.repo-changes-body').isVisible(), true, label + ': A stays expanded');
@@ -1076,6 +1100,112 @@ async function verifyRepositorySnapshotTransitions(browser, html) {
     await publish({ selectedCommit: { hash: 'uncommitted', repositoryPath: aPath }, filesIdentity: { hash: 'uncommitted', repositoryPath: aPath } });
     assert.equal(await a.locator('.repo-message-box').isVisible(), true);
     assert.deepEqual(await a.locator('.repo-file-name').allTextContents(), ['a-worktree.cpp']);
+  } finally { await page.close(); }
+}
+async function verifyRepositoryCardWorktreeUnlock(browser, html) {
+  const page = await browser.newPage({ viewport: { width: 400, height: 1000 } });
+  try {
+    await page.evaluate(() => { window.acquireVsCodeApi = () => ({ postMessage() {}, getState: () => ({}), setState() {} }); });
+    await page.setContent(html);
+    const repositoryPath = 'file:///fixture/unlock';
+    const state = { repositoryChanges: [{ repositoryPath, repositoryLabel: 'unlock', isMainRepository: true,
+      message: 'ready to commit', staged: [{ path: 'staged.cpp', status: 'M' }], unstaged: [{ path: 'draft.cpp', status: 'M' }], }],
+      commits: [], branches: [], selectedBranches: [], selectedRepositoryPaths: [], files: [], filesLoading: false,
+      selectedCommit: { hash: 'old-commit', repositoryPath, message: 'historical' }, filesIdentity: { hash: 'old-commit', repositoryPath } };
+    const publish = async patch => { Object.assign(state, patch); await page.evaluate(state => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state } })), state); };
+    await publish({});
+    const card = page.locator('.repo-changes');
+    await card.locator('.repo-changes-label').click();
+    assert.equal(await card.locator('.repo-message-box').isVisible(), false, 'selection transition temporarily hides worktree controls');
+    await publish({ selectedRepositoryPaths: [repositoryPath], selectedCommit: { hash: 'uncommitted', repositoryPath }, files: [], filesLoading: false, filesIdentity: { hash: 'uncommitted', repositoryPath }, repositoryCardDisplayLocks: [repositoryPath] });
+    assert.equal(await card.locator('.repo-message-box').isVisible(), false, 'a remembered worktree selection stays hidden while the host still owns the display lock');
+    await publish({ repositoryCardDisplayLocks: [] });
+    assert.equal(await card.locator('.repo-message-box').isVisible(), true, 'host lock release restores the commit editor without a file click');
+    assert.equal(await card.locator('.repo-commit-actions').isVisible(), true, 'confirmed worktree snapshot restores Commit actions without a file click');
+    assert.equal(await card.locator('.repo-commit-main').isDisabled(), false, 'restored Commit button uses the existing staged draft state');
+  } finally { await page.close(); }
+}
+async function verifyRepositoryCardSelectionDrivesCommitControls(browser, html) {
+  const page = await browser.newPage({ viewport: { width: 400, height: 1000 } });
+  try {
+    await page.evaluate(() => { window.acquireVsCodeApi = () => ({ postMessage() {}, getState: () => ({}), setState() {} }); });
+    await page.setContent(html);
+    const dirtyPath = 'file:///fixture/dirty', cleanPath = 'file:///fixture/clean';
+    const state = { repositoryChanges: [
+      { repositoryPath: dirtyPath, repositoryLabel: 'dirty', isMainRepository: true, message: 'draft', staged: [{ path: 'staged.cpp', status: 'M' }], unstaged: [] },
+      { repositoryPath: cleanPath, repositoryLabel: 'clean', message: '', staged: [], unstaged: [] },
+    ], commits: [], branches: [], selectedBranches: [], selectedRepositoryPaths: [], files: [], filesLoading: false, selectedCommit: null };
+    const publish = async patch => { Object.assign(state, patch); await page.evaluate(state => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state } })), state); };
+    await publish({});
+    const dirty = page.locator('.repo-changes').nth(0), clean = page.locator('.repo-changes').nth(1);
+    const uncommitted = repositoryPath => ({ selectedRepositoryPaths: [repositoryPath], selectedCommit: { hash: 'uncommitted', repositoryPath }, filesIdentity: { hash: 'uncommitted', repositoryPath } });
+    await clean.locator('.repo-changes-label').click();
+    await dirty.locator('.repo-changes-label').click();
+    assert.equal(await clean.locator('.repo-message-box').isVisible(), false, 'a clicked clean card hides its controls while the host decides');
+    assert.equal(await dirty.locator('.repo-message-box').isVisible(), false, 'a clicked dirty card is treated the same: its file list does not exempt it from the in-flight selection');
+    await publish({ ...uncommitted(cleanPath), repositoryCardDisplayLocks: [dirtyPath] });
+    assert.equal(await clean.locator('.repo-message-box').isVisible(), true, 'selecting Uncommitted Changes shows the commit editor even when the repository has no changed files');
+    assert.equal(await clean.locator('.repo-commit-actions').isVisible(), true, 'selecting Uncommitted Changes shows Commit even when the repository has no changed files');
+    assert.equal(await dirty.locator('.repo-message-box').isVisible(), false, 'a repository whose selection is still in flight stays hidden whatever its files');
+    const historical = { hash: 'old-dirty', repositoryPath: dirtyPath, message: 'history' };
+    await publish({ selectedRepositoryPaths: [dirtyPath], selectedCommit: historical, files: [{ path: 'old.cpp', status: 'M' }], filesLoading: false, filesIdentity: { hash: historical.hash, repositoryPath: dirtyPath }, repositoryCardDisplayLocks: [] });
+    assert.equal(await dirty.locator('.repo-message-box').isVisible(), false, 'a selected commit hides the editor even though the repository has changed files');
+    assert.equal(await dirty.locator('.repo-commit-details').isVisible(), true, 'a selected commit shows its details even though the repository has changed files');
+    await publish({ ...uncommitted(dirtyPath), repositoryCardDisplayLocks: [] });
+    assert.equal(await dirty.locator('.repo-message-box').isVisible(), true, 'switching the selection to Uncommitted Changes shows the editor again');
+    assert.equal(await dirty.locator('.repo-commit-details').isVisible(), false, 'Uncommitted Changes hides the commit details');
+  } finally { await page.close(); }
+}
+async function verifyNormalCommitFileMenu(browser, html) {
+  const page = await browser.newPage({ viewport: { width: 400, height: 1000 } });
+  try {
+    await page.evaluate(() => {
+      window.messages = [];
+      window.acquireVsCodeApi = () => ({ postMessage: message => window.messages.push(message), getState: () => ({}), setState() {} });
+    });
+    await page.setContent(html);
+    const repositoryPath = 'file:///fixture/normal-commit';
+    const repository = { repositoryPath, repositoryLabel: 'normal-commit', isMainRepository: true, message: '', staged: [], unstaged: [] };
+    const state = { repositoryChanges: [repository], commits: [], branches: [], selectedBranches: [], selectedRepositoryPaths: [repositoryPath],
+      files: [{ path: 'historic.cpp', status: 'M' }], filesLoading: false, filesMode: 'flat',
+      selectedCommit: { hash: '12345678', repositoryPath, message: 'history' }, filesIdentity: { hash: '12345678', repositoryPath } };
+    const publish = () => page.evaluate(state => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state } })), state);
+    await publish();
+    // #filesList is hidden since the repository-card redesign: a normal commit's files are rows inside the owning card.
+    const card = page.locator('.repo-changes').first();
+    await card.locator('.repo-changes-label').click(); await publish();
+    const rows = () => card.locator('.repo-group[data-section="commit"] .repo-file-row');
+    const menu = page.locator('#repositoryFileContextMenu');
+    const messagesBeforeContext = await page.evaluate(() => window.messages.length);
+    await rows().first().click({ button: 'right' });
+    assert.equal(await menu.isVisible(), true, 'right-clicking a normal commit file opens its context menu');
+    assert.equal(await rows().first().evaluate(row => row.classList.contains('context-target')), true, 'right-clicking a normal commit file applies temporary context highlighting');
+    assert.equal(await page.evaluate(() => window.messages.length), messagesBeforeContext, 'right-clicking a normal commit file does not change the real selection');
+    await page.keyboard.press('Escape');
+    assert.equal(await rows().first().evaluate(row => row.classList.contains('context-target')), false, 'closing the file menu restores the real selection highlight');
+    await rows().first().click({ button: 'right' });
+    const labels = ['打开文件', '打开文件 (修改前)', '打开文件 (修改后)', '通过文件管理器显示', '通过资源管理器视图显示', '复制文件', '复制文件路径', '复制文件相对路径'];
+    assert.deepEqual(await menu.locator('button:visible').allTextContents(), labels, 'a normal commit file menu matches the worktree file menu');
+    assert.deepEqual(await menu.evaluate(node => [...node.querySelectorAll('.context-menu-separator')].map(separator => separator.getBoundingClientRect().height)), [1, 1], 'both separators are drawn');
+    for (const action of ['openFile', 'openBefore', 'openAfter', 'revealInOS', 'revealInExplorer', 'copy', 'copyPath', 'copyRelativePath']) {
+      await menu.locator('[data-file-action="' + action + '"]').click();
+      assert.deepEqual(await lastMessage(page), { type: 'commitFileAction', action, hash: '12345678', repositoryPath, path: 'historic.cpp' });
+      if (action !== 'copyRelativePath') await rows().first().click({ button: 'right' });
+    }
+    state.files = [{ path: 'deleted.cpp', status: 'D' }]; await publish();
+    await rows().first().click({ button: 'right' });
+    assert.equal(await menu.locator('[data-file-action="openFile"]').isDisabled(), true, 'deleted normal-commit files have no file on disk to open');
+    assert.equal(await menu.locator('[data-file-action="openBefore"]').isDisabled(), false, 'a file deleted by a commit still has a version before the commit');
+    assert.equal(await menu.locator('[data-file-action="openAfter"]').isDisabled(), true, 'a file deleted by a commit has no version after it');
+    assert.equal(await menu.locator('[data-file-action="openAfter"]').isVisible(), true, 'the after item stays visible even when it cannot be opened');
+    assert.equal(await menu.locator('[data-file-action="revealInOS"]').isDisabled(), true, 'deleted normal-commit files cannot be revealed in the file manager');
+    assert.equal(await menu.locator('[data-file-action="revealInExplorer"]').isDisabled(), true, 'deleted normal-commit files cannot be revealed in the Explorer view');
+    await page.keyboard.press('Escape');
+    state.files = [{ path: 'added.cpp', status: 'A' }]; await publish();
+    await rows().first().click({ button: 'right' });
+    assert.equal(await menu.locator('[data-file-action="openBefore"]').isDisabled(), true, 'a file added by a commit has no version before the commit');
+    assert.equal(await menu.locator('[data-file-action="openAfter"]').isDisabled(), false, 'a file added by a commit has a version after it');
+    await page.keyboard.press('Escape');
   } finally { await page.close(); }
 }
 async function verifyBottomRepositoryExpansion(browser, html, width) {
@@ -1218,12 +1348,11 @@ async function verifyMultiDiffLinkage(page, state, publish, repositories) {
   await historic.locator('.repo-file').click();
   assert.deepEqual(await lastMessage(page), { type: 'selectFile', path: 'exact-history-key' }, 'history preserves the diff key rather than falling back to display path');
   await historic.click({ button: 'right' });
-  const historyContextMenu = page.locator('#repositoryFileContextMenu');
-  assert.equal(await historyContextMenu.isVisible(), true, 'right-clicking a repository-card commit file opens the file menu');
-  assert.equal(await historyContextMenu.locator('[data-repository-file-action="open"]').isDisabled(), false, 'historical files open their commit version');
-  assert.deepEqual(await lastMessage(page), { type: 'selectFile', path: 'exact-history-key' }, 'right-clicking a historical file selects it before showing the menu');
-  await historyContextMenu.locator('[data-repository-file-action="open"]').click();
-  assert.deepEqual(await lastMessage(page), { type: 'commitFileAction', action: 'open', hash: 'abcdef12', repositoryPath: repositories[0].repositoryPath, path: 'historic.cpp' }, 'repository-card commit files use the historical commit action');
+  const historyFileMenu = page.locator('#repositoryFileContextMenu');
+  assert.equal(await historyFileMenu.isVisible(), true, 'right-clicking a repository-card commit file opens the file menu');
+  assert.deepEqual(await historyFileMenu.locator('button:visible').allTextContents(), ['打开文件', '打开文件 (修改前)', '打开文件 (修改后)', '通过文件管理器显示', '通过资源管理器视图显示', '复制文件', '复制文件路径', '复制文件相对路径'], 'repository-card commit files share the normal commit menu');
+  await historyFileMenu.locator('[data-file-action="openBefore"]').click();
+  assert.deepEqual(await lastMessage(page), { type: 'commitFileAction', action: 'openBefore', hash: 'abcdef12', repositoryPath: repositories[0].repositoryPath, path: 'historic.cpp' }, 'a repository-card commit file posts the same intent as a normal commit file');
   repositories[0].unstaged = oldRoot; repositories[1].unstaged = oldChild; repositories[0].staged = oldStaged;
   Object.assign(state, saved); await publish();
   await root.locator('.repo-message').fill('');
@@ -1302,7 +1431,7 @@ async function verifyProvider() {
   const load = Module._load;
   const branchReads = [], commitDetailReads = [], checkouts = [], pulls = [], pushes = [], headRefreshes = [], remoteCheckouts = [];
   let pickedIndex = 2, options, branchItems, pushTargetDefaults, pushQuickPick, selectedPushTargetsResult, confirmRows;
-  const terminals = [], informationMessages = [], errorMessages = [], confirmationDialogs = [], clipboardWrites = [], executedCommands = [], openedDocuments = [], shownDocuments = [], readObjectsRequests = [];
+  const terminals = [], informationMessages = [], errorMessages = [], confirmationDialogs = [], clipboardWrites = [], executedCommands = [], openedDocuments = [], shownDocuments = [], readObjectsRequests = [], openedChanges = [];
   let terminalShows = 0, confirmationChoice = '推送', failExplorerCopy = false;
   // 推送目标只描述远程分支; 本地分支名与 HEAD hash 属于 plan.source。
   const pushTargetFixture = [
@@ -1334,8 +1463,8 @@ async function verifyProvider() {
     ProgressLocation: { Notification: 1 },
     QuickPickItemKind: { Separator: -1 },
     Uri: {
-      parse: value => ({ toString: () => value, fsPath: value.replace(/^file:\/\//, '') }),
-      joinPath: (root, ...segments) => ({ fsPath: root.fsPath.replace(/\/$/, '') + '/' + segments.join('/'), toString: () => root.toString() + '/' + segments.join('/') }),
+      parse: value => ({ toString: () => value, fsPath: value.replace(/^file:\/\//, ''), with(change) { return { ...this, ...change, toString: () => change.scheme + ':' + this.fsPath + '?' + change.query }; } }),
+      joinPath: (root, ...segments) => ({ fsPath: root.fsPath.replace(/\/$/, '') + '/' + segments.join('/'), toString: () => root.toString() + '/' + segments.join('/'), with(change) { return { ...this, ...change, toString: () => change.scheme + ':' + this.fsPath + '?' + change.query }; } }),
     },
     env: { clipboard: { writeText: async value => { clipboardWrites.push(value); } } },
     commands: { executeCommand: async (...args) => {
@@ -1392,6 +1521,7 @@ async function verifyProvider() {
         ...load.call(this, name, ...args),
         checkoutBranch: async (uri, branch) => { checkouts.push([uri.toString(), branch]); },
         checkoutRemoteBranch: async (uri, ref, localName) => remoteCheckouts.push([uri.toString(), ref, localName]),
+        resolveRevision: async (_uri, spec) => spec.endsWith('^') ? 'a'.repeat(40) : undefined,
         commitDetails: async (uri, hashes) => {
           commitDetailReads.push([uri.toString(), [...hashes]]);
           return hashes.map(hash => ({ hash, authorDate: branchFixture.find(branch => branch.hash === hash)?.authorDate }));
@@ -1454,6 +1584,7 @@ async function verifyProvider() {
     view: { webview: { postMessage: value => { published = value; } } },
     changedFileSummaryCache: new WeakMap(), selectedBranchesMap: new Map(),
     commitMessageByRepo: new Map([[repositories[1].path, 'child draft']]), commitCommittingByRepo: new Set(),
+    repositoryCardDisplayLocks: new Set(),
     pushTargetByRepository: new Map(), lastPushedTargetByRepository: new Map(),
     unpushedCommitCountByRepository: new Map([[repositories[1].path, 4]]),
     behindCommitCountByRepository: new Map([[repositories[1].path, 0]]),
@@ -1532,30 +1663,12 @@ async function verifyProvider() {
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', action: 'terminal', repositoryPath: 'file:///outside' });
   assert.equal(terminals.length, 2, 'unknown repository cannot open a terminal');
   assert.equal(terminalShows, 2);
-  const repositoryFileAction = action => provider.handleRepositoryChangesIntent({
-    type: 'repositoryChangesFileAction', action, repositoryPath: repositories[1].path, section: 'unstaged', path: 'same.cpp',
-  });
-  await repositoryFileAction('copyRelativePath');
-  await repositoryFileAction('copyPath');
-  await repositoryFileAction('copy');
-  await repositoryFileAction('reveal');
-  await repositoryFileAction('open');
-  assert.deepEqual(clipboardWrites.slice(-2), ['same.cpp', '/fixture/child/same.cpp'], 'repository file paths use the card repository rather than the selected parent');
-  assert.deepEqual(executedCommands.slice(-2).map(([command, uri]) => [command, uri.fsPath]), [
-    ['filesExplorer.copy', '/fixture/child/same.cpp'],
-    ['revealFileInOS', '/fixture/child/same.cpp'],
-  ], 'copy and reveal target the selected card file');
-  assert.equal(openedDocuments.at(-1).fsPath, '/fixture/child/same.cpp');
-  assert.equal(shownDocuments.at(-1)[1].preview, false, 'opening a repository file keeps it visible');
-  failExplorerCopy = true;
-  await repositoryFileAction('copy');
-  failExplorerCopy = false;
-  assert.equal(clipboardWrites.at(-1), '/fixture/child/same.cpp', 'repository file copy falls back to its absolute path when Explorer copy is unavailable');
-  assert.match(errorMessages.at(-1), /已改为复制文件路径/);
-  await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesFileAction', action: 'copyRelativePath', repositoryPath: repositories[1].path, section: 'unstaged', path: '../outside.cpp' });
-  assert.equal(clipboardWrites.at(-1), '/fixture/child/same.cpp', 'path traversal is rejected before clipboard access');
-  await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesFileAction', action: 'copyRelativePath', repositoryPath: repositories[1].path, section: 'unstaged', path: 'folder\\outside.cpp' });
-  assert.equal(clipboardWrites.at(-1), '/fixture/child/same.cpp', 'backslash paths are rejected before URI construction');
+  await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesFileAction', action: 'openBefore', repositoryPath: repositories[1].path, section: 'unstaged', path: 'same.cpp' });
+  const [openCommand, gitUri, openOptions] = executedCommands.at(-1);
+  assert.equal(openCommand, 'vscode.open');
+  assert.equal(gitUri.scheme, 'git');
+  assert.deepEqual(JSON.parse(gitUri.query), { path: '/fixture/child/same.cpp', ref: 'HEAD' });
+  assert.deepEqual(openOptions, { preview: false }, 'Open File (Before) uses VS Code Git document URI semantics');
   store.setState({ currentHash: 'commit-file-action', currentRepositoryPath: repositories[1].path, files: [{ path: 'history.cpp', status: 'M' }] });
   const commitFileAction = action => provider.handleCommitFileAction({
     type: 'commitFileAction', action, hash: 'commit-file-action', repositoryPath: repositories[1].path, path: 'history.cpp',
@@ -1563,18 +1676,53 @@ async function verifyProvider() {
   await commitFileAction('copyRelativePath');
   await commitFileAction('copyPath');
   await commitFileAction('copy');
-  await commitFileAction('reveal');
-  await commitFileAction('open');
+  await commitFileAction('revealInOS');
+  await commitFileAction('openFile');
   assert.deepEqual(clipboardWrites.slice(-2), ['history.cpp', '/fixture/child/history.cpp'], 'normal commit paths use the selected commit repository');
   assert.deepEqual(executedCommands.slice(-2).map(([command, uri]) => [command, uri.fsPath]), [
     ['filesExplorer.copy', '/fixture/child/history.cpp'],
     ['revealFileInOS', '/fixture/child/history.cpp'],
   ], 'normal commit copy and reveal target the selected commit file');
-  assert.deepEqual(openedDocuments.at(-1), { content: 'commit snapshot' }, 'normal commit opens the selected commit object rather than the working-tree file');
+  assert.equal(openedDocuments.at(-1).fsPath, '/fixture/child/history.cpp', 'normal commit Open File opens the file on disk, not an unsaved commit-content document');
+  assert.equal(shownDocuments.at(-1)[0].uri.fsPath, '/fixture/child/history.cpp');
+  await commitFileAction('revealInExplorer');
+  assert.deepEqual([executedCommands.at(-1)[0], executedCommands.at(-1)[1].fsPath], ['revealInExplorer', '/fixture/child/history.cpp'], 'normal commit reveals the file in the Explorer view');
+  await commitFileAction('openBefore');
+  const [beforeCommand, beforeUri] = executedCommands.at(-1);
+  assert.equal(beforeCommand, 'vscode.open'); assert.equal(beforeUri.scheme, 'git');
+  assert.deepEqual(JSON.parse(beforeUri.query), { path: '/fixture/child/history.cpp', ref: 'a'.repeat(40) }, 'normal commit Open File (Before) targets the commit\'s parent, not HEAD');
+  assert.deepEqual(readObjectsRequests.at(-1), ['commit-file-action^:history.cpp'], 'the parent version is verified before opening');
+  await commitFileAction('openAfter');
+  const [afterCommand, afterUri] = executedCommands.at(-1);
+  assert.equal(afterCommand, 'vscode.open'); assert.equal(afterUri.scheme, 'git');
+  assert.deepEqual(JSON.parse(afterUri.query), { path: '/fixture/child/history.cpp', ref: 'commit-file-action' }, 'normal commit Open File (After) shows the version the commit wrote');
+  assert.deepEqual(readObjectsRequests.at(-1), ['commit-file-action:history.cpp'], 'the commit version is verified before opening');
+  const gitBackendReadObjects = provider.gitBackend.readObjects;
+  provider.gitBackend.readObjects = async () => new Map();
+  const commandsBeforeMissingAfter = executedCommands.length;
+  await commitFileAction('openAfter');
+  assert.equal(executedCommands.length, commandsBeforeMissingAfter, 'a file the commit did not write is not opened');
+  assert.match(errorMessages.at(-1), /没有修改后的版本/);
+  const commandsBeforeMissingBefore = executedCommands.length;
+  await commitFileAction('openBefore');
+  assert.equal(executedCommands.length, commandsBeforeMissingBefore, 'a file without a version before the commit is not opened');
+  assert.match(errorMessages.at(-1), /没有修改前的版本/);
+  provider.gitBackend.readObjects = gitBackendReadObjects;
+  store.setState({ files: [{ path: 'renamed-new.cpp', oldPath: 'renamed-old.cpp', status: 'R' }] });
+  await provider.handleCommitFileAction({ type: 'commitFileAction', action: 'openBefore', hash: 'commit-file-action', repositoryPath: repositories[1].path, path: 'renamed-new.cpp' });
+  assert.deepEqual(JSON.parse(executedCommands.at(-1)[1].query), { path: '/fixture/child/renamed-old.cpp', ref: 'a'.repeat(40) }, 'a renamed file is opened from its old path in the parent commit');
+  store.setState({ files: [{ path: 'gone.cpp', status: 'D' }] });
+  const commandsBeforeDeletedAfter = executedCommands.length;
+  await provider.handleCommitFileAction({ type: 'commitFileAction', action: 'openAfter', hash: 'commit-file-action', repositoryPath: repositories[1].path, path: 'gone.cpp' });
+  assert.equal(executedCommands.length, commandsBeforeDeletedAfter, 'a file deleted by the commit has no version after it');
+  store.setState({ files: [{ path: 'brand-new.cpp', status: 'A' }] });
+  const commandsBeforeAdded = executedCommands.length;
+  await provider.handleCommitFileAction({ type: 'commitFileAction', action: 'openBefore', hash: 'commit-file-action', repositoryPath: repositories[1].path, path: 'brand-new.cpp' });
+  assert.equal(executedCommands.length, commandsBeforeAdded, 'a file added by the commit has no version before it');
   store.setState({ files: [{ path: 'deleted.cpp', oldPath: 'renamed.cpp', status: 'D' }] });
-  await provider.handleCommitFileAction({ type: 'commitFileAction', action: 'open', hash: 'commit-file-action', repositoryPath: repositories[1].path, path: 'deleted.cpp' });
-  assert.deepEqual(openedDocuments.at(-1), { content: 'commit snapshot' }, 'deleted normal-commit files open their parent-commit object');
-  assert.deepEqual(readObjectsRequests.at(-1), ['commit-file-action^:renamed.cpp'], 'deleted normal-commit files resolve the pre-delete path from the parent commit');
+  const openedBeforeDeleted = openedDocuments.length;
+  await provider.handleCommitFileAction({ type: 'commitFileAction', action: 'openFile', hash: 'commit-file-action', repositoryPath: repositories[1].path, path: 'deleted.cpp' });
+  assert.equal(openedDocuments.length, openedBeforeDeleted, 'a file deleted by the commit has no file on disk to open');
   await provider.handleCommitFileAction({ type: 'commitFileAction', action: 'copyRelativePath', hash: 'other-commit', repositoryPath: repositories[1].path, path: 'history.cpp' });
   assert.equal(clipboardWrites.at(-1), '/fixture/child/history.cpp', 'stale normal-commit identity is rejected');
   assert.match(errorMessages.at(-1), /提交或文件已更新/);
@@ -1582,8 +1730,10 @@ async function verifyProvider() {
   assert.deepEqual(selections, [[repositories[1]]], 'focus uses authoritative selection pipeline that drives commit history');
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', repositoryPath: repositories[1].path, action: 'focus' });
   assert.equal(selections.length, 1, 'repeated focus must not restart commit reads');
+  assert.equal(provider.repositoryCardDisplayLocks.has(repositories[1].path), false, 'a repository with worktree changes releases its display lock once the worktree is the final selection');
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', repositoryPath: repositories[2].path, action: 'focus' });
   assert.equal(provider.commitController.selectedCommit.hash, 'clean-latest', 'clean repository opens on its latest commit');
+  assert.equal(provider.repositoryCardDisplayLocks.has(repositories[2].path), true, 'a clean repository keeps its lock until the latest commit snapshot is complete');
   const selectionsBeforeUnknownFocus = selections.length;
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', repositoryPath: 'file:///outside', action: 'focus' });
   assert.equal(selections.length, selectionsBeforeUnknownFocus, 'unknown focus target rejected');

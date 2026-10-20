@@ -3,6 +3,7 @@ import { COMMIT_LIST_SUB_PANEL_MARKUP, COMMIT_LIST_SUB_PANEL_SCRIPT, COMMIT_LIST
 import { SELECTOR_BAR_SUB_PANEL_MARKUP, SELECTOR_BAR_SUB_PANEL_SCRIPT, SELECTOR_BAR_SUB_PANEL_STYLES } from './selectorBarSubPanel';
 import { REPOSITORY_CHANGES_SCRIPT, REPOSITORY_CHANGES_STYLES } from './repositoryChangesSubPanel';
 import { OVERLAY_SCROLLBAR_SCRIPT, OVERLAY_SCROLLBAR_STYLES } from './overlayScrollbar';
+import { FILE_CONTEXT_MENU_SCRIPT } from './fileContextMenu';
 
 /**
  * gitk webview 页面骨架: 把外壳(全局样式、布局容器、消息分发、拖拽与工具函数)
@@ -65,8 +66,8 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR
   let panelResizing = null;
 
   window.addEventListener('focus', function() { vscode.postMessage({ type: 'focus' }); });
-  window.addEventListener('blur', function() { closeDropdowns(); closeCommitContextMenu(); vscode.postMessage({ type: 'blur' }); });
-  document.addEventListener('visibilitychange', function() { if (document.visibilityState !== 'visible') { closeDropdowns(); closeCommitContextMenu(); } vscode.postMessage({ type: document.visibilityState === 'visible' ? 'focus' : 'blur' }); });
+  window.addEventListener('blur', function() { closeDropdowns(); closeAllContextMenus(); vscode.postMessage({ type: 'blur' }); });
+  document.addEventListener('visibilitychange', function() { if (document.visibilityState !== 'visible') { closeDropdowns(); closeAllContextMenus(); } vscode.postMessage({ type: document.visibilityState === 'visible' ? 'focus' : 'blur' }); });
 
   let resizeFrame = 0;
   window.addEventListener('resize', function() {
@@ -265,8 +266,27 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR
 ${SELECTOR_BAR_SUB_PANEL_SCRIPT}
 ${OVERLAY_SCROLLBAR_SCRIPT}
 ${COMMIT_LIST_SUB_PANEL_SCRIPT}
+${FILE_CONTEXT_MENU_SCRIPT}
 ${CHANGED_FILES_SUB_PANEL_SCRIPT}
 ${REPOSITORY_CHANGES_SCRIPT}
+
+  function closeAllContextMenus(exceptMenu) {
+    const commitMenu = document.getElementById('commitContextMenu');
+    if (commitMenu !== exceptMenu) closeCommitContextMenu();
+    const changedFileMenu = document.getElementById('changedFileContextMenu');
+    if (changedFileMenu !== exceptMenu) closeChangedFileContextMenu();
+    const repositoryGroupMenu = document.getElementById('repositoryGroupContextMenu');
+    if (repositoryGroupMenu !== exceptMenu) closeRepositoryGroupContextMenu();
+    const repositoryMessageMenu = document.getElementById('repositoryMessageContextMenu');
+    if (repositoryMessageMenu !== exceptMenu) closeRepositoryMessageContextMenu();
+    const repositoryFileMenu = document.getElementById('repositoryFileContextMenu');
+    if (repositoryFileMenu !== exceptMenu) closeRepositoryFileContextMenu();
+  }
+  // Close every menu on any pointer button outside the active menu before the next control handles it.
+  document.addEventListener('pointerdown', function(event) {
+    if (event.target.closest('#commitContextMenu, #changedFileContextMenu, #repositoryGroupContextMenu, #repositoryMessageContextMenu, #repositoryFileContextMenu')) return;
+    closeAllContextMenus();
+  }, true);
 
   document.addEventListener('mousedown', function(event) {
     const target = event.target;

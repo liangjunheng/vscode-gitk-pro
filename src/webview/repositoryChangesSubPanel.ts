@@ -1,5 +1,7 @@
+import { FILE_CONTEXT_MENU_STYLES } from './fileContextMenu';
 // Repository worktrees have independent expansion, drafts and repository-scoped actions.
 export const REPOSITORY_CHANGES_STYLES = `
+  ${FILE_CONTEXT_MENU_STYLES}
   #filesList { display: none; }
   #repositoryChangesViewport { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; }
   #repositoryChangesList { width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: auto; padding: 12px 3px 8px 2px; }
@@ -80,14 +82,13 @@ export const REPOSITORY_CHANGES_STYLES = `
   .repo-file-status { flex: 0 0 13px; text-align: center; margin-left: auto; }
   .repo-file-row .toolbar-icon { width: 22px; height: 22px; flex: 0 0 22px; border: 0; cursor: pointer; }
   .repo-file-actions { display: flex; }
-  #repositoryFileContextMenu { position: fixed; z-index: 20; box-sizing: border-box; width: max-content; min-width: 180px; max-width: calc(100vw - 8px); max-height: calc(100vh - 8px); overflow-y: auto; margin: 0; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border)); border-radius: 5px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 4px 14px rgba(0, 0, 0, .28); }
-  #repositoryFileContextMenu:not(:popover-open) { display: none; }
-  #repositoryFileContextMenu button { display: block; box-sizing: border-box; width: 100%; max-width: 100%; padding: 5px 8px; border: 0; border-radius: 3px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: transparent; text-align: left; font: inherit; white-space: normal; overflow-wrap: anywhere; }
-  #repositoryFileContextMenu button:hover:not(:disabled) { background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-menu-selectionForeground, var(--vscode-list-hoverForeground)); }
-  #repositoryFileContextMenu button:disabled { opacity: .5; cursor: default; }
-  #repositoryFileContextMenu .context-menu-separator { height: 1px; margin: 4px 6px; background: var(--vscode-menu-separatorBackground, var(--vscode-menu-border, var(--vscode-editorWidget-border))); }
+  #repositoryGroupContextMenu, #repositoryMessageContextMenu { position: fixed; z-index: 20; box-sizing: border-box; width: max-content; min-width: 160px; max-width: calc(100vw - 8px); max-height: calc(100vh - 8px); overflow-y: auto; margin: 0; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border)); border-radius: 5px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 4px 14px rgba(0, 0, 0, .28); }
+  #repositoryGroupContextMenu:not(:popover-open), #repositoryMessageContextMenu:not(:popover-open) { display: none; }
+  #repositoryGroupContextMenu button, #repositoryMessageContextMenu button { display: block; box-sizing: border-box; width: 100%; max-width: 100%; padding: 5px 8px; border: 0; border-radius: 3px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: transparent; text-align: left; font: inherit; }
+  #repositoryGroupContextMenu button:hover, #repositoryMessageContextMenu button:hover { background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-menu-selectionForeground, var(--vscode-list-hoverForeground)); }
   .repo-file-row:hover { background: var(--vscode-list-hoverBackground); border-radius: 3px; }
   .repo-file-row.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); border-radius: 3px; }
+  .repo-file-row.context-target, .repo-group-header.context-target { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); border-radius: 3px; outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .repo-file-row.selected .repo-file-folder { color: inherit; opacity: .8; }
   .repo-file.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
 `;
@@ -99,12 +100,16 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
   const repositoryChangesNodes = new Map();
   const repositoryDisplaySnapshots = new Map();
   let repositoryCardDisplayLocks = new Set();
+  let repositoryGroupContextTarget = null;
+  let repositoryMessageContextTarget = null;
   let repositoryFileContextTarget = null;
-  const repositoryFileContextMenu = document.createElement('div');
-  repositoryFileContextMenu.id = 'repositoryFileContextMenu';
-  repositoryFileContextMenu.setAttribute('popover', 'manual');
-  repositoryFileContextMenu.innerHTML = '<button type="button" data-repository-file-action="open">显示原文件</button><button type="button" data-repository-file-action="reveal">通过文件管理器打开文件</button><div class="context-menu-separator"></div><button type="button" data-repository-file-action="copy">复制文件</button><button type="button" data-repository-file-action="copyPath">复制文件路径</button><button type="button" data-repository-file-action="copyRelativePath">复制文件相对路径</button>';
-  document.body.append(repositoryFileContextMenu);
+  let repositoryGroupContextHeader = null;
+  let repositoryFileContextRow = null;
+  const repositoryGroupContextMenu = document.createElement('div');
+  repositoryGroupContextMenu.id = 'repositoryGroupContextMenu'; repositoryGroupContextMenu.setAttribute('popover', 'manual'); document.body.append(repositoryGroupContextMenu);
+  const repositoryMessageContextMenu = document.createElement('div');
+  repositoryMessageContextMenu.id = 'repositoryMessageContextMenu'; repositoryMessageContextMenu.setAttribute('popover', 'manual'); repositoryMessageContextMenu.innerHTML = '<button type="button" data-repository-message-action="cut">剪切</button><button type="button" data-repository-message-action="copy">复制</button><button type="button" data-repository-message-action="paste">粘贴</button><div class="context-menu-separator"></div><button type="button" data-repository-message-action="selectAll">全选</button>'; document.body.append(repositoryMessageContextMenu);
+  const repositoryFileContextMenu = createFileContextMenu('repositoryFileContextMenu');
   const repositoryChangesCollapsed = new Set();
   const repositoryChangesInitialized = new Set();
   const repositoryGroupsCollapsed = new Set();
@@ -157,35 +162,49 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     button.innerHTML = '<span class="codicon codicon-' + icon + '" aria-hidden="true"></span>';
     return button;
   }
-  function closeRepositoryFileContextMenu() {
-    const menu = document.getElementById('repositoryFileContextMenu');
-    if (menu.matches(':popover-open')) menu.hidePopover();
-    repositoryFileContextTarget = null;
-  }
-  function showRepositoryFileContextMenu(event, row) {
-    const card = row.closest('.repo-changes');
-    const section = row.closest('.repo-group')?.dataset.section;
-    if (!card || !section) return;
-    event.preventDefault();
-    const repositoryPath = card.dataset.repositoryPath;
-    const filePath = row.dataset.filePath;
-    const repository = repositoryChanges.find(function(item) { return item.repositoryPath === repositoryPath; });
-    const snapshot = repository && repositoryDisplaySnapshots.get(repositoryPath);
-    const historical = section === 'commit' && snapshot?.kind === 'commit';
-    const file = historical
-      ? snapshot.files.find(function(item) { return item.path === filePath; })
-      : repository && (section === 'staged' ? repository.staged : repository.unstaged).find(function(item) { return item.path === filePath; });
-    if (!file) return;
-    repositoryFileContextTarget = historical
-      ? { kind: 'commit', hash: snapshot.commit.hash, repositoryPath: repositoryPath, path: filePath }
-      : { kind: 'worktree', repositoryPath: repositoryPath, section: section, path: filePath };
-    const menu = document.getElementById('repositoryFileContextMenu');
-    menu.querySelector('[data-repository-file-action="open"]').disabled = file.isGitlink || (!historical && file.status === 'D');
-    menu.querySelector('[data-repository-file-action="reveal"]').disabled = file.status === 'D' || file.isGitlink;
+  function closeRepositoryGroupContextMenu() { if (repositoryGroupContextMenu.matches(':popover-open')) repositoryGroupContextMenu.hidePopover(); if (repositoryGroupContextHeader) repositoryGroupContextHeader.classList.remove('context-target'); repositoryGroupContextHeader = null; repositoryGroupContextTarget = null; }
+  function closeRepositoryMessageContextMenu() { if (repositoryMessageContextMenu.matches(':popover-open')) repositoryMessageContextMenu.hidePopover(); repositoryMessageContextTarget = null; }
+  function closeRepositoryFileContextMenu() { if (repositoryFileContextMenu.matches(':popover-open')) repositoryFileContextMenu.hidePopover(); if (repositoryFileContextRow) repositoryFileContextRow.classList.remove('context-target'); repositoryFileContextRow = null; repositoryFileContextTarget = null; }
+  function positionRepositoryContextMenu(menu, event) {
     menu.showPopover();
     const bounds = menu.getBoundingClientRect();
     menu.style.left = Math.max(4, Math.min(event.clientX, window.innerWidth - bounds.width - 4)) + 'px';
     menu.style.top = Math.max(4, Math.min(event.clientY, window.innerHeight - bounds.height - 4)) + 'px';
+  }
+  function showRepositoryGroupContextMenu(event, header) {
+    const card = header.closest('.repo-changes'); const group = header.closest('.repo-group');
+    const section = group?.dataset.section;
+    if (!card || (section !== 'unstaged' && section !== 'staged')) return;
+    event.preventDefault();
+    closeAllContextMenus(repositoryGroupContextMenu);
+    repositoryGroupContextHeader = header; header.classList.add('context-target');
+    repositoryGroupContextTarget = { repositoryPath: card.dataset.repositoryPath, section: section };
+    repositoryGroupContextMenu.innerHTML = section === 'unstaged'
+      ? '<button type="button" data-repository-group-action="discard">放弃所有更改</button><button type="button" data-repository-group-action="stage">暂存所有更改</button>'
+      : '<button type="button" data-repository-group-action="discardStaged">放弃所有更改</button>';
+    positionRepositoryContextMenu(repositoryGroupContextMenu, event);
+  }
+  function showRepositoryMessageContextMenu(event, input) {
+    event.preventDefault(); closeAllContextMenus(repositoryMessageContextMenu);
+    repositoryMessageContextTarget = input;
+    positionRepositoryContextMenu(repositoryMessageContextMenu, event);
+  }
+  function showRepositoryFileContextMenu(event, row) {
+    const card = row.closest('.repo-changes'); const group = row.closest('.repo-group'); const section = group?.dataset.section;
+    if (!card || !section) return;
+    const repositoryPath = card.dataset.repositoryPath; const filePath = row.dataset.filePath;
+    const repository = repositoryChanges.find(function(item) { return item.repositoryPath === repositoryPath; });
+    const snapshot = repository && repositoryDisplaySnapshots.get(repositoryPath);
+    const historical = section === 'commit' && snapshot?.kind === 'commit';
+    const file = historical ? snapshot.files.find(function(item) { return item.path === filePath; })
+      : repository && (section === 'staged' ? repository.staged : repository.unstaged).find(function(item) { return item.path === filePath; });
+    if (!file) return;
+    event.preventDefault(); closeAllContextMenus(repositoryFileContextMenu);
+    repositoryFileContextRow = row; row.classList.add('context-target');
+    repositoryFileContextTarget = historical ? { kind: 'commit', hash: snapshot.commit.hash, repositoryPath: repositoryPath, path: filePath }
+      : { kind: 'worktree', repositoryPath: repositoryPath, section: section, path: filePath };
+    applyFileContextMenuState(repositoryFileContextMenu, file, historical);
+    positionRepositoryContextMenu(repositoryFileContextMenu, event);
   }
   const repositoryFallbackSetiIconDefinitions = {
     default: ['E023', '#d4d7d6'], c: ['E00C', '#519aba'], cHeader: ['E00C', '#a074c4'], cpp: ['E01A', '#519aba'], cppHeader: ['E01A', '#a074c4'],
@@ -282,7 +301,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     if (!repository) return;
     if (isWorkingTreeHash(commit.hash)) {
       // A card-click may temporarily select the remembered worktree identity. The host owns
-      // the display lock and only explicit worktree/file actions are allowed to replace it.
+      // the display lock and releases it once the card's final selection is chosen.
       if (repositoryCardDisplayLocks.has(commit.repositoryPath)) return;
       repositoryDisplaySnapshots.set(commit.repositoryPath, { kind: 'worktree' });
       return;
@@ -415,14 +434,6 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
   }
   function renderRepositoryChanges() {
     const list = document.getElementById('repositoryChangesList');
-    if (repositoryFileContextTarget) {
-      const repository = repositoryChanges.find(function(item) { return item.repositoryPath === repositoryFileContextTarget.repositoryPath; });
-      const snapshot = repository && repositoryDisplaySnapshots.get(repositoryFileContextTarget.repositoryPath);
-      const files = repositoryFileContextTarget.kind === 'commit'
-        ? (snapshot?.kind === 'commit' && snapshot.commit.hash === repositoryFileContextTarget.hash ? snapshot.files : undefined)
-        : repository && (repositoryFileContextTarget.section === 'staged' ? repository.staged : repository.unstaged);
-      if (!files || !files.some(function(file) { return file.path === repositoryFileContextTarget.path; })) closeRepositoryFileContextMenu();
-    }
     focusedRepositoryChangesPath = repositoryChangesRevealPath
       || (selectedRepositoryPaths.length === 1 ? selectedRepositoryPaths[0] : '');
     const paths = new Set(repositoryChanges.map(function(repository) { return repository.repositoryPath; }));
@@ -555,11 +566,13 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
   });
   document.addEventListener('click', function(event) {
     if (!event.target.closest('.repo-commit-actions')) repositoryChangesList.querySelectorAll('.repo-commit-menu').forEach(function(menu) { menu.hidden = true; });
+    if (!event.target.closest('#repositoryGroupContextMenu')) closeRepositoryGroupContextMenu();
+    if (!event.target.closest('#repositoryMessageContextMenu')) closeRepositoryMessageContextMenu();
     if (!event.target.closest('#repositoryFileContextMenu')) closeRepositoryFileContextMenu();
   });
   document.addEventListener('keydown', function(event) {
     if (event.key === 'Escape') repositoryChangesList.querySelectorAll('.repo-commit-menu').forEach(function(menu) { menu.hidden = true; });
-    if (event.key === 'Escape') closeRepositoryFileContextMenu();
+    if (event.key === 'Escape') { closeRepositoryGroupContextMenu(); closeRepositoryMessageContextMenu(); closeRepositoryFileContextMenu(); }
   });
   repositoryChangesList.addEventListener('input', function(event) {
     if (!event.target.matches('.repo-message')) return;
@@ -658,16 +671,34 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
   });
   repositoryChangesList.addEventListener('contextmenu', function(event) {
     const row = event.target.closest('.repo-file-row');
-    if (!row) return;
-    const button = row.querySelector('[data-repo-action="file"]');
-    if (!button) return;
-    button.click();
-    showRepositoryFileContextMenu(event, row);
+    if (row) { showRepositoryFileContextMenu(event, row); return; }
+    const header = event.target.closest('.repo-group-header');
+    if (header) { showRepositoryGroupContextMenu(event, header); return; }
+    const input = event.target.closest('.repo-message');
+    if (input) { showRepositoryMessageContextMenu(event, input); return; }
+    if (event.target.closest('.repo-changes')) event.preventDefault();
   });
-  document.getElementById('repositoryFileContextMenu').addEventListener('click', function(event) {
-    const button = event.target.closest('[data-repository-file-action]');
+  repositoryGroupContextMenu.addEventListener('click', function(event) {
+    const button = event.target.closest('[data-repository-group-action]');
+    if (!button || !repositoryGroupContextTarget) return;
+    const repository = repositoryChanges.find(function(item) { return item.repositoryPath === repositoryGroupContextTarget.repositoryPath; });
+    const files = repository && (repositoryGroupContextTarget.section === 'staged' ? repository.staged : repository.unstaged);
+    if (files) vscode.postMessage({ type: 'repositoryChangesAction', repositoryPath: repositoryGroupContextTarget.repositoryPath, action: button.dataset.repositoryGroupAction, section: repositoryGroupContextTarget.section, paths: files.filter(function(file) { return !file.isConflict; }).map(function(file) { return file.path; }), untrackedPaths: files.filter(function(file) { return file.isUntracked; }).map(function(file) { return file.path; }) });
+    closeRepositoryGroupContextMenu();
+  });
+  repositoryMessageContextMenu.addEventListener('click', function(event) {
+    const button = event.target.closest('[data-repository-message-action]');
+    if (!button || !repositoryMessageContextTarget) return;
+    repositoryMessageContextTarget.focus();
+    const action = button.dataset.repositoryMessageAction;
+    if (action === 'selectAll') repositoryMessageContextTarget.select();
+    else document.execCommand(action);
+    closeRepositoryMessageContextMenu();
+  });
+  repositoryFileContextMenu.addEventListener('click', function(event) {
+    const button = event.target.closest('[data-file-action]');
     if (!button || button.disabled || !repositoryFileContextTarget) return;
-    const action = button.dataset.repositoryFileAction;
+    const action = button.dataset.fileAction;
     if (repositoryFileContextTarget.kind === 'commit') {
       vscode.postMessage({ type: 'commitFileAction', action: action, hash: repositoryFileContextTarget.hash, repositoryPath: repositoryFileContextTarget.repositoryPath, path: repositoryFileContextTarget.path });
     } else {

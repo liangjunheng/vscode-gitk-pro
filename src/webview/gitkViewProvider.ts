@@ -5,6 +5,7 @@ import { type AppState, type ChangeSetMode, type ChangedFile, GitBranchOption, C
 import { defaultPushTarget, getCommitFiles, getGitAheadBehind, getGitAheadCount, getGitBranches, getGitlinkPathsInCommit, getPushPlan, type PushSourceBranch, type PushTargetOption, readCurrentCommitMessage } from '../git/gitLogProvider';
 import { checkoutBranch, checkoutRemoteBranch, commitDetails, hasConflicts, indexGitlink, push, rangeCommits, resolveRevision, restoreAll, restoreSubmodule, trackedPaths, type NativeCommitDetails, type NativePushResult } from '../git/gitNativeOperations';
 import { MultiDiffPanel } from './multiDiffPanel';
+import { FILE_CONTEXT_MENU_ACTIONS } from './fileContextMenu';
 import { readMergeOperation, runMergeOperation, type MergeOperation } from '../git/mergeOperation';
 import { MergeEditorSessions } from './mergeEditorSessions';
 import { CommitPanel, type CommitPanelSnapshot, type CommitCard, type CommitCardStatePatch } from './commitPanel';
@@ -1810,7 +1811,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             }
             if (input.type === 'repositoryChangesFileAction') {
                 if (!['conflict', 'staged', 'unstaged'].includes(input.section)
-                    || !['open', 'reveal', 'copy', 'copyPath', 'copyRelativePath'].includes(input.action)
+                    || !FILE_CONTEXT_MENU_ACTIONS.includes(input.action)
                     || !this.isRepositoryFilePath(input.path)) { return; }
                 const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
                     .find(candidate => candidate.repoOption.path === input.repositoryPath);
@@ -1828,11 +1829,27 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     await vscode.env.clipboard.writeText(fileUri.fsPath);
                 } else if (input.action === 'copy') {
                     await this.copyFileResource(fileUri);
-                } else if (input.action === 'reveal') {
+                } else if (input.action === 'revealInOS') {
                     if (file.status !== 'D' && !file.isGitlink) await vscode.commands.executeCommand('revealFileInOS', fileUri);
+                } else if (input.action === 'revealInExplorer') {
+                    if (file.status !== 'D' && !file.isGitlink) await vscode.commands.executeCommand('revealInExplorer', fileUri);
+                } else if (input.action === 'openBefore') {
+                    // A worktree file's "before" is HEAD; an added or untracked file has none.
+                    if (file.status !== 'A' && !file.isUntracked && !file.isGitlink) await this.openGitRevisionFile(fileUri, 'HEAD');
                 } else if (file.status !== 'D' && !file.isGitlink) {
                     await this.openRepositoryChangesFile(fileUri, input.path);
                 }
+                return;
+            }
+            if (input.type === 'repositoryChangesAction' && input.action === 'discardStaged') {
+                if (input.section !== 'staged' || !Array.isArray(input.paths) || !input.paths.every(file => typeof file === 'string')) { return; }
+                const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+                    .find(candidate => candidate.repoOption.path === input.repositoryPath);
+                if (!branch) { return; }
+                const snapshot = await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(branch);
+                const paths = [...new Set(input.paths)].filter(path => snapshot.staged.some(file => file.path === path));
+                await this.discardRepositoryStagedChanges(input.repositoryPath, paths,
+                    new Set(snapshot.staged.filter(file => file.status === 'A' || file.isUntracked).map(file => file.path)));
                 return;
             }
             if (input.action === 'worktree') {
@@ -1871,10 +1888,35 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             && !filePath.split('/').some(segment => segment.length === 0 || segment === '.' || segment === '..');
     }
 
+    private async discardRepositoryStagedChanges(
+        repositoryPath: string,
+        paths: readonly string[],
+        addedPaths: ReadonlySet<string>,
+    ): Promise<void> {
+        if (paths.length === 0) { return; }
+        const discardSelection = await this.confirmDiscardWorkingTreeChanges(paths, addedPaths);
+        if (!discardSelection) { return; }
+        const rootUri = this.getRepoRootUri(repositoryPath);
+        if (!rootUri) { return; }
+        await this.gitBackend.unstage(rootUri, discardSelection.paths);
+        const trackedPaths = discardSelection.paths.filter(filePath => !addedPaths.has(filePath));
+        for (const filePath of discardSelection.paths) {
+            if (addedPaths.has(filePath)) {
+                await vscode.workspace.fs.delete(vscode.Uri.joinPath(rootUri, filePath), {
+                    recursive: true, useTrash: discardSelection.discardUntrackedToTrash,
+                });
+            }
+        }
+        if (trackedPaths.length > 0) { await this.gitBackend.discardWorktree(rootUri, trackedPaths); }
+        const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+            .find(branch => branch.repoOption.path === repositoryPath);
+        if (branch) { await this.uncommittedFilesWatcher.refreshUncommittedFilesByHeadBranch(branch); }
+    }
+
     private async handleCommitFileAction(input: Extract<GitkIntent, { type: 'commitFileAction' }>): Promise<void> {
         if (input.hash !== this.currentHash
             || input.repositoryPath !== this.currentRepositoryPath
-            || !['open', 'reveal', 'copy', 'copyPath', 'copyRelativePath'].includes(input.action)
+            || !FILE_CONTEXT_MENU_ACTIONS.includes(input.action)
             || !this.isRepositoryFilePath(input.path)) {
             void vscode.window.showWarningMessage('提交或文件已更新，请重新打开文件菜单。');
             return;
@@ -1890,10 +1932,17 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 await vscode.env.clipboard.writeText(fileUri.fsPath);
             } else if (input.action === 'copy') {
                 await this.copyFileResource(fileUri);
-            } else if (input.action === 'reveal') {
+            } else if (input.action === 'revealInOS') {
                 if (file.status !== 'D' && !file.isGitlink) await vscode.commands.executeCommand('revealFileInOS', fileUri);
-            } else if (!file.isGitlink) {
-                await this.openCommitFileVersion(rootUri, input.hash, file);
+            } else if (input.action === 'revealInExplorer') {
+                if (file.status !== 'D' && !file.isGitlink) await vscode.commands.executeCommand('revealInExplorer', fileUri);
+            } else if (input.action === 'openBefore') {
+                if (file.status !== 'A' && !file.isGitlink) await this.openCommitFileBefore(rootUri, input.hash, file);
+            } else if (input.action === 'openAfter') {
+                if (file.status !== 'D' && !file.isGitlink) await this.openCommitFileAfter(rootUri, input.hash, file);
+            } else if (file.status !== 'D' && !file.isGitlink) {
+                // Open the file on disk, exactly like a worktree file; a commit-content document would show as unsaved.
+                await this.openRepositoryChangesFile(fileUri, input.path);
             }
         } catch (error) {
             void vscode.window.showErrorMessage('提交变更文件操作失败：' + (error instanceof Error ? error.message : String(error)));
@@ -1909,19 +1958,38 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async openCommitFileVersion(rootUri: vscode.Uri, hash: string, file: ChangedFile): Promise<void> {
-        const object = file.status === 'D'
-            ? `${hash}^:${file.oldPath || file.path}`
-            : `${hash}:${file.path}`;
+    /** A normal commit's "before" is the file as its first parent had it; a renamed file is read from its old path. */
+    private async openCommitFileBefore(rootUri: vscode.Uri, hash: string, file: ChangedFile): Promise<void> {
+        const beforePath = file.oldPath || file.path;
+        const object = `${hash}^:${beforePath}`;
         const contents = await this.gitBackend.readObjects(rootUri, [object]);
-        const content = contents.get(object);
-        if (content === undefined) { throw new Error('该提交中没有可显示的文件内容'); }
-        const document = await vscode.workspace.openTextDocument({ content });
-        await vscode.window.showTextDocument(document, {
-            viewColumn: vscode.ViewColumn.Active,
-            preserveFocus: false,
-            preview: false,
-        });
+        if (contents.get(object) === undefined) {
+            void vscode.window.showWarningMessage(`该提交没有修改前的版本：${beforePath}`);
+            return;
+        }
+        const parent = await resolveRevision(rootUri, `${hash}^`);
+        if (!parent) {
+            void vscode.window.showWarningMessage(`该提交没有父提交：${beforePath}`);
+            return;
+        }
+        await this.openGitRevisionFile(vscode.Uri.joinPath(rootUri, ...beforePath.split('/')), parent);
+    }
+
+    /** A normal commit's "after" is the file as that commit wrote it, shown read-only; it is not compared with the disk file. */
+    private async openCommitFileAfter(rootUri: vscode.Uri, hash: string, file: ChangedFile): Promise<void> {
+        const object = `${hash}:${file.path}`;
+        const contents = await this.gitBackend.readObjects(rootUri, [object]);
+        if (contents.get(object) === undefined) {
+            void vscode.window.showWarningMessage(`该提交没有修改后的版本：${file.path}`);
+            return;
+        }
+        await this.openGitRevisionFile(vscode.Uri.joinPath(rootUri, ...file.path.split('/')), hash);
+    }
+
+    private async openGitRevisionFile(fileUri: vscode.Uri, ref: string): Promise<void> {
+        // Match VS Code Git's Source Control "Open File (HEAD)" URI contract: the git scheme with a JSON query.
+        const gitUri = fileUri.with({ scheme: 'git', query: JSON.stringify({ path: fileUri.fsPath, ref }) });
+        await vscode.commands.executeCommand('vscode.open', gitUri, { preview: false });
     }
 
     private async openRepositoryChangesFile(fileUri: vscode.Uri, filePath: string): Promise<void> {
@@ -1981,6 +2049,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             if (hasChanges) {
                 this.pendingGitlinkWorktreeSnapshot = { repositoryPath, branch: selectedBranch, changes };
                 const changed = this.commitController.selectCommit(new CommitMetadata({ hash: 'uncommitted', gitBranchOption: selectedBranch }));
+                // Uncommitted Changes is this card's final selection: release the lock so its Commit controls
+                // reach the webview in the same push as the selection.
+                this.repositoryCardDisplayLocks?.delete(repositoryPath);
+                this.schedulePushState();
                 if (!changed) {
                     this.pendingGitlinkWorktreeSnapshot = undefined;
                     await this.selectWorkingTreeChanges(changes, false, false);

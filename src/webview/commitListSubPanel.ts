@@ -63,6 +63,7 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   .commit-detail-value { grid-column: 3; grid-row: 1; min-width: 0; overflow-wrap: anywhere; color: var(--vscode-editor-foreground, inherit); line-height: 17px; }
   .commit-detail-value--hash, .commit-detail-value--parents { font-family: var(--vscode-editor-font-family, monospace); font-size: calc(var(--vscode-font-size, 13px) - 1px); }
   .commit-row.selected { background: var(--vscode-list-activeSelectionBackground, #094771); outline: 1px solid var(--vscode-focusBorder, #007acc); outline-offset: -1px; }
+  .commit-row.context-target { background: var(--vscode-list-activeSelectionBackground, #094771); outline: 1px solid var(--vscode-focusBorder, #007acc); outline-offset: -1px; }
   .commit-row.working-tree:hover { background: var(--vscode-list-hoverBackground); }
   /* 空分组虚拟行置灰: 降透明度 + 默认光标; 不用 pointer-events:none(曾导致点击完全不触发无法排查), 点击拦截由 JS 的 classList.contains('disabled') 负责。 */
   .commit-row.working-tree.disabled { opacity: .5; cursor: default; }
@@ -366,17 +367,25 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     return { title: title, body: body };
   }
 
+  document.getElementById('commitSection').addEventListener('contextmenu', function(event) {
+    if (event.target.closest('#searchInput')) {
+      showRepositoryMessageContextMenu(event, document.getElementById('searchInput'));
+      return;
+    }
+    event.preventDefault();
+    if (!event.target.closest('#commitList .commit-row:not(.working-tree)[data-hash][data-repository-path]')) closeAllContextMenus();
+  });
+
   document.getElementById('commitList').addEventListener('contextmenu', function(event) {
     var row = event.target.closest('.commit-row');
     if (!row || row.classList.contains('working-tree')) return;
     event.preventDefault();
     var hash = row.getAttribute('data-hash');
     var repositoryPath = row.getAttribute('data-repository-path');
-    if (!hash || !repositoryPath) return;
-    selectedCommitHash = hash;
-    selectedCommitRepositoryPath = repositoryPath;
-    applyCommitSelection(hash, repositoryPath);
+    if (!hash || !repositoryPath) { closeAllContextMenus(); return; }
+    setCommitContextTarget(row, hash, repositoryPath);
     var menu = document.getElementById('commitContextMenu');
+    closeAllContextMenus(menu);
     var toggle = menu.querySelector('[data-commit-action="toggleDescription"]');
     var expanded = row.classList.contains('expanded');
     toggle.querySelector('span').textContent = expanded ? '关闭描述' : '展开描述';
@@ -394,6 +403,17 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     menu.style.left = left + 'px';
     menu.style.top = top + 'px';
   });
+
+  var commitContextTarget = null;
+  function setCommitContextTarget(row, hash, repositoryPath) {
+    clearCommitContextTarget();
+    commitContextTarget = { row: row, hash: hash, repositoryPath: repositoryPath };
+    row.classList.add('context-target');
+  }
+  function clearCommitContextTarget() {
+    if (commitContextTarget?.row) commitContextTarget.row.classList.remove('context-target');
+    commitContextTarget = null;
+  }
 
   function refClass(ref) {
     if (ref === 'HEAD') return 'ref-head';
