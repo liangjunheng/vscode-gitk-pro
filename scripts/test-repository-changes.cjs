@@ -1524,7 +1524,11 @@ async function verifyProvider() {
         resolveRevision: async (_uri, spec) => spec.endsWith('^') ? 'a'.repeat(40) : undefined,
         commitDetails: async (uri, hashes) => {
           commitDetailReads.push([uri.toString(), [...hashes]]);
-          return hashes.map(hash => ({ hash, authorDate: branchFixture.find(branch => branch.hash === hash)?.authorDate }));
+          return hashes.map(hash => ({
+            hash, shortHash: hash.slice(0, 8), author: 'author ' + hash[0],
+            subject: 'subject ' + hash[0], message: 'subject ' + hash[0],
+            authorDate: branchFixture.find(branch => branch.hash === hash)?.authorDate,
+          }));
         },
         pull: async (uri, remote, remoteBranch, localBranch) => { pulls.push([uri.toString(), remote, remoteBranch, localBranch]); },
         push: async (uri, request) => { pushes.push([uri.toString(), request.remote, request.remoteBranch, request.sourceBranchName, request.sourceHash]); throw new Error('stop after push'); },
@@ -1761,14 +1765,15 @@ async function verifyProvider() {
   provider.selectedRepoTotalBranchWatcher = { refreshSelectedRepositories: () => selectorsRefreshed++ };
   provider.schedulePushState = () => pushed++;
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', repositoryPath: repositories[1].path, action: 'branch' });
-  assert.deepEqual(branchItems.map(item => item.label), ['【本地分支】3 个', '$(target) main', '$(git-branch) feature/y', '$(git-branch) feature/x', '【远程分支 / origin】2 个', '$(cloud) remote', '$(cloud) older'], 'group local/remote refs and sort each group by latest tip while omitting duplicate local refs, remote HEAD aliases and detached entries');
+  assert.deepEqual(branchItems.map(item => item.label), ['【本地分支】3 个', '$(git-branch) main', '$(git-branch) feature/y', '$(git-branch) feature/x', '【远程分支 / origin】2 个', '$(cloud) origin/remote', '$(cloud) origin/older'], 'group local/remote refs and sort each group by latest tip while omitting duplicate local refs, remote HEAD aliases and detached entries');
   assert.deepEqual(branchItems.filter(item => !item.branch).map(item => item.kind), [-1, -1]);
-  assert.equal(options.title, 'child：切换分支');
+  assert.equal(options.title, undefined);
+  assert.equal(options.placeHolder, '选择要签出的分支或标记');
   assert.equal(options.matchOnDescription, true); assert.equal(options.matchOnDetail, true);
-  assert.equal(branchItems[1].description, '本地 · 当前分支');
-  assert.equal(branchItems[2].description, '本地');
-  assert.equal(branchItems.at(-1).description, '远程 · origin');
-  assert.match(branchItems.at(-1).detail, /origin\s+\u00b7\s+最新提交/);
+  assert.match(branchItems[1].description, /^2↓ 4↑ \$\(circle-small-filled\) \d+ (?:天|周|个月|年)前$/, 'current branch title shows sync counts and relative tip time');
+  assert.match(branchItems[2].description, /^\d+ (?:天|周|个月|年)前$/, 'local branch title shows relative tip time');
+  assert.match(branchItems.at(-1).description, /^\d+ (?:天|周|个月|年)前$/, 'remote branch title shows relative tip time');
+  assert.equal(branchItems.at(-1).detail, 'author g $(circle-small-filled) gggggggg $(circle-small-filled) subject g', 'detail shows author, short hash, and commit subject');
   assert.deepEqual(commitDetailReads[0][1], ['a'.repeat(40), 'b'.repeat(40), 'f'.repeat(40), 'c'.repeat(40), 'g'.repeat(40)], 'tip dates are read once per unique branch tip');
   assert.deepEqual(branchReads, [repositories[1].path]);
   assert.deepEqual(checkouts, [[repositories[1].path, 'feature/x']], 'checkout belongs to clicked repository, not selected parent');
@@ -1792,8 +1797,8 @@ async function verifyProvider() {
   [branchFixture[0], branchFixture[1]] = [branchFixture[1], branchFixture[0]];
   await provider.pickRepositoryChangesBranch(repositories[1].path);
   assert.deepEqual(branchItems.filter(item => !item.branch).map(item => item.label), ['【本地分支】3 个', '【远程分支 / origin】2 个', '【远程分支 / upstream】1 个']);
-  assert.equal(branchItems.find(item => item.branch?.name === 'refs/heads/main').description, '本地 · 当前分支');
-  assert.equal(branchItems.at(-1).label, '$(cloud) team/topic', 'remote grouping preserves nested branch names');
+  assert.match(branchItems.find(item => item.branch?.name === 'refs/heads/main').description, /^2↓ 4↑ \$\(circle-small-filled\) /);
+  assert.equal(branchItems.at(-1).label, '$(cloud) upstream/team/topic', 'remote grouping preserves the full remote branch name');
   const selectedWorktrees = [];
   provider.selectCommitPanelRepository = async branch => branch;
   provider.commitController.selectCommit = commit => { selectedWorktrees.push(commit); return true; };

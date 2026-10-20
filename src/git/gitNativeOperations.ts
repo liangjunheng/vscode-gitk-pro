@@ -293,6 +293,8 @@ export interface NativeCommitDetails {
     shortHash: string;
     message: string;
     subject?: string;
+    author?: string;
+    authorEmail?: string;
     authorDate?: string;
 }
 

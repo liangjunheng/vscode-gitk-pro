@@ -31,7 +31,9 @@ type SetiIconDefinitions = Record<string, readonly [string, string]>;
 
 type BranchTip = Readonly<{
     timestamp: number;
-    authorDate?: string;
+    author?: string;
+    shortHash: string;
+    subject?: string;
 }>;
 
 const SETI_ICON_DEFINITION_IDS: Readonly<Record<string, string>> = {
@@ -2107,40 +2109,58 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 const parsed = Date.parse(detail.authorDate ?? '');
                 branchTipByHash.set(detail.hash, {
                     timestamp: Number.isNaN(parsed) ? 0 : Math.floor(parsed / 1000),
-                    authorDate: detail.authorDate,
+                    author: detail.author,
+                    shortHash: detail.shortHash || detail.hash.slice(0, 8),
+                    subject: (detail.subject ?? detail.message ?? '').split(/\r?\n/, 1)[0].trim(),
                 });
             }
         } catch {
-            // 提交时间只是排序增强信息; 读取失败时仍保留分支切换能力, 并回退到名称排序。
+            // 提交信息只是显示增强; 读取失败时仍保留分支切换能力, 并回退到现有时间和短 hash。
         }
-        const tipTimestamp = (branch: GitBranchOption): number => branchTipByHash.get(branch.hash)?.timestamp ?? 0;
+        const tipTimestamp = (branch: GitBranchOption): number =>
+            branchTipByHash.get(branch.hash)?.timestamp ?? branch.tipTimestamp ?? 0;
         const byLatestTip = (left: GitBranchOption, right: GitBranchOption) =>
             tipTimestamp(right) - tipTimestamp(left) || left.label.localeCompare(right.label);
-        const formatTipDate = (branch: GitBranchOption): string => {
+        const formatTipDate = (branch: GitBranchOption): string | undefined => {
             const timestamp = tipTimestamp(branch);
-            if (timestamp <= 0) { return '最新提交时间未知'; }
-            return '最新提交 ' + new Date(timestamp * 1000).toLocaleString(undefined, {
-                year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-            });
+            if (timestamp <= 0) { return undefined; }
+            const elapsedSeconds = Math.max(0, Math.floor(Date.now() / 1000) - timestamp);
+            if (elapsedSeconds < 60) { return elapsedSeconds < 10 ? '现在' : elapsedSeconds + ' 秒前'; }
+            const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+            if (elapsedMinutes < 60) { return elapsedMinutes + ' 分钟前'; }
+            const elapsedHours = Math.floor(elapsedMinutes / 60);
+            if (elapsedHours < 24) { return elapsedHours + ' 小时前'; }
+            const elapsedDays = Math.floor(elapsedHours / 24);
+            if (elapsedDays < 7) { return elapsedDays + ' 天前'; }
+            if (elapsedDays < 30) { return Math.floor(elapsedDays / 7) + ' 周前'; }
+            if (elapsedDays < 365) { return Math.floor(elapsedDays / 30) + ' 个月前'; }
+            return Math.floor(elapsedDays / 365) + ' 年前';
         };
-        const formatHash = (branch: GitBranchOption): string => branch.hash.slice(0, 8);
-        const formatLocalDetail = (branch: GitBranchOption): string => [
-            branch.upstreamName ? '跟踪 ' + branch.upstreamName : undefined,
-            formatTipDate(branch),
-            formatHash(branch),
-        ].filter((value): value is string => Boolean(value)).join('  ·  ');
-        const formatRemoteDetail = (branch: GitBranchOption, remoteName: string): string => [
-            '远程 ' + remoteName,
-            formatTipDate(branch),
-            formatHash(branch),
-        ].join('  ·  ');
+        const formatDescription = (branch: GitBranchOption): string | undefined => {
+            const sync = branch.kind === 'current'
+                ? (() => {
+                    const behind = Math.max(0, this.behindCommitCountByRepository.get(repositoryPath) ?? 0);
+                    const ahead = Math.max(0, this.unpushedCommitCountByRepository.get(repositoryPath) ?? 0);
+                    return behind !== 0 || ahead !== 0 ? behind + '↓ ' + ahead + '↑' : undefined;
+                })()
+                : undefined;
+            const description = [sync, formatTipDate(branch)]
+                .filter((value): value is string => Boolean(value));
+            return description.length > 0 ? description.join(' $(circle-small-filled) ') : undefined;
+        };
+        const formatDetail = (branch: GitBranchOption): string => {
+            const tip = branchTipByHash.get(branch.hash);
+            return [tip?.author, tip?.shortHash ?? branch.hash.slice(0, 8), tip?.subject]
+                .filter((value): value is string => Boolean(value))
+                .join(' $(circle-small-filled) ');
+        };
         if (local.size > 0) {
             items.push({ label: '【本地分支】' + local.size + ' 个', kind: vscode.QuickPickItemKind.Separator });
             items.push(...[...local.values()].sort((left, right) =>
                 Number(right.kind === 'current') - Number(left.kind === 'current') || byLatestTip(left, right)).map(branch => ({
-                label: (branch.kind === 'current' ? '$(target) ' : '$(git-branch) ') + branch.label,
-                description: branch.kind === 'current' ? '本地 · 当前分支' : '本地',
-                detail: formatLocalDetail(branch),
+                label: '$(git-branch) ' + branch.label,
+                description: formatDescription(branch),
+                detail: formatDetail(branch),
                 branch,
             })));
         }
@@ -2157,15 +2177,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             latestTip(rightBranches) - latestTip(leftBranches) || leftName.localeCompare(rightName))) {
             items.push({ label: '【远程分支 / ' + remoteName + '】' + remoteBranches.length + ' 个', kind: vscode.QuickPickItemKind.Separator });
             items.push(...remoteBranches.sort(byLatestTip).map(branch => ({
-                label: '$(cloud) ' + branch.name.slice(('refs/remotes/' + remoteName + '/').length),
-                description: '远程 · ' + remoteName,
-                detail: formatRemoteDetail(branch, remoteName),
+                label: '$(cloud) ' + branch.label,
+                description: formatDescription(branch),
+                detail: formatDetail(branch),
                 branch,
             })));
         }
         const picked = await vscode.window.showQuickPick(items, {
-            title: repository.label + '：切换分支',
-            placeHolder: '搜索分支名称或远程仓库，选择后切换',
+            placeHolder: '选择要签出的分支或标记',
             matchOnDescription: true,
             matchOnDetail: true,
         });
