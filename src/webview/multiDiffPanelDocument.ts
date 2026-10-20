@@ -33,7 +33,7 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 #parent-commit-hash{flex:0 0 auto;padding:2px 6px;border:1px solid color-mix(in srgb,var(--vscode-badge-background) 64%,var(--vscode-widget-border));border-radius:10px;color:var(--vscode-badge-foreground,var(--vscode-foreground));background:color-mix(in srgb,var(--vscode-badge-background) 78%,transparent);font-family:var(--vscode-editor-font-family,monospace);font-size:calc(var(--gitk-ui-font-size) * .85);line-height:1.2;white-space:nowrap}
 #loading{min-height:calc(100vh - var(--parent-navigation-height) - 14px);display:grid;place-items:center;color:var(--vscode-descriptionForeground)}
 #loading[hidden]{display:none}
-#list{width:100%;padding:8px}.multi-virtual-root{width:100%;min-width:0}.multi-virtual-spacer{width:1px;pointer-events:none}.multi-virtual-cards{display:flow-root;width:100%;min-width:0}
+#list{display:block;width:100%;margin:0;padding:8px 0}.multi-virtual-root{width:100%;min-width:0}.multi-virtual-spacer{width:1px;pointer-events:none}.multi-virtual-cards{display:flow-root;width:100%;min-width:0}
 /* 渲染中：卡片已在文档流内（保证 Monaco 拿到真实宽度），仅视觉隐藏，避免逐个跳动。 */
 #list.rendering{visibility:hidden}
 /* overflow:clip 按圆角裁掉内容溢出, 又不像 overflow:hidden 那样创建滚动容器,
