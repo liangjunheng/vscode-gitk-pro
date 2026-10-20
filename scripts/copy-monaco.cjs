@@ -9,7 +9,7 @@ const assets = [
         name: 'Merge Diff3',
         source: path.join(root, 'node_modules', 'node-diff3', 'dist'),
         target: path.join(root, 'out', 'webview', 'vendor'),
-        files: ['diff3.cjs'],
+        files: ['diff3.cjs', 'diff3.cjs.map'],
     },
     {
         name: 'Merge Diff3 License',

@@ -13,6 +13,7 @@ node_modules/**
 
 # Keep compiled extension JavaScript, but omit source maps and declarations.
 out/**/*.js.map
+out/**/*.cjs.map
 out/**/*.d.ts
 
 # Project/build metadata not required at runtime.
