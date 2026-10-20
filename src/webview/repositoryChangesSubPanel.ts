@@ -24,6 +24,11 @@ export const REPOSITORY_CHANGES_STYLES = `
   .repo-changes-branch:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); }
   .repo-changes-branch:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .repo-changes-head { min-width: 0; }
+  .repo-changes-head-dirty { flex: 0 0 auto; }
+  /* codicon 右侧留白(字形与字符盒右缘的距离)各不相同:git-commit .2773em、git-branch .125em、git-branch-changes 0。
+     把可见笔画到分支名的距离统一为 git-commit 的 .2773em。 */
+  .repo-changes-branch .codicon-git-branch { margin-right: .1523em; }
+  .repo-changes-branch .codicon-git-branch-changes { margin-right: .2773em; }
   .repo-changes-header .toolbar-icon { flex: 0 0 22px; width: 22px; height: 24px; border: 0; border-radius: 3px; cursor: pointer; }
   .repo-changes-header .repo-sync { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: auto; min-width: 22px; padding: 0 3px; gap: 2px; color: var(--vscode-descriptionForeground); font: inherit; font-size: 11px; }
   .repo-changes-header .repo-sync:hover { color: var(--vscode-foreground); }
@@ -143,15 +148,28 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     repositoryChangesRevealPath = repositoryPath;
     renderRepositoryChanges();
   }
+  // A card that is already expanded and showing its worktree Commit editor, for a repository that has
+  // changed files, ends on that same editor once the host has selected the repository. Hiding the editor
+  // and Commit button meanwhile would only make them blink (and drop focus from a clicked editor).
+  // Clean repositories still lock: the host moves them to their latest commit, where no editor is shown.
+  function repositoryKeepsCommitControls(node, repository) {
+    if (!node || !repository || node.card.classList.contains('transitioning')) return false;
+    if ((repository.staged || []).length + (repository.unstaged || []).length === 0) return false;
+    return !node.card.querySelector('.repo-changes-body').hidden
+      && !node.card.querySelector('.repo-message-box').hidden
+      && !node.card.querySelector('.repo-commit-actions').hidden;
+  }
   function focusRepositoryChanges(repositoryPath) {
     if (repositoryChangesCollapsed.has(repositoryPath) || focusedRepositoryChangesPath === repositoryPath) return;
-    // Hide Commit controls in the same event turn as expansion; the host later confirms
+    const keepControls = repositoryKeepsCommitControls(repositoryChangesNodes.get(repositoryPath),
+      repositoryChanges.find(function(item) { return item.repositoryPath === repositoryPath; }));
+    // Otherwise hide Commit controls in the same event turn as expansion; the host later confirms
     // the lock and preserves it until a complete historical snapshot is available.
-    repositoryCardDisplayLocks.add(repositoryPath);
+    if (!keepControls) repositoryCardDisplayLocks.add(repositoryPath);
     focusedRepositoryChangesPath = repositoryPath;
     repositoryChangesNodes.forEach(function(node, path) {
       node.card.classList.toggle('focused', path === repositoryPath);
-      if (path === repositoryPath) node.card.classList.add('transitioning');
+      if (path === repositoryPath && !keepControls) node.card.classList.add('transitioning');
     });
     vscode.postMessage({ type: 'repositoryChangesAction', action: 'focus', repositoryPath: repositoryPath });
   }
@@ -272,7 +290,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
   }
   function createRepositoryChangesNode(repository) {
     const card = document.createElement('section'); card.className = 'repo-changes'; card.dataset.repositoryPath = repository.repositoryPath; card.tabIndex = -1;
-    card.innerHTML = '<div class="repo-changes-header"><button type="button" class="repo-changes-toggle" data-repo-action="toggle"><span class="codicon codicon-chevron-down repo-chevron"></span></button><div class="repo-changes-title"><span class="repo-changes-icon"></span><span class="repo-changes-label"></span><span class="repo-changes-ancestry" hidden></span></div><button type="button" class="repo-changes-branch" data-repo-action="branch"><span class="codicon codicon-source-control"></span><span class="repo-changes-head"></span></button></div><div class="repo-changes-body"><div class="repo-message-box"><textarea class="repo-message" rows="1" spellcheck="false"></textarea></div><div class="repo-commit-actions"><button type="button" class="repo-commit-main" data-repo-action="commit"><span class="repo-commit-label">Commit</span></button><button type="button" class="repo-commit-more" data-repo-action="menu" title="更多提交操作" aria-label="更多提交操作"><span class="codicon codicon-chevron-down"></span></button><div class="repo-commit-menu" hidden></div></div><div class="repo-file-groups"></div></div>';
+    card.innerHTML = '<div class="repo-changes-header"><button type="button" class="repo-changes-toggle" data-repo-action="toggle"><span class="codicon codicon-chevron-down repo-chevron"></span></button><div class="repo-changes-title"><span class="repo-changes-icon"></span><span class="repo-changes-label"></span><span class="repo-changes-ancestry" hidden></span></div><button type="button" class="repo-changes-branch" data-repo-action="branch"><span class="codicon codicon-git-branch"></span><span class="repo-changes-head"></span><span class="repo-changes-head-dirty" hidden>*</span></button></div><div class="repo-changes-body"><div class="repo-message-box"><textarea class="repo-message" rows="1" spellcheck="false"></textarea></div><div class="repo-commit-actions"><button type="button" class="repo-commit-main" data-repo-action="commit"><span class="repo-commit-label">Commit</span></button><button type="button" class="repo-commit-more" data-repo-action="menu" title="更多提交操作" aria-label="更多提交操作"><span class="codicon codicon-chevron-down"></span></button><div class="repo-commit-menu" hidden></div></div><div class="repo-file-groups"></div></div>';
     const header = card.querySelector('.repo-changes-header');
     const details = document.createElement('textarea'); details.className = 'repo-commit-details'; details.hidden = true;
     details.readOnly = true; details.rows = 1; details.spellcheck = false;
@@ -460,7 +478,17 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       }
       icon.title = repository.hasSubmodules ? '包含子仓库' : repository.isSubmodule ? '子仓库（无下级子仓库）' : '独立仓库（无子仓库）';
       const changeCount = new Set((repository.staged || []).concat(repository.unstaged || []).map(function(file) { return file.path; })).size;
+      // 图标:游离 HEAD 用 git-commit;具名分支有未提交变更用 git-branch-changes,否则 git-branch。
+      // 星号是独立节点,分支名过长被省略时星号仍然保留;变更数与同步状态共用 changeCount。
+      const headDirty = changeCount !== 0;
+      const headIcon = repository.headDetached ? 'git-commit' : headDirty ? 'git-branch-changes' : 'git-branch';
+      const headIconNode = node.card.querySelector('.repo-changes-branch .codicon');
+      if (headIconNode.dataset.icon !== headIcon) {
+        headIconNode.dataset.icon = headIcon;
+        headIconNode.className = 'codicon codicon-' + headIcon;
+      }
       node.card.querySelector('.repo-changes-head').textContent = repository.headLabel || 'HEAD';
+      node.card.querySelector('.repo-changes-head-dirty').hidden = !headDirty;
       const behindCount = Number.isFinite(repository.behindCount) ? Math.max(0, repository.behindCount) : 0;
       const aheadCount = Number.isFinite(repository.aheadCount) ? Math.max(0, repository.aheadCount) : 0;
       const sync = node.card.querySelector('[data-repo-action="syncRefresh"]');
@@ -482,7 +510,9 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       node.input.title = '提交到 ' + (repository.headLabel || repository.repositoryLabel);
       const snapshot = currentRepositorySnapshot(node, repository);
       const historical = snapshot.kind === 'commit';
-      const commitControlsLocked = repositoryCardDisplayLocks.has(repository.repositoryPath);
+      // Evaluated before this pass touches the controls: it reads what the previous pass left on screen.
+      const commitControlsLocked = repositoryCardDisplayLocks.has(repository.repositoryPath)
+        && !repositoryKeepsCommitControls(node, repository);
       node.card.classList.toggle('transitioning', commitControlsLocked);
       const messageBox = node.card.querySelector('.repo-message-box');
       const actions = node.card.querySelector('.repo-commit-actions');

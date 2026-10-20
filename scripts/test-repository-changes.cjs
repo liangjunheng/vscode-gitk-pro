@@ -27,6 +27,7 @@ async function main() {
     await verifyRepositorySnapshotTransitions(browser, html);
     await verifyRepositoryCardWorktreeUnlock(browser, html);
     await verifyRepositoryCardSelectionDrivesCommitControls(browser, html);
+    await verifyExpandedRepositoryCardKeepsCommitControls(browser, html);
     await verifyNormalCommitFileMenu(browser, html);
     for (const width of [320, 400, 800]) await verifyBottomRepositoryExpansion(browser, html, width);
     const scripts = [...html.matchAll(/<script(?![^>]*type="application\/json")[^>]*>([\s\S]*?)<\/script>/g)].map(match => match[1]);
@@ -120,7 +121,7 @@ async function main() {
       return { repo: repoLabel.left - repoIcon.right, branch: branchLabel.left - branchIcon.right };
     });
     assert.equal(iconTextGaps.repo, 0, 'repository icon touches its label');
-    assert.equal(iconTextGaps.branch, 0, 'branch icon touches its label');
+    assert.ok(Math.abs(iconTextGaps.branch - 16 * .2773) < .05, 'the first (changed) card pads git-branch-changes to the same ink distance as git-commit');
     await assertCount(page.locator('#refreshBtn'), 0);
     await assertCount(page.locator('#filesRefreshBtn'), 1);
     assert.deepEqual(await page.locator('#filesActions button').evaluateAll(buttons => buttons.map(button => button.id)), ['uncommittedRepoBadge', 'filesRefreshBtn', 'filesModeBtn'], 'refresh follows Open Commit Panel in the files header');
@@ -1156,6 +1157,55 @@ async function verifyRepositoryCardSelectionDrivesCommitControls(browser, html) 
     assert.equal(await dirty.locator('.repo-commit-details').isVisible(), false, 'Uncommitted Changes hides the commit details');
   } finally { await page.close(); }
 }
+async function verifyExpandedRepositoryCardKeepsCommitControls(browser, html) {
+  const page = await browser.newPage({ viewport: { width: 400, height: 1000 } });
+  try {
+    await page.evaluate(() => { window.messages = []; window.acquireVsCodeApi = () => ({ postMessage: message => window.messages.push(message), getState: () => ({}), setState() {} }); });
+    await page.setContent(html);
+    const aPath = 'file:///fixture/keep-a', bPath = 'file:///fixture/keep-b', cleanPath = 'file:///fixture/keep-clean';
+    const state = { repositoryChanges: [
+      { repositoryPath: aPath, repositoryLabel: 'a', isMainRepository: true, message: 'draft a', staged: [{ path: 'staged.cpp', status: 'M' }], unstaged: [] },
+      { repositoryPath: bPath, repositoryLabel: 'b', message: 'draft b', staged: [{ path: 'staged.cpp', status: 'M' }], unstaged: [{ path: 'other.cpp', status: 'M' }] },
+      { repositoryPath: cleanPath, repositoryLabel: 'clean', message: '', staged: [], unstaged: [] },
+    ], commits: [], branches: [], selectedBranches: [], selectedRepositoryPaths: [], files: [], filesLoading: false, selectedCommit: null };
+    const publish = async patch => { Object.assign(state, patch); await page.evaluate(state => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state } })), state); };
+    const uncommitted = repositoryPath => ({ selectedRepositoryPaths: [repositoryPath], selectedCommit: { hash: 'uncommitted', repositoryPath }, filesIdentity: { hash: 'uncommitted', repositoryPath } });
+    const card = repositoryPath => page.locator('.repo-changes[data-repository-path="' + repositoryPath + '"]');
+    const controls = async repositoryPath => ({ editor: await card(repositoryPath).locator('.repo-message-box').isVisible(), commit: await card(repositoryPath).locator('.repo-commit-main').isVisible() });
+    const focusMessages = () => page.evaluate(() => window.messages.filter(message => message.action === 'focus').map(message => message.repositoryPath));
+    const shown = { editor: true, commit: true };
+    await publish({});
+    // Expanding a collapsed card still waits for the host. Here the host always answers Uncommitted Changes.
+    for (const repositoryPath of [bPath, cleanPath, aPath]) {
+      await card(repositoryPath).locator('.repo-changes-label').click();
+      await publish({ ...uncommitted(repositoryPath), repositoryCardDisplayLocks: [] });
+    }
+    // a is focused; b and clean stay expanded behind it.
+    assert.deepEqual(await controls(bPath), shown, 'precondition: an expanded, unfocused card with changes shows its editor and Commit button');
+    const before = (await focusMessages()).length;
+    await card(bPath).locator('.repo-changes-label').click();
+    assert.deepEqual(await controls(bPath), shown, 'switching to an expanded card with changes keeps its editor and Commit button in the click turn');
+    assert.equal(await card(bPath).evaluate(node => node.classList.contains('transitioning')), false, 'no transition cover is applied to controls that stay on screen');
+    assert.equal(await card(bPath).locator('.repo-commit-main').isDisabled(), false, 'the Commit button keeps its draft-based enabled state');
+    assert.deepEqual((await focusMessages()).slice(before), [bPath], 'the host is still told which card took focus');
+    await publish({ repositoryCardDisplayLocks: [bPath] });
+    assert.deepEqual(await controls(bPath), shown, 'the host echoing its display lock does not hide controls that never left the screen');
+    await publish({ ...uncommitted(bPath), repositoryCardDisplayLocks: [bPath] });
+    assert.deepEqual(await controls(bPath), shown, 'the temporary worktree selection keeps them as well');
+    await publish({ repositoryCardDisplayLocks: [] });
+    assert.deepEqual(await controls(bPath), shown, 'and so does the lock release');
+    assert.equal(await card(bPath).locator('.repo-commit-main').isDisabled(), false);
+    // Pressing the pointer inside an unfocused card's editor focuses that card; the editor under the cursor must survive it.
+    await card(aPath).locator('.repo-message').click();
+    assert.deepEqual(await controls(aPath), shown, 'clicking into an unfocused card editor does not remove it');
+    assert.equal(await page.evaluate(() => document.activeElement && document.activeElement.classList.contains('repo-message')), true, 'the caret stays in the clicked editor');
+    await publish({ ...uncommitted(aPath), repositoryCardDisplayLocks: [] });
+    // A repository without changes ends on its latest commit, which has no worktree editor: it still waits for the host.
+    await card(cleanPath).locator('.repo-changes-label').click();
+    assert.equal(await card(cleanPath).locator('.repo-message-box').isVisible(), false, 'a clean card still hides its editor while the host picks its final selection');
+    assert.equal(await card(cleanPath).locator('.repo-commit-actions').isVisible(), false, 'a clean card still hides Commit while the host picks its final selection');
+  } finally { await page.close(); }
+}
 async function verifyNormalCommitFileMenu(browser, html) {
   const page = await browser.newPage({ viewport: { width: 400, height: 1000 } });
   try {
@@ -1634,6 +1684,18 @@ async function verifyProvider() {
   assert.equal(provider.unpushedCommitCountByRepository.get(repositories[1].path), 4, 'sync state loads commits ahead of the configured upstream');
   provider.loadRepositorySyncState = async () => {};
     assert.equal(published.state.repositoryChanges[1].headLabel, 'deadbeef');
+  assert.deepEqual(published.state.repositoryChanges.map(repository => repository.headDetached), [false, false, false], 'named-branch HEADs (refs/heads/...) are not detached');
+  const namedHeads = provider.uncommittedFilesWatcher.listCurrentHeadBranches;
+  provider.uncommittedFilesWatcher.listCurrentHeadBranches = () => repositories.map((repoOption, index) => index === 1
+    ? { repoOption, name: 'd'.repeat(40), label: 'dddddddd', kind: 'current', hash: 'd'.repeat(40) }
+    : { repoOption, name: 'refs/heads/main', label: 'main', kind: 'current', hash: 'a'.repeat(40) });
+  provider.pushStateToWebview();
+  assert.deepEqual(published.state.repositoryChanges.map(repository => repository.headDetached), [false, true, false], 'a bare-hash HEAD (buildDetachedHeadBranch) is published as detached');
+  provider.uncommittedFilesWatcher.listCurrentHeadBranches = () => [];
+  provider.pushStateToWebview();
+  assert.deepEqual(published.state.repositoryChanges.map(repository => repository.headDetached), [false, false, false], 'a repository without a known HEAD is not reported as detached');
+  provider.uncommittedFilesWatcher.listCurrentHeadBranches = namedHeads;
+  provider.pushStateToWebview();
   assert.equal(published.state.repositoryChanges[1].unstaged[0].path, 'same.cpp');
   assert.equal(published.state.repositoryChanges[1].unstaged[1].gitlinkHasSubmodules, false, 'leaf Gitlink inherits the target repository topology');
   assert.equal(published.state.repositoryChanges[1].unstaged[2].gitlinkHasSubmodules, true, 'parent Gitlink inherits the target repository topology');

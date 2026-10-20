@@ -444,6 +444,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                         isSubmodule: (repository.ancestry?.length ?? 0) > 0,
                         isMainRepository: repository.path === this.repositories.find(candidate => (candidate.ancestry?.length ?? 0) === 0)?.path,
                         headLabel: branch?.label ?? '',
+                        // 游离 HEAD 以裸 hash 作为分支名(buildDetachedHeadBranch),具名分支一定是 refs/heads/ 全名(readHeadBranch)。
+                        headDetached: branch !== undefined && !branch.name.startsWith('refs/heads/'),
                         behindCount: this.behindCommitCountByRepository.get(repository.path) ?? 0,
                         aheadCount: this.unpushedCommitCountByRepository.get(repository.path) ?? 0,
                         message: this.commitMessageByRepo.get(repository.path) ?? '',

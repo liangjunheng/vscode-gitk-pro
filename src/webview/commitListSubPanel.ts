@@ -496,7 +496,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     var categories = [
       { kind: 'current', icon: 'target', labels: [] },
       { kind: 'tag', icon: 'tag', labels: [] },
-      { kind: 'local', icon: 'device-desktop', labels: [] },
+      { kind: 'local', icon: 'git-branch', labels: [] },
       { kind: 'remote', icon: 'cloud', labels: [] },
     ];
     var byKind = {};

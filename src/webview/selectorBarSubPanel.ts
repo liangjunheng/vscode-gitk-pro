@@ -34,7 +34,7 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   #branchDropdown .branch-icon, #branchDropdown .dropdown-group > .codicon { display: inline-flex; align-self: center; align-items: center; justify-content: center; flex: 0 0 var(--vscode-font-size, 13px); width: var(--vscode-font-size, 13px); height: var(--vscode-font-size, 13px); margin: 0; font-size: var(--vscode-font-size, 13px); line-height: var(--vscode-font-size, 13px); color: var(--vscode-icon-foreground); }
   .branch-icon.codicon-target { color: var(--vscode-gitDecoration-modifiedResourceForeground, var(--vscode-icon-foreground)); }
   .branch-icon.codicon-cloud { color: var(--vscode-gitDecoration-untrackedResourceForeground, var(--vscode-icon-foreground)); }
-  .branch-icon.codicon-device-desktop { color: var(--vscode-gitDecoration-modifiedResourceForeground, var(--vscode-icon-foreground)); }
+  .branch-icon.codicon-git-branch { color: var(--vscode-gitDecoration-modifiedResourceForeground, var(--vscode-icon-foreground)); }
   .dropdown-current:hover:not(:disabled), .dropdown.open .dropdown-current { background: var(--vscode-toolbar-hoverBackground); border-color: var(--vscode-focusBorder); }
   .dropdown-current:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .dropdown-current:disabled { cursor: default; opacity: .6; }
@@ -323,7 +323,7 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
     return '<span class="repository-icon codicon codicon-' + icon + parentClass + '" aria-hidden="true"></span>';
   }
   function branchIcon(kind) {
-    const icon = kind === 'current' ? 'target' : kind === 'remote' ? 'cloud' : 'device-desktop';
+    const icon = kind === 'current' ? 'target' : kind === 'remote' ? 'cloud' : 'git-branch';
     return '<span class="branch-icon codicon codicon-' + icon + '" aria-hidden="true"></span>';
   }
   function updateSelectedRepoDisplay(repository) {
