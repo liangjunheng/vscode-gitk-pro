@@ -216,13 +216,20 @@ export function fetchRemotes(rootUri: vscode.Uri, remote?: string): Promise<void
     return task;
 }
 
+export interface NativePullOptions {
+    /** 工作区有未提交改动时先暂存再还原; 否则 pull.rebase 会因脏工作区直接拒绝。 */
+    readonly autostash?: boolean;
+}
+
 export function pull(
     rootUri: vscode.Uri,
     remote?: string,
     remoteBranch?: string,
     localBranch?: string,
+    options: NativePullOptions = {},
 ): Promise<NativeSyncResult> {
     const cliArgs = ['pull'];
+    if (options.autostash) { cliArgs.push('--autostash'); }
     if (remote) { cliArgs.push(remote); }
     if (remote && remoteBranch) { cliArgs.push(remoteBranch); }
     return runGitCli(rootUri, cliArgs).then(() => ({}));

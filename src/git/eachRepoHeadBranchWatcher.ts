@@ -11,6 +11,10 @@ type RepoHeadBranchChangedEvent = {
     headBranch: GitBranchOption | undefined;
 };
 
+type RepoRemoteRefsChangedEvent = {
+    repositoryPath: string;
+};
+
 type HeadReadSlot = {
     running: boolean;
     needsRefresh: boolean;
@@ -31,6 +35,7 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
     private readonly repositorySubscription: vscode.Disposable;
     private readonly headBranchReadyEmitter = new vscode.EventEmitter<RepoHeadBranchChangedEvent>();
     private readonly headBranchEmitter = new vscode.EventEmitter<RepoHeadBranchChangedEvent>();
+    private readonly remoteRefsChangedEmitter = new vscode.EventEmitter<RepoRemoteRefsChangedEvent>();
     private readonly repoController: GitRepoController;
     private syncingRepositories = false;
     private needsRepositorySync = false;
@@ -42,6 +47,7 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
      */
     readonly onEachRepoHeadBranchReady = this.headBranchReadyEmitter.event;
     readonly onEachRepoHeadBranchChanged = this.headBranchEmitter.event;
+    readonly onEachRepoRemoteRefsChanged = this.remoteRefsChangedEmitter.event;
 
     constructor(repoController: GitRepoController) {
         this.repoController = repoController;
@@ -88,6 +94,7 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
         this.headReadSlots.clear();
         this.headBranchReadyEmitter.dispose();
         this.headBranchEmitter.dispose();
+        this.remoteRefsChangedEmitter.dispose();
     }
 
     private requestRepositorySync(): void {
@@ -151,15 +158,26 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
             const headWatcher = vscode.workspace.createFileSystemWatcher(
                 new vscode.RelativePattern(vscode.Uri.file(gitDir), '{HEAD,logs/HEAD}'),
             );
+            const remoteRefsWatcher = vscode.workspace.createFileSystemWatcher(
+                new vscode.RelativePattern(vscode.Uri.file(gitDir), '{refs/remotes/**,packed-refs}'),
+            );
             const refresh = () => {
                 const currentRepository = this.repositories.get(key);
                 if (currentRepository) { void this.enqueueHeadRead(key, currentRepository); }
             };
+            const notifyRemoteRefsChanged = () => {
+                const currentRepository = this.repositories.get(key);
+                if (currentRepository) { this.remoteRefsChangedEmitter.fire({ repositoryPath: currentRepository.path }); }
+            };
             return vscode.Disposable.from(
                 headWatcher,
+                remoteRefsWatcher,
                 headWatcher.onDidCreate(refresh),
                 headWatcher.onDidChange(refresh),
                 headWatcher.onDidDelete(refresh),
+                remoteRefsWatcher.onDidCreate(notifyRemoteRefsChanged),
+                remoteRefsWatcher.onDidChange(notifyRemoteRefsChanged),
+                remoteRefsWatcher.onDidDelete(notifyRemoteRefsChanged),
             );
         } catch (error) {
             console.warn(`无法创建仓库 HEAD 监听: ${repository.path}`, error);

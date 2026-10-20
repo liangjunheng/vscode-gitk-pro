@@ -1480,9 +1480,13 @@ async function verifyProvider() {
   // Host selection routing and stale MultiDiff feedback are tested below with the actual methods.
   const load = Module._load;
   const branchReads = [], commitDetailReads = [], checkouts = [], pulls = [], pushes = [], headRefreshes = [], remoteCheckouts = [];
-  let pickedIndex = 2, options, branchItems, pushTargetDefaults, pushQuickPick, selectedPushTargetsResult, confirmRows;
+  let pickedIndex = 2, options, branchItems, pushTargetDefaults, pushQuickPick, selectedPushTargetsResult, confirmRows, confirmOptions;
+  let pulledHeadHash = 'a'.repeat(40), conflictAfterPull = false, pushFails = true, pullFails = false;
+  const pushResultNotices = [];
   const terminals = [], informationMessages = [], errorMessages = [], confirmationDialogs = [], clipboardWrites = [], executedCommands = [], openedDocuments = [], shownDocuments = [], readObjectsRequests = [], openedChanges = [];
-  let terminalShows = 0, confirmationChoice = '推送', failExplorerCopy = false;
+  let terminalShows = 0, confirmationChoice = '推送', syncChoice = 'sync', failExplorerCopy = false;
+  let syncStatePublishes = 0;
+  let aheadBehindImpl = async () => ({ ahead: 4, behind: 2 });
   // 推送目标只描述远程分支; 本地分支名与 HEAD hash 属于 plan.source。
   const pushTargetFixture = [
     { remote: 'fork', branch: 'main', remoteName: 'fork/main', isUpstream: false, tipTimestamp: 200, unpushedCommitCount: 1 },
@@ -1550,7 +1554,7 @@ async function verifyProvider() {
       },
     },
   };
-  let pickPushTargets, confirmPush, describePushRow, showPushResult;
+  let pickPushTargets, confirmPush, confirmSync, describePushRow, showPushResult;
   let GitkViewProvider, store;
   try {
     Module._load = function(name, ...args) {
@@ -1558,14 +1562,16 @@ async function verifyProvider() {
       if (name === '../git/gitLogProvider') return {
         ...load.call(this, name, ...args),
         getGitBranches: async uri => { branchReads.push(uri.toString()); return branchFixture; },
-        getGitAheadBehind: async () => ({ ahead: 4, behind: 2 }),
+        getGitAheadBehind: (...args) => aheadBehindImpl(...args),
         getPushPlan: async () => pushPlanFixture,
+        getCurrentGitHeadHash: async () => pulledHeadHash,
       };
       if (name === '../services/pushDialogs') return {
         ...load.call(this, name, ...args),
         pickPushTargets: async (_plan, defaultTargets) => { pushTargetDefaults = defaultTargets; return selectedPushTargetsResult; },
-        confirmPush: async rows => { confirmRows = rows; return true; },
-        showPushResult: async () => {},
+        confirmPush: async rows => { confirmRows = rows; confirmOptions = undefined; return true; },
+        confirmSync: async (rows, pullFrom) => { confirmRows = rows; confirmOptions = { pullFrom }; return syncChoice; },
+        showPushResult: async (title, detail) => { pushResultNotices.push([title, detail]); },
       };
       if (name === '../git/gitNativeOperations') return {
         ...load.call(this, name, ...args),
@@ -1580,13 +1586,21 @@ async function verifyProvider() {
             authorDate: branchFixture.find(branch => branch.hash === hash)?.authorDate,
           }));
         },
-        pull: async (uri, remote, remoteBranch, localBranch) => { pulls.push([uri.toString(), remote, remoteBranch, localBranch]); },
-        push: async (uri, request) => { pushes.push([uri.toString(), request.remote, request.remoteBranch, request.sourceBranchName, request.sourceHash]); throw new Error('stop after push'); },
+        pull: async (uri, remote, remoteBranch, localBranch, pullOptions) => {
+          if (pullFails) throw new Error('pull failed');
+          pulls.push([uri.toString(), remote, remoteBranch, localBranch, pullOptions]);
+        },
+        push: async (uri, request) => {
+          pushes.push([uri.toString(), request.remote, request.remoteBranch, request.sourceBranchName, request.sourceHash]);
+          if (pushFails) throw new Error('stop after push');
+          return { remote: request.remote, remoteBranch: request.remoteBranch, sourceBranchName: request.sourceBranchName, sourceHash: request.sourceHash };
+        },
+        hasConflicts: async () => conflictAfterPull,
       };
       return load.call(this, name, ...args);
     };
     ({ GitkViewProvider } = require('../out/webview/gitkViewProvider'));
-    ({ pickPushTargets, confirmPush, describePushRow, showPushResult } = require('../out/services/pushDialogs'));
+    ({ pickPushTargets, confirmPush, confirmSync, describePushRow, showPushResult } = require('../out/services/pushDialogs'));
     ({ store } = require('../out/state/store'));
   } finally { Module._load = load; }
   // 目标选择弹窗: 标题显示本地分支名, detail 只显示未推送提交数。
@@ -1614,6 +1628,21 @@ async function verifyProvider() {
     modal: true,
     detail: '需要推送的分支：\nink_dev → origin/ink_master\nchild：ink_dev → upstream/develop',
   }, 'modal detail lists each branch on its own line');
+  // 同步确认: 三个按钮分别是"同步"、"仅推送"和"取消"; 普通推送确认仍只有"推送"和"取消"。
+  const syncRow = { source: pushDialogPlan.source, target: pushDialogPlan.targets[0] };
+  confirmationChoice = '同步';
+  assert.equal(await confirmSync([syncRow], ['origin/ink_master', 'child：upstream/develop']), 'sync');
+  const syncConfirmation = confirmationDialogs.at(-1);
+  assert.equal(syncConfirmation.message, '确认同步');
+  assert.deepEqual(syncConfirmation.items, [{ title: '同步' }, { title: '仅推送' }, { title: '取消', isCloseAffordance: true }], 'sync confirmation exposes sync, push-only, and cancel actions');
+  assert.equal(syncConfirmation.options.detail, '先拉取：\norigin/ink_master\nchild：upstream/develop\n\n需要推送的分支：\nink_dev → origin/ink_master', 'pull targets come before the push list');
+  confirmationChoice = '仅推送';
+  assert.equal(await confirmSync([syncRow], []), 'push');
+  assert.equal(confirmationDialogs.at(-1).options.detail, '先拉取：\n无可拉取的远程分支，将直接推送\n\n需要推送的分支：\nink_dev → origin/ink_master', 'without an upstream the dialog says nothing will be pulled');
+  confirmationChoice = '取消';
+  assert.equal(await confirmSync([syncRow], []), undefined, 'cancel returns no choice');
+  confirmationChoice = undefined;
+  assert.equal(await confirmSync([syncRow], []), undefined, 'closing the dialog returns no choice');
   confirmationChoice = '取消';
   assert.equal(await confirmPush([{ source: pushDialogPlan.source, target: pushDialogPlan.targets[0] }]), false);
   confirmationChoice = undefined;
@@ -1642,9 +1671,9 @@ async function verifyProvider() {
     pushTargetByRepository: new Map(), lastPushedTargetByRepository: new Map(),
     unpushedCommitCountByRepository: new Map([[repositories[1].path, 4]]),
     behindCommitCountByRepository: new Map([[repositories[1].path, 0]]),
-    repositorySyncKeyByRepository: new Map(), repositorySyncStateLoadingByHead: new Set(),
+    repositorySyncKeyByRepository: new Map(), repositorySyncStateLoadingByHead: new Set(), repositorySyncRevisionByRepository: new Map(),
     loadRepositorySyncState: async () => {},
-    schedulePushState: () => {}, commitPanel: { isVisible: () => false },
+    schedulePushState: () => { syncStatePublishes++; }, commitPanel: { isVisible: () => false },
     repoSubmoduleWatcher: {
       findSubmoduleRepository: (_parent, file) => file === 'leaf-link' ? repositories[2] : file === 'parent-link' ? repositories[0] : undefined,
       getRepositoryAncestry: () => [],
@@ -1682,6 +1711,28 @@ async function verifyProvider() {
   await provider.loadRepositorySyncState(repositories[1].path);
   assert.equal(provider.behindCommitCountByRepository.get(repositories[1].path), 2, 'sync state loads commits behind the configured upstream');
   assert.equal(provider.unpushedCommitCountByRepository.get(repositories[1].path), 4, 'sync state loads commits ahead of the configured upstream');
+  // 拉取与旧的 ahead/behind 查询并发: 旧结果不能回写, 失效后必须自动重读到最新数量。
+  {
+    const syncPath = repositories[1].path;
+    provider.unpushedStateLoadedByHead = provider.unpushedStateLoadedByHead ?? new Set();
+    provider.commitGitlinkPathsByHead = provider.commitGitlinkPathsByHead ?? new Map();
+    provider.unpushedCommitCountByRepository.clear(); provider.behindCommitCountByRepository.clear(); provider.repositorySyncKeyByRepository.clear();
+    const pendingReads = [];
+    aheadBehindImpl = () => new Promise(resolve => { pendingReads.push(resolve); });
+    const staleLoad = provider.loadRepositorySyncState(syncPath);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(pendingReads.length, 1, 'the first read is in flight');
+    provider.invalidateRepositorySyncState([syncPath]);
+    pendingReads[0]({ ahead: 9, behind: 9 });
+    await staleLoad;
+    assert.equal(provider.behindCommitCountByRepository.has(syncPath), false, 'a read that started before the pull cannot write stale counts back');
+    assert.equal(pendingReads.length, 2, 'invalidating during a read triggers a fresh read once the stale one settles');
+    pendingReads[1]({ ahead: 4, behind: 2 });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(provider.behindCommitCountByRepository.get(syncPath), 2, 'the fresh read supplies the post-pull behind count, not the stale 9');
+    assert.equal(provider.unpushedCommitCountByRepository.get(syncPath), 4);
+    aheadBehindImpl = async () => ({ ahead: 4, behind: 2 });
+  }
   provider.loadRepositorySyncState = async () => {};
     assert.equal(published.state.repositoryChanges[1].headLabel, 'deadbeef');
   assert.deepEqual(published.state.repositoryChanges.map(repository => repository.headDetached), [false, false, false], 'named-branch HEADs (refs/heads/...) are not detached');
@@ -1887,14 +1938,86 @@ async function verifyProvider() {
   await provider.runCommitPanelPush([repositories[1].path], false, false);
   assert.equal(pushTargetDefaults[0].remoteName, 'fork/main', 'plain push keeps the cached target');
   const checkoutCountBeforePush = checkouts.length;
+  const syncHeadRefreshes = [], syncHistoryRefreshes = [];
+  provider.context = { workspaceState: { update: async () => {} } };
+  provider.unpushedStateLoadedByHead = new Set(); provider.commitGitlinkPathsByHead = new Map();
+  provider.uncommittedFilesWatcher.refreshHeadBranch = async repositoryPath => { syncHeadRefreshes.push(repositoryPath); };
+  provider.commitController.forceRefreshCurrentSelection = async () => { syncHistoryRefreshes.push('history'); };
+  const childPath = repositories[1].path;
+  const syncHeadAfter = 'b'.repeat(40);
+  const resetSyncState = () => { pulls.length = 0; pushes.length = 0; syncHeadRefreshes.length = 0; syncHistoryRefreshes.length = 0; pushResultNotices.length = 0; };
+  // 同步 = 先拉取当前分支绑定的 upstream, 再推送; 本例让推送失败, 只观察确认信息与拉取。
   selectedPushTargetsResult = [pushTargetFixture[1]];
-  await provider.runCommitPanelPush([repositories[1].path], true, false);
+  await provider.runCommitPanelPush([childPath], true, false);
   // 确认行用的是 HEAD 现场读到的分支名与 hash, 而不是目标里的任何字段。
   assert.deepEqual(confirmRows.map(row => [row.source.branchName, row.source.hash, row.target.remoteName]), [['main', 'a'.repeat(40), 'origin/main']]);
-  selectedPushTargetsResult = undefined;
-  assert.equal(checkouts.length, checkoutCountBeforePush, 'push does not switch branches');
-  assert.deepEqual(pulls, [], 'push does not pull before sending the current branch commit');
-  assert.deepEqual(pushes.at(-1), [repositories[1].path, 'origin', 'main', 'main', 'a'.repeat(40)], 'push sends the current HEAD to the selected remote branch, carrying branch name and hash in separate fields');
+  assert.deepEqual(confirmOptions, { pullFrom: ['origin/main'] }, 'sync confirmation lists the upstream it pulls before pushing');
+  assert.equal(checkouts.length, checkoutCountBeforePush, 'sync does not switch branches');
+  assert.deepEqual(pulls, [[childPath, 'origin', 'main', undefined, { autostash: true }]], 'sync pulls the bound upstream once, with autostash so a dirty worktree cannot block it');
+  assert.deepEqual(pushes.at(-1), [childPath, 'origin', 'main', 'main', 'a'.repeat(40)], 'sync sends the current HEAD to the selected remote branch, carrying branch name and hash in separate fields');
+  assert.deepEqual(syncHeadRefreshes, [childPath], 'a pulled repository is re-read even when the following push fails');
+  assert.deepEqual(syncHistoryRefreshes, ['history']);
+  assert.deepEqual(pushResultNotices.at(-1), ['Git Sync 失败', 'stop after push']);
+  // 普通 Push 绝不拉取, 失败后也不重读未被拉取的仓库。
+  resetSyncState();
+  await provider.runCommitPanelPush([childPath], false, false);
+  assert.deepEqual(pulls, [], 'plain push never pulls');
+  assert.equal(confirmOptions, undefined, 'plain push keeps the two-button confirmation');
+  assert.deepEqual(syncHeadRefreshes, [], 'a plain push failure does not reread an unpulled repository');
+  assert.deepEqual(pushResultNotices.at(-1), ['Git Push 失败', 'stop after push']);
+  // 同时勾选多个远程分支: 只拉取一次 upstream, 然后把拉取后的 HEAD 推送到每个勾选的分支。
+  resetSyncState(); pushFails = false; pulledHeadHash = syncHeadAfter;
+  selectedPushTargetsResult = [pushTargetFixture[0], pushTargetFixture[1]];
+  await provider.runCommitPanelPush([childPath], true, false);
+  assert.equal(pulls.length, 1, 'several ticked branches still pull the upstream only once');
+  assert.deepEqual(pulls[0].slice(1, 4), ['origin', 'main', undefined]);
+  assert.deepEqual(confirmRows.map(row => row.target.remoteName), ['fork/main', 'origin/main']);
+  assert.deepEqual(pushes.map(entry => entry.slice(1)), [['fork', 'main', 'main', syncHeadAfter], ['origin', 'main', 'main', syncHeadAfter]], 'every ticked branch receives the pulled HEAD');
+  assert.equal(pushResultNotices.at(-1)[0], 'Git Sync 已完成');
+  assert.match(pushResultNotices.at(-1)[1], /拉取 origin\/main：本地提交 aaaaaaaa → bbbbbbbb/);
+  assert.match(pushResultNotices.at(-1)[1], /main → fork\/main，提交 bbbbbbbb/);
+  assert.match(pushResultNotices.at(-1)[1], /main → origin\/main，提交 bbbbbbbb/);
+  assert.deepEqual(syncHeadRefreshes, [childPath], 'the pulled repository HEAD is re-read after a successful sync');
+  assert.deepEqual(syncHistoryRefreshes, ['history'], 'history refreshes once');
+  assert.equal(provider.unpushedCommitCountByRepository.has(childPath) || provider.behindCommitCountByRepository.has(childPath), false, 'cached ahead/behind counts are dropped so the card badge is recomputed');
+  assert.ok(syncStatePublishes > 0, 'sync state cache invalidation republishes the card so ahead/behind is reread even when HEAD is unchanged');
+  // 没有勾选 upstream 时没有可拉取的来源: 同步入口仍是三按钮, "同步"只推送, 标题仍按同步表述。
+  resetSyncState();
+  selectedPushTargetsResult = [pushTargetFixture[0]];
+  await provider.runCommitPanelPush([childPath], true, false);
+  assert.deepEqual(pulls, [], 'unticking the upstream leaves nothing to pull from');
+  assert.deepEqual(confirmOptions, { pullFrom: [] });
+  assert.equal(pushResultNotices.at(-1)[0], 'Git Sync 已完成');
+  // 选择"仅推送": 不拉取, 对所有勾选分支推送当前 HEAD, 结果按普通推送表述且不重读未拉取的仓库。
+  resetSyncState(); syncChoice = 'push';
+  selectedPushTargetsResult = [pushTargetFixture[0], pushTargetFixture[1]];
+  await provider.runCommitPanelPush([childPath], true, false);
+  assert.deepEqual(confirmOptions, { pullFrom: ['origin/main'] }, 'the dialog still lists what sync would have pulled');
+  assert.deepEqual(pulls, [], 'push-only never pulls');
+  assert.deepEqual(pushes.map(entry => entry.slice(1)), [['fork', 'main', 'main', 'a'.repeat(40)], ['origin', 'main', 'main', 'a'.repeat(40)]], 'push-only sends the unpulled HEAD to every ticked branch');
+  assert.equal(pushResultNotices.at(-1)[0], 'Git Push 已完成');
+  assert.deepEqual(syncHeadRefreshes, [], 'push-only does not reread an unpulled repository');
+  // 取消: 不拉取也不推送。
+  resetSyncState(); syncChoice = undefined;
+  await provider.runCommitPanelPush([childPath], true, false);
+  assert.deepEqual([pulls, pushes, pushResultNotices], [[], [], []], 'cancel neither pulls nor pushes');
+  syncChoice = 'sync';
+  // 拉取后本地改动与拉取内容冲突: 推送继续, 但结果必须明确警告。
+  resetSyncState(); conflictAfterPull = true;
+  selectedPushTargetsResult = [pushTargetFixture[1]];
+  await provider.runCommitPanelPush([childPath], true, false);
+  assert.equal(pushResultNotices.at(-1)[0], 'Git Sync 已完成，但本地改动有冲突');
+  assert.match(pushResultNotices.at(-1)[1], /本地未提交改动与拉取内容冲突/);
+  assert.equal(pushes.length, 1, 'committed work is still pushed');
+  conflictAfterPull = false;
+  // 拉取失败(例如变基冲突): 不推送, 并重读仓库以显示变基中间状态。
+  resetSyncState(); pullFails = true;
+  await provider.runCommitPanelPush([childPath], true, false);
+  assert.deepEqual(pushes, [], 'a failed pull never pushes');
+  assert.deepEqual(pushResultNotices.at(-1), ['Git Sync 失败', 'pull failed']);
+  assert.deepEqual(syncHeadRefreshes, [childPath], 'a failed pull can leave a rebase in progress, so the repository is re-read');
+  pullFails = false; pushFails = true; pulledHeadHash = 'a'.repeat(40); selectedPushTargetsResult = undefined;
+  resetSyncState();
   const syncSteps = [];
   provider.runCommitPanelPush = async (...args) => syncSteps.push(['sync', ...args]);
   provider.uncommittedFilesWatcher.refreshHeadBranch = async value => syncSteps.push(['head', value]);
