@@ -350,14 +350,11 @@ export class GitCommitController implements vscode.Disposable {
         this.commitPageOffsetByRepository.clear();
         this.hasMoreCommits = false;
         this.commitPageError = '';
+        // 全屏蒙版只属于换仓库(或仍在途的重建): 同一仓库内改分支(手动确认或自动展开 refs)
+        //   旧列表仍有参考价值, 只亮顶部进度条, 列表保持可见。
+        const rebuildInFlight = this._isLoading && this.reloadKind === 'rebuild';
         this._isLoading = true;
-        const automaticBranchExpansion = !this.branchesController.hasManualBranchSelection
-            && this.branches.length > 0
-            && branches.length > this.branches.length
-            && this.branches.every(previous => branches.some(next => next.equals(previous)));
-        // The initial HEAD page is already visible. Expanding the automatic default to all
-        // refs should refresh it in place instead of hiding it behind the rebuild overlay.
-        this.reloadKind = automaticBranchExpansion ? 'refresh' : 'rebuild';
+        this.reloadKind = repositoryChanged || rebuildInFlight ? 'rebuild' : 'refresh';
         this.branches = [...branches];
         this.branchRepositorySelectionGeneration = this.repositorySelectionGeneration;
         void this.syncWorkingTreeForCurrentBranch();
@@ -379,17 +376,26 @@ export class GitCommitController implements vscode.Disposable {
         this._isLoading = true;
         // 本次读取不改已选仓库/分支, 只是就地重读, 界面用顶部进度条即可。
         this.reloadKind = 'refresh';
+        // 提交列表与工作区状态都由本控制器负责; 后者内部已吸收 rejection。
+        const historyRefresh = this.refresh(true);
+        const generation = this.commitReadGeneration;
         try {
-            // 提交列表与工作区状态都由本控制器负责; 后者内部已吸收 rejection。
-            const historyRefresh = this.refresh(true);
             if (worktreeAlreadyRefreshed) {
                 await historyRefresh;
             } else {
                 await Promise.all([historyRefresh, this.syncWorkingTreeForCurrentBranch(true)]);
             }
         } finally {
-            this.reloadKind = 'rebuild';
+            this.resetReloadKind(generation);
         }
+    }
+
+    /**
+     * 刷新/搜索收尾时把加载呈现方式复位为默认。期间若已有新的读取接管(例如用户确认了分支),
+     * 呈现方式属于新读取, 旧流程不能把它改回全屏蒙版。
+     */
+    private resetReloadKind(generation: number): void {
+        if (generation === this.commitReadGeneration) { this.reloadKind = 'rebuild'; }
     }
 
     /** 刷新入口二: 关键字变化; 空数组表示不过滤。 */
@@ -400,11 +406,13 @@ export class GitCommitController implements vscode.Disposable {
         this.keywords = [...keywords];
         // 搜索只是在同一份已选上重新过滤, 不换数据源, 同样用顶部进度条。
         this.reloadKind = 'search';
+        // 关键字变化不影响未过滤的全量列表与工作区状态。
+        const reading = this.refresh(false);
+        const generation = this.commitReadGeneration;
         try {
-            // 关键字变化不影响未过滤的全量列表与工作区状态。
-            await this.refresh(false);
+            await reading;
         } finally {
-            this.reloadKind = 'rebuild';
+            this.resetReloadKind(generation);
         }
         return [...this.searched];
     }
