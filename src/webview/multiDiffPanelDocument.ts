@@ -73,11 +73,12 @@ body{margin:0;padding-bottom:14px;background:color-mix(in srgb, var(--vscode-edi
 .line-stats.ready{display:inline-flex}
 .line-stat-added{color:var(--vscode-gitDecoration-addedResourceForeground)}
 .line-stat-removed{color:var(--vscode-gitDecoration-deletedResourceForeground)}
-.file-location{display:flex;align-items:center;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+/* 文件名行高(1.2)小于字体实际字形高度, overflow:hidden 会裁掉 g/p/q/y 的下伸部分。裁剪区上下各外扩 3px, 并用负外边距抵消, 标题栏高度保持不变。 */
+.file-location{display:flex;align-items:center;min-width:0;padding-block:3px;margin-block:-3px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .file-location.is-deleted{text-decoration-line:line-through;text-decoration-thickness:1px}
 .file-name{flex:0 0 auto;font-size:calc(var(--vscode-editor-font-size) + 2px);line-height:1.2}
 .file-path-gap{flex:0 0 auto;white-space:pre}
-.file-folder{min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--vscode-descriptionForeground);opacity:.72;line-height:1.2}
+.file-folder{min-width:0;padding-block:3px;margin-block:-3px;overflow:hidden;text-overflow:ellipsis;color:var(--vscode-descriptionForeground);opacity:.72;line-height:1.2}
 /* 标题栏和 index 栏在卡片内容边界内吸顶，不覆盖卡片自身边框或外环。 */
 .pinned-group{position:sticky;top:calc(var(--parent-navigation-height) + var(--header-gap) + var(--header-inset));z-index:2;margin:0;border-top:0;border-right:0;border-left:0;border-radius:calc(var(--card-radius) - var(--card-border)) calc(var(--card-radius) - var(--card-border)) 0 0;background:var(--vscode-editorWidget-background,var(--vscode-tab-activeBackground));box-shadow:0 1px 3px rgba(0,0,0,.18)}
 /* 独立标题层在 pinned 组内建立完整的遮罩层叠上下文: 盖板覆盖相邻 diff 内容和其 box-shadow 高亮，
