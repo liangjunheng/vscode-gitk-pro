@@ -94,7 +94,7 @@ export const REPOSITORY_CHANGES_STYLES = `
   .repo-file-folder { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); font-size: 11px; }
   .repo-file-status { flex: 0 0 13px; text-align: center; margin-left: auto; }
   .repo-file-row .toolbar-icon { width: 22px; height: 22px; flex: 0 0 22px; border: 0; cursor: pointer; }
-  .repo-file-actions { display: flex; }
+  .repo-file-actions { display: flex; gap: 4px; }
   #repositoryGroupContextMenu, #repositoryMessageContextMenu { position: fixed; z-index: 20; box-sizing: border-box; width: max-content; min-width: 160px; max-width: calc(100vw - 8px); max-height: calc(100vh - 8px); overflow-y: auto; margin: 0; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border)); border-radius: 5px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 4px 14px rgba(0, 0, 0, .28); }
   #repositoryGroupContextMenu:not(:popover-open), #repositoryMessageContextMenu:not(:popover-open) { display: none; }
   #repositoryGroupContextMenu button, #repositoryMessageContextMenu button { display: block; box-sizing: border-box; width: 100%; max-width: 100%; padding: 5px 8px; border: 0; border-radius: 3px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: transparent; text-align: left; font: inherit; }
@@ -403,8 +403,9 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
         button.innerHTML = repositoryFileIconHTML(file) + '<span class="repo-file-name">' + escapeHtml(file.path.slice(slash + 1)) + '</span><span class="repo-file-folder">' + escapeHtml(slash < 0 ? '' : file.path.slice(0, slash)) + '</span><span class="repo-file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span>';
         row.appendChild(button);
         const actions = document.createElement('span'); actions.className = 'repo-file-actions';
-        if (section.key !== 'commit') actions.appendChild(repoChangesIcon(section.key === 'staged' ? 'unstage' : 'stage', section.key === 'staged' ? 'remove' : 'add', section.key === 'staged' ? '取消暂存' : '暂存'));
+        // Same order as the group header (discard, then stage) so the icons of a row sit under the matching header icons.
         if (section.key === 'unstaged') actions.appendChild(repoChangesIcon('discard', 'discard', '放弃此文件变更'));
+        if (section.key !== 'commit') actions.appendChild(repoChangesIcon(section.key === 'staged' ? 'unstage' : 'stage', section.key === 'staged' ? 'remove' : 'add', section.key === 'staged' ? '取消暂存' : '暂存'));
         row.appendChild(actions); container.appendChild(row);
       });
       group.append(header, rows); node.groups.appendChild(group);

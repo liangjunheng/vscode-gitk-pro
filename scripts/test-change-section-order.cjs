@@ -61,6 +61,15 @@ async function main() {
         assert.ok(badgeSize.height <= 16 && badgeSize.width <= 18, 'the repository-card count badge is compact, got ' + JSON.stringify(badgeSize));
         await verifyCountBadgeCentering(browser, repositoryPath);
         assert.equal(await page.locator('.repo-group[data-section="unstaged"] .repo-group-toggle .repo-count').textContent(), '1');
+        // A file row's action icons must sit under the matching icons of the group header, otherwise the two columns look shifted and click the opposite action.
+        const iconColumns = await page.locator('.repo-group[data-section="unstaged"], .repo-group[data-section="staged"]').evaluateAll(groups => Object.fromEntries(groups.map(group => {
+            const columns = scope => Object.fromEntries([...scope.querySelectorAll(':scope > .toolbar-icon, :scope > .repo-file-actions > .toolbar-icon')].map(button => [button.dataset.repoAction, Math.round(button.getBoundingClientRect().left)]));
+            return [group.dataset.section, { header: columns(group.querySelector('.repo-group-header')), row: columns(group.querySelector('.repo-file-row')) }];
+        })));
+        assert.ok(iconColumns.unstaged.header.discard < iconColumns.unstaged.header.stage, 'the header lists discard before stage');
+        assert.equal(iconColumns.unstaged.row.discard, iconColumns.unstaged.header.discard, 'the row discard icon is under the header discard icon: ' + JSON.stringify(iconColumns.unstaged));
+        assert.equal(iconColumns.unstaged.row.stage, iconColumns.unstaged.header.stage, 'the row stage icon is under the header stage icon: ' + JSON.stringify(iconColumns.unstaged));
+        assert.equal(iconColumns.staged.row.unstage, iconColumns.staged.header.unstage, 'the staged row unstage icon is under the header unstage icon: ' + JSON.stringify(iconColumns.staged));
         await page.evaluate(repositoryPath => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state: {
             repositoryChanges: [{ repositoryPath, repositoryLabel: 'fixture', isMainRepository: true, headLabel: 'main',
                 staged: [{ path: 'resolved.cpp', status: 'M' }], unstaged: [], mergeOperation: 'merge' }],
