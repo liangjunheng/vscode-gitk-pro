@@ -221,7 +221,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     repositoryFileContextRow = row; row.classList.add('context-target');
     repositoryFileContextTarget = historical ? { kind: 'commit', hash: snapshot.commit.hash, repositoryPath: repositoryPath, path: filePath }
       : { kind: 'worktree', repositoryPath: repositoryPath, section: section, path: filePath };
-    applyFileContextMenuState(repositoryFileContextMenu, file, historical);
+    applyFileContextMenuState(repositoryFileContextMenu, file);
     positionRepositoryContextMenu(repositoryFileContextMenu, event);
   }
   const repositoryFallbackSetiIconDefinitions = {

@@ -395,9 +395,10 @@ async function main() {
     const fileMenu = page.locator('#repositoryFileContextMenu');
     assert.equal(await contextRow.evaluate(row => row.classList.contains('context-target')), true, 'right-clicking a repository file applies temporary context highlighting');
     assert.equal(await page.evaluate(() => window.messages.length), repositoryMessagesBeforeContext, 'right-clicking a repository file does not change the real selection');
-    assert.equal(await fileMenu.locator('[data-file-action="openAfter"]').isVisible(), false, 'the after item is really hidden for a worktree file, not just flagged hidden');
-    assert.deepEqual(await fileMenu.locator('button:visible').allTextContents(), ['打开文件', '打开文件 (修改前)', '通过文件管理器显示', '通过资源管理器视图显示', '复制文件', '复制文件路径', '复制文件相对路径'], 'a worktree file has no separate "after": it is the file on disk');
-    for (const action of ['openFile', 'openBefore', 'revealInOS', 'revealInExplorer', 'copy', 'copyPath', 'copyRelativePath']) {
+    assert.equal(await fileMenu.locator('[data-file-action="openAfter"]').isVisible(), true, 'a worktree file shows the after item just like a normal commit file');
+    assert.equal(await fileMenu.locator('[data-file-action="openAfter"]').isDisabled(), false, 'a modified worktree file has a version after the change');
+    assert.deepEqual(await fileMenu.locator('button:visible').allTextContents(), ['打开文件', '打开文件 (修改前)', '打开文件 (修改后)', '通过文件管理器显示', '通过资源管理器视图显示', '复制文件', '复制文件路径', '复制文件相对路径'], 'a worktree file shares the normal commit menu');
+    for (const action of ['openFile', 'openBefore', 'openAfter', 'revealInOS', 'revealInExplorer', 'copy', 'copyPath', 'copyRelativePath']) {
       await fileMenu.locator('[data-file-action="' + action + '"]').click();
       message = await lastMessage(page);
       assert.deepEqual(message, { type: 'repositoryChangesFileAction', action, repositoryPath: repositories[0].repositoryPath, section: 'unstaged', path: 'other.cpp' });

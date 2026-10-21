@@ -191,7 +191,7 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
     closeAllContextMenus(changedFileContextMenu);
     changedFileContextRow = item; item.classList.add('context-target');
     changedFileContextTarget = { hash: selectedCommitHash, repositoryPath: selectedCommitRepositoryPath, path: path };
-    applyFileContextMenuState(changedFileContextMenu, file, true);
+    applyFileContextMenuState(changedFileContextMenu, file);
     placeFileContextMenu(changedFileContextMenu, event);
   }
   changedFileContextMenu.addEventListener('click', function(event) {

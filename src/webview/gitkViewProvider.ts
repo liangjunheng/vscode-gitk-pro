@@ -1876,6 +1876,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 await this.runCommitPanelPush([input.repositoryPath], true, false, true);
                 return;
             }
+                } else if (input.action === 'openAfter') {
+                    // A worktree change's "after" is what it leaves behind: the index copy for a staged file (it differs from the
+                    // disk when only part of the file is staged), the file on disk for merge and unstaged files.
+                    if (file.status !== 'D' && !file.isGitlink) {
+                        if (input.section === 'staged') await this.openGitRevisionFile(fileUri, '');
+                        else await this.openRepositoryChangesFile(fileUri, input.path);
+                    }
             if (!['stage', 'unstage', 'discard'].includes(input.action)
                 || !['conflict', 'staged', 'unstaged'].includes(input.section)
                 || !Array.isArray(input.paths) || !input.paths.every(file => typeof file === 'string')) { return; }
