@@ -35,13 +35,16 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   .commit-header { flex: 0 0 auto; position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; height: 30px; margin: 0; padding: 0 10px; color: var(--vscode-tab-activeForeground); background: var(--commit-title-background); border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorGroup-border)); box-sizing: border-box; font-size: inherit; font-weight: 600; }
   /* 同步操作固定在标题行右侧。 */
   #commitHeaderSearch { display: flex; align-items: center; gap: 6px; margin-left: auto; padding-left: 8px; position: sticky; right: 10px; z-index: 1; background: var(--commit-title-background); }
-  .commit-row { min-height: 26px; height: auto; box-sizing: border-box; cursor: pointer; align-items: start; font-size: inherit; }
+  .commit-row { min-height: 26px; height: auto; box-sizing: border-box; cursor: pointer; align-items: start; font-size: inherit; user-select: none; }
   .commit-row:hover { background: var(--vscode-list-hoverBackground); }
   /* 外层 Grid 的所有内容显式共用第 1 行；标签覆盖其上而不占出第 2 行。 */
   .commit-row > .col-main { grid-column: 1; grid-row: 1; width: 100%; }
   /* 分支图与描述合并为 col-main 单列: SVG 画泳道(左), 摘要行与描述(右)在同一字段内竖排。 */
   .col-main { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 26px; align-items: center; min-width: 0; overflow: hidden; }
-  .commit-row.expanded .col-main { grid-template-rows: 26px auto; }
+  .commit-row.expanded .col-main { grid-template-rows: minmax(26px, auto) auto; }
+  /* 只有展开的提交行允许选中文字；折叠行的点击只负责选中/展开。泳道与悬浮按钮不参与文字选择。 */
+  .commit-row.expanded { user-select: text; }
+  .commit-row.expanded .graph-svg { user-select: none; }
   .col-main .graph-svg { grid-column: 1; grid-row: 1 / -1; align-self: stretch; flex: 0 0 auto; }
   /* 搜索结果不展示拓扑，泳道和占位一起移除。 */
   #graph.without-lanes .graph-svg { display: none; }
@@ -51,6 +54,8 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   .col-main-summary { grid-column: 2; grid-row: 1; display: flex; align-items: center; min-width: 0; overflow: hidden; padding: 0 calc(var(--commit-row-refs-width, 0px) + 5px) 0 0; }
   .col-main-summary .commit-message-text { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-foreground, inherit); }
   .commit-row.selected .commit-message-text { font-weight: 600; }
+  /* 展开后标题完整显示并自动换行；20px 行高加上下各 3px 内边距，使单行时仍是 26px，与右侧悬浮按钮对齐。 */
+  .commit-row.expanded .col-main-summary .commit-message-text { overflow: visible; text-overflow: clip; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 20px; padding: 3px 0; cursor: text; }
   .commit-description { display: none; grid-column: 2; grid-row: 2; padding: 0 10px 10px 0; color: var(--vscode-descriptionForeground); cursor: text; }
   .commit-row.expanded .commit-description { display: block; }
   .commit-description:empty { display: none; }
@@ -60,7 +65,8 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   .commit-detail-item { display: grid; grid-template-columns: 14px 58px minmax(0, 1fr); column-gap: 3px; align-items: start; min-width: 0; }
   .commit-detail-item .codicon { grid-column: 1; grid-row: 1; padding-top: 2px; color: var(--vscode-descriptionForeground); font-size: 13px; line-height: 1; }
   .commit-detail-label { grid-column: 2; grid-row: 1; color: var(--vscode-descriptionForeground); font-size: calc(var(--vscode-font-size, 13px) - 1px); line-height: 17px; }
-  .commit-detail-value { grid-column: 3; grid-row: 1; min-width: 0; overflow-wrap: anywhere; color: var(--vscode-editor-foreground, inherit); line-height: 17px; }
+  .commit-detail-value { grid-column: 3; grid-row: 1; min-width: 0; white-space: normal; overflow-wrap: anywhere; color: var(--vscode-editor-foreground, inherit); line-height: 17px; }
+  .commit-detail-item .codicon { user-select: none; }
   .commit-detail-value--hash, .commit-detail-value--parents { font-family: var(--vscode-editor-font-family, monospace); font-size: calc(var(--vscode-font-size, 13px) - 1px); }
   .commit-row.selected { background: var(--vscode-list-activeSelectionBackground, #094771); outline: 1px solid var(--vscode-focusBorder, #007acc); outline-offset: -1px; }
   .commit-row.context-target { background: var(--vscode-list-activeSelectionBackground, #094771); outline: 1px solid var(--vscode-focusBorder, #007acc); outline-offset: -1px; }
@@ -714,6 +720,13 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     applyCommitSelection(selectedCommitHash, selectedCommitRepositoryPath);
   }
 
+  // 展开行内正在拖选文字时，抬起鼠标产生的 click 属于选择操作，不能当作“再次点击折叠”。
+  function rowHasTextSelection(row) {
+    var selection = window.getSelection ? window.getSelection() : null;
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return false;
+    return selection.getRangeAt(0).intersectsNode(row);
+  }
+
   // 为单行设置 SVG 和点击监听
 
   function setupRow(row, graphW) {
@@ -756,6 +769,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     row.addEventListener('click', function(event) {
       if (row.classList.contains('disabled')) return;
       if (event.target && event.target.closest('.commit-description')) return;
+      if (row.classList.contains('expanded') && rowHasTextSelection(row)) return;
       var hash = row.getAttribute('data-hash');
       var repositoryPath = row.getAttribute('data-repository-path');
       var commitKey = repositoryPath + ':' + hash;
