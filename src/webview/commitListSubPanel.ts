@@ -145,6 +145,20 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   #commitSearchRow #searchBox { flex: 1 1 auto; min-width: 0; }
   #commitSearchRow .count { flex: 0 0 auto; }
   #commitSearchRow #searchInput { width: 100%; }
+  /* 云端提交折叠条: 紧贴搜索行下方、占满宽度、随搜索行一起吸顶(top = 列头 + 选择器 + 搜索行高度)。 */
+  #cloudCommitBars { flex: 0 0 auto; position: sticky; top: var(--commit-cloud-top, 90px); left: 0; z-index: 3; width: 100%; background: var(--commit-title-background); }
+  #cloudCommitBars:empty { display: none; }
+  .cloud-commit-bar { display: flex; align-items: center; gap: 6px; width: 100%; box-sizing: border-box; padding: 4px 10px; border: 0; border-bottom: 1px solid var(--vscode-panel-border); background: transparent; color: var(--vscode-foreground); font: inherit; text-align: left; cursor: pointer; }
+  .cloud-commit-bar:hover { background: var(--vscode-list-hoverBackground); }
+  .cloud-commit-bar:focus-visible { outline: 1px solid var(--vscode-focusBorder, #007acc); outline-offset: -1px; }
+  .cloud-commit-bar .codicon { flex: 0 0 auto; font-size: 14px; color: var(--vscode-descriptionForeground); }
+  .cloud-commit-bar-text { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  /* 云端提交行: 只读展示, 不可选中, 文字用弱化颜色以区别于本地提交。 */
+  #commitCloudRows { width: 100%; min-width: 0; }
+  /* 云端行与普通提交行共用同一套行模板(选中、悬浮按钮、描述展开、右键菜单); 只是标题用弱化颜色。 */
+  .commit-row.cloud .commit-message-text { color: var(--vscode-descriptionForeground); }
+  .commit-row.cloud.selected .commit-message-text { color: var(--vscode-foreground); }
+  .cloud-commit-group-title { padding: 2px 10px; color: var(--vscode-descriptionForeground); font-size: calc(var(--vscode-font-size, 13px) - 1px); }
 `;
 
 /** Commit 列表子面板的结构片段。 */
@@ -154,6 +168,7 @@ export const COMMIT_LIST_SUB_PANEL_MARKUP = `
       <div id="commitHeader" class="commit-header"><div id="commitHeaderColumns"><div>Commit列表</div></div><div id="commitHeaderSearch"><button class="toolbar-icon" id="fetchBtn" title="Fetch" aria-label="Fetch"><span class="codicon codicon-repo-fetch" aria-hidden="true"></span></button><button class="toolbar-icon" id="pullBtn" title="Pull" aria-label="Pull"><span class="codicon codicon-repo-pull" aria-hidden="true"></span></button><button class="toolbar-icon" id="pushBtn" title="Push" aria-label="Push"><span class="codicon codicon-repo-push" aria-hidden="true"></span></button></div></div>
       <!-- commit-selectors -->
       <div id="commitSearchRow"><div class="selector" id="searchBox"><svg id="searchIcon" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 .96-.96l3.04 3.03-1.06 1.06-2.94-3.13z"/></svg><input type="text" id="searchInput" placeholder="搜索提交..." title="输入关键词搜索, 支持作者/邮箱/消息/Hash/日期, 多个关键词用空格隔开, 回车开始搜索"><button id="searchClear" title="清除搜索">&times;</button></div><span class="count" id="countLabel"></span><div id="commitProgress" hidden><div id="commitProgressFill"></div></div></div>
+      <div id="cloudCommitBars"></div>
       <div id="loading">
         <div id="loadingText">加载中...</div>
         <div id="progressBar"><div id="progressBarFill"></div></div>
@@ -173,18 +188,21 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
   var commitHeader = document.getElementById('commitHeader');
   var commitSelectors = document.getElementById('commitSelectors');
   var commitSearchRow = document.getElementById('commitSearchRow');
+  var commitCloudBars = document.getElementById('cloudCommitBars');
   var commitVerticalScrollbar = document.getElementById('commitVerticalScrollbar');
   function updateCommitChromeLayout() {
     var searchTop = (commitHeader ? commitHeader.offsetHeight : 0) + (commitSelectors ? commitSelectors.offsetHeight : 0);
-    var scrollbarTop = searchTop + (commitSearchRow ? commitSearchRow.offsetHeight : 0);
+    var cloudTop = searchTop + (commitSearchRow ? commitSearchRow.offsetHeight : 0);
+    var scrollbarTop = cloudTop + (commitCloudBars ? commitCloudBars.offsetHeight : 0);
     if (commitSearchRow) commitSearchRow.style.setProperty('--commit-search-top', searchTop + 'px');
+    if (commitCloudBars) commitCloudBars.style.setProperty('--commit-cloud-top', cloudTop + 'px');
     if (commitVerticalScrollbar) commitVerticalScrollbar.style.top = scrollbarTop + 'px';
   }
   installOverlayScrollbars(commitGraphViewport, commitGraph, [commitVerticalScrollbar]);
   updateCommitChromeLayout();
   if (typeof ResizeObserver !== 'undefined') {
     var commitChromeObserver = new ResizeObserver(updateCommitChromeLayout);
-    [commitHeader, commitSelectors, commitSearchRow].forEach(function(element) { if (element) commitChromeObserver.observe(element); });
+    [commitHeader, commitSelectors, commitSearchRow, commitCloudBars].forEach(function(element) { if (element) commitChromeObserver.observe(element); });
   }
   window.addEventListener('resize', updateCommitChromeLayout);
   ['fetch', 'pull', 'push'].forEach(function(action) {
@@ -237,6 +255,11 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
   let commits = [];
   // 工作区虚拟提交行(changes/staged)由后端下发, webview 循环渲染, 不再写死单行。
   let workingTreeRowsState = [];
+  // 云端提交(HEAD..upstream): 每个已选仓库当前分支一组; 折叠状态只存在内存里, 默认全部折叠。
+  let cloudGroupsState = [];
+  const expandedCloudGroups = new Set();
+  let cloudBarsKey = '';
+  let cloudRowsKey = '';
   let selectedCommitHash = '';
   let selectedCommitRepositoryPath = '';
   let hasMoreCommits = false;
@@ -284,6 +307,13 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     let commitVirtualEnd = -1;
     let commitVirtualFrame = 0;
   const DOT_R = 5;
+  // 描述与泳道之间额外的空隙: 所有行(普通提交、云端提交、未提交行)的泳道 SVG 统一加宽这么多, 描述整体右移。
+  const LANE_GAP = 2;
+  // 云端提交的泳道节点: codicon "cloud" 的矢量轮廓(16x16 视窗, 墨迹横向占 14/16); 14px 是确认过的显示大小。
+  const CLOUD_NODE_SIZE = 14;
+  // 云图标比圆形节点宽出的那部分: 把云端行的泳道列加宽同样的量, 描述与泳道的间隔就和普通提交一致, 图标本身不缩放。
+  const CLOUD_NODE_EXTRA = Math.max(0, CLOUD_NODE_SIZE * 14 / 16 / 2 - DOT_R);
+  const CLOUD_NODE_PATH = 'M8 4C6.34315 4 5 5.34315 5 7C5 7.27614 4.77614 7.5 4.5 7.5H4.25C3.00736 7.5 2 8.50736 2 9.75C2 10.9926 3.00736 12 4.25 12H11.75C12.9926 12 14 10.9926 14 9.75C14 8.50736 12.9926 7.5 11.75 7.5H11.5C11.2239 7.5 11 7.27614 11 7C11 5.34315 9.65685 4 8 4ZM4.03004 6.50733C4.27283 4.53062 5.95767 3 8 3C10.0423 3 11.7272 4.53063 11.97 6.50733C13.6623 6.62043 15 8.029 15 9.75C15 11.5449 13.5449 13 11.75 13H4.25C2.45507 13 1 11.5449 1 9.75C1 8.029 2.33769 6.62043 4.03004 6.50733Z';
   let graphViewportWidth = 0;
   // 增量渲染状态
   let currentMaxLane = 0;
@@ -466,7 +496,8 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     var graphRect = graph.getBoundingClientRect();
     var regionTop = topSpacer.getBoundingClientRect().top - graphRect.top + graph.scrollTop;
     var stickyHeight = document.getElementById('commitHeader').offsetHeight
-      + document.getElementById('commitSearchRow').offsetHeight;
+      + document.getElementById('commitSearchRow').offsetHeight
+      + document.getElementById('cloudCommitBars').offsetHeight;
     var viewportBottom = Math.max(0, graph.scrollTop + graph.clientHeight - regionTop);
     var lastExclusive = Math.max(1, commitUpperBound(Math.max(stickyHeight, viewportBottom)));
     var lastVisibleIndex = Math.min(commits.length - 1, lastExclusive - 1);
@@ -485,9 +516,12 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
   }
 
   // 单行 SVG 宽度 = 该行实际泳道所需宽度; 描述随每行泳道紧贴, 泳道少的行不再留全表最大空白。
-  // 坐标系与 width 同值保证 1:1 不缩放; (max+1)*LANE_W + 6 含节点半径余量。
+  // 坐标系与 width 同值保证 1:1 不缩放; (max+1)*LANE_W + 6 含节点半径余量, LANE_GAP 是描述前的额外空隙。
+  function laneColumnWidth(laneCount) {
+    return laneCount * LANE_W + 6 + LANE_GAP;
+  }
   function rowGraphW(c) {
-    return (rowMaxSwimlane(c) + 1) * LANE_W + 6;
+    return laneColumnWidth(rowMaxSwimlane(c) + 1);
   }
 
   // 每类 ref 最多渲染一个图标位：当前分支、Tag、本地分支、远程分支。
@@ -550,7 +584,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
   }
 
   function syncVisibleCommitRowRefReservations() {
-    document.querySelectorAll('#commitVirtualRows .commit-row, #commitWorkingTreeRows .commit-row').forEach(reserveCommitRowRefs);
+    document.querySelectorAll('#commitVirtualRows .commit-row, #commitWorkingTreeRows .commit-row, #commitCloudRows .commit-row').forEach(reserveCommitRowRefs);
   }
 
   // 描述列的分支标签: 仅标注当前分支 HEAD 与其 upstream 远程分支 HEAD。
@@ -577,15 +611,17 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     return labels;
   }
 
-  // 构建单行提交 HTML
-  function buildCommitRowHTML(i, graphW) {
-    var c = commits[i];
-    var commitKey = c.gitBranchOption.repoOption.path + ':' + c.hash;
-    var selected = selectedCommitHash === c.hash && c.gitBranchOption.repoOption.path === selectedCommitRepositoryPath;
+  // 构建单行提交 HTML。options.cloud: 云端提交(泳道由 cloudRowSvg 画虚线, 标题前带云图标, 行内不带 data-row)。
+  function buildCommitRowHTML(i, graphW, options) {
+    options = options || {};
+    var cloud = options.cloud;
+    var c = cloud ? cloud.commit : commits[i];
+    var repositoryPath = cloud ? cloud.repositoryPath : c.gitBranchOption.repoOption.path;
+    var commitKey = repositoryPath + ':' + c.hash;
+    var selected = selectedCommitHash === c.hash && repositoryPath === selectedCommitRepositoryPath;
     // 描述只能在当前高亮 commit 上显示。
     var expanded = selected && expandedCommits.has(commitKey);
-    var html = '<div class="commit-row' + (expanded ? ' expanded' : '') + (selected ? ' selected' : '') + '" data-hash="' + escapeAttr(c.hash) + '" data-repository-path="' + escapeAttr(c.gitBranchOption.repoOption.path) + '" data-row="' + i + '" data-has-description="true">';
-    var repositoryPath = c.gitBranchOption.repoOption.path;
+    var html = '<div class="commit-row' + (cloud ? ' cloud' : '') + (expanded ? ' expanded' : '') + (selected ? ' selected' : '') + '" data-hash="' + escapeAttr(c.hash) + '" data-repository-path="' + escapeAttr(repositoryPath) + '"' + (cloud ? '' : ' data-row="' + i + '"') + ' data-has-description="true">';
     var commitMessage = splitCommitMessage(c);
     // 每个分支类别独立展开；Commit 详情由行悬浮卡与展开描述提供。
     var refChipsHtml = categorizedRefs(c.refs || [], repositoryPath).map(function(category) {
@@ -603,10 +639,15 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
         + '<span class="commit-row-info-label">' + escapeHtml(info.label) + '</span></span>';
     }).join('');
     // col-main: SVG(仅泳道, 按本行泳道宽) + 摘要行 + 展开后的描述, 同属一个字段。
-    var rowW = rowGraphW(c);
     html += '<div class="col-main">';
-    html += '<svg class="graph-svg" width="' + rowW + '" height="' + ROW_H + '" viewBox="0 0 ' + rowW + ' ' + ROW_H + '"></svg>';
-    html += '<div class="col-main-summary"><span class="commit-message-text">' + escapeHtml(commitMessage.title) + '</span></div>';
+    if (cloud) {
+      html += '<span class="graph-svg">' + cloudRowSvg(cloud.layout, cloud.isLastOfGroup, cloud.connectsDown) + '</span>';
+      html += '<div class="col-main-summary"><span class="commit-message-text">' + escapeHtml(commitMessage.title) + '</span></div>';
+    } else {
+      var rowW = rowGraphW(c);
+      html += '<svg class="graph-svg" width="' + rowW + '" height="' + ROW_H + '" viewBox="0 0 ' + rowW + ' ' + ROW_H + '"></svg>';
+      html += '<div class="col-main-summary"><span class="commit-message-text">' + escapeHtml(commitMessage.title) + '</span></div>';
+    }
     var parentList = (c.parents || []).map(function(parent) { return parent.slice(0, 12); }).join(' ');
     var detailItem = function(icon, label, value, valueClass) {
       if (!value) return '';
@@ -678,8 +719,9 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
   function setupRow(row, graphW) {
     // 工作区虚拟行(changes/staged)的 SVG 由 workingTreeGraphSvg 在模板中直接生成, 不走 commit 的 drawSvg。
     var isWorkingTree = row.classList.contains('working-tree');
+    var isCloud = row.classList.contains('cloud');
     var svg = row.querySelector('svg');
-    if (svg && !isWorkingTree) {
+    if (svg && !isWorkingTree && !isCloud) {
       var idx = Number(row.getAttribute('data-row'));
       // 每行按自身泳道宽度绘制, 使描述紧贴泳道; graphW 仅作无对应 commit 时的兜底。
       var rowW = commits[idx] ? rowGraphW(commits[idx]) : graphW;
@@ -734,6 +776,10 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
       if (wasSelected) {
         if (wasExpanded) expandedCommits.delete(commitKey);
         else expandedCommits.add(commitKey);
+        if (row.classList.contains('cloud')) {
+          updateCloudRows(true);
+          return;
+        }
         commitLayoutDirty = true;
         render();
         return;
@@ -778,10 +824,15 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     const cx = LANE_W / 2 + 5;
     const cy = ROW_H / 2;
     const r = DOT_R;
-    const width = LANE_W + 10;
+    // 未提交行与普通提交首列同宽(同一个函数), 描述与泳道的间隔因此完全一致。
+    const width = laneColumnWidth(1);
     const color = 'var(--vscode-descriptionForeground, #999)';
     let inner = '';
     if (hash === 'uncommitted') {
+      // 云端提交展开时, 云端泳道从上方用虚线接入这个节点。
+      if (cloudConnectsToWorkingTree()) {
+        inner += '<path d="M ' + cx + ' 0 V ' + (cy - r) + '" fill="none" stroke="' + color + '" stroke-width="1.5" stroke-dasharray="2 2" stroke-linecap="round"/>';
+      }
       inner += '<path d="M ' + cx + ' ' + (cy + r) + ' V ' + ROW_H + '" fill="none" stroke="' + color + '" stroke-width="1.5" stroke-dasharray="2 2" stroke-linecap="round"/>';
     }
     inner += '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="var(--vscode-editor-background)" stroke="' + color + '" stroke-width="1.5"/>';
@@ -824,6 +875,183 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     host.querySelectorAll('.working-tree').forEach(function(row) { setupRow(row, currentGraphW); });
     scheduleCommitVirtualWindow();
   }
+
+  // ---- 云端提交: 折叠条(搜索行下方) + 只读行(未提交行之上, 同一个列表) ----
+  function visibleCloudGroups() {
+    var workingTreePath = workingTreeRowsState.length ? workingTreeRowsState[0].repositoryPath : '';
+    // 与未提交行同仓库的那组放最后, 使它的虚线刚好落进紧邻的未提交节点。
+    return cloudGroupsState
+      .filter(function(group) { return expandedCloudGroups.has(group.repositoryPath); })
+      .sort(function(left, right) { return (left.repositoryPath === workingTreePath ? 1 : 0) - (right.repositoryPath === workingTreePath ? 1 : 0); });
+  }
+
+  function lastVisibleCloudGroup() {
+    var groups = visibleCloudGroups();
+    var last = groups[groups.length - 1];
+    return last && last.commits.length > 0 ? last : undefined;
+  }
+
+  function cloudConnectsToWorkingTree() {
+    var last = lastVisibleCloudGroup();
+    var row = workingTreeRowsState.find(function(item) { return item.hash === 'uncommitted'; });
+    return Boolean(last && row && row.repositoryPath === last.repositoryPath);
+  }
+
+  function cloudConnectsToFirstCommit() {
+    var last = lastVisibleCloudGroup();
+    if (!last || !commits.length) return false;
+    if (workingTreeRowsState.some(function(item) { return item.hash === 'uncommitted'; })) return false;
+    return commits[0].gitBranchOption.repoOption.path === last.repositoryPath;
+  }
+
+  // 与 GitCommitController.buildGraph 同一个输入/输出泳道状态机, 只是颜色统一为弱化灰色并全部画成虚线。
+  function cloudGroupLayout(group) {
+    var lanes = [];
+    return group.commits.map(function(commit) {
+      var input = lanes.slice();
+      var parents = commit.parents || [];
+      var inputIndex = input.indexOf(commit.hash);
+      var lane = inputIndex >= 0 ? inputIndex : input.length;
+      var next = [], pass = [], mergeIn = [], fromNode = [];
+      for (var i = 0; i < input.length; i++) {
+        if (input[i] === commit.hash) {
+          if (i === inputIndex && parents.length > 0) { fromNode.push(next.length); next.push(parents[0]); }
+          else if (i !== inputIndex) { mergeIn.push(i); }
+          continue;
+        }
+        pass.push({ from: i, to: next.length });
+        next.push(input[i]);
+      }
+      for (var p = (inputIndex >= 0 && parents.length > 0) ? 1 : 0; p < parents.length; p++) {
+        fromNode.push(next.length);
+        next.push(parents[p]);
+      }
+      lanes = next;
+      return { commit: commit, lane: lane, inputIndex: inputIndex, input: input, next: next, pass: pass, mergeIn: mergeIn, fromNode: fromNode };
+    });
+  }
+
+  function cloudRowSvg(row, isLastOfGroup, connectsDown, rowHeight) {
+    var height = Math.max(ROW_H, rowHeight || ROW_H);
+    var y = ROW_H / 2;
+    var color = 'var(--vscode-descriptionForeground, #999)';
+    var maxLane = Math.max(row.lane, row.input.length - 1, row.next.length - 1, 0);
+    var width = laneColumnWidth(maxLane + 1) + CLOUD_NODE_EXTRA;
+    var laneX = function(index) { return index * LANE_W + LANE_W / 2 + 5; };
+    var cx = laneX(row.lane);
+    var dash = ' fill="none" stroke="' + color + '" stroke-width="1.5" stroke-dasharray="2 2" stroke-linecap="round"';
+    var edge = function(x1, y1, x2, y2) {
+      if (x1 === x2) return '<path d="M ' + x1 + ' ' + y1 + ' V ' + y2 + '"' + dash + '/>';
+      var half = (y2 - y1) / 2;
+      return '<path d="M ' + x1 + ' ' + y1 + ' C ' + x1 + ' ' + (y1 + half) + ' ' + x2 + ' ' + (y2 - half) + ' ' + x2 + ' ' + y2 + '"' + dash + '/>';
+    };
+    var inner = '';
+    if (row.inputIndex >= 0) inner += edge(cx, 0, cx, y);
+    row.mergeIn.forEach(function(index) { inner += edge(laneX(index), 0, cx, y); });
+    row.pass.forEach(function(item) { inner += edge(laneX(item.from), 0, laneX(item.to), y); });
+    row.next.forEach(function(hash, k) {
+      // 组内最后一行只有在紧邻未提交行/首个本地提交时才继续向下; 否则下面是空白或另一仓库的标题, 不画指向它们的虚线。
+      if (isLastOfGroup && !connectsDown) return;
+      var startX = row.fromNode.indexOf(k) >= 0 ? cx : laneX(k);
+      // 组内最后一行: 所有仍向下延伸的泳道收拢到第 0 道, 再接入本地的未提交/首个提交节点。
+      var endX = isLastOfGroup && k > 0 ? laneX(0) : laneX(k);
+      inner += edge(startX, y, endX, height);
+    });
+    // 节点画成 codicon 的 cloud 轮廓, 底色填成编辑器背景先遮住穿过它的虚线, 再画图标本体。
+    var scale = CLOUD_NODE_SIZE / 16;
+    var nodeTransform = 'translate(' + (cx - 8 * scale) + ' ' + (y - 8 * scale) + ') scale(' + scale + ')';
+    inner += '<g data-cloud-node transform="' + nodeTransform + '"><path d="' + CLOUD_NODE_PATH + '" fill="var(--vscode-editor-background)" stroke="var(--vscode-editor-background)" stroke-width="2" stroke-linejoin="round"/>'
+      + '<path d="' + CLOUD_NODE_PATH + '" fill="' + color + '"/></g>';
+    return '<svg width="' + width + '" height="' + height + '" viewBox="0 0 ' + width + ' ' + height + '">' + inner + '</svg>';
+  }
+
+  // 云端行与普通行同一模板: 选中、悬浮按钮(分支/作者/时间)、描述展开、右键菜单都走同一条路径。
+  function cloudRowHTML(group, row, isLastOfGroup, connectsDown) {
+    return buildCommitRowHTML(-1, currentGraphW, {
+      cloud: { commit: row.commit, repositoryPath: group.repositoryPath, layout: row, isLastOfGroup: isLastOfGroup, connectsDown: connectsDown },
+    });
+  }
+
+  // 展开描述后行高大于 ROW_H: 按真实行高重画云端泳道, 虚线才能贯穿整行。
+  var cloudRowLayouts = new Map();
+  function stretchCloudRowLanes(host) {
+    host.querySelectorAll('.commit-row.cloud.expanded').forEach(function(row) {
+      var entry = cloudRowLayouts.get(row.getAttribute('data-repository-path') + ':' + row.getAttribute('data-hash'));
+      var holder = row.querySelector('.graph-svg');
+      if (!entry || !holder) return;
+      holder.innerHTML = cloudRowSvg(entry.layout, entry.isLastOfGroup, entry.connectsDown, row.getBoundingClientRect().height);
+    });
+  }
+
+  function updateCloudRows(force) {
+    var host = document.getElementById('commitCloudRows');
+    if (!host) return;
+    var groups = visibleCloudGroups();
+    var key = JSON.stringify(groups.map(function(group) {
+      return [group.repositoryPath, group.count, group.commits.map(function(commit) { return commit.hash; })];
+    }));
+    if (!force && key === cloudRowsKey) return;
+    cloudRowsKey = key;
+    var html = '';
+    var connecting = (cloudConnectsToWorkingTree() || cloudConnectsToFirstCommit()) ? lastVisibleCloudGroup() : undefined;
+    groups.forEach(function(group) {
+      if (groups.length > 1) {
+        html += '<div class="cloud-commit-group-title">' + escapeHtml(group.repositoryLabel + (group.branchLabel ? '（' + group.branchLabel + '）' : '')) + '</div>';
+      }
+      if (group.commits.length < group.count) {
+        html += '<div class="cloud-commit-group-title">' + (group.commits.length > 0
+          ? '仅显示最新 ' + group.commits.length + ' 条，共 ' + group.count + ' 条'
+          : '云端提交暂时无法读取') + '</div>';
+      }
+      var layout = cloudGroupLayout(group);
+      layout.forEach(function(row, index) {
+        var last = index === layout.length - 1, down = group === connecting;
+        cloudRowLayouts.set(group.repositoryPath + ':' + row.commit.hash, { layout: row, isLastOfGroup: last, connectsDown: down });
+        html += cloudRowHTML(group, row, last, down);
+      });
+    });
+    host.innerHTML = html;
+    host.querySelectorAll('.commit-row').forEach(function(row) { setupRow(row, currentGraphW); });
+    stretchCloudRowLanes(host);
+    scheduleCommitVirtualWindow();
+  }
+
+  function updateCloudBars() {
+    var host = document.getElementById('cloudCommitBars');
+    if (!host) return;
+    // 蒙版加载期间旧列表没有参考价值, 折叠条一起让位。
+    host.hidden = isCommitLoading && commitLoadingMode === 'overlay';
+    var multi = cloudGroupsState.length > 1;
+    var key = JSON.stringify([
+      cloudGroupsState.map(function(group) { return [group.repositoryPath, group.repositoryLabel, group.branchLabel, group.count]; }),
+      Array.from(expandedCloudGroups),
+    ]);
+    if (key === cloudBarsKey) return;
+    cloudBarsKey = key;
+    host.innerHTML = cloudGroupsState.map(function(group) {
+      var expanded = expandedCloudGroups.has(group.repositoryPath);
+      var text = (multi ? group.repositoryLabel + '：' : '') + group.count + ' 条提交待拉取';
+      var title = '云端' + (group.branchLabel ? ' ' + group.branchLabel : '') + ' 比本地多 ' + group.count + ' 条提交，点击' + (expanded ? '收起' : '展开');
+      return '<button type="button" class="cloud-commit-bar" data-cloud-repository-path="' + escapeAttr(group.repositoryPath) + '" aria-expanded="' + String(expanded) + '" aria-controls="commitCloudRows" title="' + escapeAttr(title) + '">'
+        + '<span class="codicon codicon-chevron-' + (expanded ? 'down' : 'right') + '" aria-hidden="true"></span>'
+        + '<span class="codicon codicon-cloud" aria-hidden="true"></span>'
+        + '<span class="cloud-commit-bar-text">' + escapeHtml(text) + '</span></button>';
+    }).join('');
+    updateCommitChromeLayout();
+  }
+
+  document.getElementById('cloudCommitBars').addEventListener('click', function(event) {
+    var button = event.target.closest('.cloud-commit-bar');
+    if (!button) return;
+    var repositoryPath = button.getAttribute('data-cloud-repository-path') || '';
+    if (expandedCloudGroups.has(repositoryPath)) expandedCloudGroups.delete(repositoryPath);
+    else expandedCloudGroups.add(repositoryPath);
+    updateCloudBars();
+    updateCloudRows(true);
+    // 虚线衔接依赖云端行是否可见: 未提交行与首个本地提交的节点要跟着重绘。
+    updateWorkingTreeRows();
+    renderCommitVirtualWindow(true);
+  });
 
   function commitKeyAt(index) {
     const commit = commits[index];
@@ -869,7 +1097,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     if (!topSpacer || !commits.length) return { start: 0, end: 0 };
     const graphRect = graph.getBoundingClientRect();
     const regionTop = topSpacer.getBoundingClientRect().top - graphRect.top + graph.scrollTop;
-    const stickyHeight = document.getElementById('commitHeader').offsetHeight + document.getElementById('commitSelectors').offsetHeight + document.getElementById('commitSearchRow').offsetHeight;
+    const stickyHeight = document.getElementById('commitHeader').offsetHeight + document.getElementById('commitSelectors').offsetHeight + document.getElementById('commitSearchRow').offsetHeight + document.getElementById('cloudCommitBars').offsetHeight;
     const viewportTop = Math.max(0, graph.scrollTop + stickyHeight - regionTop);
     const viewportBottom = Math.max(viewportTop, graph.scrollTop + graph.clientHeight - regionTop);
     const first = commitLowerBound(viewportTop);
@@ -1022,7 +1250,8 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     commitVirtualStart = -1;
     commitVirtualEnd = -1;
     // 工作区虚拟行始终保留；普通提交只挂载可视范围与前后各 50 条。
-    list.innerHTML = '<div id="commitWorkingTreeRows">' + workingTreeHtml + '</div>'
+    list.innerHTML = '<div id="commitCloudRows"></div>'
+      + '<div id="commitWorkingTreeRows">' + workingTreeHtml + '</div>'
       + '<div id="commitVirtualTop" class="commit-virtual-spacer"></div>'
       + '<div id="commitVirtualRows"></div>'
       + '<div id="commitVirtualBottom" class="commit-virtual-spacer" style="height:' + commitLayoutTotal + 'px"></div>';
@@ -1031,6 +1260,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     graph.style.setProperty('--graph-lane-width', naturalGraphW + 'px');
     list.style.setProperty('--graph-lane-width', naturalGraphW + 'px');
     document.querySelectorAll('#commitWorkingTreeRows .commit-row').forEach(function(row) { setupRow(row, graphW); });
+    updateCloudRows(true);
     renderCommitVirtualWindow(true);
 
     updateCountLabel();
@@ -1120,7 +1350,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     //   需在该首行 commit 节点上方补一段虚线衔接, 使 Uncommitted Changes 与节点视觉连通。
     //   判定用 idx===0(布局上紧邻虚拟行)而非 refs 含 'HEAD'(部分仓库首行 refs 无字面量 HEAD, 导致永不命中)。
     var hasUncommittedRow = workingTreeRowsState.some(function(row) { return row.hash === 'uncommitted'; });
-    if (idx === 0 && hasUncommittedRow && inputIndex < 0) {
+    if (idx === 0 && (hasUncommittedRow || cloudConnectsToFirstCommit()) && inputIndex < 0) {
       content += '<path d="M ' + cx + ' 0 V ' + y + '" fill="none" stroke="var(--vscode-descriptionForeground, #999)" stroke-width="1.5" stroke-dasharray="2 2" stroke-linecap="round"/>';
     }
 

@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { type AppState, type ChangeSetMode, type ChangedFile, GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
-import { defaultPushTarget, getCommitFiles, getCurrentGitHeadHash, getGitAheadBehind, getGitAheadCount, getGitBranches, getGitlinkPathsInCommit, getPushPlan, type PushSourceBranch, type PushTargetOption, readCurrentCommitMessage } from '../git/gitLogProvider';
+import { defaultPushTarget, getCloudCommits, getCommitFiles, getCurrentGitHeadHash, getGitAheadBehind, getGitAheadCount, getGitBranches, getGitlinkPathsInCommit, getPushPlan, type PushSourceBranch, type PushTargetOption, readCurrentCommitMessage } from '../git/gitLogProvider';
 import { checkoutBranch, checkoutRemoteBranch, commitDetails, hasConflicts, indexGitlink, pull, push, rangeCommits, resolveRevision, restoreAll, restoreSubmodule, trackedPaths, type NativeCommitDetails, type NativePushResult } from '../git/gitNativeOperations';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { FILE_CONTEXT_MENU_ACTIONS } from './fileContextMenu';
@@ -165,6 +165,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private readonly amendCommittedFilesLoading = new Set<string>();
     private readonly unpushedCommitCountByRepository = new Map<string, number>();
     private readonly behindCommitCountByRepository = new Map<string, number>();
+    /** 每个仓库当前分支 HEAD..upstream 的云端提交(最新在前), 与 behind 计数同源同刷新。 */
+    private readonly cloudCommitsByRepository = new Map<string, readonly CommitMetadata[]>();
     private readonly repositorySyncKeyByRepository = new Map<string, string>();
     private readonly repositorySyncStateLoadingByHead = new Set<string>();
     private readonly repositorySyncRevisionByRepository = new Map<string, number>();
@@ -413,6 +415,33 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             ...commit,
             key: `${commit.gitBranchOption?.repoOption.path ?? ''}:${commit.hash}`,
         }));
+        // 云端提交: 每个已选仓库当前分支 HEAD..upstream 各一组; 数量取 behind(与同步按钮同源), 条目可能因上限少于数量。
+        // 搜索结果不展示拓扑, 云端提交也不混入搜索。
+        const cloudGroups = searchKeywords.length > 0 ? [] : this.repositories.filter(repository => selectedRepositoryPaths.includes(repository.path)).flatMap(repository => {
+            const count = this.behindCommitCountByRepository.get(repository.path) ?? 0;
+            if (count <= 0) { return []; }
+            const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+                .find(candidate => candidate.repoOption.path === repository.path);
+            return [{
+                repositoryPath: repository.path,
+                repositoryLabel: repository.label,
+                branchLabel: branch?.label ?? '',
+                count,
+                commits: (this.cloudCommitsByRepository.get(repository.path) ?? []).map(commit => ({
+                    hash: commit.hash,
+                    shortHash: commit.shortHash,
+                    parents: commit.parents,
+                    message: commit.message,
+                    body: commit.body,
+                    rawMessage: commit.rawMessage,
+                    author: commit.author,
+                    authorEmail: commit.authorEmail,
+                    authorDate: commit.authorDate,
+                    authorDateLabel: commit.authorDateLabel,
+                    refs: commit.refs,
+                })),
+            }];
+        });
         const selectedCommit = selectedCommitMetadata ? {
             key: `${selectedCommitMetadata.gitBranchOption?.repoOption.path ?? ''}:${selectedCommitMetadata.hash}`,
             hash: selectedCommitMetadata.hash,
@@ -427,6 +456,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             state: {
                 commits,
                 showCommitLanes: searchKeywords.length === 0,
+                cloudGroups,
                 workingTreeRows,
                 uncommittedRepositoryCount: this.countUncommittedRepositories(s.commitRepositories),
                 repositoryCardDisplayLocks: this.repositoryCardDisplayLocks ? [...this.repositoryCardDisplayLocks] : [],
@@ -1846,6 +1876,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 } else if (input.action === 'openBefore') {
                     // A worktree file's "before" is HEAD; an added or untracked file has none.
                     if (file.status !== 'A' && !file.isUntracked && !file.isGitlink) await this.openGitRevisionFile(fileUri, 'HEAD');
+                } else if (input.action === 'openAfter') {
+                    // A worktree change's "after" is what it leaves behind: the index copy for a staged file (it differs from the
+                    // disk when only part of the file is staged), the file on disk for merge and unstaged files.
+                    if (file.status !== 'D' && !file.isGitlink) {
+                        if (input.section === 'staged') await this.openGitRevisionFile(fileUri, '');
+                        else await this.openRepositoryChangesFile(fileUri, input.path);
+                    }
                 } else if (file.status !== 'D' && !file.isGitlink) {
                     await this.openRepositoryChangesFile(fileUri, input.path);
                 }
@@ -1876,13 +1913,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 await this.runCommitPanelPush([input.repositoryPath], true, false, true);
                 return;
             }
-                } else if (input.action === 'openAfter') {
-                    // A worktree change's "after" is what it leaves behind: the index copy for a staged file (it differs from the
-                    // disk when only part of the file is staged), the file on disk for merge and unstaged files.
-                    if (file.status !== 'D' && !file.isGitlink) {
-                        if (input.section === 'staged') await this.openGitRevisionFile(fileUri, '');
-                        else await this.openRepositoryChangesFile(fileUri, input.path);
-                    }
             if (!['stage', 'unstage', 'discard'].includes(input.action)
                 || !['conflict', 'staged', 'unstaged'].includes(input.section)
                 || !Array.isArray(input.paths) || !input.paths.every(file => typeof file === 'string')) { return; }
@@ -2415,7 +2445,20 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     private findCommit(hash: string, repositoryPath: string): CommitMetadata | undefined {
-        return this.commitController.findCommit(hash, repositoryPath);
+        return this.commitController.findCommit(hash, repositoryPath) ?? this.findCloudCommit(hash, repositoryPath);
+    }
+
+    /**
+     * 云端提交(HEAD..upstream)不在本地提交列表里, 但它的对象已随 fetch 进入本地对象库,
+     * 变更文件与 Diff 都按 hash 读取, 因此可以像普通提交一样被选中。
+     */
+    private findCloudCommit(hash: string, repositoryPath: string): CommitMetadata | undefined {
+        const cloud = this.cloudCommitsByRepository.get(repositoryPath)?.find(commit => commit.hash === hash);
+        if (!cloud) { return undefined; }
+        const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+            .find(candidate => candidate.repoOption.path === repositoryPath)
+            ?? this.branchesController.getCurrentBranch(this.repositories.find(repository => repository.path === repositoryPath)!);
+        return new CommitMetadata({ ...cloud, gitBranchOption: branch });
     }
 
     private async runOpenCommitEditor(repositoryPath: string, amend: boolean): Promise<void> {
@@ -2692,13 +2735,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (this.repositorySyncStateLoadingByHead.has(headKey)) { return; }
         this.repositorySyncStateLoadingByHead.add(headKey);
         try {
-            const syncState = await getGitAheadBehind(rootUri);
+            const [syncState, cloudCommits] = await Promise.all([getGitAheadBehind(rootUri), getCloudCommits(rootUri)]);
             const currentBranch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
                 .find(candidate => candidate.repoOption.path === repositoryPath);
             if (currentBranch?.name !== branch.name || currentBranch.hash !== branch.hash
                 || this.repositorySyncRevision(repositoryPath) !== revision) { return; }
             this.unpushedCommitCountByRepository.set(repositoryPath, syncState.ahead);
             this.behindCommitCountByRepository.set(repositoryPath, syncState.behind);
+            this.cloudCommitsByRepository.set(repositoryPath, cloudCommits);
             this.repositorySyncKeyByRepository.set(repositoryPath, branchKey);
             this.schedulePushState();
             if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
@@ -2822,6 +2866,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.repositorySyncRevisionByRepository.set(repositoryPath, this.repositorySyncRevision(repositoryPath) + 1);
             this.unpushedCommitCountByRepository.delete(repositoryPath);
             this.behindCommitCountByRepository.delete(repositoryPath);
+            this.cloudCommitsByRepository.delete(repositoryPath);
             this.repositorySyncKeyByRepository.delete(repositoryPath);
             for (const headKey of this.unpushedStateLoadedByHead) {
                 if (headKey.startsWith(`${repositoryPath}\u0000`)) {

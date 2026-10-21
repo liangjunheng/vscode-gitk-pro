@@ -134,6 +134,7 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR
       selectedBranches = state.selectedBranches || [];
       var workingTreeRows = state.workingTreeRows || [];
       workingTreeRowsState = workingTreeRows;
+      cloudGroupsState = state.cloudGroups || [];
       uncommittedEnabled = workingTreeRows.some(function(row) { return row.enabled; });
       var uncommittedRepositoryCount = Number(state.uncommittedRepositoryCount) || 0;
       var uncommittedRepoBadge = document.getElementById('uncommittedRepoBadge');
@@ -184,6 +185,8 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR
         selectedRepositoryPaths,
         selectedBranches,
         workingTreeRows.map(function(row) { return [row.hash, row.repositoryPath, row.label, row.enabled]; }),
+        // 云端提交是否衔接到未提交行/首个提交决定它们顶部的虚线, 因此云端内容变化也要重绘列表。
+        cloudGroupsState.map(function(group) { return [group.repositoryPath, group.count, group.commits.map(function(commit) { return commit.hash; })]; }),
         commitListRevision,
       ]);
       var shouldRenderCommitList = nextCommitListModelKey !== commitListModelKey
@@ -198,6 +201,8 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR
       if (shouldRenderCommitList) {
         render();
       }
+      updateCloudBars();
+      if (!shouldRenderCommitList) updateCloudRows(false);
       applySelectedCommit();
       updateCountLabel();
       updateFilesCommitHash();

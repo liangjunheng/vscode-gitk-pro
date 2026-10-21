@@ -595,6 +595,44 @@ export async function getGitAheadCount(rootUri: vscode.Uri): Promise<number> {
     return (await getGitAheadBehind(rootUri)).ahead;
 }
 
+/** 云端提交最多下发到 Webview 的条数; 总数始终以 aheadBehind 的 behind 为准。 */
+export const CLOUD_COMMIT_LIMIT = 200;
+
+/**
+ * HEAD..@{upstream} 中最新的 limit 条提交(含 parents)。只读取本地已有的远程跟踪分支, 不联网;
+ * 没有 upstream、游离 HEAD 或上游已删除时返回空。
+ */
+export async function getCloudCommits(rootUri: vscode.Uri, limit: number = CLOUD_COMMIT_LIMIT): Promise<CommitMetadata[]> {
+    try {
+        const range = await invokeNativeGit<Array<{ hash: string }>>('rangeCommits', {
+            rootPath: rootUri.fsPath,
+            from: 'HEAD',
+            to: '@{upstream}',
+        });
+        const wanted = new Set(range.slice(0, limit).map(commit => commit.hash));
+        if (wanted.size === 0) { return []; }
+        // rangeCommits 不带 parents/refs, 只能由 commits 补齐, 而 commits 没有 "排除 HEAD 可达" 的能力:
+        // 上游历史里较新的公共祖先(合并提交的另一条父线)可能排在区间提交之前, 所以窗口不够就加倍重取。
+        let window = wanted.size;
+        for (let attempt = 0; attempt < 6; attempt++) {
+            const upstreamCommits = await invokeNativeGit<NativeCommitMetadata[]>('commits', {
+                rootPath: rootUri.fsPath,
+                refs: ['@{upstream}'],
+                limit: window,
+                skip: 0,
+            });
+            const found = upstreamCommits.filter(commit => wanted.has(commit.hash));
+            if (found.length === wanted.size || upstreamCommits.length < window) {
+                return found.map(fromNativeCommit);
+            }
+            window *= 4;
+        }
+        return [];
+    } catch {
+        return [];
+    }
+}
+
 async function readCommitsFromNative(rootUri: vscode.Uri, limit: number, refs: readonly string[], skip: number, signal?: AbortSignal): Promise<CommitMetadata[]> {
     throwIfAborted(signal);
     const commits = await invokeNativeGit<NativeCommitMetadata[]>('commits', {

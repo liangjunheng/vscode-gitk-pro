@@ -1488,6 +1488,8 @@ async function verifyProvider() {
   let terminalShows = 0, confirmationChoice = '推送', syncChoice = 'sync', failExplorerCopy = false;
   let syncStatePublishes = 0;
   let aheadBehindImpl = async () => ({ ahead: 4, behind: 2 });
+  let cloudCommitsImpl = async () => [];
+  const cloudFixture = (hash, parent, message) => ({ hash: hash.repeat(40).slice(0, 40), shortHash: hash.repeat(8).slice(0, 8), parents: parent ? [parent.repeat(40).slice(0, 40)] : [], message, author: 'cloud author', authorDateLabel: '2026-10-21 10:00:00', refs: [] });
   // 推送目标只描述远程分支; 本地分支名与 HEAD hash 属于 plan.source。
   const pushTargetFixture = [
     { remote: 'fork', branch: 'main', remoteName: 'fork/main', isUpstream: false, tipTimestamp: 200, unpushedCommitCount: 1 },
@@ -1564,6 +1566,7 @@ async function verifyProvider() {
         ...load.call(this, name, ...args),
         getGitBranches: async uri => { branchReads.push(uri.toString()); return branchFixture; },
         getGitAheadBehind: (...args) => aheadBehindImpl(...args),
+        getCloudCommits: (...args) => cloudCommitsImpl(...args),
         getPushPlan: async () => pushPlanFixture,
         getCurrentGitHeadHash: async () => pulledHeadHash,
       };
@@ -1657,9 +1660,10 @@ async function verifyProvider() {
   assert.equal(errorMessages.at(-1), 'Git Push 失败：network unavailable', 'failed push uses an error notification');
   const repositories = ['parent', 'child', 'clean'].map((repositoryLabel, index) => ({ path: 'file:///fixture/' + repositoryLabel, label: repositoryLabel, hasSubmodules: index < 2, ancestry: index ? ['file:///fixture/parent'] : [] }));
   let published;
+  let selectedPathsForTest = [repositories[0].path];
   const provider = Object.create(GitkViewProvider.prototype);
   Object.defineProperties(provider, {
-    repositories: { value: repositories }, selectedRepositoryPaths: { value: [repositories[0].path] },
+    repositories: { value: repositories }, selectedRepositoryPaths: { get: () => selectedPathsForTest },
     selectedBranches: { value: [] }, branches: { value: [] },
     commitLoadingMode: { value: 'bar' },
   });
@@ -1671,7 +1675,7 @@ async function verifyProvider() {
     repositoryCardDisplayLocks: new Set(),
     pushTargetByRepository: new Map(), lastPushedTargetByRepository: new Map(),
     unpushedCommitCountByRepository: new Map([[repositories[1].path, 4]]),
-    behindCommitCountByRepository: new Map([[repositories[1].path, 0]]),
+    behindCommitCountByRepository: new Map([[repositories[1].path, 0]]), cloudCommitsByRepository: new Map(),
     repositorySyncKeyByRepository: new Map(), repositorySyncStateLoadingByHead: new Set(), repositorySyncRevisionByRepository: new Map(),
     loadRepositorySyncState: async () => {},
     schedulePushState: () => { syncStatePublishes++; }, commitPanel: { isVisible: () => false },
@@ -1707,11 +1711,45 @@ async function verifyProvider() {
   assert.equal(published.state.repositoryChanges[1].message, 'child draft');
   assert.equal(published.state.repositoryChanges[1].behindCount, 0);
   assert.equal(published.state.repositoryChanges[1].aheadCount, 4);
+  assert.deepEqual(published.state.cloudGroups, [], 'no cloud group is published while nothing is behind');
   delete provider.loadRepositorySyncState;
   provider.unpushedCommitCountByRepository.clear(); provider.behindCommitCountByRepository.clear();
   await provider.loadRepositorySyncState(repositories[1].path);
   assert.equal(provider.behindCommitCountByRepository.get(repositories[1].path), 2, 'sync state loads commits behind the configured upstream');
   assert.equal(provider.unpushedCommitCountByRepository.get(repositories[1].path), 4, 'sync state loads commits ahead of the configured upstream');
+  // 云端提交与 behind 计数同源: 每个已选仓库当前分支各一组, 数量取 behind, 条目取 HEAD..upstream。
+  {
+    const cloudPath = repositories[1].path;
+    provider.unpushedStateLoadedByHead = provider.unpushedStateLoadedByHead ?? new Set();
+    provider.commitGitlinkPathsByHead = provider.commitGitlinkPathsByHead ?? new Map();
+    provider.cloudCommitsByRepository.clear(); provider.behindCommitCountByRepository.clear(); provider.unpushedCommitCountByRepository.clear(); provider.repositorySyncKeyByRepository.clear();
+    cloudCommitsImpl = async () => [cloudFixture('c', 'b', 'cloud newest'), cloudFixture('b', 'a', 'cloud older')];
+    await provider.loadRepositorySyncState(cloudPath);
+    assert.deepEqual(provider.cloudCommitsByRepository.get(cloudPath).map(commit => commit.message), ['cloud newest', 'cloud older']);
+    selectedPathsForTest = [cloudPath];
+    provider.pushStateToWebview();
+    assert.equal(published.state.cloudGroups.length, 1, 'one group per selected repository');
+    assert.equal(published.state.cloudGroups[0].repositoryPath, cloudPath);
+    assert.equal(published.state.cloudGroups[0].count, 2, 'the bar count is the behind count shared with the sync button');
+    assert.deepEqual(published.state.cloudGroups[0].commits.map(commit => commit.message), ['cloud newest', 'cloud older']);
+    assert.deepEqual(published.state.cloudGroups[0].commits[0].parents, ['b'.repeat(40)], 'parents are published so the webview can draw the lanes');
+    // 未选中的仓库不出组; 搜索结果不展示拓扑, 也不混入云端提交。
+    selectedPathsForTest = [repositories[0].path];
+    provider.pushStateToWebview();
+    assert.deepEqual(published.state.cloudGroups, [], 'a repository that is not selected contributes no cloud group');
+    selectedPathsForTest = [cloudPath];
+    const realSearch = Object.getOwnPropertyDescriptor(provider.commitController, 'displayedSearchKeywords');
+    Object.defineProperty(provider.commitController, 'displayedSearchKeywords', { value: ['x'], configurable: true });
+    provider.pushStateToWebview();
+    assert.deepEqual(published.state.cloudGroups, [], 'search results never mix in cloud commits');
+    if (realSearch) Object.defineProperty(provider.commitController, 'displayedSearchKeywords', realSearch); else delete provider.commitController.displayedSearchKeywords;
+    // 拉取/外部 fetch 使缓存失效后, 云端提交一起被清掉, 重读后才重新出现。
+    provider.invalidateRepositorySyncState([cloudPath]);
+    assert.equal(provider.cloudCommitsByRepository.has(cloudPath), false, 'cloud commits are dropped with the behind count');
+    cloudCommitsImpl = async () => [];
+    provider.unpushedCommitCountByRepository.clear(); provider.behindCommitCountByRepository.clear();
+    selectedPathsForTest = [repositories[0].path];
+  }
   // 拉取与旧的 ahead/behind 查询并发: 旧结果不能回写, 失效后必须自动重读到最新数量。
   {
     const syncPath = repositories[1].path;
