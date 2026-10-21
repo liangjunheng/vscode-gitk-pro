@@ -368,3 +368,5 @@ mod tests {
 }
 #[cfg(test)]
 mod compat_tests;
+#[cfg(test)]
+mod eol_tests;

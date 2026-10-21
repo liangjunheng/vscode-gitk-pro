@@ -367,6 +367,20 @@ pub fn worktree_matches_index(repo: &Repository, index: &Index, path: &Path) -> 
     let Ok(clean) = clean_data(repo, path, &input) else {
         return false;
     };
-    repo.find_blob(entry.id)
-        .is_ok_and(|blob| blob.content() == clean)
+    let Ok(blob) = repo.find_blob(entry.id) else {
+        return false;
+    };
+    if blob.content() != clean {
+        return false;
+    }
+    // External filters are defined by arbitrary processes and are not safely
+    // reversible during a status read. Preserve the established clean-match
+    // behavior for them; built-in EOL rules can be checked in both directions.
+    if filter_command(repo, path, "clean").is_some()
+        || filter_command(repo, path, "smudge").is_some()
+        || process_filter_command(repo, path).is_some()
+    {
+        return true;
+    }
+    smudge_data(repo, path, blob.content()).is_ok_and(|expected| expected == input)
 }

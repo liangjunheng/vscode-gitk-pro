@@ -5,10 +5,10 @@ const { spawnSync } = require('node:child_process');
 const { toolsRoot } = require('./prepare-native-tools.cjs');
 
 const LIBGIT2_SYS_VERSION = '0.18.8+1.9.7';
-const PATCH_REVISION = 1;
+const PATCH_REVISION = 2;
 const STAMP_FILE = '.vscode-gitk-darwin-openssl-patch.json';
 
-const replacements = Object.freeze([
+const buildScriptReplacements = Object.freeze([
   Object.freeze([
 `        if windows {
             features.push_str("#define GIT_WINHTTP 1\\n");
@@ -60,6 +60,13 @@ const replacements = Object.freeze([
   ]),
 ]);
 
+const bindingsReplacements = Object.freeze([
+  Object.freeze([
+    'pub const GIT_REBASE_NO_OPERATION: usize = usize::max_value();',
+    'pub const GIT_REBASE_NO_OPERATION: usize = usize::MAX;',
+  ]),
+]);
+
 function sha256(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }
@@ -80,18 +87,22 @@ function sleep(milliseconds) {
 function validPatch(directory) {
   const stampPath = path.join(directory, STAMP_FILE);
   const buildScript = path.join(directory, 'build.rs');
-  if (!fs.existsSync(stampPath) || !fs.existsSync(buildScript)) return false;
+  const bindings = path.join(directory, 'lib.rs');
+  if (!fs.existsSync(stampPath) || !fs.existsSync(buildScript) || !fs.existsSync(bindings)) return false;
   try {
     const stamp = JSON.parse(fs.readFileSync(stampPath, 'utf8'));
     const contents = fs.readFileSync(buildScript, 'utf8');
+    const bindingContents = fs.readFileSync(bindings, 'utf8');
     return stamp.version === LIBGIT2_SYS_VERSION
       && stamp.patchRevision === PATCH_REVISION
       && stamp.buildScriptSha256 === sha256(buildScript)
+      && stamp.bindingsSha256 === sha256(bindings)
       && contents.includes('#define GIT_OPENSSL 1')
       && contents.includes('#define GIT_SHA256_OPENSSL 1')
       && !contents.includes('#define GIT_SECURE_TRANSPORT 1')
       && !contents.includes('cargo:rustc-link-lib=framework=Security')
-      && !contents.includes('cargo:rustc-link-lib=framework=CoreFoundation');
+      && !contents.includes('cargo:rustc-link-lib=framework=CoreFoundation')
+      && bindingContents.includes('GIT_REBASE_NO_OPERATION: usize = usize::MAX;');
   } catch {
     return false;
   }
@@ -125,11 +136,11 @@ function locateRegistryCrate(manifest, env) {
   return path.dirname(package.manifest_path);
 }
 
-function patchBuildScript(file) {
+function patchFile(file, replacements, label) {
   let contents = fs.readFileSync(file, 'utf8');
   for (const [original, replacement] of replacements) {
     if (!contents.includes(original)) {
-      throw new Error(`libgit2-sys ${LIBGIT2_SYS_VERSION} build.rs no longer matches the expected patch context`);
+      throw new Error(`libgit2-sys ${LIBGIT2_SYS_VERSION} ${label} no longer matches the expected patch context`);
     }
     contents = contents.replace(original, replacement);
   }
@@ -163,11 +174,14 @@ function prepareDarwinLibgit2Patch(manifest, env = process.env) {
     const source = locateRegistryCrate(path.resolve(manifest), env);
     fs.cpSync(source, staging, { recursive: true });
     const buildScript = path.join(staging, 'build.rs');
-    patchBuildScript(buildScript);
+    const bindings = path.join(staging, 'lib.rs');
+    patchFile(buildScript, buildScriptReplacements, 'build.rs');
+    patchFile(bindings, bindingsReplacements, 'lib.rs');
     fs.writeFileSync(path.join(staging, STAMP_FILE), `${JSON.stringify({
       version: LIBGIT2_SYS_VERSION,
       patchRevision: PATCH_REVISION,
       buildScriptSha256: sha256(buildScript),
+      bindingsSha256: sha256(bindings),
     }, null, 2)}\n`);
     if (fs.existsSync(destination)) fs.rmSync(destination, { recursive: true, force: true });
     fs.renameSync(staging, destination);

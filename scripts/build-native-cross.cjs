@@ -79,6 +79,17 @@ if (reusableOpenSsl) {
 let darwinPatchConfig;
 if (rustTarget.endsWith('-apple-darwin')) {
   childEnv.CFLAGS = [process.env.CFLAGS, '-DOPENSSL_NO_APPLE_CRYPTO_RANDOM'].filter(Boolean).join(' ');
+  if (process.platform !== 'darwin') {
+    // Rust tries to discover an Apple SDK with xcrun and asks rust-objcopy to
+    // strip Mach-O files after linking. Neither tool path is valid on a
+    // non-macOS cargo-zigbuild host: Zig already supplies the system-library
+    // stubs, while rust-objcopy crashes on these Mach-O dylibs. Keep the valid
+    // unstripped artifact and cap only compiler warnings for this cross-build;
+    // real compile/link failures still return a non-zero status.
+    childEnv.CARGO_PROFILE_RELEASE_STRIP = process.env.CARGO_PROFILE_RELEASE_STRIP || 'none';
+    childEnv.RUSTFLAGS = [process.env.RUSTFLAGS, '-A warnings'].filter(Boolean).join(' ');
+    console.log(`${vscodeTarget}: non-macOS Darwin cross-build uses Zig stubs and keeps the unstripped Mach-O artifact`);
+  }
   const patchDirectory = process.env.VSCODE_GITK_LIBGIT2_PATCH
     || prepareDarwinLibgit2Patch(manifest, childEnv);
   darwinPatchConfig = libgit2PatchConfig(patchDirectory);
