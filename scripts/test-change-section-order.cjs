@@ -47,6 +47,17 @@ async function main() {
         } })), { repositoryPath, conflict, staged, unstaged });
         assert.deepEqual(await page.locator('.repo-group').evaluateAll(groups => groups.map(group => group.dataset.section)), ['conflict', 'unstaged', 'staged']);
         assert.deepEqual(await page.locator('.repo-group-toggle > span:nth-child(2)').allTextContents(), ['Merge Changes', 'Unstaged Changes', 'Staged Changes']);
+        await page.locator('.repo-changes-label').click();
+        assert.equal(await page.locator('.repo-group[data-section="unstaged"]').isVisible(), true, 'the card is expanded so the badges have real geometry');
+        const badgeGaps = await page.locator('.repo-group').evaluateAll(groups => Object.fromEntries(groups.map(group => {
+            const label = group.querySelector('.repo-group-toggle > span:nth-child(2)').getBoundingClientRect();
+            const badge = group.querySelector('.repo-count').getBoundingClientRect();
+            return [group.dataset.section, Math.round(badge.left - label.right)];
+        })));
+        assert.equal(badgeGaps.unstaged, 5, 'the Unstaged count badge sits right after its title');
+        assert.equal(badgeGaps.staged, 5, 'the Staged count badge sits right after its title');
+        assert.ok(badgeGaps.conflict > 5, 'the Merge Changes badge is untouched, beside its actions');
+        assert.equal(await page.locator('.repo-group[data-section="unstaged"] .repo-group-toggle .repo-count').textContent(), '1');
         await page.evaluate(repositoryPath => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state: {
             repositoryChanges: [{ repositoryPath, repositoryLabel: 'fixture', isMainRepository: true, headLabel: 'main',
                 staged: [{ path: 'resolved.cpp', status: 'M' }], unstaged: [], mergeOperation: 'merge' }],

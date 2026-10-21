@@ -70,6 +70,7 @@ export const REPOSITORY_CHANGES_STYLES = `
   .repo-group-toggle { display: flex; flex: 1; gap: 5px; align-items: center; min-width: 0; height: 26px; padding: 0 2px; border: 0; background: transparent; color: inherit; font: inherit; font-size: var(--vscode-font-size, 13px); font-weight: 600; text-align: left; cursor: pointer; }
   .repo-group-toggle:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .repo-count { border-radius: 10px; min-width: 20px; height: 18px; padding: 0 5px; text-align: center; line-height: 18px; font-size: calc(var(--vscode-font-size, 13px) - 1px); background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+  .repo-group-toggle .repo-count { flex: none; font-weight: normal; }
   .repo-group-files { min-width: 0; }
   .repo-folder-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 25px; padding: 0 5px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
   .repo-folder-toggle:hover { background: var(--vscode-list-hoverBackground); }
@@ -356,7 +357,9 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'repo-group-toggle'; toggle.dataset.repoAction = 'group';
       toggle.innerHTML = '<span class="codicon codicon-chevron-down"></span><span>' + escapeHtml(section.label) + '</span>';
       const badge = document.createElement('span'); badge.className = 'repo-count'; badge.textContent = String(section.files.length);
-      header.append(toggle, badge);
+      // Unstaged/Staged show the count right after the title (inside the toggle); other groups keep it beside the actions.
+      if (section.key === 'unstaged' || section.key === 'staged') { toggle.appendChild(badge); header.append(toggle); }
+      else header.append(toggle, badge);
       if (section.key === 'conflict') {
         const actions = document.createElement('span'); actions.style.cssText = 'display:flex;margin-left:auto;gap:2px';
         const proceed = repoChangesIcon('continue', 'check', '继续当前合并操作');
