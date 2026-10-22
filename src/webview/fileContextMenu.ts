@@ -50,13 +50,43 @@ export const FILE_CONTEXT_MENU_SCRIPT = `
     return menu;
   }
   function applyFileContextMenuState(menu, file) {
-    var missingOnDisk = file.status === 'D' || Boolean(file.isGitlink);
+    applyFileContextMenuStateForFiles(menu, [file]);
+  }
+  // 暂存 / 取消暂存 / 还原 only exist for a worktree group and depend on it; they sit above the open items and are rebuilt on every
+  // open, so a normal commit menu keeps exactly the shared items. A merge conflict can only be staged (marks it resolved).
+  function applyFileChangeActions(menu, section) {
+    menu.querySelectorAll('[data-file-change-item]').forEach(function(item) { item.remove(); });
+    var labels = { stage: '暂存', unstage: '取消暂存', discard: '还原' };
+    var actions = section === 'unstaged' ? ['stage', 'discard'] : section === 'staged' ? ['unstage'] : section === 'conflict' ? ['stage'] : [];
+    if (actions.length === 0) return;
+    var fragment = document.createDocumentFragment();
+    actions.forEach(function(action) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.setAttribute('data-file-change-action', action);
+      button.setAttribute('data-file-change-item', '');
+      button.textContent = labels[action];
+      fragment.append(button);
+    });
+    var separator = document.createElement('div');
+    separator.className = 'context-menu-separator';
+    separator.setAttribute('data-file-change-item', '');
+    fragment.append(separator);
+    menu.insertBefore(fragment, menu.firstChild);
+  }
+  function applyFileContextMenuStateForFiles(menu, files, section) {
+    var list = Array.isArray(files) ? files.filter(Boolean) : [];
+    applyFileChangeActions(menu, section);
+    var multiple = list.length > 1;
     function setDisabled(action, disabled) { menu.querySelector('[data-file-action="' + action + '"]').disabled = Boolean(disabled); }
-    setDisabled('openFile', missingOnDisk);
-    setDisabled('openBefore', Boolean(file.isGitlink) || file.status === 'A' || Boolean(file.isUntracked));
-    setDisabled('openAfter', missingOnDisk);
-    setDisabled('revealInOS', missingOnDisk);
-    setDisabled('revealInExplorer', missingOnDisk);
+    function noDiskFile(file) { return file.status === 'D' || Boolean(file.isGitlink); }
+    setDisabled('openFile', list.length === 0 || list.every(noDiskFile));
+    setDisabled('openBefore', list.length === 0 || list.every(function(file) { return Boolean(file.isGitlink) || file.status === 'A' || Boolean(file.isUntracked); }));
+    setDisabled('openAfter', list.length === 0 || list.every(noDiskFile));
+    // Revealing and copying the file itself address one resource; with several files selected they stay disabled.
+    setDisabled('revealInOS', multiple || list.length === 0 || list.every(noDiskFile));
+    setDisabled('revealInExplorer', multiple || list.length === 0 || list.every(noDiskFile));
+    setDisabled('copy', multiple);
   }
   function placeFileContextMenu(menu, event) {
     menu.showPopover();

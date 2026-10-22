@@ -397,7 +397,7 @@ async function main() {
     assert.equal(await page.evaluate(() => window.messages.length), repositoryMessagesBeforeContext, 'right-clicking a repository file does not change the real selection');
     assert.equal(await fileMenu.locator('[data-file-action="openAfter"]').isVisible(), true, 'a worktree file shows the after item just like a normal commit file');
     assert.equal(await fileMenu.locator('[data-file-action="openAfter"]').isDisabled(), false, 'a modified worktree file has a version after the change');
-    assert.deepEqual(await fileMenu.locator('button:visible').allTextContents(), ['打开文件', '打开文件 (修改前)', '打开文件 (修改后)', '通过文件管理器显示', '通过资源管理器视图显示', '复制文件', '复制文件路径', '复制文件相对路径'], 'a worktree file shares the normal commit menu');
+    assert.deepEqual(await fileMenu.locator('button:visible').allTextContents(), ['暂存', '还原', '打开文件', '打开文件 (修改前)', '打开文件 (修改后)', '通过文件管理器显示', '通过资源管理器视图显示', '复制文件', '复制文件路径', '复制文件相对路径'], 'an unstaged worktree file adds its group actions above the shared commit menu items');
     for (const action of ['openFile', 'openBefore', 'openAfter', 'revealInOS', 'revealInExplorer', 'copy', 'copyPath', 'copyRelativePath']) {
       await fileMenu.locator('[data-file-action="' + action + '"]').click();
       message = await lastMessage(page);

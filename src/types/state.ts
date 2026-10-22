@@ -17,14 +17,14 @@ export type GitkIntent =
     | { type: 'commitAction'; action: unknown; hash: unknown; repositoryPath: unknown }
     | { type: 'selectCommit'; hash: unknown; repositoryPath?: unknown }
     | { type: 'selectFile'; path?: unknown }
-    | { type: 'commitFileAction'; hash: string; repositoryPath: string; path: string; action: 'openFile' | 'openBefore' | 'openAfter' | 'revealInOS' | 'revealInExplorer' | 'copy' | 'copyPath' | 'copyRelativePath' }
+    | { type: 'commitFileAction'; hash: string; repositoryPath: string; path: string; paths?: string[]; action: 'openFile' | 'openBefore' | 'openAfter' | 'revealInOS' | 'revealInExplorer' | 'copy' | 'copyPath' | 'copyRelativePath' }
     | { type: 'copyFilePath'; path: unknown; absolute?: unknown }
     | { type: 'workingTreeAction'; action: unknown; section: unknown; path?: unknown; paths?: unknown }
     | { type: 'toggleStashes'; visible?: unknown }
     | { type: 'workingTreeCommit'; action: unknown; repositoryPath: unknown; message: unknown }
     | { type: 'updateCommitMessage'; repositoryPath: unknown; message: unknown }
     | { type: 'repositoryChangesFile'; repositoryPath: string; section: 'conflict' | 'staged' | 'unstaged'; path: string }
-    | { type: 'repositoryChangesFileAction'; repositoryPath: string; section: 'conflict' | 'staged' | 'unstaged'; path: string; action: 'openFile' | 'openBefore' | 'openAfter' | 'revealInOS' | 'revealInExplorer' | 'copy' | 'copyPath' | 'copyRelativePath' }
+    | { type: 'repositoryChangesFileAction'; repositoryPath: string; section: 'conflict' | 'staged' | 'unstaged'; path: string; paths?: string[]; action: 'openFile' | 'openBefore' | 'openAfter' | 'revealInOS' | 'revealInExplorer' | 'copy' | 'copyPath' | 'copyRelativePath' }
     | { type: 'repositoryChangesAction'; repositoryPath: string; action: string; section?: 'conflict' | 'staged' | 'unstaged'; paths?: string[]; untrackedPaths?: string[] }
     | { type: 'rendered'; target: unknown; fileCount: unknown }
     | { type: 'openCommitEditor'; amend: unknown; repositoryPath: unknown }

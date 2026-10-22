@@ -1881,41 +1881,55 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 return;
             }
             if (input.type === 'repositoryChangesFileAction') {
+                const targetPaths = this.resolveFileActionPaths(input.path, input.paths);
                 if (!['conflict', 'staged', 'unstaged'].includes(input.section)
                     || !FILE_CONTEXT_MENU_ACTIONS.includes(input.action)
-                    || !this.isRepositoryFilePath(input.path)) { return; }
+                    || !targetPaths) { return; }
                 const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
                     .find(candidate => candidate.repoOption.path === input.repositoryPath);
                 if (!branch) { void vscode.window.showWarningMessage('仓库状态已更新，请重新打开文件菜单。'); return; }
                 const snapshot = await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(branch);
                 const candidates = input.section === 'staged' ? snapshot.staged : snapshot.changes;
-                const file = candidates.find(candidate => candidate.path === input.path
-                    && (input.section === 'conflict' ? candidate.isConflict : !candidate.isConflict));
-                if (!file) { void vscode.window.showWarningMessage('仓库文件已更新，请重新打开文件菜单。'); return; }
+                // The menu acts on the clicked file, or on the whole multi-selection the webview sends; stale paths are dropped.
+                const files: typeof candidates = [];
+                for (const targetPath of targetPaths) {
+                    const match = candidates.find(candidate => candidate.path === targetPath
+                        && (input.section === 'conflict' ? candidate.isConflict : !candidate.isConflict));
+                    if (match) { files.push(match); }
+                }
+                if (files.length === 0) { void vscode.window.showWarningMessage('仓库文件已更新，请重新打开文件菜单。'); return; }
                 const rootUri = vscode.Uri.parse(input.repositoryPath);
-                const fileUri = vscode.Uri.joinPath(rootUri, ...input.path.split('/'));
+                const uriOf = (filePath: string): vscode.Uri => vscode.Uri.joinPath(rootUri, ...filePath.split('/'));
                 if (input.action === 'copyRelativePath') {
-                    await vscode.env.clipboard.writeText(input.path);
+                    await vscode.env.clipboard.writeText(files.map(file => file.path).join('\n'));
                 } else if (input.action === 'copyPath') {
-                    await vscode.env.clipboard.writeText(fileUri.fsPath);
-                } else if (input.action === 'copy') {
-                    await this.copyFileResource(fileUri);
-                } else if (input.action === 'revealInOS') {
-                    if (file.status !== 'D' && !file.isGitlink) await vscode.commands.executeCommand('revealFileInOS', fileUri);
-                } else if (input.action === 'revealInExplorer') {
-                    if (file.status !== 'D' && !file.isGitlink) await vscode.commands.executeCommand('revealInExplorer', fileUri);
-                } else if (input.action === 'openBefore') {
-                    // A worktree file's "before" is HEAD; an added or untracked file has none.
-                    if (file.status !== 'A' && !file.isUntracked && !file.isGitlink) await this.openGitRevisionFile(fileUri, 'HEAD');
-                } else if (input.action === 'openAfter') {
-                    // A worktree change's "after" is what it leaves behind: the index copy for a staged file (it differs from the
-                    // disk when only part of the file is staged), the file on disk for merge and unstaged files.
-                    if (file.status !== 'D' && !file.isGitlink) {
-                        if (input.section === 'staged') await this.openGitRevisionFile(fileUri, '');
-                        else await this.openRepositoryChangesFile(fileUri, input.path);
+                    await vscode.env.clipboard.writeText(files.map(file => uriOf(file.path).fsPath).join('\n'));
+                } else if (input.action === 'copy' || input.action === 'revealInOS' || input.action === 'revealInExplorer') {
+                    // These address a single resource; the webview disables them for a multi-selection, so use the clicked file.
+                    const file = files.find(candidate => candidate.path === input.path) ?? files[0];
+                    const fileUri = uriOf(file.path);
+                    if (input.action === 'copy') {
+                        await this.copyFileResource(fileUri);
+                    } else if (file.status !== 'D' && !file.isGitlink) {
+                        await vscode.commands.executeCommand(input.action === 'revealInOS' ? 'revealFileInOS' : 'revealInExplorer', fileUri);
                     }
-                } else if (file.status !== 'D' && !file.isGitlink) {
-                    await this.openRepositoryChangesFile(fileUri, input.path);
+                } else {
+                    for (const file of files) {
+                        const fileUri = uriOf(file.path);
+                        if (input.action === 'openBefore') {
+                            // A worktree file's "before" is HEAD; an added or untracked file has none.
+                            if (file.status !== 'A' && !file.isUntracked && !file.isGitlink) await this.openGitRevisionFile(fileUri, 'HEAD');
+                        } else if (input.action === 'openAfter') {
+                            // A worktree change's "after" is what it leaves behind: the index copy for a staged file (it differs from the
+                            // disk when only part of the file is staged), the file on disk for merge and unstaged files.
+                            if (file.status !== 'D' && !file.isGitlink) {
+                                if (input.section === 'staged') await this.openGitRevisionFile(fileUri, '');
+                                else await this.openRepositoryChangesFile(fileUri, file.path);
+                            }
+                        } else if (file.status !== 'D' && !file.isGitlink) {
+                            await this.openRepositoryChangesFile(fileUri, file.path);
+                        }
+                    }
                 }
                 return;
             }
@@ -1959,6 +1973,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    /** A file action targets the clicked file, or the multi-selection the webview sends with it; every path must be a safe repository-relative path. */
+    private resolveFileActionPaths(filePath: string, paths: readonly string[] | undefined): string[] | undefined {
+        const requested = Array.isArray(paths) && paths.length > 0 ? paths : [filePath];
+        if (!requested.includes(filePath)
+            || !requested.every(candidate => typeof candidate === 'string' && this.isRepositoryFilePath(candidate))) { return undefined; }
+        return [...new Set(requested)];
+    }
+
     private isRepositoryFilePath(filePath: string): boolean {
         return filePath.length > 0
             && !path.isAbsolute(filePath)
@@ -1992,35 +2014,44 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     private async handleCommitFileAction(input: Extract<GitkIntent, { type: 'commitFileAction' }>): Promise<void> {
+        const targetPaths = this.resolveFileActionPaths(input.path, input.paths);
         if (input.hash !== this.currentHash
             || input.repositoryPath !== this.currentRepositoryPath
             || !FILE_CONTEXT_MENU_ACTIONS.includes(input.action)
-            || !this.isRepositoryFilePath(input.path)) {
+            || !targetPaths) {
             void vscode.window.showWarningMessage('提交或文件已更新，请重新打开文件菜单。');
             return;
         }
-        const file = this.files.find(candidate => candidate.path === input.path);
-        if (!file) { void vscode.window.showWarningMessage('提交文件已更新，请重新打开文件菜单。'); return; }
+        // Keep the list order of the commit so copied paths read like the file list.
+        const files = this.files.filter(candidate => targetPaths.includes(candidate.path));
+        if (files.length === 0) { void vscode.window.showWarningMessage('提交文件已更新，请重新打开文件菜单。'); return; }
         try {
             const rootUri = vscode.Uri.parse(input.repositoryPath);
-            const fileUri = vscode.Uri.joinPath(rootUri, ...input.path.split('/'));
+            const uriOf = (filePath: string): vscode.Uri => vscode.Uri.joinPath(rootUri, ...filePath.split('/'));
             if (input.action === 'copyRelativePath') {
-                await vscode.env.clipboard.writeText(input.path);
+                await vscode.env.clipboard.writeText(files.map(file => file.path).join('\n'));
             } else if (input.action === 'copyPath') {
-                await vscode.env.clipboard.writeText(fileUri.fsPath);
-            } else if (input.action === 'copy') {
-                await this.copyFileResource(fileUri);
-            } else if (input.action === 'revealInOS') {
-                if (file.status !== 'D' && !file.isGitlink) await vscode.commands.executeCommand('revealFileInOS', fileUri);
-            } else if (input.action === 'revealInExplorer') {
-                if (file.status !== 'D' && !file.isGitlink) await vscode.commands.executeCommand('revealInExplorer', fileUri);
-            } else if (input.action === 'openBefore') {
-                if (file.status !== 'A' && !file.isGitlink) await this.openCommitFileBefore(rootUri, input.hash, file);
-            } else if (input.action === 'openAfter') {
-                if (file.status !== 'D' && !file.isGitlink) await this.openCommitFileAfter(rootUri, input.hash, file);
-            } else if (file.status !== 'D' && !file.isGitlink) {
-                // Open the file on disk, exactly like a worktree file; a commit-content document would show as unsaved.
-                await this.openRepositoryChangesFile(fileUri, input.path);
+                await vscode.env.clipboard.writeText(files.map(file => uriOf(file.path).fsPath).join('\n'));
+            } else if (input.action === 'copy' || input.action === 'revealInOS' || input.action === 'revealInExplorer') {
+                // These address a single resource; the webview disables them for a multi-selection, so use the clicked file.
+                const file = files.find(candidate => candidate.path === input.path) ?? files[0];
+                const fileUri = uriOf(file.path);
+                if (input.action === 'copy') {
+                    await this.copyFileResource(fileUri);
+                } else if (file.status !== 'D' && !file.isGitlink) {
+                    await vscode.commands.executeCommand(input.action === 'revealInOS' ? 'revealFileInOS' : 'revealInExplorer', fileUri);
+                }
+            } else {
+                for (const file of files) {
+                    if (input.action === 'openBefore') {
+                        if (file.status !== 'A' && !file.isGitlink) await this.openCommitFileBefore(rootUri, input.hash, file);
+                    } else if (input.action === 'openAfter') {
+                        if (file.status !== 'D' && !file.isGitlink) await this.openCommitFileAfter(rootUri, input.hash, file);
+                    } else if (file.status !== 'D' && !file.isGitlink) {
+                        // Open the file on disk, exactly like a worktree file; a commit-content document would show as unsaved.
+                        await this.openRepositoryChangesFile(uriOf(file.path), file.path);
+                    }
+                }
             }
         } catch (error) {
             void vscode.window.showErrorMessage('提交变更文件操作失败：' + (error instanceof Error ? error.message : String(error)));

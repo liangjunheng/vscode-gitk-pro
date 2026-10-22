@@ -100,9 +100,9 @@ export const REPOSITORY_CHANGES_STYLES = `
   #repositoryGroupContextMenu button, #repositoryMessageContextMenu button { display: block; box-sizing: border-box; width: 100%; max-width: 100%; padding: 5px 8px; border: 0; border-radius: 3px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: transparent; text-align: left; font: inherit; }
   #repositoryGroupContextMenu button:hover, #repositoryMessageContextMenu button:hover { background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-menu-selectionForeground, var(--vscode-list-hoverForeground)); }
   .repo-file-row:hover { background: var(--vscode-list-hoverBackground); border-radius: 3px; }
-  .repo-file-row.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); border-radius: 3px; }
+  .repo-file-row.selected, .repo-file-row.multi-selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); border-radius: 3px; }
   .repo-file-row.context-target, .repo-group-header.context-target { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); border-radius: 3px; outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
-  .repo-file-row.selected .repo-file-folder { color: inherit; opacity: .8; }
+  .repo-file-row.selected .repo-file-folder, .repo-file-row.multi-selected .repo-file-folder { color: inherit; opacity: .8; }
   .repo-file.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
 `;
 export const REPOSITORY_CHANGES_SCRIPT = String.raw`
@@ -128,6 +128,82 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
   const repositoryGroupsCollapsed = new Set();
   const repositoryFoldersCollapsed = new Set();
   const repositoryDrafts = new Map();
+  // Multi-selection belongs to one repository card and one snapshot (the worktree or a single commit); only one card holds it at a time.
+  const repositorySelectedFiles = new Map();
+  const repositorySelectionAnchors = new Map();
+  const repositorySelectionScopes = new Map();
+  function repositorySelectionKey(section, filePath) { return section + String.fromCharCode(0) + filePath; }
+  function repositorySelectionParts(key) { const separator = key.indexOf(String.fromCharCode(0)); return { section: key.slice(0, separator), path: key.slice(separator + 1) }; }
+  // Rows of a group in display order. A Shift range follows what the user sees, and tree mode lists rows folder by folder.
+  function repositoryGroupRows(group) {
+    return Array.from(group.querySelectorAll('.repo-file-row')).filter(function(row) { return !row.closest('.repo-folder-files[hidden]'); });
+  }
+  // A file acts together with the selection only when it belongs to it; otherwise it acts alone.
+  function repositorySelectedPaths(repositoryPath, section, filePath, group) {
+    const selected = repositorySelectedFiles.get(repositoryPath);
+    if (!filePath || !selected || !selected.has(repositorySelectionKey(section, filePath))) return filePath ? [filePath] : [];
+    return Array.from(group.querySelectorAll('.repo-file-row'))
+      .map(function(row) { return row.dataset.filePath; })
+      .filter(function(path) { return selected.has(repositorySelectionKey(section, path)); });
+  }
+  function syncRepositoryMultiSelectionClasses(node, repositoryPath) {
+    const selected = repositorySelectedFiles.get(repositoryPath);
+    node.groups.querySelectorAll('.repo-file-row').forEach(function(row) {
+      const group = row.closest('.repo-group');
+      row.classList.toggle('multi-selected', Boolean(selected && group && selected.has(repositorySelectionKey(group.dataset.section, row.dataset.filePath))));
+    });
+  }
+  function clearRepositorySelection(repositoryPath) {
+    repositorySelectedFiles.delete(repositoryPath); repositorySelectionAnchors.delete(repositoryPath);
+  }
+  // A different snapshot (another commit, or worktree vs commit) never inherits the previous selection. Returns whether one was dropped.
+  function syncRepositorySelectionScope(repositoryPath, snapshot) {
+    const scope = snapshot.kind === 'commit' ? 'commit:' + snapshot.commit.hash : 'worktree';
+    if (repositorySelectionScopes.get(repositoryPath) === scope) return false;
+    repositorySelectionScopes.set(repositoryPath, scope);
+    const hadSelection = repositorySelectedFiles.has(repositoryPath);
+    clearRepositorySelection(repositoryPath);
+    return hadSelection;
+  }
+  // Files that left their group (staged, discarded, committed) drop out of the selection.
+  function pruneRepositorySelection(repositoryPath, sections) {
+    const selected = repositorySelectedFiles.get(repositoryPath);
+    if (!selected) return;
+    const available = new Set();
+    sections.forEach(function(section) { section.files.forEach(function(file) { available.add(repositorySelectionKey(section.key, file.path)); }); });
+    selected.forEach(function(key) { if (!available.has(key)) selected.delete(key); });
+    const anchor = repositorySelectionAnchors.get(repositoryPath);
+    if (anchor && !available.has(anchor)) repositorySelectionAnchors.delete(repositoryPath);
+    if (!selected.size) clearRepositorySelection(repositoryPath);
+  }
+  // Plain click selects one file, Ctrl / Cmd toggles it, Shift selects the range from the last clicked file within the same group.
+  function updateRepositoryFileSelection(node, repositoryPath, section, filePath, row, event) {
+    repositorySelectedFiles.forEach(function(_selected, otherPath) {
+      if (otherPath === repositoryPath) return;
+      clearRepositorySelection(otherPath);
+      const otherNode = repositoryChangesNodes.get(otherPath);
+      if (otherNode) syncRepositoryMultiSelectionClasses(otherNode, otherPath);
+    });
+    let selected = repositorySelectedFiles.get(repositoryPath);
+    if (!selected) { selected = new Set(); repositorySelectedFiles.set(repositoryPath, selected); }
+    const key = repositorySelectionKey(section, filePath);
+    const additive = event.ctrlKey || event.metaKey;
+    const anchorKey = repositorySelectionAnchors.get(repositoryPath);
+    const anchor = anchorKey ? repositorySelectionParts(anchorKey) : null;
+    const rows = event.shiftKey && anchor && anchor.section === section ? repositoryGroupRows(row.closest('.repo-group')) : [];
+    const from = rows.findIndex(function(item) { return item.dataset.filePath === anchor.path; });
+    const to = rows.indexOf(row);
+    if (from >= 0 && to >= 0) {
+      if (!additive) selected.clear();
+      for (let index = Math.min(from, to); index <= Math.max(from, to); index++) selected.add(repositorySelectionKey(section, rows[index].dataset.filePath));
+    } else if (additive) {
+      if (selected.has(key)) selected.delete(key); else selected.add(key);
+    } else {
+      selected.clear(); selected.add(key);
+    }
+    repositorySelectionAnchors.set(repositoryPath, key);
+    syncRepositoryMultiSelectionClasses(node, repositoryPath);
+  }
   function resizeRepositoryTextArea(input, borderHeight) {
     const container = input.parentElement;
     const minHeight = container.style.minHeight;
@@ -222,14 +298,19 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     const repository = repositoryChanges.find(function(item) { return item.repositoryPath === repositoryPath; });
     const snapshot = repository && repositoryDisplaySnapshots.get(repositoryPath);
     const historical = section === 'commit' && snapshot?.kind === 'commit';
-    const file = historical ? snapshot.files.find(function(item) { return item.path === filePath; })
-      : repository && (section === 'staged' ? repository.staged : repository.unstaged).find(function(item) { return item.path === filePath; });
+    const candidates = historical ? snapshot.files : repository && (section === 'staged' ? repository.staged : repository.unstaged);
+    const file = candidates && candidates.find(function(item) { return item.path === filePath; });
     if (!file) return;
+    // Right-clicking a selected file targets the whole selection of its group; any other file targets itself and keeps the selection.
+    const files = repositorySelectedPaths(repositoryPath, section, filePath, group)
+      .map(function(path) { return candidates.find(function(item) { return item.path === path; }); }).filter(Boolean);
+    const paths = files.map(function(item) { return item.path; });
+    const untrackedPaths = files.filter(function(item) { return item.isUntracked; }).map(function(item) { return item.path; });
     event.preventDefault(); closeAllContextMenus(repositoryFileContextMenu);
     repositoryFileContextRow = row; row.classList.add('context-target');
-    repositoryFileContextTarget = historical ? { kind: 'commit', hash: snapshot.commit.hash, repositoryPath: repositoryPath, path: filePath }
-      : { kind: 'worktree', repositoryPath: repositoryPath, section: section, path: filePath };
-    applyFileContextMenuState(repositoryFileContextMenu, file);
+    repositoryFileContextTarget = historical ? { kind: 'commit', hash: snapshot.commit.hash, repositoryPath: repositoryPath, path: filePath, paths: paths }
+      : { kind: 'worktree', repositoryPath: repositoryPath, section: section, path: filePath, paths: paths, untrackedPaths: untrackedPaths };
+    applyFileContextMenuStateForFiles(repositoryFileContextMenu, files, historical ? 'commit' : section);
     positionRepositoryContextMenu(repositoryFileContextMenu, event);
   }
   const repositoryFallbackSetiIconDefinitions = {
@@ -355,7 +436,9 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       ? [{ key: 'commit', label: '提交变更 ' + snapshot.commit.hash.slice(0, 8), files: snapshot.files }]
       : repoChangesSections(displayRepository);
     const key = JSON.stringify([filesMode, repository.mergeOperation, repository.mergeOperationBusy, sections.map(function(section) { return [section.key, section.label, section.files]; })]);
-    if (key === node.groupsKey) return;
+    const selectionDropped = syncRepositorySelectionScope(repository.repositoryPath, snapshot);
+    if (key === node.groupsKey) { if (selectionDropped) syncRepositoryMultiSelectionClasses(node, repository.repositoryPath); return; }
+    pruneRepositorySelection(repository.repositoryPath, sections);
     node.groupsKey = key; node.groups.replaceChildren(); node.rowsByDiffKey.clear();
     sections.forEach(function(section) {
       if (!section.files.length && !(section.key === 'conflict' && repository.mergeOperation)) return;
@@ -410,6 +493,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       });
       group.append(header, rows); node.groups.appendChild(group);
     });
+    syncRepositoryMultiSelectionClasses(node, repository.repositoryPath);
   }
   function updateRepositoryFolderVisibility(folder) {
     const expanded = !repositoryFoldersCollapsed.has(folder.dataset.folderKey);
@@ -443,7 +527,9 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     }
     highlightedRepositoryFileRow = row || null;
     if (!row) return;
-    row.classList.add('selected'); row.querySelector('.repo-file').classList.add('selected');
+    // While a multi-selection is active, the host's single selection only shows on a row that belongs to it.
+    const showSelected = !repositorySelectionAnchors.has(repositoryPath) || row.classList.contains('multi-selected');
+    row.classList.toggle('selected', showSelected); row.querySelector('.repo-file').classList.toggle('selected', showSelected);
     if (!reveal) return;
     repositoryChangesCollapsed.delete(repositoryPath);
     const group = row.closest('.repo-group');
@@ -698,6 +784,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     if (action === 'file') {
       card.classList.remove('transitioning');
       const diffKey = fileRow.dataset.diffKey;
+      updateRepositoryFileSelection(node, repositoryPath, section, filePath, fileRow, event);
       pendingRepositoryFileSelection = { repositoryPath: repositoryPath, diffKey: diffKey };
       pendingLocalFileSelectionPath = diffKey;
       if (selectedCommitRepositoryPath === repositoryPath) selectedPath = diffKey;
@@ -707,7 +794,8 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       return;
     }
     const sectionFiles = repoChangesSections(repository).find(function(item) { return item.key === section; }).files;
-    const paths = filePath ? [filePath] : sectionFiles.map(function(file) { return file.path; });
+    // A file button acts on the whole selection when its row is part of it; a group button always acts on the whole group.
+    const paths = filePath ? repositorySelectedPaths(repositoryPath, section, filePath, group) : sectionFiles.map(function(file) { return file.path; });
     vscode.postMessage({ type: 'repositoryChangesAction', repositoryPath: repositoryPath, action: action, section: section, paths: paths, untrackedPaths: sectionFiles.filter(function(file) { return file.isUntracked; }).map(function(file) { return file.path; }) });
   });
   repositoryChangesList.addEventListener('contextmenu', function(event) {
@@ -737,14 +825,22 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     closeRepositoryMessageContextMenu();
   });
   repositoryFileContextMenu.addEventListener('click', function(event) {
+    const changeButton = event.target.closest('[data-file-change-action]');
+    if (changeButton && repositoryFileContextTarget && repositoryFileContextTarget.kind === 'worktree') {
+      // Same intent as the row and group buttons, so the host confirms a discard and re-reads the group; it covers the whole selection.
+      vscode.postMessage({ type: 'repositoryChangesAction', repositoryPath: repositoryFileContextTarget.repositoryPath, action: changeButton.dataset.fileChangeAction,
+        section: repositoryFileContextTarget.section, paths: repositoryFileContextTarget.paths, untrackedPaths: repositoryFileContextTarget.untrackedPaths });
+      closeRepositoryFileContextMenu();
+      return;
+    }
     const button = event.target.closest('[data-file-action]');
     if (!button || button.disabled || !repositoryFileContextTarget) return;
     const action = button.dataset.fileAction;
-    if (repositoryFileContextTarget.kind === 'commit') {
-      vscode.postMessage({ type: 'commitFileAction', action: action, hash: repositoryFileContextTarget.hash, repositoryPath: repositoryFileContextTarget.repositoryPath, path: repositoryFileContextTarget.path });
-    } else {
-      vscode.postMessage({ type: 'repositoryChangesFileAction', action: action, repositoryPath: repositoryFileContextTarget.repositoryPath, section: repositoryFileContextTarget.section, path: repositoryFileContextTarget.path });
-    }
+    const message = repositoryFileContextTarget.kind === 'commit'
+      ? { type: 'commitFileAction', action: action, hash: repositoryFileContextTarget.hash, repositoryPath: repositoryFileContextTarget.repositoryPath, path: repositoryFileContextTarget.path }
+      : { type: 'repositoryChangesFileAction', action: action, repositoryPath: repositoryFileContextTarget.repositoryPath, section: repositoryFileContextTarget.section, path: repositoryFileContextTarget.path };
+    if (repositoryFileContextTarget.paths && repositoryFileContextTarget.paths.length > 1) message.paths = repositoryFileContextTarget.paths;
+    vscode.postMessage(message);
     closeRepositoryFileContextMenu();
   });
 `;
