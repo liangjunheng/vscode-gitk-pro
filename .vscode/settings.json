@@ -8,5 +8,5 @@
   "typescript.tsdk": "./node_modules/typescript/lib",
   // 禁用增量编译缓存
   "typescript.enablePromptUseWorkspaceTsdk": true,
-  "vscode-gitk.changedFilesDisplayMode": "flat"
+  "fastergit.changedFilesDisplayMode": "flat"
 }

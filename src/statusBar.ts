@@ -59,7 +59,7 @@ export class GitkStatusBar {
     }
 
     private async checkVisibility(hasRepo: boolean): Promise<void> {
-        await vscode.commands.executeCommand('setContext', 'gitk:hasRepository', hasRepo);
+        await vscode.commands.executeCommand('setContext', 'fastergit:hasRepository', hasRepo);
         if (hasRepo) {
             this.item.show();
         } else {

@@ -117,7 +117,7 @@ async function hasExplicitGitProxy(rootUri: vscode.Uri): Promise<boolean> {
 async function gitCliEnvironment(rootUri: vscode.Uri, args: readonly string[]): Promise<NodeJS.ProcessEnv> {
     const environment = { ...process.env };
     if (!isNetworkCommand(args)
-        || !vscode.workspace.getConfiguration('vscode-gitk').get<boolean>('useSystemProxy', true)
+        || !vscode.workspace.getConfiguration('fastergit').get<boolean>('useSystemProxy', true)
         || await hasExplicitGitProxy(rootUri)) {
         return environment;
     }

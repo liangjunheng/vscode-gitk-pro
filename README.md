@@ -105,12 +105,12 @@ FasterGit 在 VS Code 底部面板中绘制彩色泳道提交图，并把历史�
 
 | 设置项 | 可选值 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `vscode-gitk.changedFilesDisplayMode` | `tree`、`flat` | `flat` | 控制 Changed Files 的布局。工具栏切换操作会写入 VS Code 全局用户设置。 |
-| `vscode-gitk.multiDiffRenderSideBySide` | `true`、`false` | `true` | Multi-Diff 面板是否使用双栏模式显示差异。 |
-| `vscode-gitk.discardUntrackedChangesToTrash` | `true`、`false` | `true` | 还原未跟踪文件时移入回收站，而不是永久删除。回收站不可用的环境（远程、Snap）始终永久删除。 |
-| `vscode-gitk.useSystemProxy` | `true`、`false` | `true` | 远程 Git 操作使用 VS Code `http.proxy`，或 Windows 用户级系统 HTTP/HTTPS 代理及 bypass 列表。 |
+| `fastergit.changedFilesDisplayMode` | `tree`、`flat` | `flat` | 控制 Changed Files 的布局。工具栏切换操作会写入 VS Code 全局用户设置。 |
+| `fastergit.multiDiffRenderSideBySide` | `true`、`false` | `true` | Multi-Diff 面板是否使用双栏模式显示差异。 |
+| `fastergit.discardUntrackedChangesToTrash` | `true`、`false` | `true` | 还原未跟踪文件时移入回收站，而不是永久删除。回收站不可用的环境（远程、Snap）始终永久删除。 |
+| `fastergit.useSystemProxy` | `true`、`false` | `true` | 远程 Git 操作使用 VS Code `http.proxy`，或 Windows 用户级系统 HTTP/HTTPS 代理及 bypass 列表。 |
 
-设置项和命令 ID 仍沿用 `vscode-gitk.` 前缀，已有的用户配置和快捷键绑定不会失效。
+从旧版（扩展 ID 为 `liangjunheng.vscode-gitk-pro`）升级时，设置项、命令和 `when` 上下文键的前缀已从 `vscode-gitk.` / `gitk:` 改为 `fastergit.` / `fastergit:`。`settings.json` 中的 `vscode-gitk.*` 配置和 `keybindings.json` 中引用旧命令 ID 的快捷键需要手动改成新前缀，否则不会生效。
 
 ## 运行要求
 

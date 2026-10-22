@@ -29,9 +29,9 @@ export class GitCommitEditMsgEditor implements vscode.Disposable {
 
     constructor(_extensionPath: string) {
         this.disposables = [
-            vscode.commands.registerCommand('vscode-gitk.commitEditMsg.history', () => this.fillHistoryMessage()),
-            vscode.commands.registerCommand('vscode-gitk.commitEditMsg.complete', () => this.completeActiveSession()),
-            vscode.commands.registerCommand('vscode-gitk.commitEditMsg.cancel', () => this.cancelActiveSession()),
+            vscode.commands.registerCommand('fastergit.commitEditMsg.history', () => this.fillHistoryMessage()),
+            vscode.commands.registerCommand('fastergit.commitEditMsg.complete', () => this.completeActiveSession()),
+            vscode.commands.registerCommand('fastergit.commitEditMsg.cancel', () => this.cancelActiveSession()),
             vscode.window.tabGroups.onDidChangeTabs(event => this.handleTabsClosed(event.closed)),
             vscode.window.onDidChangeActiveTextEditor(() => this.updateActiveContext()),
         ];
@@ -49,7 +49,7 @@ export class GitCommitEditMsgEditor implements vscode.Disposable {
         try {
             const commentChar = await this.readCommentChar(rootUri);
             const initialMessage = amend ? await readCurrentCommitMessage(rootUri) : '';
-            const filePath = path.join(os.tmpdir(), `vscode-gitk-COMMIT_EDITMSG-${randomUUID()}`);
+            const filePath = path.join(os.tmpdir(), `fastergit-COMMIT_EDITMSG-${randomUUID()}`);
             const help = [
                 `${commentChar} 请输入提交说明。以 ${commentChar} 开头的行不会进入提交信息。`,
                 `${commentChar} 使用 Ctrl+Enter 提交，Esc 取消。`,
@@ -73,7 +73,7 @@ export class GitCommitEditMsgEditor implements vscode.Disposable {
     dispose(): void {
         for (const session of [...this.sessions.values()]) { this.finishSession(session, false); }
         for (const disposable of this.disposables) { disposable.dispose(); }
-        void vscode.commands.executeCommand('setContext', 'gitk:commitEditMsgActive', false);
+        void vscode.commands.executeCommand('setContext', 'fastergit:commitEditMsgActive', false);
     }
 
     private async completeActiveSession(): Promise<void> {
@@ -157,7 +157,7 @@ export class GitCommitEditMsgEditor implements vscode.Disposable {
     }
 
     private async updateActiveContext(): Promise<void> {
-        await vscode.commands.executeCommand('setContext', 'gitk:commitEditMsgActive', Boolean(this.getActiveSession()));
+        await vscode.commands.executeCommand('setContext', 'fastergit:commitEditMsgActive', Boolean(this.getActiveSession()));
     }
 
     private finishSession(session: CommitEditSession, accepted: boolean): void {

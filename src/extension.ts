@@ -7,7 +7,7 @@ import { GitCommitEditMsgEditor } from './webview/gitCommitEditMsgEditor';
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     // 空文档提供器: 用于 Added/Deleted 文件的 diff 空白侧
     context.subscriptions.push(
-        vscode.workspace.registerTextDocumentContentProvider('gitk-empty', {
+        vscode.workspace.registerTextDocumentContentProvider('fastergit-empty', {
             provideTextDocumentContent(): string { return ''; },
         })
     );
@@ -29,38 +29,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     // 注册命令
     context.subscriptions.push(
-        vscode.commands.registerCommand('vscode-gitk.open', async () => {
-            await vscode.commands.executeCommand('vscode-gitk.panelView.focus');
+        vscode.commands.registerCommand('fastergit.open', async () => {
+            await vscode.commands.executeCommand('fastergit.panelView.focus');
         })
     );
 
-    const multiDiffLayoutConfiguration = vscode.workspace.getConfiguration('vscode-gitk');
+    const multiDiffLayoutConfiguration = vscode.workspace.getConfiguration('fastergit');
     const initialRenderSideBySide = multiDiffLayoutConfiguration.get<boolean>('multiDiffRenderSideBySide', true);
     provider.setMultiDiffRenderSideBySide(initialRenderSideBySide);
-    await vscode.commands.executeCommand('setContext', 'gitk:multiDiffRenderSideBySide', initialRenderSideBySide);
+    await vscode.commands.executeCommand('setContext', 'fastergit:multiDiffRenderSideBySide', initialRenderSideBySide);
     const setMultiDiffRenderSideBySide = (renderSideBySide: boolean): Thenable<void> =>
-        vscode.workspace.getConfiguration('vscode-gitk')
+        vscode.workspace.getConfiguration('fastergit')
             .update('multiDiffRenderSideBySide', renderSideBySide, vscode.ConfigurationTarget.Global);
     context.subscriptions.push(
-        vscode.commands.registerCommand('vscode-gitk.selectCommit', (hash: string) => provider.selectCommit(hash)),
-        vscode.commands.registerCommand('vscode-gitk.multiDiff.previousChange', () => provider.navigateMultiDiffChange(-1)),
-        vscode.commands.registerCommand('vscode-gitk.multiDiff.nextChange', () => provider.navigateMultiDiffChange(1)),
-        vscode.commands.registerCommand('vscode-gitk.multiDiff.search', () => provider.showMultiDiffSearch()),
-        vscode.commands.registerCommand('vscode-gitk.multiDiff.useInlineView', () => setMultiDiffRenderSideBySide(false)),
-        vscode.commands.registerCommand('vscode-gitk.multiDiff.useSideBySideView', () => setMultiDiffRenderSideBySide(true)),
+        vscode.commands.registerCommand('fastergit.selectCommit', (hash: string) => provider.selectCommit(hash)),
+        vscode.commands.registerCommand('fastergit.multiDiff.previousChange', () => provider.navigateMultiDiffChange(-1)),
+        vscode.commands.registerCommand('fastergit.multiDiff.nextChange', () => provider.navigateMultiDiffChange(1)),
+        vscode.commands.registerCommand('fastergit.multiDiff.search', () => provider.showMultiDiffSearch()),
+        vscode.commands.registerCommand('fastergit.multiDiff.useInlineView', () => setMultiDiffRenderSideBySide(false)),
+        vscode.commands.registerCommand('fastergit.multiDiff.useSideBySideView', () => setMultiDiffRenderSideBySide(true)),
         vscode.workspace.onDidChangeConfiguration(async event => {
-            if (!event.affectsConfiguration('vscode-gitk.multiDiffRenderSideBySide')) { return; }
-            const renderSideBySide = vscode.workspace.getConfiguration('vscode-gitk')
+            if (!event.affectsConfiguration('fastergit.multiDiffRenderSideBySide')) { return; }
+            const renderSideBySide = vscode.workspace.getConfiguration('fastergit')
                 .get<boolean>('multiDiffRenderSideBySide', true);
             provider.setMultiDiffRenderSideBySide(renderSideBySide);
-            await vscode.commands.executeCommand('setContext', 'gitk:multiDiffRenderSideBySide', renderSideBySide);
+            await vscode.commands.executeCommand('setContext', 'fastergit:multiDiffRenderSideBySide', renderSideBySide);
         })
     );
 
     // 状态栏: workspace 有 git 仓库时显示 FasterGit 及全仓库未提交统计。
     const statusBar = new GitkStatusBar(
         context,
-        'vscode-gitk.open',
+        'fastergit.open',
         () => provider.getWorkingTreeSummary(),
         () => provider.hasRepositories,
         provider.onDidChangeRepositoryState,

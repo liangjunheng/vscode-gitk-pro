@@ -108,7 +108,7 @@ type StoredPushTarget = PushTargetOption;
 
 // Webview 视图提供器: 渲染 gitk 风格的提交图 (div flex 布局, 避免 table 高度塌陷)
 export class GitkViewProvider implements vscode.WebviewViewProvider {
-    public static readonly viewType = 'vscode-gitk.panelView';
+    public static readonly viewType = 'fastergit.panelView';
     private view?: vscode.WebviewView;
     // 异步控制 / 内部状态 (不存入 Store)
     private refreshAbortController?: AbortController;
@@ -529,7 +529,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         private readonly context: vscode.ExtensionContext,
         commitEditMsgEditor: GitCommitEditMsgEditor,
     ) {
-        this.displayMode = vscode.workspace.getConfiguration('vscode-gitk').get<'tree' | 'flat'>('changedFilesDisplayMode', 'flat');
+        this.displayMode = vscode.workspace.getConfiguration('fastergit').get<'tree' | 'flat'>('changedFilesDisplayMode', 'flat');
         for (const [repositoryPath, target] of Object.entries(this.context.workspaceState.get<Record<string, StoredPushTarget>>('lastPushedTargets', {}))) {
             this.lastPushedTargetByRepository.set(repositoryPath, target);
         }
@@ -691,9 +691,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.schedulePushState();
             }),
             vscode.workspace.onDidChangeConfiguration(event => {
-                if (!event.affectsConfiguration('vscode-gitk.changedFilesDisplayMode')) { return; }
+                if (!event.affectsConfiguration('fastergit.changedFilesDisplayMode')) { return; }
                 // scope 为 application, 生效值只来自 Global, 与 update() 的写入目标一致, 回读值必然等于刚写入值。
-                this.displayMode = vscode.workspace.getConfiguration('vscode-gitk').get<'tree' | 'flat'>('changedFilesDisplayMode', 'flat');
+                this.displayMode = vscode.workspace.getConfiguration('fastergit').get<'tree' | 'flat'>('changedFilesDisplayMode', 'flat');
                 if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
             }),
         );
@@ -2487,7 +2487,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 });
                 break;
             case 'toggleFilesDisplayModeSetting': {
-                const configuration = vscode.workspace.getConfiguration('vscode-gitk');
+                const configuration = vscode.workspace.getConfiguration('fastergit');
                 const currentDisplayMode = configuration.get<'tree' | 'flat'>('changedFilesDisplayMode', 'flat');
                 void configuration.update(
                     'changedFilesDisplayMode',
@@ -3409,7 +3409,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 : undefined;
         }
 
-        const discardToTrash = vscode.workspace.getConfiguration('vscode-gitk').get<boolean>('discardUntrackedChangesToTrash', true)
+        const discardToTrash = vscode.workspace.getConfiguration('fastergit').get<boolean>('discardUntrackedChangesToTrash', true)
             && !vscode.env.remoteName
             && !(process.platform === 'linux' && !!process.env.SNAP);
         const warning = discardToTrash

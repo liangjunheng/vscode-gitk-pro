@@ -156,10 +156,10 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   assert.match(compiledProvider, /this\.showStashes = false;/, 'the provider field has a safe off fallback');
   assert.doesNotMatch(compiledProvider, /this\.showStashes = true;/);
   assert.match(compiledProvider, /configuration\.get\(['"]showStashes['"], false\)/, 'the constructor restores the saved showStashes setting');
-  assert.match(compiledProvider, /affectsConfiguration\(['"]vscode-gitk\.showStashes['"]\)/, 'external Settings changes update the live view');
+  assert.match(compiledProvider, /affectsConfiguration\(['"]fastergit\.showStashes['"]\)/, 'external Settings changes update the live view');
   assert.match(compiledProvider, /\.update\([\s\S]*?['"]showStashes['"][\s\S]*?ConfigurationTarget\.Global/, 'the toolbar toggle persists globally');
   const packageJson = JSON.parse(require('node:fs').readFileSync(require('node:path').resolve(__dirname, '../package.json'), 'utf8'));
-  assert.deepEqual(packageJson.contributes.configuration.properties['vscode-gitk.showStashes'], {
+  assert.deepEqual(packageJson.contributes.configuration.properties['fastergit.showStashes'], {
     type: 'boolean', default: false, scope: 'application',
     description: '在 Commit 列表中显示 Stash。列表右上角的 Stash 按钮会同步更新此设置。',
   }, 'the preference is public in Settings and defaults to off');
@@ -204,10 +204,10 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   controllerCalls.length = 0; configurationWrites.length = 0;
   provider.runEffect({ type: 'toggleStashes', visible: false }); assert.equal(provider.showStashes, false);
   assert.deepEqual(controllerCalls, [['setStashesVisible', false]], 'the controller rebuilds the graph without stash rows');
-  assert.deepEqual(configurationWrites.at(-1), { section: 'vscode-gitk', key: 'showStashes', value: false, target: vscode.ConfigurationTarget.Global }, 'explicit off is saved globally');
+  assert.deepEqual(configurationWrites.at(-1), { section: 'fastergit', key: 'showStashes', value: false, target: vscode.ConfigurationTarget.Global }, 'explicit off is saved globally');
   provider.runEffect({ type: 'toggleStashes' }); assert.equal(provider.showStashes, true, 'no value flips the state');
   assert.deepEqual(controllerCalls.at(-1), ['setStashesVisible', true]);
-  assert.deepEqual(configurationWrites.at(-1), { section: 'vscode-gitk', key: 'showStashes', value: true, target: vscode.ConfigurationTarget.Global }, 'the new preference is saved for the next session');
+  assert.deepEqual(configurationWrites.at(-1), { section: 'fastergit', key: 'showStashes', value: true, target: vscode.ConfigurationTarget.Global }, 'the new preference is saved for the next session');
 
   // ---- 4) 变更文件: stash 走专用读取，普通提交仍走 getCommitFiles
   provider.commitFilesGeneration = 0;

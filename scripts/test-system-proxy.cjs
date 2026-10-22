@@ -15,7 +15,7 @@ function loadOperations({ useSystemProxy, vscodeProxy = '', fetchFailures = 0 })
                 workspace: {
                     getConfiguration: section => ({
                         get: (key, defaultValue) => {
-                            if (section === 'vscode-gitk' && key === 'useSystemProxy') return useSystemProxy;
+                            if (section === 'fastergit' && key === 'useSystemProxy') return useSystemProxy;
                             if (section === 'http' && key === 'proxy') return vscodeProxy;
                             return defaultValue;
                         },

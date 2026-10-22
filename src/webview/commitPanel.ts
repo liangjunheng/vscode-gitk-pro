@@ -130,7 +130,7 @@ export class CommitPanel implements vscode.Disposable {
         this.webviewReady = false;
         this.postQueue = Promise.resolve();
         const codiconsRoot = vscode.Uri.joinPath(vscode.Uri.file(__dirname), '..', '..', 'media', 'codicons');
-        this.panel = vscode.window.createWebviewPanel('vscode-gitk.commit', 'commit', vscode.ViewColumn.Active, {
+        this.panel = vscode.window.createWebviewPanel('fastergit.commit', 'commit', vscode.ViewColumn.Active, {
             enableScripts: true,
             retainContextWhenHidden: true,
             localResourceRoots: [codiconsRoot],

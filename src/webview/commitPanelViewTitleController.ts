@@ -9,7 +9,7 @@ export class CommitPanelViewTitleController implements vscode.Disposable {
     private readonly command: vscode.Disposable;
 
     constructor(openCommitPanel: () => void | Promise<void>) {
-        this.command = vscode.commands.registerCommand('vscode-gitk.openCommitPanel', () => {
+        this.command = vscode.commands.registerCommand('fastergit.openCommitPanel', () => {
             void openCommitPanel();
         });
     }

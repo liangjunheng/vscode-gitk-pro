@@ -28,7 +28,7 @@ const repository = (repositoryPath, staged = [], unstaged = []) => ({
 });
 let opened = 0;
 const controller = new CommitPanelViewTitleController(() => { opened++; });
-assert.equal(registeredCommand.name, 'vscode-gitk.openCommitPanel');
+assert.equal(registeredCommand.name, 'fastergit.openCommitPanel');
 registeredCommand.callback();
 assert.equal(opened, 1);
 assert.doesNotThrow(() => controller.update([]));

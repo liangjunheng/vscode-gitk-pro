@@ -1,7 +1,7 @@
 # 工作记忆
 
 ## 项目概况
-- 项目：`vscode-gitk`，VS Code 扩展，在底部 Panel 提供 gitk 风格提交图、Changed Files 和 Multi-Diff。
+- 项目：`fastergit`（原 `vscode-gitk-pro`），VS Code 扩展，在底部 Panel 提供 gitk 风格提交图、Changed Files 和 Multi-Diff。
 - 技术栈：TypeScript、VS Code Extension API、Webview View；通过 VS Code Git 扩展 API 获取仓库、日志和差异，兼容桌面与 Web。
 - 当前工作区：`c:\Users\JUNHENG.LIANG\OneDrive\vscode\vscode-gitk`。
 
@@ -11,7 +11,7 @@
 - `src/webview/gitkViewProvider.ts`：提交图面板 TS 逻辑。
 - `src/commitFilesViewProvider.ts`：Changed Files 与 Multi-Diff 打开、选中同步。
 - Webview 分层：面板类只保留 TS 控制逻辑；`xxxDocument.ts` 生成整页 HTML；子面板分别导出 `STYLES`、`MARKUP`、`SCRIPT`；拥有 DOM 的子面板负责监听，子面板之间不互相 import。
-- Multi-Diff 使用 `vscode.commands.executeCommand('vscode.open', multiDiffSourceUri, { label, resources, multiDiffSource }, ViewColumn.Active)`；内部 scheme 为 `multi-diff-editor`；空侧由 `gitk-empty` provider 提供。
+- Multi-Diff 使用 `vscode.commands.executeCommand('vscode.open', multiDiffSourceUri, { label, resources, multiDiffSource }, ViewColumn.Active)`；内部 scheme 为 `multi-diff-editor`；空侧由 `fastergit-empty` provider 提供。
 
 ## 提交加载设计
 - 初始化顺序：环境 → 仓库/子模块 → 分支 → 提交 → 内容。

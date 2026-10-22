@@ -117,11 +117,11 @@ export class MultiDiffPanel implements vscode.Disposable {
     private setNavigationState(canPrevious: boolean, canNext: boolean): void {
         if (this.canNavigatePrevious !== canPrevious) {
             this.canNavigatePrevious = canPrevious;
-            void vscode.commands.executeCommand('setContext', 'gitk:multiDiffCanNavigatePrevious', canPrevious);
+            void vscode.commands.executeCommand('setContext', 'fastergit:multiDiffCanNavigatePrevious', canPrevious);
         }
         if (this.canNavigateNext !== canNext) {
             this.canNavigateNext = canNext;
-            void vscode.commands.executeCommand('setContext', 'gitk:multiDiffCanNavigateNext', canNext);
+            void vscode.commands.executeCommand('setContext', 'fastergit:multiDiffCanNavigateNext', canNext);
         }
     }
 
@@ -169,7 +169,7 @@ export class MultiDiffPanel implements vscode.Disposable {
         const mediaRoot = vscode.Uri.joinPath(vscode.Uri.file(__dirname), '..', '..', 'media');
         const monacoRoot = vscode.Uri.joinPath(mediaRoot, 'monaco');
         const codiconsRoot = vscode.Uri.joinPath(mediaRoot, 'codicons');
-        this.panel = vscode.window.createWebviewPanel('vscode-gitk.multiDiff', 'FasterGit Diff', vscode.ViewColumn.Active, {
+        this.panel = vscode.window.createWebviewPanel('fastergit.multiDiff', 'FasterGit Diff', vscode.ViewColumn.Active, {
             enableScripts: true,
             retainContextWhenHidden: true,
             localResourceRoots: [monacoRoot, codiconsRoot],
