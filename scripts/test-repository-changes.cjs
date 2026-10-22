@@ -1481,6 +1481,7 @@ async function verifyProvider() {
   // Host selection routing and stale MultiDiff feedback are tested below with the actual methods.
   const load = Module._load;
   const branchReads = [], commitDetailReads = [], checkouts = [], pulls = [], pushes = [], headRefreshes = [], remoteCheckouts = [];
+  const remoteFetchStarts = [], remoteFetchResolvers = [];
   let pickedIndex = 2, options, branchItems, pushTargetDefaults, pushQuickPick, selectedPushTargetsResult, confirmRows, confirmOptions;
   let pulledHeadHash = 'a'.repeat(40), conflictAfterPull = false, pushFails = true, pullFails = false;
   const pushResultNotices = [];
@@ -1581,6 +1582,10 @@ async function verifyProvider() {
         ...load.call(this, name, ...args),
         checkoutBranch: async (uri, branch) => { checkouts.push([uri.toString(), branch]); },
         checkoutRemoteBranch: async (uri, ref, localName) => remoteCheckouts.push([uri.toString(), ref, localName]),
+        fetchRemotes: async uri => {
+          remoteFetchStarts.push(uri.toString());
+          await new Promise(resolve => remoteFetchResolvers.push(resolve));
+        },
         resolveRevision: async (_uri, spec) => spec.endsWith('^') ? 'a'.repeat(40) : undefined,
         commitDetails: async (uri, hashes) => {
           commitDetailReads.push([uri.toString(), [...hashes]]);
@@ -2064,8 +2069,72 @@ async function verifyProvider() {
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', action: 'syncRefresh', repositoryPath: repositories[1].path });
   assert.deepEqual(syncSteps, [['sync', [repositories[1].path], true, false, true]], 'card sync uses the current branch configured upstream and no longer runs the manual workspace/history refresh');
   await verifyFocusedRefresh(GitkViewProvider, repositories);
+  assert.deepEqual(remoteFetchStarts, [], 'manual refresh stays local and never starts a remote fetch');
+  await verifyVisibilityFetch(GitkViewProvider, store, repositories, remoteFetchStarts, remoteFetchResolvers);
   await verifyGitlinkNavigation(GitkViewProvider, store);
   await verifyMultiDiffHostSelection(GitkViewProvider, store, repositories);
+}
+async function verifyVisibilityFetch(Provider, store, repositories, fetchStarts, fetchResolvers) {
+  const provider = Object.create(Provider.prototype);
+  const repositoryPaths = repositories.map(repository => repository.path);
+  const multiDiffUpdates = [];
+  Object.defineProperty(provider, 'repositories', { value: repositories, configurable: true });
+  provider.updateMultiDiffVisibility = () => multiDiffUpdates.push(provider.view.visible);
+  provider.remoteFetchRefresh = undefined;
+  const setVisible = visible => {
+    provider.view = { visible };
+    provider.onViewVisibilityChanged(provider.view);
+  };
+
+  store.setState({ isViewVisible: true });
+  setVisible(true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fetchStarts, [], 'a visibility event that keeps the panel visible does not fetch');
+
+  setVisible(false);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fetchStarts, [], 'hiding the panel does not fetch');
+  assert.equal(store.getState().isViewVisible, false, 'the hidden state is published before the next reveal');
+
+  setVisible(true);
+  const pending = provider.remoteFetchRefresh;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(pending, 'hidden-to-visible starts one background fetch task');
+  assert.deepEqual(fetchStarts, repositoryPaths, 'the reveal fetches the root and every known submodule together');
+  assert.equal(fetchResolvers.length, repositoryPaths.length, 'every repository fetch is in flight before any completes');
+  assert.equal(store.getState().isViewVisible, true);
+  assert.deepEqual(multiDiffUpdates, [true, false, true], 'MultiDiff visibility still follows every transition');
+
+  setVisible(false);
+  setVisible(true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(provider.remoteFetchRefresh, pending, 'a second reveal during an in-flight fetch shares the same task');
+  assert.equal(fetchStarts.length, repositoryPaths.length, 'the second reveal does not start duplicate fetches');
+
+  fetchResolvers.splice(0).forEach(resolve => resolve());
+  await pending;
+  assert.equal(provider.remoteFetchRefresh, undefined, 'the single-flight lock clears after every repository finishes');
+
+  fetchStarts.length = 0;
+  provider.fetchRepositories = async () => { throw new Error('fetch exploded'); };
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args);
+  try {
+    setVisible(false);
+    setVisible(true);
+    await provider.remoteFetchRefresh;
+  } finally { console.warn = originalWarn; }
+  assert.equal(provider.remoteFetchRefresh, undefined, 'a failed background fetch releases the lock');
+  assert.equal(warnings.length, 1, 'a failed background fetch is logged, not thrown into the UI');
+
+  provider.remoteFetchRefresh = undefined;
+  provider.fetchRepositories = async () => { fetchStarts.push('unexpected'); };
+  Object.defineProperty(provider, 'repositories', { value: [], configurable: true });
+  setVisible(false);
+  setVisible(true);
+  assert.equal(provider.remoteFetchRefresh, undefined, 'no repositories means no fetch task');
+  assert.deepEqual(fetchStarts, [], 'an empty repository list never fetches');
 }
 async function verifyFocusedRefresh(Provider, repositories) {
   const provider = Object.create(Provider.prototype);
