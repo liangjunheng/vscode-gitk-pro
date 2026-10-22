@@ -1,5 +1,5 @@
 @echo off
-REM 一键启动 vscode-gitk 扩展 (Extension Development Host)
+REM 一键启动 FasterGit 扩展 (Extension Development Host)
 REM 用法: 在项目根目录双击运行
 REM 效果: 启动新 VS Code 窗口加载本插件, 不依赖 launch.json
 
