@@ -41,8 +41,13 @@ async function main() {
         commit('2', ['1'], [lane('2', blue)], [lane('1', blue)]),
         commit('1', [], [lane('1', blue)], []),
       ];
+      // A stash display branch must never punch a dashed hole in either real lane.
+      commits.splice(3,0,{
+        ...commit('8',['3'],[lane('3',blue),lane('3',orange)],[lane('3',blue),lane('3',orange)]),
+        isStash:true, stashRef:'stash@{0}', stashIndex:0,
+      });
       const state = { repositoryChanges: [], branches: [branch], selectedBranches: [branch.name], selectedRepositoryPaths: [repo.path], commits,
-        workingTreeRows: [], cloudGroups: [], showStashes: false, hiddenStashCount: 0, files: [], stagedFiles: [], unstagedFiles: [],
+        workingTreeRows: [], cloudGroups: [], showStashes: true, hiddenStashCount: 0, files: [], stagedFiles: [], unstagedFiles: [],
         filesMode: 'flat', filesLoading: false, selectedCommit: null, isLoading: false, hasMoreCommits: false };
       await page.evaluate(next => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state: next } })), JSON.parse(JSON.stringify(state)));
       await page.evaluate(() => document.fonts.ready);
@@ -73,7 +78,8 @@ async function main() {
           const y = Math.floor(boundary);
           const reference = [-6, -5].reduce((sum, offset) => sum + coverage(x, y + offset, color), 0) / 2;
           const minimum = Math.min(...[-1, 0, 1].map(offset => coverage(x, y + offset, color)));
-          result.push({ row: index, lane: column, boundary, reference, minimum, ratio: minimum / reference });
+          const maximum = Math.max(...[-2, -1, 0, 1, 2].map(offset => coverage(x, y + offset, color)));
+          result.push({ row: index, lane: column, boundary, reference, minimum, ratio: minimum / reference, peakRatio: maximum / reference });
         }
         assert.ok(geometry.every(row => row.height === 26), 'fix must not change commit row height');
         return result;
@@ -84,17 +90,24 @@ async function main() {
         const result = await measure();
         for (const seam of result) assert.ok(seam.ratio >= .94,
           'DPR ' + dpr + (composited ? ' composited' : '') + ': lane must not fade/disconnect across a commit-row seam: ' + JSON.stringify(seam));
+        for (const seam of result) {
+          // Independently composited SVGs at 125% retain subpixel blending; do not allow the old 50% bump.
+          const maximumRatio = 1.10;
+          assert.ok(seam.peakRatio <= maximumRatio, 'DPR ' + dpr + (composited ? ' composited' : '')
+            + ': row seam must not become thicker/brighter from overlapping ends: ' + JSON.stringify(seam));
+        }
+        if (process.env.GITK_LANE_SEAM_DIAGNOSTICS) console.log(JSON.stringify({dpr,composited,min:Math.min(...result.map(s=>s.ratio)),peak:Math.max(...result.map(s=>s.peakRatio))}));
         if (layer) await layer.evaluate(element => element.remove());
       }
       const clipping = await page.locator('#commitVirtualRows .commit-row .col-main').first().evaluate(element => {
         const style = getComputedStyle(element);
         return { overflow: style.overflow, margin: style.overflowClipMargin };
       });
-      assert.deepEqual(clipping, { overflow: 'clip', margin: '1px' }, 'allow only a 1px join overlap, never unrestricted row overflow');
+      assert.deepEqual(clipping, { overflow: 'clip', margin: '1px' }, 'allow only the 1px compensation needed by 2px crisp straight lanes');
       assert.deepEqual(errors, []);
       await page.close();
     }
-    console.log('Commit lane seams passed: straight/side lanes, adjacent 26px rows, fractional DPR 1/1.25/1.5/2, pixel coverage at each seam.');
+    console.log('Commit lane seams passed: straight/side/stash-through lanes, adjacent 26px rows, fractional DPR 1/1.25/1.5/2, pixel coverage at each seam.');
   } finally { await browser.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -62,55 +62,65 @@ async function main() {
     async function assertJoined(char, label) {
       const geometry = await row(char).evaluate(element => {
         const svg = element.querySelector('svg.graph-svg');
-        const down = svg.querySelector('.stash-link-down');
-        const endpoint = down.getPointAtLength(down.getTotalLength()).matrixTransform(down.getScreenCTM());
-        const start = down.getPointAtLength(0).matrixTransform(down.getScreenCTM());
-        const rowRect = element.getBoundingClientRect(), svgRect = svg.getBoundingClientRect();
+        const branch = svg.querySelector('.stash-branch');
+        const trunk = svg.querySelector('.stash-base-lane');
+        const fork = {x:trunk.x1.baseVal.value};
+        const endpoint = trunk.getPointAtLength(trunk.getTotalLength()).matrixTransform(trunk.getScreenCTM());
+        const start = trunk.getPointAtLength(0).matrixTransform(trunk.getScreenCTM());
         const next = element.nextElementSibling;
-        const nextLink = next.querySelector('.stash-link-up, .stash-link-continuation');
+        const nextLink = next.classList.contains('stash')
+          ? [...next.querySelectorAll('.stash-main-lane')].find(line => line.x1.baseVal.value === fork.x)
+          : [...next.querySelectorAll('svg.graph-svg path')].find(path => {
+            const start = path.getPointAtLength(0); return start.x === fork.x && start.y === 0;
+          });
         const nextStart = nextLink.getPointAtLength(0).matrixTransform(nextLink.getScreenCTM());
+        const stemEnd = branch.getPointAtLength(branch.getTotalLength()).matrixTransform(branch.getScreenCTM());
+        const nextBranch = next.querySelector('.stash-branch, .stash-fork');
+        const nextBranchPoint = nextBranch.getPointAtLength(next.classList.contains('stash') ? 0 : nextBranch.getTotalLength())
+          .matrixTransform(nextBranch.getScreenCTM());
+        const nodeX = Number(svg.querySelector('.stash-node').getAttribute('d').split(' ')[1]);
+        const rowRect = element.getBoundingClientRect(), svgRect = svg.getBoundingClientRect();
         return {
-          height: rowRect.height, svgHeight: svgRect.height,
-          rowTop: rowRect.top, svgTop: svgRect.top, svgLeft: svgRect.left, rowBottom: rowRect.bottom, svgBottom: svgRect.bottom,
-          start: { x: start.x, y: start.y }, end: { x: endpoint.x, y: endpoint.y },
-          nextStart: { x: nextStart.x, y: nextStart.y }, nextTop: next.getBoundingClientRect().top,
+          height:rowRect.height, svgHeight:svgRect.height, rowTop:rowRect.top, svgTop:svgRect.top, svgLeft:svgRect.left,
+          rowBottom:rowRect.bottom, svgBottom:svgRect.bottom, start:{x:start.x,y:start.y}, end:{x:endpoint.x,y:endpoint.y},
+          nextStart:{x:nextStart.x,y:nextStart.y}, nextTop:next.getBoundingClientRect().top,
+          stemEnd:{x:stemEnd.x,y:stemEnd.y}, nextBranch:{x:nextBranchPoint.x,y:nextBranchPoint.y},
+          color:getComputedStyle(trunk).stroke.match(/[\d.]+/g).map(Number).slice(0,3),
+          dash:trunk.getAttribute('stroke-dasharray'), nodeX, trunkX:fork.x,
         };
       });
       for (const [actual, expected, reason] of [
-        [geometry.svgTop, geometry.rowTop, 'SVG starts at the row top'],
-        [geometry.svgBottom, geometry.rowBottom, 'SVG fills the row without depending on a cached height'],
-        [geometry.end.y, geometry.nextTop, 'the lower dashed segment reaches the next row in SCREEN coordinates'],
-        [geometry.end.x, geometry.nextStart.x, 'next row receives the line at the same x'],
-        [geometry.end.y, geometry.nextStart.y, 'next dashed segment starts exactly at the prior endpoint'],
+        [geometry.svgTop, geometry.rowTop, 'SVG starts at row top'],
+        [geometry.svgBottom, geometry.rowBottom, 'SVG fills actual row without cached height'],
+        [geometry.end.y, geometry.nextTop, 'solid trunk reaches next row in screen coordinates'],
+        [geometry.end.x, geometry.nextStart.x, 'next row receives the same real lane'],
+        [geometry.end.y, geometry.nextStart.y, 'next lane starts exactly at prior endpoint'],
+        [geometry.stemEnd.x, geometry.nextBranch.x, 'stash stem meets the next stem or base fork horizontally'],
+        [geometry.stemEnd.y, geometry.nextBranch.y, 'stash stem reaches the next stem or base fork at the actual row boundary'],
       ]) assert.ok(Math.abs(actual - expected) < .5, label + ': ' + reason + ': ' + JSON.stringify(geometry));
-      if (process.env.GITK_TEST_LANE_DIAGNOSTICS) console.log(label + ': ' + JSON.stringify({
-        rowHeight: geometry.height, svgHeight: geometry.svgHeight, gapToNext: geometry.nextTop - geometry.end.y,
-      }));
+      assert.equal(geometry.dash, null, label + ': real lane is never dashed');
+      assert.ok(geometry.nodeX > geometry.trunkX, label + ': stash diamond is on its own side branch');
+      if (process.env.GITK_TEST_LANE_DIAGNOSTICS) console.log(label + ': ' + JSON.stringify({rowHeight:geometry.height,svgHeight:geometry.svgHeight,gapToNext:geometry.nextTop-geometry.end.y}));
       return geometry;
     }
     async function assertRaster(char, label) {
-      const geometry = await assertJoined(char, label);
+      const g = await assertJoined(char, label);
       const png = PNG.sync.read(await row(char).locator('svg.graph-svg').screenshot());
-      const scale = png.height / geometry.svgHeight;
-      const x = Math.round((geometry.end.x - geometry.svgLeft) * scale);
-      const start = Math.ceil((geometry.start.y - geometry.svgTop + 2) * scale);
-      let ink = 0, gaps = 0, gap = 0, maxGap = 0, inkRun = 0, maxInk = 0;
-      for (let y = start; y < png.height; y++) {
-        // A fractional DPR can split a 1.5px stroke across adjacent device columns.
-        // Read its whole footprint and count >=25% stroke coverage above the controlled #262626
-        // selection background. A high brightness cutoff would misclassify antialiasing as gaps.
+      const scale = png.height / g.svgHeight, x = Math.round((g.end.x - g.svgLeft) * scale);
+      const delta = g.color.map(channel => channel - 38), norm = delta.reduce((sum, channel) => sum + channel * channel, 0);
+      let samples = 0, missing = 0;
+      // Ignore the 1px selection outline; the entire internal trunk, including long details, must have continuous ink.
+      for (let y = Math.ceil(2 * scale); y < Math.floor((g.svgHeight - 2) * scale); y++) {
         let drawn = false;
-        for (let sampleX = Math.max(0, x - 1); sampleX <= Math.min(png.width - 1, x + 1); sampleX++) {
-          const i = (y * png.width + sampleX) * 4;
-          const [r, g, b] = png.data.subarray(i, i + 3);
-          if (r > 38 + (146 - 38) * .25 && Math.abs(r - g) < 6 && Math.abs(g - b) < 6) drawn = true;
+        for (let sx = Math.max(0,x-1); sx <= Math.min(png.width-1,x+1); sx++) {
+          const at = (y * png.width + sx) * 4;
+          const alpha = delta.reduce((sum, channel, i) => sum + (png.data[at+i] - 38) * channel, 0) / norm;
+          if (alpha > .25) drawn = true;
         }
-        if (drawn) { ink++; gap = 0; maxInk = Math.max(maxInk, ++inkRun); }
-        else { gaps++; inkRun = 0; maxGap = Math.max(maxGap, ++gap); }
+        samples++; if (!drawn) missing++;
       }
-      assert.ok(ink > 0 && gaps > 0, label + ': has both ink and gaps (not solid): ' + JSON.stringify({ ink, gaps }));
-      assert.ok(maxGap / scale <= 3, label + ': no long unpainted tail; longest gap=' + maxGap / scale + 'px');
-      assert.ok(maxInk / scale <= 3, label + ': dash length stays 2px, longest ink=' + maxInk / scale + 'px');
+      assert.ok(samples > 20, label + ': meaningful expanded-row raster coverage');
+      assert.equal(missing, 0, label + ': main trunk has no blank or dashed segments');
     }
     await publish(); await page.evaluate(() => document.fonts.ready); await settle();
     await assertJoined('5', 'collapsed consecutive stashes');
@@ -149,8 +159,10 @@ async function main() {
     assert.equal(await page.locator('.commit-row.cloud').count(), 1, 'real cloud row participates in style check');
     const styles = await page.locator('.commit-row [stroke-dasharray]').evaluateAll(elements => elements.map(element => ({
       dash: element.getAttribute('stroke-dasharray'), width: element.getAttribute('stroke-width'), cap: element.getAttribute('stroke-linecap'),
+      stash: element.matches('.stash-branch, .stash-fork'),
     })));
-    assert.deepEqual([...new Set(styles.map(s => [s.dash, s.width, s.cap].join('|')))], ['2 2|1.5|butt']);
+    assert.deepEqual([...new Set(styles.map(s => [s.dash, s.cap].join('|')))], ['2 2|butt']);
+    for (const style of styles) assert.equal(style.width, '2', 'all dashed lane edges use the requested 2px stroke');
     // Changing the mounted virtual range must not reintroduce numeric height/viewBox stash sizing.
     state.cloudGroups = [];
     const tailHash = i => i.toString(16).padStart(40, '0');
@@ -180,13 +192,13 @@ async function main() {
     await assertJoined('5', 'side-lane stash connects to base column');
     await assertRaster('5', 'side-lane stash raster');
     const pass = await row('5').evaluate(element => {
-      const line = element.querySelector('svg.graph-svg line:not(.stash-link)');
+      const line = element.querySelector('svg.graph-svg .stash-main-lane');
       const end = line.getPointAtLength(line.getTotalLength()).matrixTransform(line.getScreenCTM());
       return { y: end.y, bottom: element.getBoundingClientRect().bottom };
     });
     assert.ok(Math.abs(pass.y - pass.bottom) < .5, 'pass-through real lane also reaches actual row bottom');
     assert.deepEqual(errors, [], 'no webview errors');
-    console.log('Stash adaptive lanes passed: long title/date wraps, floating-author transition, viewport/font changes, consecutive stashes, re-expansion, real screen endpoints and 2px ink/gap raster, virtual remount, side-lane pass-through and uniform cloud/stash dashes.');
+    console.log('Stash adaptive lanes passed: long title/date wraps, floating-author transition, viewport/font changes, consecutive stashes, re-expansion, real screen endpoints and solid-trunk raster, virtual remount, side-lane pass-through and uniform cloud/stash branch dashes.');
   } finally { await browser.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

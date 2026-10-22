@@ -124,16 +124,23 @@ async function main() {
     assert.ok(Math.abs(spacing.nodeWidth - 12.25) < 0.05, 'the cloud icon keeps its confirmed 14px size (about 12.25px of ink), it is not shrunk to match the circle: ' + JSON.stringify(spacing));
     assert.ok(spacing.nodeColumnDelta < 0.75, 'the cloud node sits in the same lane column as an ordinary node: ' + JSON.stringify(spacing));
     assert.ok(spacing.nodeRowMiddleDelta < 0.75, 'the cloud node is vertically centred on its row: ' + JSON.stringify(spacing));
-    assert.ok(Math.abs(spacing.cloudTextLeft - spacing.ordinaryTextLeft - 2.125) < 0.01, 'the lane column adds only the cloud icon overhang beyond the uniform 4px commit dot: ' + JSON.stringify(spacing));
-    assert.equal(spacing.ordinaryRadius, 4, 'all circular commit nodes use a uniform 4px radius: ' + JSON.stringify(spacing));
-    assert.equal(spacing.ordinaryGap, 7, "the uniform dot keeps a 7px node-edge-to-title gap inside VS Code's extra lane slot: " + JSON.stringify(spacing));
-    assert.equal(spacing.cloudGap, 7, 'cloud rows keep the same node-to-title gap: ' + JSON.stringify(spacing));
+    assert.ok(Math.abs(spacing.cloudTextLeft - spacing.ordinaryTextLeft - 1.125) < 0.01, 'the lane column adds only the cloud icon overhang beyond the uniform 5px commit dot: ' + JSON.stringify(spacing));
+    assert.equal(spacing.ordinaryRadius, 5, 'all circular commit nodes use a uniform 5px radius: ' + JSON.stringify(spacing));
+    assert.equal(spacing.ordinaryGap, 6, "the 1px larger dot keeps the title column and leaves a 6px node-edge-to-title gap: " + JSON.stringify(spacing));
+    assert.equal(spacing.cloudGap, 6, 'cloud rows keep the same node-to-title gap: ' + JSON.stringify(spacing));
     const workingTree = await page.evaluate(() => {
       const r = el => el.getBoundingClientRect();
       const row = document.querySelector('.commit-row.working-tree');
       return { gap: r(row.querySelector('.col-main-summary')).left - r(row.querySelector('svg circle')).right, textLeft: r(row.querySelector('.col-main-summary')).left, radius: Number(row.querySelector('svg circle').getAttribute('r')) };
     });
-    assert.equal(workingTree.radius, 4, 'the working-tree circle uses the same 4px radius');
+    assert.equal(workingTree.radius, 5, 'the working-tree circle uses the same 5px radius');
+    const dashedNode = await page.locator('.commit-row.working-tree[data-hash="uncommitted"] path.working-tree-dashed-node').evaluate(path => ({
+      segments: (path.getAttribute('d').match(/M /g) || []).length, fill: path.previousElementSibling.getAttribute('fill'), cap: path.getAttribute('stroke-linecap'), dash: path.getAttribute('stroke-dasharray'),
+    }));
+    assert.equal(dashedNode.fill, 'var(--vscode-editor-background)', 'Uncommitted Changes keeps a hollow node');
+    assert.equal(dashedNode.cap, 'round', 'dashed node uses rounded segment ends like the requested icon');
+    assert.equal(dashedNode.segments, 8, 'the node has eight evenly spaced arc segments');
+    assert.equal(dashedNode.dash, null, 'the node icon does not reuse lane dash attributes');
     assert.equal(workingTree.gap, spacing.ordinaryGap, 'the Uncommitted Changes row keeps exactly the same lane-to-description gap as an ordinary commit: ' + JSON.stringify({ workingTree, spacing }));
     assert.equal(workingTree.textLeft, spacing.ordinaryTextLeft, 'and its label starts in the same column as an ordinary commit title');
     assert.ok(spacing.nodeRight < spacing.cloudTextLeft, 'the cloud node does not run into the description: ' + JSON.stringify(spacing));

@@ -82,15 +82,19 @@ const commit = (hash, parents, message) => ({ hash: h(hash), shortHash: hash.rep
     const titleStarts = await domRows.locator('.col-main-summary').evaluateAll(items => items.map(item => Math.round(item.getBoundingClientRect().left * 10) / 10));
     assert.equal(new Set(titleStarts).size, 1, 'merge, side branch, main branch and common base titles are perfectly aligned: ' + JSON.stringify(titleStarts));
     const paint = await page.evaluate(() => [...document.querySelectorAll('#commitVirtualRows .commit-row')].map(row => {
-      const circle = row.querySelector('circle'); const css = getComputedStyle(circle);
-      return { fill: css.fill, r: Number(circle.getAttribute('r')), strokeWidth: Number(circle.getAttribute('stroke-width')) };
+      const circle = row.querySelector('circle'); const css = getComputedStyle(circle), center = row.querySelector('circle.merge-dot-center');
+      return { fill: center ? getComputedStyle(center).fill : css.fill, ring: center ? css.stroke : null, background: css.fill, r: Number(circle.getAttribute('r')),
+        centerR: center ? Number(center.getAttribute('r')) : null, strokeWidth: Number(circle.getAttribute('stroke-width')), merge: circle.classList.contains('merge-dot') };
     }));
     assert.deepEqual(paint.map(p => p.fill), ['rgb(87, 163, 248)', 'rgb(255, 176, 0)', 'rgb(87, 163, 248)', 'rgb(87, 163, 248)']);
-    assert.deepEqual(paint.map(p => p.r), [4, 4, 4, 4], 'all commit dots use one uniform 4px radius');
-    assert.ok(paint.every(p => p.strokeWidth === 2), 'VS Code node outline is 2px');
+    assert.deepEqual(paint.map(p => p.merge), [true, false, false, false], 'only the merge commit uses the merge icon');
+    assert.deepEqual({ ring: paint[0].ring, background: paint[0].background, r: paint[0].r, centerR: paint[0].centerR, width: paint[0].strokeWidth },
+      { ring: 'rgb(87, 163, 248)', background: 'rgb(25, 26, 27)', r: 4.75, centerR: 2.25, width: 1.5 }, 'merge icon is a lane-coloured ring with a centre dot');
+    assert.deepEqual(paint.slice(1).map(p => p.r), [5, 5, 5], 'ordinary commit dots keep the uniform 5px radius');
+    assert.ok(paint.slice(1).every(p => p.strokeWidth === 2), 'ordinary node outline is 2px');
     const mergePaths = await domRows.nth(0).locator('svg path').evaluateAll(paths => paths.map(p => ({ d: p.getAttribute('d'), stroke: getComputedStyle(p).stroke, width: p.getAttribute('stroke-width') })));
     assert.ok(mergePaths.some(p => /A 11 11/.test(p.d) && /H 11/.test(p.d)), 'merge branch uses VS Code 11px arc + horizontal geometry: ' + JSON.stringify(mergePaths));
-    assert.ok(mergePaths.filter(p => p.width === '1').length >= 2, 'normal graph lines use VS Code 1px stroke');
+    assert.ok(mergePaths.filter(p => p.width === '2').length >= 2, 'normal graph lines use the requested 2px stroke');
     const basePaths = await domRows.nth(3).locator('svg path').evaluateAll(paths => paths.map(p => p.getAttribute('d')));
     const mergeIn = basePaths.find(d => /A 11 11/.test(d));
     // VS Code (scmHistory.ts) 画这条汇入曲线时 sweep-flag 是 1。用 0 得到的是水平镜像的弧,
@@ -109,6 +113,6 @@ const commit = (hash, parents, message) => ({ hash: h(hash), shortHash: hash.rep
     assert.ok(arcTrajectory[1].x > 21, 'shortly after entering the row the lane is still on the right (x>21), i.e. it has not jumped left: ' + JSON.stringify(arcTrajectory));
     assert.ok(arcTrajectory[2].x > arcTrajectory[3].x && arcTrajectory[3].x > 11, 'the curve moves left monotonically and only reaches the node column at the end: ' + JSON.stringify(arcTrajectory));
     assert.deepEqual(errors, []);
-    console.log('VS Code graph passed: topo-order side branch block, blue current lane, orange side lane, filled nodes, 11px arcs and 1px lines.');
+    console.log('VS Code graph passed: topo-order side branch block, blue current lane, orange side lane, filled nodes, 11px arcs and 2px lines.');
   } finally { await browser.close(); }
 })().catch(e => { console.error(e); process.exit(1); });

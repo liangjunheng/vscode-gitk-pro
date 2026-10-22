@@ -24,7 +24,7 @@ async function main() {
     const measureSource = html.slice(measureStart, measureEnd);
     assert.ok(measureStart >= 0 && measureSource.includes('expandedCommitRowHeights.set(key, height);'),
       'measurement still updates the virtual-list height cache');
-    assert.ok(measureSource.includes('!commits[index].isStash'), 'stash lanes never re-enter measured-height SVG redraw');
+    assert.equal(measureSource.includes('drawSvg('), false, 'virtual-list height measurement never redraws either real or stash lanes');
     assert.equal(measureSource.includes('new ResizeObserver'), false, 'expanded stash correction does not reintroduce the rejected persistent observer solution');
     for (const match of html.matchAll(/<script(?![^>]*type="application\/json")[^>]*>([\s\S]*?)<\/script>/g)) new Function(match[1]);
     await page.evaluate(() => {
@@ -37,7 +37,7 @@ async function main() {
     const h = ch => ch.repeat(40);
     const branchOption = (repo, hash) => ({ repoOption: repo, name: 'refs/heads/main', label: 'main', kind: 'current', hash });
     // 一条线性历史 c3 -> c2 -> c1 -> c0; stash 挂在 c2 上 (宿主已把它穿插成 c2 之上的一行, 单一父提交 = 基线)。
-    // stash 不是侧枝: 不开泳道、不占颜色, 落在基线所在列 (lane 0), 输入/输出泳道原样穿过。
+    // 数据中的 lane 是基线锚点；展示侧枝只由 Webview 为 stash 行添加，真实泳道状态原样穿过。
     const lane = (hash, color) => ({ hash, color });
     const base = (hash, parent, message, extra) => ({ hash, shortHash: hash.slice(0, 8), key: repoA.path + ':' + hash, parents: parent ? [parent] : [], refs: [], message, rawMessage: message, body: '', author: 'me', authorEmail: 'me@example.com', authorDateLabel: 'today', authorDate: '2026-10-21T10:00:00+08:00', gitBranchOption: branchOption(repoA, hash), ...extra });
     const red = '#e06c75', blue = '#61afef';
@@ -154,28 +154,25 @@ async function main() {
     assert.match(diamond, /^M [\d.]+ [\d.]+ L [\d.]+ [\d.]+ L [\d.]+ [\d.]+ L [\d.]+ [\d.]+ Z$/, 'diamond outline: ' + diamond);
     const box = await stashRow.locator('svg path.stash-node').boundingBox();
     assert.ok(Math.abs(box.width - box.height) < 0.6, 'a diamond is as wide as it is tall: ' + JSON.stringify(box));
-    // 灰色空心菱形 + 上下虚线: 上虚线 = 行顶 → 菱形上顶点, 下虚线 = 菱形下顶点 → 行底, 都是灰色虚线
-    assert.equal(await stashRow.locator('svg path.stash-link-up').count(), 1, 'a dashed link above the diamond');
-    assert.equal(await stashRow.locator('svg .stash-link-down').count(), 1, 'a dashed link below the diamond');
-    for (const name of ['up', 'down']) {
-      const link = await stashRow.locator('svg .stash-link-' + name).evaluate(node => ({ dash: node.getAttribute('stroke-dasharray'), stroke: node.getAttribute('stroke') }));
-      const dashPair = link.dash.split(' ').map(Number);
-      assert.ok(dashPair.length === 2 && dashPair.every(v => v >= 2) && dashPair[0] === dashPair[1],
-        name + ' link is dashed with an equal on/off step of at least 2px (the exact step is aligned to the row boundary): ' + link.dash);
-      assert.equal(link.stroke, 'var(--vscode-descriptionForeground, #999)', name + ' link is grey, not a lane colour');
-    }
+    // 主泳道保持原色实线；只有 stash 在右侧增加展示侧枝。
     const linkGeometry = await stashRow.locator('svg').evaluate(svg => {
-      const num = s => Number(s);
-      const d = el => el instanceof SVGLineElement
-        ? [el.x1.baseVal.value, el.y1.baseVal.value, el.y2.baseVal.value]
-        : el.getAttribute('d').match(/-?[\d.]+/g).map(num);
-      const up = d(svg.querySelector('.stash-link-up')), down = d(svg.querySelector('.stash-link-down')), node = d(svg.querySelector('.stash-node'));
-      return { upFrom: up[1], upTo: up[2], downFrom: down[1], nodeTop: node[1], nodeBottom: node[5], x: [up[0], down[0], node[0]] };
+      const branch = svg.querySelector('.stash-branch');
+      const start = branch.getPointAtLength(0), end = branch.getPointAtLength(branch.getTotalLength());
+      const trunk = svg.querySelector('.stash-base-lane');
+      const node = svg.querySelector('.stash-node').getAttribute('d').match(/-?[\d.]+/g).map(Number);
+      return { trunkX: trunk.x1.baseVal.value, trunkDash: trunk.getAttribute('stroke-dasharray'), trunkColor: trunk.getAttribute('stroke'),
+        dash: branch.getAttribute('stroke-dasharray'), color: branch.getAttribute('stroke'), start: {x:start.x,y:start.y}, end: {x:end.x,y:end.y}, nodeX: node[0], nodeBottom: node[5] };
     });
-    assert.equal(linkGeometry.upFrom, 0, 'the upper link starts at the top of the row');
-    assert.equal(linkGeometry.upTo, linkGeometry.nodeTop, 'and ends at the top vertex of the diamond');
-    assert.equal(linkGeometry.downFrom, linkGeometry.nodeBottom, 'the lower link starts at the bottom vertex of the diamond');
-    assert.equal(new Set(linkGeometry.x).size, 1, 'both links and the diamond share one x (the base commit column)');
+    assert.equal(linkGeometry.trunkDash, null, 'main lane is solid through stash');
+    assert.equal(linkGeometry.trunkColor, '#e06c75', 'main lane retains the real commit colour');
+    assert.equal(linkGeometry.dash, '2 2', 'only the stash side branch is dashed');
+    assert.equal(linkGeometry.color, 'var(--vscode-descriptionForeground, #999)', 'stash branch remains grey');
+    assert.equal(linkGeometry.nodeX - linkGeometry.trunkX, 11, 'stash leaf moves one display lane right');
+    assert.equal(linkGeometry.start.x, linkGeometry.nodeX, 'branch starts under its diamond');
+    assert.equal(linkGeometry.start.y, 13, 'stem starts inside the diamond, whose background masks the hidden segment');
+    assert.equal(linkGeometry.end.x, linkGeometry.nodeX, 'stem stays in the display column until the fork in the real base row');
+    const baseFork = page.locator('#commitVirtualRows .commit-row[data-hash="' + h('2') + '"] .stash-fork');
+    assert.equal(await baseFork.count(), 1, 'real base commit owns the fork rooted at its circle');
     // 空心: 描边是灰色, 内部是编辑器背景色(盖住穿过它的泳道线), 而不是实心
     const paint = await stashRow.locator('svg path.stash-node').evaluate(node => ({
       fill: node.getAttribute('fill'), stroke: node.getAttribute('stroke'), width: node.getAttribute('stroke-width'),
@@ -183,7 +180,7 @@ async function main() {
     }));
     assert.equal(paint.fill, 'var(--vscode-editor-background)', 'the inside is the editor background, so the diamond reads as hollow');
     assert.equal(paint.stroke, 'var(--vscode-descriptionForeground, #999)', 'the outline is grey');
-    assert.equal(paint.width, '1.5', 'outline thick enough to read at this size, same as the lane lines');
+    assert.equal(paint.width, '2', 'hollow diamond matches the 2px lane stroke');
     assert.notEqual(paint.computedFill, paint.computedStroke, 'fill and outline resolve to different colours');
     assert.equal(paint.computedFill, 'rgb(24, 24, 24)', 'and the resolved fill is the theme editor background (#181818)');
     // 菱形内部不能露出泳道线: 节点在泳道线之后绘制, 所以 stash-node 必须排在该行所有 path 的最后
@@ -205,8 +202,8 @@ async function main() {
         const ctx = canvas.getContext('2d'); ctx.drawImage(img, 0, 0);
         return points.map(([x, y]) => Array.from(ctx.getImageData(x, y, 1, 1).data));
       }, { b64: png, points });
-      // 中心正下方 2~3px: 泳道线在这里穿过节点, 空心菱形的背景填充必须把它盖住
-      const inside = await sample([[Math.floor(cx) - 1, Math.round(cy) + 2], [Math.floor(cx), Math.round(cy) + 2], [Math.floor(cx) - 1, Math.round(cy) + 3], [Math.floor(cx), Math.round(cy) + 3], [Math.floor(cx), Math.round(cy)]]);
+      // 中心正下方 1~2px（避开加粗轮廓的抗锯齿边缘）: 泳道线在这里穿过节点, 空心菱形的背景填充必须把它盖住
+      const inside = await sample([[Math.floor(cx) - 1, Math.round(cy) + 2], [Math.floor(cx), Math.round(cy) + 2], [Math.floor(cx) - 1, Math.round(cy) + 1], [Math.floor(cx), Math.round(cy) + 1], [Math.floor(cx), Math.round(cy)]]);
       for (const [r, g, b] of inside) assert.ok(b < 70 && g < 70, 'inside the hollow diamond the lane line is covered by the background: ' + JSON.stringify(inside));
       // 左顶点附近 3x3: 至少有一个像素是灰色描边(#929292 与背景的混合, 红蓝绿接近且明显亮于背景), 不是泳道色
       const vx = Math.floor(nodeBox.x - clip.x), vy = Math.round(cy);
@@ -217,149 +214,54 @@ async function main() {
     // 普通提交仍是实心圆点, 没有被空心样式影响
     assert.equal(await ordinary.locator('svg circle').first().getAttribute('fill'), '#e06c75', 'ordinary/current commits keep a solid lane-coloured circle');
 
-    // 3a) 必须和上下连在一起: 折叠、展开、再折叠三种状态下, 灰色虚线都从行顶画到菱形上顶点、从菱形下顶点画到行底,
-    //     行边界处与相邻行的线首尾相接 (相邻行的线端点也在行边界上), 展开时下虚线一直延伸到被撑高的整行底部。
+    // 3a) 折叠/展开时，贯穿 stash 的真实泳道必须连到下一行；侧枝不参与其他行的宽度。
     {
-      const readLinks = () => page.evaluate(() => [...document.querySelectorAll('#commitVirtualRows .commit-row')].map(row => {
-        const svg = row.querySelector('svg.graph-svg');
-        const parse = el => !el ? null : el instanceof SVGLineElement
-          ? [el.x1.baseVal.value, el.y1.baseVal.value, el.y2.baseVal.value]
-          : el.getAttribute('d').match(/-?[\d.]+/g).map(Number);
-        return { stash: row.classList.contains('stash'), height: row.getBoundingClientRect().height, svgHeight: svg.getBoundingClientRect().height,
-          up: parse(svg.querySelector('.stash-link-up')), down: parse(svg.querySelector('.stash-link-down')), node: parse(svg.querySelector('.stash-node')) };
-      }));
-      const assertJoined = (rows, label) => {
-        const stashes = rows.filter(r => r.stash);
-        assert.ok(stashes.length >= 1, label + ': there is a stash row');
-        for (const r of stashes) {
-          assert.equal(r.up[1], 0, label + ': upper dash starts at the very top of the row');
-          assert.equal(r.up[2], r.node[1], label + ': upper dash ends at the diamond top vertex');
-          assert.equal(r.down[1], r.node[5], label + ': lower dash starts at the diamond bottom vertex');
-          assert.equal(r.down[2], r.svgHeight, label + ': lower dash reaches the very bottom of the row (' + r.svgHeight + ')');
-          assert.ok(Math.abs(r.svgHeight - r.height) < 1, label + ': the svg is as tall as the row, so the bottom of the dash is the bottom of the row');
-        }
+      const assertBoundaryJoin = async (selector, label) => {
+        const g = await page.locator(selector).evaluate(row => {
+          const svg = row.querySelector('svg.graph-svg'), branch = svg.querySelector('.stash-branch');
+          const trunk = svg.querySelector('.stash-base-lane');
+          const end = trunk.getPointAtLength(trunk.getTotalLength()).matrixTransform(trunk.getScreenCTM());
+          return { height: row.getBoundingClientRect().height, svgHeight: svg.getBoundingClientRect().height,
+            endY: end.y, nextTop: row.nextElementSibling.getBoundingClientRect().top, dash: trunk.getAttribute('stroke-dasharray'),
+            branchX: branch.x1.baseVal.value, width: svg.getBoundingClientRect().width };
+        });
+        assert.equal(g.dash, null, label + ': actual commit lane is solid');
+        assert.ok(Math.abs(g.height - g.svgHeight) < .5, label + ': SVG fills actual row');
+        assert.ok(Math.abs(g.endY - g.nextTop) < .5, label + ': trunk reaches next commit');
+        return g;
       };
-      assertJoined(await readLinks(), 'collapsed');
-      // 展开第一条 stash: 先选中, 再点一次展开
+      const selector = '#commitVirtualRows .commit-row.stash';
+      const collapsed = await assertBoundaryJoin(selector, 'collapsed');
       state.selectedCommit = { key: repoA.path + ':' + h('5'), hash: h('5'), repositoryPath: repoA.path, message: 'WIP on main: stash tip', body: '', kind: 'commit' };
-      await publish();
-      await stashRow.click();
-      await page.waitForTimeout(150);
-      const expandedRows = await readLinks();
-      assert.ok(expandedRows.find(r => r.stash).height > 40, 'the stash row really grew when expanded');
-      assertJoined(expandedRows, 'expanded');
-      await stashRow.click();
-      await page.waitForTimeout(150);
-      assertJoined(await readLinks(), 'collapsed again');
+      await publish(); await stashRow.locator('.stash-badge').click(); await page.waitForTimeout(150);
+      const expanded = await assertBoundaryJoin(selector, 'expanded');
+      assert.ok(expanded.height > 40);
+      assert.equal(expanded.branchX, collapsed.branchX, 'expansion keeps the stash stem in its own display column');
+      await stashRow.locator('.stash-badge').click(); await page.waitForTimeout(150);
+      assert.equal((await assertBoundaryJoin(selector, 'collapsed again')).height, 26);
+      const halves = await page.evaluate(() => {
+        const rows = [...document.querySelectorAll('#commitVirtualRows .commit-row')];
+        const i = rows.findIndex(row => row.classList.contains('stash'));
+        return [rows[i - 1], rows[i + 1]].map(row => [...row.querySelectorAll('svg path')]
+          .filter(p => /^M 11 (0|13) V (13|26)$/.test(p.getAttribute('d')))
+          .map(p => ({ d:p.getAttribute('d'), dash:p.getAttribute('stroke-dasharray'), color:p.getAttribute('stroke') })));
+      });
+      assert.ok(halves[0].some(p => p.d === 'M 11 13 V 26' && !p.dash && p.color === '#e06c75'), 'commit above stash keeps a solid lower half');
+      assert.ok(halves[1].some(p => p.d === 'M 11 0 V 13' && !p.dash && p.color === '#e06c75'), 'base commit keeps a solid upper half');
       state.selectedCommit = null; await publish();
 
-      // 3a.1) 坐标对齐还不够: dasharray 固定写 '2 2' 时, 线段长度往往让收尾正好落在空档里,
-      //       于是行边界处有一截完全没画出来 (26px 行实测尾部空 1.5px), 视觉上就是"没有完全连接到下方 commit"。
-      //       这里直接按渲染后的像素验证: stash 行上下边界、以及与相邻行交界处都必须有可见的笔迹。
-      const dashPixels = await page.evaluate(() => {
-        const row = document.querySelector('#commitVirtualRows .commit-row.stash');
-        const svg = row.querySelector('svg.graph-svg');
-        const box = svg.getBoundingClientRect();
-        const read = el => {
-          const dash = el.getAttribute('stroke-dasharray').split(' ').map(Number);
-          const nums = el instanceof SVGLineElement
-            ? [el.x1.baseVal.value, el.y1.baseVal.value, el.y2.baseVal.value]
-            : el.getAttribute('d').match(/-?[\d.]+/g).map(Number);
-          return { dash, from: nums[1], to: nums[2], cap: el.getAttribute('stroke-linecap'),
-            offset: Number(el.getAttribute('stroke-dashoffset')) };
-        };
-        return { up: read(svg.querySelector('.stash-link-up')), down: read(svg.querySelector('.stash-link-down')), height: box.height };
-      });
-      // 统一样式契约: 每段都用固定的 2/2 + butt, 由 stroke-dashoffset 把相位锁到该段在行内的起点,
-      // 因此所有段落(折叠/展开、stash/云端/未提交)共享同一条无限虚线的相位, 行边界处既不错位也不断口。
-      const PERIOD = 4, ON = 2;
-      for (const [name, link] of Object.entries({ up: dashPixels.up, down: dashPixels.down })) {
-        assert.deepEqual(link.dash, [ON, PERIOD - ON], name + ': uses the single shared 2/2 lane dash: ' + JSON.stringify(link));
-        assert.equal(link.cap, 'butt', name + ': butt caps keep the painted ends exactly on the row boundary');
-        // 相位必须由该段起点的绝对位置决定(读渲染出来的 stroke-dashoffset, 不是重新算一遍),
-        // 这样同一条泳道上下相邻的段落看起来才是连续的一条虚线。offset 写死成 0 必须失败。
-        const expectedOffset = ((link.from % PERIOD) + PERIOD) % PERIOD;
-        assert.ok(Math.abs(link.offset - expectedOffset) < 0.01,
-          name + ': stroke-dashoffset locks the pattern to the absolute lane position (expected ' + expectedOffset.toFixed(3) + '): ' + JSON.stringify(link));
-      }
-    }
-
-    // 3a.3) 夹在两个 commit 之间的 stash: 上方 commit "节点 → 行底" 的下半段也必须是灰色虚线,
-    //       整条链是 节点 → 虚线 → 空心菱形 → 虚线 → 节点, 中间不能出现一段实线泳道。
-    {
-      const chain = await page.evaluate(() => {
-        const rows = [...document.querySelectorAll('#commitVirtualRows .commit-row')];
-        const stashIndex = rows.findIndex(r => r.classList.contains('stash'));
-        const read = row => [...row.querySelectorAll('svg path')].map(p => {
-          const d = p.getAttribute('d');
-          const nums = d.match(/-?[\d.]+/g).map(Number);
-          return { cls: p.getAttribute('class') || '', d, dash: p.getAttribute('stroke-dasharray'), from: nums[1], to: nums[2] };
-        });
-        return { above: read(rows[stashIndex - 1]), below: read(rows[stashIndex + 1]), stashIndex };
-      });
-      assert.ok(chain.stashIndex > 0, 'the stash sits between two commits in this fixture');
-      // 上方 commit 的下半段 (从节点中线 13 画到行底 26)
-      const lowerHalf = chain.above.find(p => p.from === 13);
-      assert.ok(lowerHalf, 'the commit above the stash draws a lane segment from its node down to the row bottom: ' + JSON.stringify(chain.above));
-      assert.ok(/stash-link-continuation/.test(lowerHalf.cls), 'and that segment is a stash link, not a plain solid lane: ' + JSON.stringify(lowerHalf));
-      assert.ok(lowerHalf.dash && Number(lowerHalf.dash.split(' ')[0]) >= 2, 'it is dashed with a boundary-aligned step: ' + JSON.stringify(lowerHalf));
-      assert.equal(chain.above.filter(p => !p.dash).length, 0, 'no solid lane line remains on the row directly above the stash: ' + JSON.stringify(chain.above));
-      // 下方基线提交: 上半段虚线接住 stash, 下半段恢复成实线 (它下面没有 stash)
-      const belowUpper = chain.below.find(p => p.from === 0);
-      const belowLower = chain.below.find(p => p.from === 13);
-      assert.ok(belowUpper && belowUpper.dash, 'the base commit below still joins the stash with a dashed upper half');
-      assert.ok(belowLower && !belowLower.dash, 'but its lower half stays solid because no stash hangs under it: ' + JSON.stringify(belowLower));
-    }
-
-    // 3a.2) stash 挂在“最新提交”上: 基线提交此时没有 inputSwimlanes, 也必须主动补灰色虚线接住 stash。
-    //        展开 stash 后, 下虚线到被撑高的行底；下一行最新提交的 continuation 从行顶画到节点, 两行边界没有空档。
-    {
+      // 最新提交没有输入泳道，也必须用其真实颜色接住 stash 展示行的实线。
       const latestRows = [
-        base(h('8'), h('3'), 'WIP on main: stash above latest', { isStash: true, stashRef: 'stash@{0}', stashIndex: 0, lane: 0, indentDepth: 0, inputSwimlanes: [], outputSwimlanes: [] }),
-        base(h('3'), h('2'), 'c3 newest', { lane: 0, laneColor: red, inputSwimlanes: [], outputSwimlanes: [lane(h('2'), red)] }),
-        base(h('2'), h('1'), 'c2 base', { lane: 0, laneColor: red, inputSwimlanes: [lane(h('2'), red)], outputSwimlanes: [lane(h('1'), red)] }),
-        base(h('1'), h('0'), 'c1', { lane: 0, laneColor: red, inputSwimlanes: [lane(h('1'), red)], outputSwimlanes: [lane(h('0'), red)] }),
+        base(h('8'), h('3'), 'WIP on main: stash above latest', { isStash:true, stashRef:'stash@{0}', stashIndex:0, lane:0, inputSwimlanes:[], outputSwimlanes:[] }),
+        ...commits.filter(c => !c.isStash),
       ];
-      state.commits = latestRows; state.showStashes = true; state.selectedCommit = null; await publish();
-      const latestStash = page.locator('#commitVirtualRows .commit-row.stash').first();
-      const latestBase = page.locator('#commitVirtualRows .commit-row[data-hash="' + h('3') + '"]');
-      const continuation = latestBase.locator('svg path.stash-link-continuation');
-      assert.equal(await continuation.count(), 1, 'latest commit gets a continuation although it has no input lane');
-      const continuationPaint = await continuation.evaluate(node => ({ d: node.getAttribute('d'), dash: node.getAttribute('stroke-dasharray'), stroke: node.getAttribute('stroke') }));
-      const continuationDash = continuationPaint.dash.split(' ').map(Number);
-      assert.ok(continuationDash.length === 2 && continuationDash.every(v => v >= 2) && continuationDash[0] === continuationDash[1],
-        'the continuation is dashed with a boundary-aligned step: ' + continuationPaint.dash);
-      assert.equal(continuationPaint.stroke, 'var(--vscode-descriptionForeground, #999)');
-      assert.match(continuationPaint.d, /^M [0-9.]+ 0 V [0-9.]+$/, 'the continuation starts at the very top of the latest commit row');
-      const assertBoundaryJoin = async label => {
-        const joined = await page.evaluate(({ stashHash, baseHash }) => {
-          const stash = document.querySelector('#commitVirtualRows .commit-row[data-hash="' + stashHash + '"]');
-          const base = document.querySelector('#commitVirtualRows .commit-row[data-hash="' + baseHash + '"]');
-          const stashSvg = stash.querySelector('svg.graph-svg'), baseSvg = base.querySelector('svg.graph-svg');
-          const nums = el => el instanceof SVGLineElement
-            ? [el.x1.baseVal.value, el.y1.baseVal.value, el.y2.baseVal.value]
-            : el.getAttribute('d').match(/-?[0-9.]+/g).map(Number);
-          const down = nums(stashSvg.querySelector('.stash-link-down'));
-          const cont = nums(baseSvg.querySelector('.stash-link-continuation'));
-          const stashViewportHeight = stashSvg.getBoundingClientRect().height;
-          const stashBox = stash.getBoundingClientRect(), baseBox = base.getBoundingClientRect();
-          return { stashBottomPath: down[2], stashViewportBottom: stashViewportHeight, continuationStarts: cont[1], sameX: Math.abs(down[0] - cont[0]) < .01,
-            adjacentRows: Math.abs(stashBox.bottom - baseBox.top) < 1, stashHeight: stashBox.height, stashSvgHeight: stashSvg.getBoundingClientRect().height };
-        }, { stashHash: h('8'), baseHash: h('3') });
-        assert.equal(joined.stashBottomPath, joined.stashViewportBottom, label + ': stash lower dash reaches the row bottom');
-        assert.equal(joined.continuationStarts, 0, label + ': latest commit continuation starts at its row top');
-        assert.equal(joined.sameX, true, label + ': both segments share one x');
-        assert.equal(joined.adjacentRows, true, label + ': row bottom and next row top are adjacent');
-        assert.ok(Math.abs(joined.stashHeight - joined.stashSvgHeight) < 1, label + ': expanded SVG fills the whole stash row');
-        return joined;
-      };
-      const collapsedJoin = await assertBoundaryJoin('collapsed, stash above latest');
-      assert.equal(collapsedJoin.stashHeight, 26);
-      state.selectedCommit = { key: repoA.path + ':' + h('8'), hash: h('8'), repositoryPath: repoA.path, message: 'WIP on main: stash above latest', body: '', kind: 'commit' };
-      await publish(); await latestStash.click(); await page.waitForTimeout(150);
-      const expandedJoin = await assertBoundaryJoin('expanded, stash above latest');
-      assert.ok(expandedJoin.stashHeight > 40, 'the latest stash row really expanded');
-      // 恢复主测试数据
+      state.commits = latestRows; await publish();
+      const latest = page.locator(selector);
+      assert.equal(await latest.locator('.stash-main-lane').getAttribute('stroke'), '#e06c75');
+      await assertBoundaryJoin(selector, 'stash above latest');
+      state.selectedCommit = { key:repoA.path + ':' + h('8'), hash:h('8'), repositoryPath:repoA.path, kind:'commit', message:'WIP on main: stash above latest' };
+      await publish(); await latest.locator('.stash-badge').click(); await page.waitForTimeout(150);
+      await assertBoundaryJoin(selector, 'expanded above latest');
       state.commits = commits; state.selectedCommit = null; await publish();
     }
 
@@ -404,14 +306,14 @@ async function main() {
       assert.equal(selectedCloud.fontWeight, '600', 'selected cloud row is bold');
       state.cloudGroups = []; await publish();
     }
-    // 3c) 图形窄带: 所有提交行（含 stash）用同一个泳道窄带宽度, 摘要区(文字所在区域)起点一致, 不随经过该行的泳道数忽左忽右。
-    //     量 .col-main-summary 的左边缘而不是文字节点: stash 行的文字前面还有 stash@{n} 引用前缀, 文字本身会更靠右。
+    // 3c) 只有 stash 摘要向右增加一个泳道槽，普通提交仍保持原来的对齐位置。
     {
-      const xs = await page.evaluate(() => {
-        const list = document.getElementById('commitVirtualRows').getBoundingClientRect();
-        return [...document.querySelectorAll('#commitVirtualRows .commit-row')].map(row => Math.round((row.querySelector('.col-main-summary').getBoundingClientRect().left - list.left) * 10) / 10);
-      });
-      assert.equal(new Set(xs).size, 1, 'every main-line row starts its summary at the same x: ' + JSON.stringify(xs));
+      const rows = await page.locator('#commitVirtualRows .commit-row').evaluateAll(rows => rows.map(row => ({
+        stash:row.classList.contains('stash'), x:row.querySelector('.col-main-summary').getBoundingClientRect().left,
+      })));
+      const real = rows.filter(row => !row.stash);
+      assert.equal(new Set(real.map(row => row.x)).size, 1, 'ordinary commit summaries stay aligned');
+      assert.ok(rows.filter(row => row.stash).every(row => row.x === real[0].x + 11), 'only stash gets one display-lane indent');
     }
 
     // 4) 点击 stash 行: 像普通提交一样选中并发出 selectCommit
@@ -502,7 +404,7 @@ async function main() {
         .concat(panelSource.match(/stroke-linecap="round"[^>]*stroke-dasharray=/g) || []);
       assert.deepEqual(dashedWithRound, [],
         'no dashed lane uses round caps (round adds half a stroke width at each end): ' + JSON.stringify(dashedWithRound));
-      assert.ok(/const laneDashAttrs = function\(startY\)/.test(panelSource),
+      assert.ok(/const laneDashAttrs = function\(startY, strokeWidth = LANE_STROKE_W\)/.test(panelSource),
         'the single shared dash helper exists');
       assert.ok(/stroke-dashoffset="' \+ phase/.test(panelSource),
         'and it phase-locks the pattern with stroke-dashoffset');
@@ -523,6 +425,7 @@ async function main() {
             dash: p.getAttribute('stroke-dasharray'),
             cap: p.getAttribute('stroke-linecap'),
             width: p.getAttribute('stroke-width'),
+            stash: p.matches('.stash-branch, .stash-fork'),
           });
         });
         return seen;
@@ -533,13 +436,14 @@ async function main() {
       // stash 行、未提交行和普通提交行的虚线; 至少要跨两种行类型, 否则"统一"没有意义。
       assert.ok(kinds.has('stash'), 'stash dashed lanes are included: ' + JSON.stringify([...kinds]));
       assert.ok(kinds.size >= 2, 'the check spans more than one row type: ' + JSON.stringify([...kinds]));
-      const signatures = [...new Set(styles.map(s => s.dash + '|' + s.cap + '|' + s.width))];
-      assert.deepEqual(signatures, ['2 2|butt|1.5'],
+      const signatures = [...new Set(styles.map(s => s.dash + '|' + s.cap))];
+      for (const style of styles) assert.equal(style.width, '2', 'all dashed lane edges use the requested 2px stroke');
+      assert.deepEqual(signatures, ['2 2|butt'],
         'every dashed lane segment shares one style regardless of row type or expansion: ' + JSON.stringify(styles));
     }
 
     assert.deepEqual(errors, [], 'no page errors: ' + errors.join('; '));
-    console.log('Stash UI passed: toggle at the far right of the repository row (off by default, shows the stash rows when selected), stash rows interleaved between commits with a diamond node and lane lines, no separate group, a stash-only context menu (apply / pop / drop), hidden-count hint.');
+    console.log('Stash UI passed: toggle at the far right of the repository row (off by default, shows the stash rows when selected), stash rows interleaved with a hollow side-branch diamond and a solid real-commit trunk, no separate group, a stash-only context menu (apply / pop / drop), hidden-count hint.');
   } finally { await browser.close(); }
 }
 
