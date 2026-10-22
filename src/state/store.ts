@@ -13,6 +13,7 @@ export type StoreEffect =
     | { type: 'selectFile'; path?: unknown }
     | { type: 'copyFilePath'; path: unknown; absolute?: unknown }
     | { type: 'workingTreeAction'; action: unknown; section: unknown; path?: unknown; paths?: unknown }
+    | { type: 'toggleStashes'; visible?: boolean }
     | { type: 'workingTreeCommit'; action: unknown; repositoryPath: unknown; message: unknown }
     | { type: 'updateCommitMessage'; repositoryPath: unknown; message: unknown }
     | { type: 'rendered'; fileCount: unknown }
@@ -110,10 +111,19 @@ export class Store {
             case 'copyFilePath':
                 effects = [{ type: 'copyFilePath', path: intent.path, absolute: intent.absolute }];
                 break;
+            case 'toggleStashes':
+                // visible 缺省表示翻转; 显式布尔值表示设为该值。
+                if (intent.visible === undefined) {
+                    effects = [{ type: 'toggleStashes' }];
+                } else if (typeof intent.visible === 'boolean') {
+                    effects = [{ type: 'toggleStashes', visible: intent.visible }];
+                }
+                break;
             case 'workingTreeAction':
-                if ((intent.action === 'stage' || intent.action === 'unstage' || intent.action === 'discard')
+                if ((intent.action === 'stage' || intent.action === 'unstage' || intent.action === 'discard' || intent.action === 'stash')
                     && (intent.section === 'conflict' || intent.section === 'staged' || intent.section === 'unstaged')
                     && (intent.section !== 'conflict' || intent.action === 'stage')
+                    && (intent.action !== 'stash' || intent.section !== 'conflict')
                     && (intent.path === undefined || typeof intent.path === 'string')
                     && (intent.paths === undefined
                         || (Array.isArray(intent.paths) && intent.paths.every(path => typeof path === 'string')))) {

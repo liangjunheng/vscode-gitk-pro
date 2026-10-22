@@ -135,6 +135,7 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR
       var workingTreeRows = state.workingTreeRows || [];
       workingTreeRowsState = workingTreeRows;
       cloudGroupsState = state.cloudGroups || [];
+      updateStashToggle(state.showStashes === true, Number(state.hiddenStashCount) || 0);
       uncommittedEnabled = workingTreeRows.some(function(row) { return row.enabled; });
       var uncommittedRepositoryCount = Number(state.uncommittedRepositoryCount) || 0;
       var uncommittedRepoBadge = document.getElementById('uncommittedRepoBadge');

@@ -48,6 +48,7 @@ try {
   Object.defineProperty(provider, 'repositories', { value: [repoOption] });
   Object.assign(provider, {
     cloudCommitsByRepository: new Map([[repoOption.path, [cloudCommit]]]),
+    stashesByRepository: new Map(),
     uncommittedFilesWatcher: { listCurrentHeadBranches: () => [head] },
     branchesController: { getCurrentBranch: () => head },
     commitController: {
@@ -66,6 +67,16 @@ try {
   assert.equal(found.gitBranchOption, head, 'it is attached to the repository current branch like any commit of that repository');
   assert.equal(provider.findCommit('0'.repeat(40), repoOption.path), undefined, 'unknown hashes still resolve to nothing');
   assert.equal(provider.findCommit(cloudHash, 'file:///other'), undefined, 'a cloud commit is only resolvable inside its own repository');
+  // stash 与云端提交共用同一条回落链路, 互不串线: 空的 stash 缓存不影响云端解析, 云端缓存也不会让 stash 哈希解析成功。
+  const stashHash = '1'.repeat(40);
+  assert.equal(provider.findCommit(stashHash, repoOption.path), undefined, 'a stash hash does not resolve while the stash cache is empty');
+  provider.stashesByRepository.set(repoOption.path, [{ hash: stashHash, shortHash: '11111111', parents: ['a'.repeat(40), 'b'.repeat(40)], message: 'WIP on main', rawMessage: 'WIP on main', stashRef: 'stash@{0}', stashIndex: 0 }]);
+  const foundStash = provider.findCommit(stashHash, repoOption.path);
+  assert.ok(foundStash, 'a stash resolves through the same fallback chain');
+  assert.equal(foundStash.gitBranchOption, head, 'and is attached to the current branch');
+  assert.equal(foundStash.stashRef, 'stash@{0}', 'stash metadata travels with it');
+  assert.equal(provider.findCommit(cloudHash, repoOption.path).hash, cloudHash, 'cloud commits still resolve with stashes cached');
+  provider.stashesByRepository.clear();
 
   // 2) selectCommit effect: 与普通提交同一条路径 -> controller.selectCommit
   provider.runEffect({ type: 'selectCommit', hash: cloudHash, repositoryPath: repoOption.path });

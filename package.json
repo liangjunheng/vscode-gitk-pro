@@ -56,6 +56,12 @@
           "scope": "application",
           "description": "Changed Files 与 Commit Editor 的同步显示方式"
         },
+        "vscode-gitk.showStashes": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "description": "在 Commit 列表中显示 Stash。列表右上角的 Stash 按钮会同步更新此设置。"
+        },
         "vscode-gitk.multiDiffRenderSideBySide": {
           "type": "boolean",
           "default": true,

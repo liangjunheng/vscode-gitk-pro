@@ -319,6 +319,58 @@ pub fn apply_clean_filters(
     Ok(())
 }
 
+fn repo_has_external_filters(repo: &Repository) -> bool {
+    let Ok(config) = repo.config() else {
+        return true;
+    };
+    let Ok(mut entries) = config.entries(Some(r"^filter\..*\.(clean|smudge|process)$")) else {
+        return true;
+    };
+    entries.next().is_some()
+}
+
+fn uses_external_filter(repo: &Repository, path: &Path) -> bool {
+    let Some(name) = attribute_string(repo, path, "filter") else {
+        return false;
+    };
+    let Ok(config) = repo.config() else {
+        return true;
+    };
+    ["clean", "smudge", "process"].iter().any(|direction| {
+        config
+            .get_string(&format!("filter.{name}.{direction}"))
+            .is_ok()
+    })
+}
+
+/// libgit2 stash does not execute configured external filter processes. Refuse
+/// those paths, and unreadable transparent-encryption payloads, before any
+/// stash ref or worktree state is changed.
+pub fn ensure_stashable(repo: &Repository, paths: &[String], operation: &str) -> NativeResult<()> {
+    use std::io::Read;
+
+    let root = repository_root(repo)?;
+    let may_have_external_filters = repo_has_external_filters(repo);
+    for value in paths {
+        let path = Path::new(value);
+        if may_have_external_filters && uses_external_filter(repo, path) {
+            return Err(format!(
+                "{value} 使用了外部 Git filter（如 LFS），libgit2 在「{operation}」时不会执行它们，已拒绝以免破坏文件内容"
+            ));
+        }
+        let mut header = [0u8; 16];
+        if let Ok(mut file) = std::fs::File::open(root.join(path)) {
+            let read = file.read(&mut header).unwrap_or(0);
+            if header[..read].starts_with(b"%TSD-Header-###%") {
+                return Err(format!(
+                    "{value} 受到透明加密保护，当前进程无法读取明文，已拒绝{operation}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn apply_smudge_filters(repo: &Repository, paths: &[String]) -> NativeResult<()> {
     let root = repository_root(repo)?;
     let index = repo.index().map_err(format_git_error)?;

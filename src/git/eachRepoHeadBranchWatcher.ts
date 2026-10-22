@@ -15,6 +15,10 @@ type RepoRemoteRefsChangedEvent = {
     repositoryPath: string;
 };
 
+type RepoStashChangedEvent = {
+    repositoryPath: string;
+};
+
 type HeadReadSlot = {
     running: boolean;
     needsRefresh: boolean;
@@ -36,6 +40,7 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
     private readonly headBranchReadyEmitter = new vscode.EventEmitter<RepoHeadBranchChangedEvent>();
     private readonly headBranchEmitter = new vscode.EventEmitter<RepoHeadBranchChangedEvent>();
     private readonly remoteRefsChangedEmitter = new vscode.EventEmitter<RepoRemoteRefsChangedEvent>();
+    private readonly stashChangedEmitter = new vscode.EventEmitter<RepoStashChangedEvent>();
     private readonly repoController: GitRepoController;
     private syncingRepositories = false;
     private needsRepositorySync = false;
@@ -48,6 +53,8 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
     readonly onEachRepoHeadBranchReady = this.headBranchReadyEmitter.event;
     readonly onEachRepoHeadBranchChanged = this.headBranchEmitter.event;
     readonly onEachRepoRemoteRefsChanged = this.remoteRefsChangedEmitter.event;
+    /** refs/stash 或其 reflog 变化: 创建、drop、pop 都会改写它们(drop 非最后一条时只改 reflog)。 */
+    readonly onEachRepoStashChanged = this.stashChangedEmitter.event;
 
     constructor(repoController: GitRepoController) {
         this.repoController = repoController;
@@ -95,6 +102,7 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
         this.headBranchReadyEmitter.dispose();
         this.headBranchEmitter.dispose();
         this.remoteRefsChangedEmitter.dispose();
+        this.stashChangedEmitter.dispose();
     }
 
     private requestRepositorySync(): void {
@@ -161,6 +169,19 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
             const remoteRefsWatcher = vscode.workspace.createFileSystemWatcher(
                 new vscode.RelativePattern(vscode.Uri.file(gitDir), '{refs/remotes/**,packed-refs}'),
             );
+            // 同一个 refs/stash 变更会触发 ref 与 reflog 两个事件, 合并成一次通知。
+            const stashWatcher = vscode.workspace.createFileSystemWatcher(
+                new vscode.RelativePattern(vscode.Uri.file(gitDir), '{refs/stash,logs/refs/stash,packed-refs}'),
+            );
+            let stashNotifyTimer: ReturnType<typeof setTimeout> | undefined;
+            const notifyStashChanged = () => {
+                if (stashNotifyTimer) { return; }
+                stashNotifyTimer = setTimeout(() => {
+                    stashNotifyTimer = undefined;
+                    const currentRepository = this.repositories.get(key);
+                    if (currentRepository) { this.stashChangedEmitter.fire({ repositoryPath: currentRepository.path }); }
+                }, 50);
+            };
             const refresh = () => {
                 const currentRepository = this.repositories.get(key);
                 if (currentRepository) { void this.enqueueHeadRead(key, currentRepository); }
@@ -172,6 +193,11 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
             return vscode.Disposable.from(
                 headWatcher,
                 remoteRefsWatcher,
+                stashWatcher,
+                { dispose: () => { if (stashNotifyTimer) { clearTimeout(stashNotifyTimer); stashNotifyTimer = undefined; } } },
+                stashWatcher.onDidCreate(notifyStashChanged),
+                stashWatcher.onDidChange(notifyStashChanged),
+                stashWatcher.onDidDelete(notifyStashChanged),
                 headWatcher.onDidCreate(refresh),
                 headWatcher.onDidChange(refresh),
                 headWatcher.onDidDelete(refresh),

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { CommitFile, WorkingTreeChanges, type FileStatus } from '../types';
-import type { GitBackend } from './gitBackend';
+import type { GitBackend, StashApplyResult, StashResult, StashScope } from './gitBackend';
 import { invokeNativeGit } from './nativeGitBinding';
 
 interface NativeCommitFile {
@@ -92,6 +92,22 @@ export class LibGit2Backend implements GitBackend {
     async discardWorktree(rootUri: vscode.Uri, paths: readonly string[]): Promise<void> {
         if (paths.length === 0) { return; }
         await invokeNativeGit('restoreWorktree', { rootPath: rootUri.fsPath, paths });
+    }
+
+    async stash(rootUri: vscode.Uri, scope: StashScope): Promise<StashResult> {
+        return invokeNativeGit<StashResult>('stashCreate', { rootPath: rootUri.fsPath, scope });
+    }
+
+    async stashApply(rootUri: vscode.Uri, stash: string): Promise<StashApplyResult> {
+        return invokeNativeGit<StashApplyResult>('stashApply', { rootPath: rootUri.fsPath, stash });
+    }
+
+    async stashPop(rootUri: vscode.Uri, stash: string): Promise<StashApplyResult> {
+        return invokeNativeGit<StashApplyResult>('stashPop', { rootPath: rootUri.fsPath, stash });
+    }
+
+    async stashDrop(rootUri: vscode.Uri, stash: string): Promise<void> {
+        await invokeNativeGit('stashDrop', { rootPath: rootUri.fsPath, stash });
     }
 
     dispose(): void {}

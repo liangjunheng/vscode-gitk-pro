@@ -7,7 +7,7 @@ use git2::{
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap};
 
-fn signature_text(bytes: &[u8], fallback: &str) -> String {
+pub(crate) fn signature_text(bytes: &[u8], fallback: &str) -> String {
     let value = String::from_utf8_lossy(bytes).into_owned();
     if value.is_empty() {
         fallback.to_owned()
@@ -16,7 +16,7 @@ fn signature_text(bytes: &[u8], fallback: &str) -> String {
     }
 }
 
-fn iso_time(time: git2::Time) -> String {
+pub(crate) fn iso_time(time: git2::Time) -> String {
     let Some(utc) = DateTime::<Utc>::from_timestamp(time.seconds(), 0) else {
         return String::new();
     };
@@ -207,7 +207,7 @@ fn status_text(status: git2::Delta) -> &'static str {
     }
 }
 
-fn delta_value(delta: DiffDelta<'_>) -> Value {
+pub(crate) fn delta_value(delta: DiffDelta<'_>) -> Value {
     let old = delta.old_file();
     let new = delta.new_file();
     let old_mode = mode_text(old.mode());

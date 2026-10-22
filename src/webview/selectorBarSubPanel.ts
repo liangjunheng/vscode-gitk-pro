@@ -28,6 +28,11 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   #repositoryDisplay { display: flex; align-items: center; gap: 0; flex: 0 1 20ch; min-width: 0; height: 26px; color: var(--vscode-dropdown-foreground, var(--vscode-foreground)); font: inherit; cursor: default; }
   #repositoryDisplay .dropdown-label { gap: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #repositoryDisplay .repository-icon { margin-right: 0; }
+  /* Stash 列表开关: 选中时给出与悬停一致的浅底, 未选中(默认)时只显示图标。 */
+  /* 位于 @仓库名 这一行的最右侧; margin-left:auto 把它推到行尾, 仓库名过长时由 #repositoryDisplay 先收缩。 */
+  #stashListToggle { flex: 0 0 auto; margin-left: auto; width: 22px; height: 22px; border-radius: 3px; }
+  #stashListToggle[aria-pressed="true"] { background: var(--vscode-toolbar-activeBackground, var(--vscode-toolbar-hoverBackground)); color: var(--vscode-foreground); }
+  #stashListToggle:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .dropdown-current { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 26px; padding: 0 7px; color: var(--vscode-dropdown-foreground, var(--vscode-foreground)); background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent); border: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent); border-radius: 4px; box-shadow: none; font: inherit; text-align: left; cursor: pointer; }
   .dropdown-current:has(.dropdown-spinner) { gap: 2px; }
   .dropdown-label:has(.dropdown-spinner:not([hidden])) { display: inline-flex; align-items: center; flex: 1 1 auto; gap: 2px; }
@@ -101,6 +106,7 @@ export const SELECTOR_BAR_SUB_PANEL_MARKUP = `
       </div></div>
       <span class="selector-separator" aria-hidden="true">@</span>
       <div id="repositoryDisplay" title="未选择仓库"><span class="dropdown-label">未选择仓库</span></div>
+      <button type="button" class="toolbar-icon" id="stashListToggle" aria-pressed="false" title="显示 Stash（穿插在提交之间）" aria-label="显示或隐藏 Stash 列表"><span class="codicon codicon-inbox" aria-hidden="true"></span></button>
     </div>
   </div>
 `;

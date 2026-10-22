@@ -8,6 +8,7 @@ mod operations;
 mod remote;
 mod repository;
 mod signing;
+mod stash;
 mod status;
 mod submodule;
 mod support;
@@ -49,6 +50,10 @@ fn is_mutating_operation(operation: &str) -> bool {
             | "unstage"
             | "restoreWorktree"
             | "restoreAll"
+            | "stashCreate"
+            | "stashApply"
+            | "stashPop"
+            | "stashDrop"
             | "commit"
             | "createBranch"
             | "createTag"
@@ -96,6 +101,12 @@ fn dispatch_operation(operation: &str, payload: &Value) -> std::result::Result<V
         "unstage" => mutations::unstage(payload),
         "restoreWorktree" => mutations::restore_worktree(payload),
         "restoreAll" => mutations::restore_all(payload),
+        "stashCreate" => stash::create(payload),
+        "stashApply" => stash::apply(payload),
+        "stashPop" => stash::pop(payload),
+        "stashDrop" => stash::drop_stash(payload),
+        "stashList" => stash::list(payload),
+        "stashFiles" => stash::files(payload),
         "trackedPaths" => mutations::tracked_paths(payload),
         "indexChangedPaths" => mutations::index_changed_paths(payload),
         "hasConflicts" => mutations::has_conflicts(payload),

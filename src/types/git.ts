@@ -22,6 +22,18 @@ export class CommitMetadata {
     outputSwimlanes?: GraphLane[];
     laneColor?: string;
     laneStartsHere?: boolean;
+    /**
+     * 文字缩进层数（与泳道列号 lane 无关）：
+     * - 主线（第一行提交沿第一父提交走到根）上的提交恒为 0；
+     * - 属于某条“真侧枝”的提交 = 该侧枝的嵌套层数（侧枝里再开出的侧枝逐层 +1）；
+     * - “真侧枝”指泳道上至少有一个属于它自己的提交，空线不算。
+     * stash 行取其基线提交的层数。
+     */
+    indentDepth?: number;
+    /** stash 提交: 作为一条只有基线一个父提交的行穿插在基线提交之上。 */
+    isStash?: boolean;
+    stashRef?: string;
+    stashIndex?: number;
 
     constructor(init: Partial<CommitMetadata> = {}) {
         Object.assign(this, init);

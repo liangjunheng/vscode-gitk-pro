@@ -633,6 +633,33 @@ export async function getCloudCommits(rootUri: vscode.Uri, limit: number = CLOUD
     }
 }
 
+/** 一条 stash: 带 isStash 标记与序号/引用名的 CommitMetadata。 */
+export type StashEntry = CommitMetadata & { isStash: true; stashIndex: number; stashRef: string };
+
+interface NativeStashEntry extends NativeCommitMetadata {
+    stashIndex: number;
+    stashRef: string;
+}
+
+/**
+ * 读取仓库的全部 stash（最新在前）。只读，不联网；
+ * 原生层不支持（旧二进制）或读取失败时返回空数组，保证状态刷新不被它打断。
+ */
+export async function getStashes(rootUri: vscode.Uri): Promise<StashEntry[]> {
+    try {
+        const entries = await invokeNativeGit<NativeStashEntry[]>('stashList', { rootPath: rootUri.fsPath });
+        return entries.map(entry => new CommitMetadata({
+            ...fromNativeCommit(entry),
+            isStash: true,
+            stashIndex: entry.stashIndex,
+            stashRef: entry.stashRef,
+        }) as StashEntry);
+    } catch (error) {
+        console.warn('无法读取 stash 列表:', rootUri.toString(), error);
+        return [];
+    }
+}
+
 async function readCommitsFromNative(rootUri: vscode.Uri, limit: number, refs: readonly string[], skip: number, signal?: AbortSignal): Promise<CommitMetadata[]> {
     throwIfAborted(signal);
     const commits = await invokeNativeGit<NativeCommitMetadata[]>('commits', {
@@ -677,6 +704,17 @@ export async function searchCommits(rootUri: vscode.Uri, keywords: string[], ref
 // 判断是否 git 仓库
 export async function isGitRepo(rootUri: vscode.Uri): Promise<boolean> {
     return !!await resolveRepositoryRoot(rootUri.fsPath);
+}
+
+/** stash 的变更文件: 基线到 stash 树的差异，加上未跟踪文件。 */
+export async function getStashFiles(rootUri: vscode.Uri, hash: string, signal?: AbortSignal): Promise<CommitFile[]> {
+    throwIfAborted(signal);
+    const files = await invokeNativeGit<Array<Partial<CommitFile> & { path: string }>>('stashFiles', {
+        rootPath: rootUri.fsPath,
+        revision: hash,
+    });
+    throwIfAborted(signal);
+    return files.map(file => new CommitFile({ ...file, oldPath: file.oldPath ?? undefined }));
 }
 
 // 通过 git 命令获取指定提交的变更文件列表 (仅 --raw 清单, 不含行数统计)

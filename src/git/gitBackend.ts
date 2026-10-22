@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import type { WorkingTreeChanges } from '../types';
 
-/** Git 工作区与对象读取边界，由 libgit2 原生后端实现。 */
+/** Git 工作区、Stash 与对象读取边界，全部由 libgit2 原生后端实现。 */
 export interface GitBackend extends vscode.Disposable {
     warmup(rootUri: vscode.Uri): Promise<void>;
     readObjects(rootUri: vscode.Uri, objects: readonly string[]): Promise<Map<string, string>>;
@@ -13,4 +13,30 @@ export interface GitBackend extends vscode.Disposable {
     stage(rootUri: vscode.Uri, paths: readonly string[]): Promise<void>;
     unstage(rootUri: vscode.Uri, paths: readonly string[]): Promise<void>;
     discardWorktree(rootUri: vscode.Uri, paths: readonly string[]): Promise<void>;
+    /** 创建 stash：保留暂存区的 unstaged，或仅 staged。 */
+    stash(rootUri: vscode.Uri, scope: StashScope): Promise<StashResult>;
+    /**
+     * 应用 stash 并保留条目（git stash apply）。stash 用提交 hash 标识：序号会随其他 stash 操作移位。
+     */
+    stashApply(rootUri: vscode.Uri, stash: string): Promise<StashApplyResult>;
+    /** 应用并删除条目（git stash pop）；应用带冲突时与 Git 一致地保留条目。 */
+    stashPop(rootUri: vscode.Uri, stash: string): Promise<StashApplyResult>;
+    /** 删除 stash 条目（git stash drop）。提交对象保留到垃圾回收前。 */
+    stashDrop(rootUri: vscode.Uri, stash: string): Promise<void>;
+}
+
+export type StashScope = 'unstaged' | 'staged';
+
+export interface StashApplyResult {
+    readonly stash: string;
+    /** 应用后索引里有冲突，冲突文件留在工作区。 */
+    readonly conflicts: boolean;
+    /** 条目是否已被删除（只有 pop 且没有冲突时为 true）。 */
+    readonly dropped: boolean;
+}
+
+export interface StashResult {
+    readonly stash: string;
+    /** libgit2 未从工作区移走的子模块（gitlink）路径，由界面提示。 */
+    readonly skippedGitlinks: readonly string[];
 }

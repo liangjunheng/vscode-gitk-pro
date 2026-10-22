@@ -20,6 +20,7 @@ export type GitkIntent =
     | { type: 'commitFileAction'; hash: string; repositoryPath: string; path: string; action: 'openFile' | 'openBefore' | 'openAfter' | 'revealInOS' | 'revealInExplorer' | 'copy' | 'copyPath' | 'copyRelativePath' }
     | { type: 'copyFilePath'; path: unknown; absolute?: unknown }
     | { type: 'workingTreeAction'; action: unknown; section: unknown; path?: unknown; paths?: unknown }
+    | { type: 'toggleStashes'; visible?: unknown }
     | { type: 'workingTreeCommit'; action: unknown; repositoryPath: unknown; message: unknown }
     | { type: 'updateCommitMessage'; repositoryPath: unknown; message: unknown }
     | { type: 'repositoryChangesFile'; repositoryPath: string; section: 'conflict' | 'staged' | 'unstaged'; path: string }
