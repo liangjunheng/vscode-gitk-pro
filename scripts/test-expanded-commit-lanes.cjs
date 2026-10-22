@@ -94,6 +94,7 @@ async function main() {
         const seamY=Math.floor((g.rowTop+26)*dpr), reference=(coverage(seamY+8)+coverage(seamY+9))/2;
         const seam=[-2,-1,0,1,2].map(offset=>coverage(seamY+offset)/reference);
         assert.ok(Math.max(...seam)<=1.10,label + ': expanded lane has no internal overlap: ' + JSON.stringify(seam));
+        assert.ok(Math.min(...seam)>=.94,label + ': expanded curve and tail have no dim join: ' + JSON.stringify(seam));
         let missing=0;
         for(let y=Math.ceil((g.rowTop+28)*dpr);y<Math.floor((g.rowBottom-2)*dpr);y++) {
           let ink=false;

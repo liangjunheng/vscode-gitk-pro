@@ -57,6 +57,11 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   .commit-row[data-row] svg.graph-svg { overflow: visible; }
   .commit-row[data-row] svg.graph-svg path:not([stroke-dasharray]) { stroke-linecap: square; }
   .commit-row[data-row] svg.graph-svg path.lane-straight, .commit-row[data-row] svg.graph-svg line.lane-straight { shape-rendering: crispEdges; }
+  /* 曲线保持平滑，但与像素对齐的竖线使用相同的设备像素粗细。 */
+  .commit-row[data-row] svg.graph-svg .lane-curve { stroke-width: var(--commit-lane-curve-width, 2px); shape-rendering: geometricPrecision; }
+  /* 曲线和延长线在同一透明组内合成，接头的抗锯齿覆盖相加，不产生暗缝或重复描边。 */
+  .commit-row[data-row] svg.graph-svg .lane-curve-join { isolation: isolate; }
+  .commit-row[data-row] svg.graph-svg .lane-curve-join > .lane-curve { mix-blend-mode: plus-lighter; stroke-linecap: butt; }
   /* 搜索结果不展示拓扑，泳道和占位一起移除。 */
   #graph.without-lanes .graph-svg { display: none; }
   #graph.without-lanes .col-main { grid-template-columns: minmax(0, 1fr); }
@@ -327,6 +332,13 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     const LANE_CURVE_R = 5;
     const LANE_STROKE_W = 2;
     const NODE_STROKE_W = 2;
+  function updateCommitLaneCurveWidth() {
+    const ratio = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+    const width = Math.max(1, Math.round(LANE_STROKE_W * ratio)) / ratio;
+    document.documentElement.style.setProperty('--commit-lane-curve-width', width + 'px');
+  }
+  updateCommitLaneCurveWidth();
+  window.addEventListener('resize', updateCommitLaneCurveWidth);
     const expandedCommits = new Set();
     const expandedCommitRowHeights = new Map();
     let commitLayoutPrefix = [];
@@ -1416,9 +1428,13 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     svg.removeAttribute('viewBox');
     let content = '';
     const laneTail = function(x, color) {
-      // 曲线末端的 square cap 已延伸半个线宽；直线从该端点接起，不重复覆盖。
-      return expanded ? '<line class="commit-lane-tail lane-straight" x1="' + x + '" y1="' + (rowH + LANE_STROKE_W / 2) + '" x2="' + x
-        + '" y2="100%" stroke="' + color + '" stroke-width="' + LANE_STROKE_W + '" stroke-linecap="butt"/>' : '';
+      return '<line class="commit-lane-tail lane-curve" x1="' + x + '" y1="' + rowH + '" x2="' + x
+        + '" y2="100%" stroke="' + color + '" stroke-width="' + LANE_STROKE_W + '" stroke-linecap="butt"/>';
+    };
+    const curvedLane = function(d, color, tailX) {
+      const path = '<path class="lane-curve" d="' + d + '" fill="none" stroke="' + color + '" stroke-width="' + LANE_STROKE_W + '"/>';
+      return expanded && tailX !== undefined
+        ? '<g class="lane-curve-join">' + path + laneTail(tailX, color) + '</g>' : path;
     };
     const expandedLane = function(x, startY, color) {
       return '<line class="commit-main-lane lane-straight" x1="' + x + '" y1="' + startY + '" x2="' + x
@@ -1466,7 +1482,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
             'A ' + laneW + ' ' + laneW + ' 0 0 1 ' + (x1 - laneW) + ' ' + y,
             'H ' + cx,
           ].join(' ');
-          content += '<path d="' + d + '" fill="none" stroke="' + inputLane.color + '" stroke-width="' + LANE_STROKE_W + '"/>';
+          content += curvedLane(d, inputLane.color);
         } else if (c.parents.length > 0) {
           outputIndex++;
         }
@@ -1486,8 +1502,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
           'A ' + LANE_CURVE_R + ' ' + LANE_CURVE_R + ' 0 0 0 ' + x2 + ' ' + (y + LANE_CURVE_R),
           'V ' + rowH,
         ].join(' ');
-        content += '<path d="' + d + '" fill="none" stroke="' + inputLane.color + '" stroke-width="' + LANE_STROKE_W + '"/>';
-        content += laneTail(x2, inputLane.color);
+        content += curvedLane(d, inputLane.color, x2);
       }
       outputIndex++;
     }
@@ -1509,8 +1524,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
         'M ' + curveStartX + ' ' + y,
         'H ' + cx,
       ].join(' ');
-      content += '<path d="' + d + '" fill="none" stroke="' + outputSwimlanes[parentOutputIndex].color + '" stroke-width="' + LANE_STROKE_W + '"/>';
-      content += laneTail(parentX, outputSwimlanes[parentOutputIndex].color);
+      content += curvedLane(d, outputSwimlanes[parentOutputIndex].color, parentX);
     }
 
     // 真实提交之间保持原色实线，与 stash 展示侧枝互不影响。

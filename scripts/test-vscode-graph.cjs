@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const Module = require('node:module');
 const { chromium } = require('playwright');
+const { PNG } = require('pngjs');
 const { renderGitkWebviewHtml } = require('../out/webview/gitkWebviewDocument');
 
 class Emitter {
@@ -55,7 +56,7 @@ const commit = (hash, parents, message) => ({ hash: h(hash), shortHash: hash.rep
 
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   try {
-    const page = await browser.newPage({ viewport: { width: 640, height: 500 } });
+    const page = await browser.newPage({ viewport: { width: 640, height: 500 }, deviceScaleFactor: Number(process.env.GITK_TEST_DPR || 1) });
     const errors = []; page.on('pageerror', e => errors.push(e.message));
     await page.route('https://gitk.test/codicon.ttf*', route => route.fulfill({ body: fs.readFileSync(path.resolve(__dirname, '../media/codicons/codicon.ttf')), contentType: 'font/ttf', headers: { 'Access-Control-Allow-Origin': '*' } }));
     const css = fs.readFileSync(path.resolve(__dirname, '../media/codicons/codicon.css'), 'utf8').replaceAll('./codicon.ttf', 'https://gitk.test/codicon.ttf');
@@ -112,6 +113,63 @@ const commit = (hash, parents, message) => ({ hash: h(hash), shortHash: hash.rep
     });
     assert.ok(arcTrajectory[1].x > 21, 'shortly after entering the row the lane is still on the right (x>21), i.e. it has not jumped left: ' + JSON.stringify(arcTrajectory));
     assert.ok(arcTrajectory[2].x > arcTrajectory[3].x && arcTrajectory[3].x > 11, 'the curve moves left monotonically and only reaches the node column at the end: ' + JSON.stringify(arcTrajectory));
+
+    // Crisp vertical strokes round to device pixels. Smooth merge arcs must match their visible weight.
+    const dpr = Number(process.env.GITK_TEST_DPR || 1);
+    const curveGeometry = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('#commitVirtualRows .commit-row')];
+      const sample = (row, lengths) => {
+        const path = [...row.querySelectorAll('svg path')].find(path => path.getAttribute('d').includes('A 11 11'));
+        return lengths.map(length => {
+          const a = path.getPointAtLength(length - .05), b = path.getPointAtLength(length + .05);
+          const point = path.getPointAtLength(length).matrixTransform(path.getScreenCTM());
+          const tangent = Math.hypot(b.x - a.x, b.y - a.y);
+          return { x:point.x, y:point.y, nx:-(b.y-a.y)/tangent, ny:(b.x-a.x)/tangent };
+        });
+      };
+      const straight = rows[2].querySelector('svg').getBoundingClientRect();
+      return { left:straight.left, top:straight.top, upper:sample(rows[0],[8,10,12,14]), lower:sample(rows[3],[5,7,9,11]) };
+    });
+    const png = PNG.sync.read(await page.screenshot());
+    const background = [25,26,27], delta = [255-25,176-26,0-27], norm = delta.reduce((sum,c)=>sum+c*c,0);
+    const alpha = (x,y) => {
+      if(x<0||y<0||x>=png.width||y>=png.height)return 0;
+      const index = (y*png.width+x)*4;
+      return Math.max(0,Math.min(1,delta.reduce((sum,c,k)=>sum+(png.data[index+k]-background[k])*c,0)/norm));
+    };
+    const bilinear = (x,y) => {
+      x-=.5; y-=.5;
+      const left=Math.floor(x), top=Math.floor(y), u=x-left, v=y-top;
+      return alpha(left,top)*(1-u)*(1-v)+alpha(left+1,top)*u*(1-v)+alpha(left,top+1)*(1-u)*v+alpha(left+1,top+1)*u*v;
+    };
+    const arcWidth = point => {
+      let width=0;
+      for(let offset=-4;offset<=4;offset+=.1)width+=bilinear(point.x*dpr+point.nx*offset,point.y*dpr+point.ny*offset)*.1;
+      return width;
+    };
+    let straightWidth=0, referenceSamples=0;
+    for(let y=Math.ceil((curveGeometry.top+4)*dpr);y<Math.floor((curveGeometry.top+9)*dpr);y++) {
+      for(let x=Math.floor((curveGeometry.left+22)*dpr)-4;x<=Math.ceil((curveGeometry.left+22)*dpr)+4;x++)straightWidth+=alpha(x,y);
+      referenceSamples++;
+    }
+    straightWidth/=referenceSamples;
+    const widths = { straight:straightWidth, upper:curveGeometry.upper.reduce((sum,p)=>sum+arcWidth(p),0)/curveGeometry.upper.length,
+      lower:curveGeometry.lower.reduce((sum,p)=>sum+arcWidth(p),0)/curveGeometry.lower.length };
+    if(process.env.GITK_CURVE_WEIGHT_DIAGNOSTICS)console.log(JSON.stringify({dpr,...widths}));
+    for(const part of ['upper','lower'])assert.ok(widths[part]/widths.straight>=.90&&widths[part]/widths.straight<=1.10,
+      part+' merge arc must match the straight lane weight: '+JSON.stringify({dpr,...widths}));
+    const resizeProbe = await domRows.first().locator('svg path.lane-curve').evaluate(path => {
+      const before = path.getAttribute('d');
+      document.documentElement.style.setProperty('--commit-lane-curve-width','1px');
+      window.dispatchEvent(new Event('resize'));
+      return { width:parseFloat(getComputedStyle(path).strokeWidth), sameGeometry:before===path.getAttribute('d'), connected:path.isConnected };
+    });
+    assert.ok(Math.abs(resizeProbe.width-Math.max(1,Math.round(2*dpr))/dpr)<.001, 'resize updates curve raster width without rebuilding the graph');
+    assert.ok(resizeProbe.sameGeometry && resizeProbe.connected,'resize preserves the curve element and geometry');
+    if(process.env.GITK_CURVE_SCREENSHOT) {
+      const first=await domRows.first().boundingBox(), last=await domRows.last().boundingBox();
+      await page.screenshot({path:process.env.GITK_CURVE_SCREENSHOT,clip:{x:first.x,y:first.y,width:first.width,height:last.y+last.height-first.y}});
+    }
     assert.deepEqual(errors, []);
     console.log('VS Code graph passed: topo-order side branch block, blue current lane, orange side lane, filled nodes, 11px arcs and 2px lines.');
   } finally { await browser.close(); }
