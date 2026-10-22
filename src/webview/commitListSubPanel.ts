@@ -348,8 +348,10 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     let commitVirtualEnd = -1;
     let commitVirtualFrame = 0;
   const DOT_R = 5;
-  // Stash 菱形保持既有尺寸；只有圆形 commit / 未提交节点放大。
-  const STASH_NODE_R = 5.5;
+  // Stash 菱形独立于泳道线宽；10px 外接尺寸已包含 1px 描边。
+  const STASH_NODE_SIZE = 10;
+  const STASH_NODE_STROKE_W = 1;
+  const STASH_NODE_R = (STASH_NODE_SIZE - STASH_NODE_STROKE_W) / 2;
   // Merge 节点: 背景遮罩 + 泳道色圆环 + 中心实心点，外层遮罩与普通圆点一致。
   const MERGE_RING_R = DOT_R - 0.25;
   const MERGE_RING_W = 1.5;
@@ -1414,7 +1416,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
       content += trunk(trunkX, commitLaneColor(sameBase ? base : c));
     }
     // 菱形最后绘制，保留灰色空心样式与 inbox 徽章。
-    content += '<path class="stash-node" d="M ' + x + ' ' + (y - radius) + ' L ' + (x + radius) + ' ' + y + ' L ' + x + ' ' + (y + radius) + ' L ' + (x - radius) + ' ' + y + ' Z" fill="var(--vscode-editor-background)" stroke="' + grey + '" stroke-width="' + LANE_STROKE_W + '" stroke-linejoin="round"/>';
+    content += '<path class="stash-node" d="M ' + x + ' ' + (y - radius) + ' L ' + (x + radius) + ' ' + y + ' L ' + x + ' ' + (y + radius) + ' L ' + (x - radius) + ' ' + y + ' Z" fill="var(--vscode-editor-background)" stroke="' + grey + '" stroke-width="' + STASH_NODE_STROKE_W + '" stroke-linejoin="round"/>';
     return '<svg class="graph-svg" width="' + graphW + '" height="100%">' + content + '</svg>';
   }
 

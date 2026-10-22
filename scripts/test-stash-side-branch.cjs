@@ -49,7 +49,8 @@ async function main() {
       const visibleEdge = Number(circle.getAttribute('r')) + Number(circle.getAttribute('stroke-width')) / 2;
       const join = path.getPointAtLength(visibleEdge + .5).matrixTransform(path.getScreenCTM());
       return { start:{x:point.x,y:point.y}, end:{x:end.x,y:end.y}, circle:{x:Number(circle.getAttribute('cx')),y:Number(circle.getAttribute('cy'))},
-        width:Number(path.getAttribute('stroke-width')), join:{x:join.x,y:join.y} };
+        width:Number(path.getAttribute('stroke-width')), dotDiameter:2*Number(circle.getAttribute('r'))-parseFloat(getComputedStyle(circle).strokeWidth),
+        dotCenter:{x:point.matrixTransform(path.getScreenCTM()).x,y:point.matrixTransform(path.getScreenCTM()).y}, join:{x:join.x,y:join.y} };
     });
     assert.deepEqual(root.start,root.circle,'fork starts at actual base-circle centre');
     assert.equal(root.width,2,'stash fork matches the 2px real-commit trunk');
@@ -61,7 +62,7 @@ async function main() {
         const ends = element => [element.getPointAtLength(0), element.getPointAtLength(element.getTotalLength())].map(p => ({ x: p.x, y: p.y }));
         return { trunk: trunk ? { x: trunk.x1.baseVal.value, stroke: trunk.getAttribute('stroke'), width:Number(trunk.getAttribute('stroke-width')), dash: trunk.getAttribute('stroke-dasharray'), ends: ends(trunk) } : null,
           branch: branch ? { dash: branch.getAttribute('stroke-dasharray'), width:Number(branch.getAttribute('stroke-width')), ends: ends(branch) } : null,
-          nodeX: nums[0], nodeWidth:Number(node.getAttribute('stroke-width')), titleX: row.querySelector('.col-main-summary').getBoundingClientRect().left, height: row.getBoundingClientRect().height };
+          nodeX: nums[0], nodeWidth:Number(node.getAttribute('stroke-width')), nodeDiameter:nums[5]-nums[1]+Number(node.getAttribute('stroke-width')), titleX: row.querySelector('.col-main-summary').getBoundingClientRect().left, height: row.getBoundingClientRect().height };
       });
       assert.ok(g.trunk && g.branch, 'stash has a continuous real-commit trunk and its own side branch: ' + JSON.stringify(g));
       assert.equal(g.trunk.dash, null, 'the trunk is solid even inside a stash row'); assert.equal(g.trunk.stroke, blue, 'trunk retains the real lane colour');
@@ -69,7 +70,8 @@ async function main() {
       assert.equal(g.titleX - baseline[0].titleX, 11, 'only stash title indents by one lane');
       assert.equal(g.branch.dash, '2 2', 'stash branch keeps the uniform dashed style');
       assert.equal(g.branch.width,g.trunk.width,'stash stem matches the real-commit trunk weight');
-      assert.equal(g.nodeWidth,g.trunk.width,'hollow diamond border matches the real-commit trunk');
+      assert.equal(g.nodeWidth,1,'stash diamond has a dedicated 1px outline');
+      assert.equal(g.nodeDiameter,10,'stash diamond outer size is 10px including its outline');
       assert.equal(g.branch.ends[1].x, g.nodeX, 'stem stays in the stash display column until the base row');
       assert.equal(root.end.x,g.nodeX,'base fork reaches the stash display column');
       assert.equal(root.end.y,0,'base fork connects at the preceding row boundary');
@@ -81,6 +83,10 @@ async function main() {
       const n=node.getAttribute('d').match(/-?[\d.]+/g).map(Number),p=svg.createSVGPoint();p.x=n[0];p.y=n[5]+1;
       const point=p.matrixTransform(svg.getScreenCTM());return {x:point.x,y:point.y};
     });
+    const diamondCenter = await rows.first().evaluate(row => {
+      const node=row.querySelector('.stash-node'),box=node.getBoundingClientRect();
+      return {x:box.left+box.width/2,y:box.top+box.height/2};
+    });
     const png=PNG.sync.read(await page.screenshot());
     const scale = png.width / page.viewportSize().width;
     const greyInk = point => {
@@ -91,6 +97,27 @@ async function main() {
       }
       return false;
     };
+    const paintedWidth = (center,grey) => {
+      const target=grey ? [146,146,146] : [87,163,248];
+      const backgroundIndex=(Math.floor(center.y*scale)*png.width+Math.floor((center.x-7)*scale))*4;
+      const background=png.data.subarray(backgroundIndex,backgroundIndex+3);
+      const delta=target.map((c,i)=>c-background[i]), norm=delta.reduce((sum,c)=>sum+c*c,0);
+      let left=Infinity,right=-Infinity;
+      for(let y=Math.max(0,Math.floor((center.y-6)*scale));y<Math.min(png.height,Math.ceil((center.y+6)*scale));y++) {
+        for(let x=Math.max(0,Math.floor((center.x-6)*scale));x<Math.min(png.width,Math.ceil((center.x+6)*scale));x++) {
+          const i=(y*png.width+x)*4,[r,g,b]=png.data.subarray(i,i+3);
+          const coverage=delta.reduce((sum,c,k)=>sum+([r,g,b][k]-background[k])*c,0)/norm;
+          const ink=coverage>.25&&(grey ? Math.abs(r-g)<12&&Math.abs(g-b)<12 : b>r+40&&b>g+20);
+          if(ink){left=Math.min(left,x);right=Math.max(right,x);}
+        }
+      }
+      assert.ok(Number.isFinite(left),'node has visible ink');
+      return right-left+1;
+    };
+    const circleWidth=paintedWidth(root.dotCenter,false),diamondWidth=paintedWidth(diamondCenter,true);
+    assert.ok(Math.abs(circleWidth-root.dotDiameter*scale)<=1,'ordinary dot visible size remains unchanged');
+    assert.ok(Math.abs(diamondWidth-10*scale)<=1,'diamond raster matches its 10px outer size within one device pixel: '+JSON.stringify({circleWidth,diamondWidth,scale}));
+    if(process.env.GITK_TEST_NODE_SIZE_DIAGNOSTICS)console.log(JSON.stringify({scale,circleWidth,diamondWidth,diamondSize:10,stroke:1}));
     assert.ok(greyInk(root.join),'the first visible fork dash meets the real commit circle');
     assert.ok(greyInk(tip),'stem ink meets the hollow diamond lower tip');
     // A stash above the latest commit has no pre-existing lane: resolve its colour from the real base.

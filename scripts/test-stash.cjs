@@ -180,7 +180,7 @@ async function main() {
     }));
     assert.equal(paint.fill, 'var(--vscode-editor-background)', 'the inside is the editor background, so the diamond reads as hollow');
     assert.equal(paint.stroke, 'var(--vscode-descriptionForeground, #999)', 'the outline is grey');
-    assert.equal(paint.width, '2', 'hollow diamond matches the 2px lane stroke');
+    assert.equal(paint.width, '1', 'hollow diamond uses its own 1px outline without changing the 2px lanes');
     assert.notEqual(paint.computedFill, paint.computedStroke, 'fill and outline resolve to different colours');
     assert.equal(paint.computedFill, 'rgb(24, 24, 24)', 'and the resolved fill is the theme editor background (#181818)');
     // 菱形内部不能露出泳道线: 节点在泳道线之后绘制, 所以 stash-node 必须排在该行所有 path 的最后
@@ -202,8 +202,17 @@ async function main() {
         const ctx = canvas.getContext('2d'); ctx.drawImage(img, 0, 0);
         return points.map(([x, y]) => Array.from(ctx.getImageData(x, y, 1, 1).data));
       }, { b64: png, points });
-      // 中心正下方 1~2px（避开加粗轮廓的抗锯齿边缘）: 泳道线在这里穿过节点, 空心菱形的背景填充必须把它盖住
-      const inside = await sample([[Math.floor(cx) - 1, Math.round(cy) + 2], [Math.floor(cx), Math.round(cy) + 2], [Math.floor(cx) - 1, Math.round(cy) + 1], [Math.floor(cx), Math.round(cy) + 1], [Math.floor(cx), Math.round(cy)]]);
+      // 只采样菱形的真实空心区域，避开 1px 描边的抗锯齿边缘。
+      const outline = diamond.match(/-?[\d.]+/g).map(Number);
+      const innerRadius = (outline[5] - outline[1]) / 2 - Number(paint.width) / Math.SQRT2;
+      const centerPixels = [];
+      for (let y = Math.floor(cy) - 1; y <= Math.ceil(cy); y++) {
+        for (let x = Math.floor(cx) - 1; x <= Math.ceil(cx); x++) {
+          if (Math.abs(x + .5 - cx) + Math.abs(y + .5 - cy) < innerRadius - 1) centerPixels.push([x, y]);
+        }
+      }
+      assert.ok(centerPixels.length > 0, 'the smaller diamond still has a visible hollow centre');
+      const inside = await sample(centerPixels);
       for (const [r, g, b] of inside) assert.ok(b < 70 && g < 70, 'inside the hollow diamond the lane line is covered by the background: ' + JSON.stringify(inside));
       // 左顶点附近 3x3: 至少有一个像素是灰色描边(#929292 与背景的混合, 红蓝绿接近且明显亮于背景), 不是泳道色
       const vx = Math.floor(nodeBox.x - clip.x), vy = Math.round(cy);
