@@ -57,7 +57,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         })
     );
 
-    // 状态栏: workspace 有 git 仓库时显示 Gitk 及全仓库未提交统计。
+    // 状态栏: workspace 有 git 仓库时显示 FasterGit 及全仓库未提交统计。
     const statusBar = new GitkStatusBar(
         context,
         'vscode-gitk.open',

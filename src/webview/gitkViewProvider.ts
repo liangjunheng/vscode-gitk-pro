@@ -1292,7 +1292,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             else { this.mergeOperations.delete(repositoryPath); }
             this.schedulePushState();
             if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
-        }).catch(error => console.error('[Gitk][merge-operation]', error))
+        }).catch(error => console.error('[FasterGit][merge-operation]', error))
             .finally(() => this.mergeOperationReads.delete(repositoryPath));
         this.mergeOperationReads.set(repositoryPath, task);
         return task;
@@ -1315,7 +1315,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const label = repository?.label || path.basename(root.fsPath);
             await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
-                title: `Gitk: ${operation} ${action} (${label})`,
+                title: `FasterGit: ${operation} ${action} (${label})`,
                 cancellable: false,
             }, async progress => {
                 progress.report({ message: action === 'continue' ? '正在继续 Git 操作…' : '正在中止 Git 操作…' });
@@ -1331,9 +1331,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     await this.refreshCommitPanel();
                 }
             });
-            void vscode.window.showInformationMessage(`Gitk: ${operation} ${action} 完成 (${label})`);
+            void vscode.window.showInformationMessage(`FasterGit: ${operation} ${action} 完成 (${label})`);
         } catch (error) {
-            void vscode.window.showErrorMessage(`Gitk ${action} 失败：${error instanceof Error ? error.message : String(error)}`);
+            void vscode.window.showErrorMessage(`FasterGit ${action} 失败：${error instanceof Error ? error.message : String(error)}`);
         } finally {
             this.mergeOperationBusy.delete(repositoryPath);
             this.schedulePushState();
@@ -1851,8 +1851,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             }
             if (input.type === 'repositoryChangesAction' && input.action === 'terminal') {
                 const rootUri = vscode.Uri.parse(input.repositoryPath);
-                const terminalName = path.basename(rootUri.fsPath) || 'Gitk';
-                vscode.window.createTerminal({ name: `Gitk: ${terminalName}`, cwd: rootUri }).show();
+                const terminalName = path.basename(rootUri.fsPath) || 'FasterGit';
+                vscode.window.createTerminal({ name: `FasterGit: ${terminalName}`, cwd: rootUri }).show();
                 return;
             }
             if (input.type === 'repositoryChangesAction' && input.action === 'blur') {
@@ -2407,8 +2407,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     void vscode.window.showWarningMessage('请先选择一个仓库。');
                     break;
                 }
-                const terminalName = path.basename(rootUri.fsPath) || 'Gitk';
-                vscode.window.createTerminal({ name: `Gitk: ${terminalName}`, cwd: rootUri }).show();
+                const terminalName = path.basename(rootUri.fsPath) || 'FasterGit';
+                vscode.window.createTerminal({ name: `FasterGit: ${terminalName}`, cwd: rootUri }).show();
                 break;
             }
             case 'commitAction':

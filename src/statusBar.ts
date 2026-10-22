@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 
-// 状态栏管理: 通过 workspace 根目录 .git/HEAD 是否存在控制 Gitk 面板和状态栏显示
+// 状态栏管理: 通过 workspace 根目录 .git/HEAD 是否存在控制 FasterGit 面板和状态栏显示
 export class GitkStatusBar {
     private item: vscode.StatusBarItem;
     private repositoryStateListener?: vscode.Disposable;
@@ -33,7 +33,7 @@ export class GitkStatusBar {
             100
         );
         this.item.command = openCommand;
-        this.item.name = 'Gitk';
+        this.item.name = 'FasterGit';
         this.refreshWorkingTreeSummary();
         this.repositoryStateListener = onDidChangeRepositoryState(() => void this.refreshVisibility());
         this.workingTreeSummaryListener = onDidChangeWorkingTreeSummary(() => this.refreshWorkingTreeSummary());
@@ -45,7 +45,7 @@ export class GitkStatusBar {
         const repositoryDetails = repositories
             .map(repository => `${repository.label}: Merge ${repository.conflictCount} · Staged ${repository.stagedCount} · Unstaged ${repository.unstagedCount} · Untracked ${repository.untrackedCount}`)
             .join('\n');
-        this.item.tooltip = `打开 Gitk 提交图面板${repositoryDetails ? `\n${repositoryDetails}` : ''}`;
+        this.item.tooltip = `打开 FasterGit 提交图面板${repositoryDetails ? `\n${repositoryDetails}` : ''}`;
     }
 
     async initialize(): Promise<void> {

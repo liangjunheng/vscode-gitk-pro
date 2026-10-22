@@ -158,7 +158,7 @@ export class CommitPanel implements vscode.Disposable {
             this.publish();
             this.sendPendingFocus();
         } else if (data.type === 'rendered' && typeof data.cardCount === 'number') {
-            console.log('[Gitk][CommitPanel] rendered', {
+            console.log('[FasterGit][CommitPanel] rendered', {
                 timestamp: new Date().toISOString(),
                 cardCount: data.cardCount,
             });
@@ -219,7 +219,7 @@ export class CommitPanel implements vscode.Disposable {
                 data.untrackedPaths as string[],
             );
         } else if (data.type === 'error') {
-            console.error('[gitk-commit]', data.message);
+            console.error('[fastergit-commit]', data.message);
         }
     }
 
@@ -229,7 +229,7 @@ export class CommitPanel implements vscode.Disposable {
         const snapshot = this.snapshot;
         this.publishedSnapshot = snapshot;
         void this.panel.webview.postMessage({ type: 'snapshot', cards: snapshot.cards, displayMode: snapshot.displayMode })
-            .then(() => console.log('[Gitk][CommitPanel] snapshot posted', {
+            .then(() => console.log('[FasterGit][CommitPanel] snapshot posted', {
                 timestamp: new Date().toISOString(),
                 cardCount: snapshot.cards.length,
             }));

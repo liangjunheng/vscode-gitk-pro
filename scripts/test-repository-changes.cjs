@@ -1814,7 +1814,7 @@ async function verifyProvider() {
   provider.commitController.totalCommitList = [{ hash: 'clean-latest', message: 'latest clean commit', gitBranchOption: { repoOption: repositories[2] } }];
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', action: 'terminal', repositoryPath: repositories[1].path });
   assert.equal(terminals[0].cwd.toString(), repositories[1].path, 'child terminal cwd is independent of selected parent');
-  assert.equal(terminals[0].name, 'Gitk: child'); assert.equal(terminalShows, 1);
+  assert.equal(terminals[0].name, 'FasterGit: child'); assert.equal(terminalShows, 1);
   assert.equal(selections.length, 0, 'opening a terminal does not change selected repository');
   const savedHeads = provider.uncommittedFilesWatcher.listCurrentHeadBranches;
   provider.uncommittedFilesWatcher.listCurrentHeadBranches = () => [];

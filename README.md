@@ -1,23 +1,23 @@
 <div align="center">
-  <img src="media/gitk-logo.png" width="128" height="128" alt="Gitk Pro 图标">
+  <img src="media/fastergit-logo.png" width="128" height="128" alt="FasterGit 图标">
 
-# Gitk Pro
+# FasterGit
 
-**专注于 Git 历史浏览与变更管理的 VS Code 工作区。**
+**在 VS Code 底部面板中浏览 Git 历史、审查多文件差异、管理多仓库变更。**
 
-无需离开编辑器，即可查看提交拓扑、多文件差异，管理分支与标签，并处理已暂存和未暂存的更改。
+提交图、分支管理、多仓库提交和合并冲突处理集中在同一个面板里，本地仓库读写由内置 libgit2 原生模块完成。
 
-[![Visual Studio Marketplace](https://img.shields.io/visual-studio-marketplace/v/liangjunheng.vscode-gitk-pro?label=Marketplace&color=007ACC)](https://marketplace.visualstudio.com/items?itemName=liangjunheng.vscode-gitk-pro)
+[![Visual Studio Marketplace](https://img.shields.io/visual-studio-marketplace/v/liangjunheng.fastergit?label=Marketplace&color=007ACC)](https://marketplace.visualstudio.com/items?itemName=liangjunheng.fastergit)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE.txt)
-[![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.80.0-007ACC.svg)](https://code.visualstudio.com/)
+[![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.94.0-007ACC.svg)](https://code.visualstudio.com/)
 
 </div>
 
 ## 项目简介
 
-Gitk Pro 在 VS Code 底部面板中提供 Gitk 风格的提交图，并将历史浏览与日常 Git 操作整合在同一界面。插件会发现当前工作区中的仓库及已初始化子模块，绘制分支拓扑，并同步提交图、变更文件列表和多文件差异编辑器。
+FasterGit 在 VS Code 底部面板中绘制彩色泳道提交图，并把历史浏览、变更文件列表和多文件差异编辑器联动起来。插件会发现当前工作区中的仓库及已初始化子模块，在同一界面里完成日常 Git 操作，不需要在终端和多个视图之间来回切换。
 
-插件通过随扩展分发的原生 libgit2 后端完成仓库发现、历史读取、远程同步和写入操作，不启动 `git` 命令行进程，面向桌面版 VS Code 设计。
+本地仓库的发现、历史读取和写入由随扩展分发的 libgit2 原生模块完成。Fetch、Pull、Push、子模块更新以及继续或中止合并操作会调用系统 Git CLI，以复用你已有的凭据和网络配置。插件面向桌面版 VS Code 设计。
 
 ## 主要功能
 
@@ -26,42 +26,51 @@ Gitk Pro 在 VS Code 底部面板中提供 Gitk 风格的提交图，并将历�
 - 使用彩色泳道显示提交拓扑、合并路径、引用、作者、日期和短哈希。
 - 在工作区仓库与已初始化子模块之间切换。
 - 同时选择一个或多个本地或远程分支，查看组合后的提交历史。
-- 按哈希、父提交哈希、作者、邮箱、提交者、日期、标题、正文或引用名称搜索提交。
+- 按哈希、父提交哈希、作者、邮箱、提交者、日期、标题、正文或引用名称搜索提交，多个关键词用空格分隔。
 - 展开提交，查看完整提交信息和元数据。
 - 提交图刷新时保持当前可见提交的位置稳定。
 
 ### 变更文件与 Multi-Diff
 
-- 在一个 Multi-Diff 编辑器中查看某次提交涉及的全部文件。
+- 在一个 Multi-Diff 编辑器中查看某次提交涉及的全部文件，支持双栏和单栏两种显示。
 - 在平铺列表与目录树之间切换 Changed Files 的显示方式。
-- 从差异视图打开单个文件，并同步文件选中状态。
-- 使用编辑器标题栏按钮或 `F7`、`Shift+F7` 在差异之间导航。
-- 从 Changed Files 标题栏直接复制提交哈希。
+- 在整个 Multi-Diff 中搜索，使用 `F7`、`Shift+F7` 或编辑器标题栏按钮在差异之间导航。
+- 文件右键菜单支持打开文件、打开修改前或修改后的版本、在文件管理器或资源管理器视图中显示，以及复制文件路径。
+- 子模块指针（Gitlink）的变更会展示为可跳转到子模块提交的卡片。
 
-### 工作区变更
+### 工作区变更与 Commit Panel
 
-- 通过虚拟的 **Uncommitted Changes** 提交查看已暂存、未暂存和未跟踪文件。
-- 对单个文件或整个分区执行暂存、取消暂存和放弃更改。
-- 提交已暂存内容，或通过内置 `COMMIT_EDITMSG` 编辑流程执行 Amend。
+- 通过虚拟的 **Uncommitted Changes** 提交查看合并冲突、已暂存、未暂存和未跟踪文件。
+- 对单个文件或整个分区执行暂存、取消暂存和放弃更改；放弃未跟踪文件时默认移入回收站。
+- 打开 Commit Panel，在一个编辑器页面里按仓库卡片分别编写提交信息、管理 Staged 与 Unstaged 列表。
+- 提交已暂存内容，或通过内置 `COMMIT_EDITMSG` 编辑流程执行 Amend，并可从历史提交信息中选取。
 - 使用 `Ctrl+Enter` / `Cmd+Enter` 完成提交，使用 `Escape` 取消提交。
 
 ### 历史与仓库操作
 
 - 对选中的仓库执行 Fetch、Pull 和 Push。
-- 基于选中的提交创建分支或标签。
-- 对提交执行 Checkout、Cherry-pick、Revert 或 Reset。
+- 在提交上右键，执行 Checkout、Revert、Drop、Cherry-pick、Merge、Rebase 或 Reset，也可以基于该提交创建分支或添加标签。
+- 在选中仓库的根目录打开终端。
 - 通过文件系统监听同步仓库、HEAD、Index 和工作区状态。
+
+### 合并冲突
+
+- 仓库处于 Merge、Rebase、Cherry-pick 或 Revert 过程中时，可直接在界面上继续或中止当前操作。
+- 冲突文件以内嵌 Merge Editor 卡片的形式显示在 Multi-Diff 中，支持接受当前、传入或组合结果，并可保存后标记为已解决。
+- 子模块指针冲突同样可以在卡片中处理。
+
+### 状态栏
+
+当工作区包含 Git 仓库时，状态栏显示仓库数量，以及冲突、已暂存、未暂存和未跟踪文件的合计；悬停可查看每个仓库的明细，点击打开 FasterGit 面板。
 
 ## 快速开始
 
 1. 打开包含 Git 仓库的文件夹或工作区。
-2. 打开底部面板并选择 **Gitk**。
+2. 打开底部面板并选择 **FasterGit**，或从命令面板运行 **FasterGit: Open Panel**。
 3. 从仓库选择器中选择仓库或已初始化子模块。
 4. 选择需要查看历史的一个或多个分支。
 5. 选择提交，加载 Changed Files 列表和 Multi-Diff 视图。
-6. 选择 **Uncommitted Changes**，管理当前工作区变更。
-
-也可以从命令面板运行 **Gitk: Open Gitk Panel**。
+6. 选择 **Uncommitted Changes**，管理当前工作区变更；也可以运行 **FasterGit: Open Commit Panel** 同时处理多个仓库。
 
 ## 界面控件
 
@@ -75,12 +84,20 @@ Gitk Pro 在 VS Code 底部面板中提供 Gitk 风格的提交图，并将历�
 | Fetch / Pull / Push | 同步当前仓库 |
 | Tree / Flat | 切换 Changed Files 的目录树或平铺布局 |
 
+## 命令
+
+| 命令 | 功能 |
+| --- | --- |
+| `FasterGit: Open Panel` | 聚焦 FasterGit 底部面板 |
+| `FasterGit: Open Commit Panel` | 打开多仓库 Commit Panel |
+
 ## 快捷键
 
 | 快捷键 | 使用场景 | 功能 |
 | --- | --- | --- |
-| `F7` | Gitk Multi-Diff | 下一个差异 |
-| `Shift+F7` | Gitk Multi-Diff | 上一个差异 |
+| `Ctrl+F` / `Cmd+F` | FasterGit Multi-Diff | 搜索整个 Multi-Diff |
+| `F7` | FasterGit Multi-Diff | 下一个差异 |
+| `Shift+F7` | FasterGit Multi-Diff | 上一个差异 |
 | `Ctrl+Enter` / `Cmd+Enter` | `COMMIT_EDITMSG` | 完成提交 |
 | `Escape` | `COMMIT_EDITMSG` | 取消提交 |
 
@@ -89,7 +106,11 @@ Gitk Pro 在 VS Code 底部面板中提供 Gitk 风格的提交图，并将历�
 | 设置项 | 可选值 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `vscode-gitk.changedFilesDisplayMode` | `tree`、`flat` | `flat` | 控制 Changed Files 的布局。工具栏切换操作会写入 VS Code 全局用户设置。 |
+| `vscode-gitk.multiDiffRenderSideBySide` | `true`、`false` | `true` | Multi-Diff 面板是否使用双栏模式显示差异。 |
+| `vscode-gitk.discardUntrackedChangesToTrash` | `true`、`false` | `true` | 还原未跟踪文件时移入回收站，而不是永久删除。回收站不可用的环境（远程、Snap）始终永久删除。 |
 | `vscode-gitk.useSystemProxy` | `true`、`false` | `true` | 远程 Git 操作使用 VS Code `http.proxy`，或 Windows 用户级系统 HTTP/HTTPS 代理及 bypass 列表。 |
+
+设置项和命令 ID 仍沿用 `vscode-gitk.` 前缀，已有的用户配置和快捷键绑定不会失效。
 
 ## 运行要求
 

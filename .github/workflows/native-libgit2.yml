@@ -39,7 +39,7 @@ jobs:
         shell: bash
         run: |
           version="$(node -p "require('./package.json').version")"
-          output="vscode-gitk-pro-${version}.vsix"
+          output="fastergit-${version}.vsix"
           npx vsce package -o "$output"
           echo "output=$output" >> "$GITHUB_OUTPUT"
       - name: Test the build-host native module
@@ -63,7 +63,7 @@ jobs:
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
-          name: vscode-gitk-pro-universal
+          name: fastergit-universal
           path: ${{ steps.package.outputs.output }}
           if-no-files-found: error
 

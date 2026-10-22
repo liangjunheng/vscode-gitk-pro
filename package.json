@@ -1,7 +1,7 @@
 {
-  "name": "vscode-gitk-pro",
-  "displayName": "Gitk Pro",
-  "description": "Explore Git history, multi-file diffs, branches, and working-tree changes in a Gitk-style panel",
+  "name": "fastergit",
+  "displayName": "FasterGit",
+  "description": "Git history graph, multi-file diffs, branch management, multi-repository commits, and merge conflict resolution for VS Code, backed by a built-in libgit2 module.",
   "version": "1.5.9",
   "publisher": "liangjunheng",
   "license": "MIT",
@@ -17,7 +17,7 @@
   "enabledApiProposals": [
     "contribEditorContentMenu"
   ],
-  "icon": "media/gitk-logo.png",
+  "icon": "media/fastergit-logo.png",
   "main": "./out/extension.js",
   "extensionKind": [
     "workspace"
@@ -40,7 +40,7 @@
       }
     ],
     "configuration": {
-      "title": "Gitk",
+      "title": "FasterGit",
       "properties": {
         "vscode-gitk.changedFilesDisplayMode": {
           "type": "string",
@@ -66,7 +66,7 @@
           "type": "boolean",
           "default": true,
           "scope": "application",
-          "description": "Gitk Diff 面板是否使用双栏模式显示差异"
+          "description": "FasterGit Diff 面板是否使用双栏模式显示差异"
         },
         "vscode-gitk.discardUntrackedChangesToTrash": {
           "type": "boolean",
@@ -85,70 +85,70 @@
     "commands": [
       {
         "command": "vscode-gitk.open",
-        "title": "Open Gitk Panel",
-        "category": "Gitk"
+        "title": "Open Panel",
+        "category": "FasterGit"
       },
       {
         "command": "vscode-gitk.openCommitPanel",
         "title": "Open Commit Panel",
-        "category": "Gitk",
+        "category": "FasterGit",
         "icon": "$(git-commit)"
       },
       {
         "command": "vscode-gitk.selectCommit",
         "title": "Select Commit",
-        "category": "Gitk",
+        "category": "FasterGit",
         "enablement": "false"
       },
       {
         "command": "vscode-gitk.multiDiff.previousChange",
         "title": "上一个差异",
-        "category": "Gitk",
+        "category": "FasterGit",
         "icon": "$(arrow-up)",
         "enablement": "activeWebviewPanelId == vscode-gitk.multiDiff && gitk:multiDiffCanNavigatePrevious"
       },
       {
         "command": "vscode-gitk.multiDiff.nextChange",
         "title": "下一个差异",
-        "category": "Gitk",
+        "category": "FasterGit",
         "icon": "$(arrow-down)",
         "enablement": "activeWebviewPanelId == vscode-gitk.multiDiff && gitk:multiDiffCanNavigateNext"
       },
       {
         "command": "vscode-gitk.multiDiff.search",
         "title": "搜索整个 MultiDiff",
-        "category": "Gitk",
+        "category": "FasterGit",
         "icon": "$(search)",
         "enablement": "activeWebviewPanelId == vscode-gitk.multiDiff"
       },
       {
         "command": "vscode-gitk.multiDiff.useInlineView",
         "title": "当前：双栏模式（切换到单栏）",
-        "category": "Gitk",
+        "category": "FasterGit",
         "icon": "$(layout-centered)"
       },
       {
         "command": "vscode-gitk.multiDiff.useSideBySideView",
         "title": "当前：单栏模式（切换到双栏）",
-        "category": "Gitk",
+        "category": "FasterGit",
         "icon": "$(layout-centered)"
       },
       {
         "command": "vscode-gitk.commitEditMsg.history",
         "title": "历史提交信息",
-        "category": "Gitk",
+        "category": "FasterGit",
         "icon": "$(history)"
       },
       {
         "command": "vscode-gitk.commitEditMsg.complete",
         "title": "Commit",
-        "category": "Gitk",
+        "category": "FasterGit",
         "icon": "$(check)"
       },
       {
         "command": "vscode-gitk.commitEditMsg.cancel",
         "title": "Close",
-        "category": "Gitk",
+        "category": "FasterGit",
         "icon": "$(close)"
       }
     ],
@@ -156,8 +156,8 @@
       "panel": [
         {
           "id": "vscode-gitk",
-          "title": "Gitk",
-          "icon": "media/gitk-sidebar.png"
+          "title": "FasterGit",
+          "icon": "media/fastergit-sidebar.png"
         }
       ]
     },
@@ -166,9 +166,9 @@
         {
           "type": "webview",
           "id": "vscode-gitk.panelView",
-          "name": "Gitk",
-          "icon": "media/gitk-sidebar.png",
-          "contextualTitle": "Gitk"
+          "name": "FasterGit",
+          "icon": "media/fastergit-sidebar.png",
+          "contextualTitle": "FasterGit"
         }
       ]
     },

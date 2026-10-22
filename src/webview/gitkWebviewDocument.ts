@@ -24,7 +24,7 @@ export function renderGitkWebviewHtml(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Gitk</title>
+<title>FasterGit</title>
 <link rel="stylesheet" href="${codiconCssUri}">
 <style>
   ${setiFontFace}

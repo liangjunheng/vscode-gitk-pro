@@ -87,7 +87,7 @@ export class MultiDiffPanel implements vscode.Disposable {
         const isNewPanel = !this.panel;
         this.ensurePanel();
         // 标题仅在提交变化时更新, 避免重复写入面板属性。
-        const title = `${commitTitle || 'Gitk Diff'} (${hash.slice(0, 8)})`;
+        const title = `${commitTitle || 'FasterGit Diff'} (${hash.slice(0, 8)})`;
         if (this.panel!.title !== title) { this.panel!.title = title; }
         this.panel!.reveal(this.panel!.viewColumn ?? vscode.ViewColumn.Active, false);
         // 已渲染的面板只做定位，避免重建全部 Monaco 编辑器；卡片重建仅由 Store 快照驱动。
@@ -169,7 +169,7 @@ export class MultiDiffPanel implements vscode.Disposable {
         const mediaRoot = vscode.Uri.joinPath(vscode.Uri.file(__dirname), '..', '..', 'media');
         const monacoRoot = vscode.Uri.joinPath(mediaRoot, 'monaco');
         const codiconsRoot = vscode.Uri.joinPath(mediaRoot, 'codicons');
-        this.panel = vscode.window.createWebviewPanel('vscode-gitk.multiDiff', 'Gitk Diff', vscode.ViewColumn.Active, {
+        this.panel = vscode.window.createWebviewPanel('vscode-gitk.multiDiff', 'FasterGit Diff', vscode.ViewColumn.Active, {
             enableScripts: true,
             retainContextWhenHidden: true,
             localResourceRoots: [monacoRoot, codiconsRoot],
@@ -240,9 +240,9 @@ export class MultiDiffPanel implements vscode.Disposable {
                 // Diff 卡片与行号渲染完成, 通知 Provider 放行 Changed Files 列表。
                 this.onRendered?.(identity);
             } else if (message?.type === 'error') {
-                console.error('[gitk-multi-diff]', message.message);
+                console.error('[fastergit-multi-diff]', message.message);
             } else if (message?.type === 'log') {
-                console.log('[gitk-multi-diff]', message.message);
+                console.log('[fastergit-multi-diff]', message.message);
             }
         });
         // 面板被关闭后不会再有渲染完成信号, 通知 Provider 兜底放行 Changed Files 列表。
