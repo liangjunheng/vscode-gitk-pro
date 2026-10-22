@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { bindings, detectNativeTarget } = require('./native-targets.cjs');
+const { prepareBuildWorkspace, prepareLibgit2Patch, libgit2PatchConfig } = require('./prepare-libgit2-darwin-patch.cjs');
 
 const forwardedArgs = process.argv.slice(2);
 let target;
@@ -25,7 +26,11 @@ if (!Object.hasOwn(bindings, target)) {
 }
 
 const root = path.resolve(__dirname, '..');
-const output = path.join(root, 'lib', target);
+const manifest = path.join(root, 'native', 'git2-backend', 'Cargo.toml');
+const patch = prepareLibgit2Patch(manifest);
+const buildManifest = prepareBuildWorkspace(root, target);
+// Keep NAPI's filesystem transaction outside the delivered module directory.
+const output = path.join(path.dirname(buildManifest), '..', 'output');
 fs.mkdirSync(output, { recursive: true });
 
 
@@ -39,10 +44,13 @@ const args = [
   '--no-js',
   '--release',
   '--manifest-path',
-  path.join(root, 'native', 'git2-backend', 'Cargo.toml'),
+  buildManifest,
+  '--target-dir',
+  process.env.CARGO_TARGET_DIR || path.join(root, 'native', 'git2-backend', 'target'),
   '-o',
   output,
   ...forwardedArgs,
+  '--', '--config', libgit2PatchConfig(patch),
 ];
 const result = spawnSync(process.execPath, args, {
   cwd: root,
@@ -63,4 +71,23 @@ const matches = bindings[target].filter(name => actual.includes(name));
 if (actual.length !== 1 || matches.length !== 1) {
   throw new Error(`${target} build must produce exactly one of ${bindings[target].join(' or ')}, found: ${actual.join(', ') || '(none)'}`);
 }
-console.log(`${target}: ${path.relative(root, path.join(output, matches[0]))}`);
+const destination = path.join(root, 'lib', target, matches[0]);
+fs.mkdirSync(path.dirname(destination), { recursive: true });
+try {
+  fs.copyFileSync(path.join(output, matches[0]), destination);
+} catch (error) {
+  if (process.platform !== 'win32' || !['EBUSY', 'EPERM'].includes(error.code)
+      || !fs.existsSync(destination)) throw error;
+  // A running Extension Host can keep the old image mapped. Rename that exact
+  // file into the generated cache; never terminate the editor or discard it.
+  const previous = path.join(output, `previous-${Date.now()}.backup`);
+  fs.renameSync(destination, previous);
+  try {
+    fs.copyFileSync(path.join(output, matches[0]), destination);
+  } catch (copyError) {
+    fs.renameSync(previous, destination);
+    throw copyError;
+  }
+  console.log(`native: retained loaded module at ${previous}; reload the Extension Host to use the new build`);
+}
+console.log(`${target}: ${path.relative(root, destination)}`);

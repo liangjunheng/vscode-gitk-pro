@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { type AppState, type ChangeSetMode, type ChangedFile, GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
-import { defaultPushTarget, getCloudCommits, getCommitFiles, getCurrentGitHeadHash, getGitAheadBehind, getGitAheadCount, getGitBranches, getGitlinkPathsInCommit, getPushPlan, type PushSourceBranch, type PushTargetOption, readCurrentCommitMessage } from '../git/gitLogProvider';
+import { defaultPushTarget, getCloudCommits, getCommitFiles, getStashes, getStashFiles, type StashEntry, getCurrentGitHeadHash, getGitAheadBehind, getGitAheadCount, getGitBranches, getGitlinkPathsInCommit, getPushPlan, type PushSourceBranch, type PushTargetOption, readCurrentCommitMessage } from '../git/gitLogProvider';
 import { checkoutBranch, checkoutRemoteBranch, commitDetails, fetchRemotes, hasConflicts, indexGitlink, pull, push, rangeCommits, resolveRevision, restoreAll, restoreSubmodule, trackedPaths, type NativeCommitDetails, type NativePushResult } from '../git/gitNativeOperations';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { FILE_CONTEXT_MENU_ACTIONS } from './fileContextMenu';
@@ -14,6 +14,7 @@ import { renderGitkWebviewHtml } from './gitkWebviewDocument';
 import { commitWithMessage } from '../git/gitCommitService';
 import { DiffReader } from '../git/diffReader';
 import { LibGit2Backend } from '../git/libGit2Backend';
+import type { StashScope } from '../git/gitBackend';
 import { GitCommitEditMsgEditor } from './gitCommitEditMsgEditor';
 import { GitActionRunner } from '../services/gitActions';
 import { confirmPush, confirmSync, describePushRow, pickPushTarget, pickPushTargets, showPushResult, type PushConfirmRow } from '../services/pushDialogs';
@@ -103,6 +104,67 @@ function workingTreeChangeCount(changes: WorkingTreeChanges): number {
     ]).size;
 }
 
+
+type WorkingTreeMutationProjection = {
+    readonly changes: WorkingTreeChanges;
+    readonly verificationPaths: readonly string[];
+};
+
+function projectUnstageChanges(
+    before: WorkingTreeChanges,
+    paths: readonly string[],
+): WorkingTreeMutationProjection {
+    const selected = new Set(paths);
+    const stagedByPath = new Map(before.staged.map(file => [file.path, file]));
+    const unstagedByPath = new Map(before.changes.map(file => [file.path, file]));
+    const staged = before.staged.filter(file => !selected.has(file.path));
+    const changes = before.changes.filter(file => !selected.has(file.path));
+    const verificationPaths: string[] = [];
+    for (const filePath of selected) {
+        const file = stagedByPath.get(filePath);
+        const hasUnstagedHalf = unstagedByPath.has(filePath);
+        const canProject = file
+            && !hasUnstagedHalf
+            && !file.isConflict
+            && !file.isGitlink
+            && !file.oldPath
+            && (file.status === 'M' || file.status === 'A' || file.status === 'D');
+        if (!canProject) {
+            verificationPaths.push(filePath);
+            continue;
+        }
+        changes.push(new CommitFile({
+            ...file,
+            isUntracked: file.status === 'A',
+            isConflict: false,
+            workingTreeKind: undefined,
+            diffKey: undefined,
+        }));
+    }
+    staged.sort((left, right) => left.path.localeCompare(right.path));
+    changes.sort((left, right) => left.path.localeCompare(right.path));
+    return {
+        changes: new WorkingTreeChanges({ staged, changes }),
+        verificationPaths,
+    };
+}
+
+function projectStashChanges(
+    before: WorkingTreeChanges,
+    paths: readonly string[],
+    scope: StashScope,
+    skippedGitlinks: readonly string[],
+): WorkingTreeChanges {
+    const skipped = new Set(skippedGitlinks);
+    const removed = new Set(paths.filter(filePath => !skipped.has(filePath)));
+    return new WorkingTreeChanges({
+        staged: scope === 'unstaged'
+            ? [...before.staged]
+            : before.staged.filter(file => !removed.has(file.path)),
+        changes: before.changes.filter(file => !removed.has(file.path)),
+    });
+}
+
 /** 每个仓库记录的推送目标; 源分支随每次读取的 HEAD 变化, 不缓存。 */
 type StoredPushTarget = PushTargetOption;
 
@@ -168,6 +230,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private readonly behindCommitCountByRepository = new Map<string, number>();
     /** 每个仓库当前分支 HEAD..upstream 的云端提交(最新在前), 与 behind 计数同源同刷新。 */
     private readonly cloudCommitsByRepository = new Map<string, readonly CommitMetadata[]>();
+    /** 每个仓库的全部 stash(最新在前)。刷新由 refs/stash 监听、stash 操作和手动刷新触发。 */
+    private readonly stashesByRepository = new Map<string, readonly StashEntry[]>();
+    private readonly stashLoadingByRepository = new Map<string, number>();
+    private stashLoadsInFlight?: Map<string, { dirty: boolean; promise: Promise<void> }>;
+    /** Commit 列表是否显示 stash；构造时从 fastergit.showStashes 读取，按钮切换后写回全局设置。 */
+    private showStashes = false;
     private readonly repositorySyncKeyByRepository = new Map<string, string>();
     private readonly repositorySyncStateLoadingByHead = new Set<string>();
     private readonly repositorySyncRevisionByRepository = new Map<string, number>();
@@ -228,7 +296,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     // 分支相关 UI loading 快照只由 onBranchesLoadingChanged 写入。
     private branchesLoadingSnapshot = false;
     private readonly workingTreeActionQueue: Array<{
-        action: 'stage' | 'unstage' | 'discard';
+        action: 'stage' | 'unstage' | 'discard' | 'stash' | 'stashApply' | 'stashPop';
+        /** 仅 stash: 要创建的 stash 范围。 */
+        stashScope?: StashScope;
+        /** 仅 stashApply/stashPop: 目标 stash 的提交 hash(序号会随其他 stash 操作移位，hash 才稳定)。 */
+        stashHash?: string;
         section: 'conflict' | 'staged' | 'unstaged';
         paths: string[];
         untrackedPaths: ReadonlySet<string>;
@@ -416,6 +488,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             ...commit,
             key: `${commit.gitBranchOption?.repoOption.path ?? ''}:${commit.hash}`,
         }));
+        // 基线不在已加载列表里、没能穿插进图的 stash 数量(跨已选仓库汇总), 用于开关按钮的提示。
+        const hiddenStashCount = selectedRepositoryPaths.reduce(
+            (sum, repositoryPath) => sum + (this.commitController.hiddenStashCounts.get(repositoryPath) ?? 0), 0);
         // 云端提交: 每个已选仓库当前分支 HEAD..upstream 各一组; 数量取 behind(与同步按钮同源), 条目可能因上限少于数量。
         // 搜索结果不展示拓扑, 云端提交也不混入搜索。
         const cloudGroups = searchKeywords.length > 0 ? [] : this.repositories.filter(repository => selectedRepositoryPaths.includes(repository.path)).flatMap(repository => {
@@ -458,6 +533,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 commits,
                 showCommitLanes: searchKeywords.length === 0,
                 cloudGroups,
+                showStashes: this.showStashes,
+                hiddenStashCount,
                 workingTreeRows,
                 uncommittedRepositoryCount: this.countUncommittedRepositories(s.commitRepositories),
                 repositoryCardDisplayLocks: this.repositoryCardDisplayLocks ? [...this.repositoryCardDisplayLocks] : [],
@@ -518,7 +595,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 loadingMessage: commitListLoadingMessage,
             },
         });
-        this.repositories.forEach(repository => { void this.loadRepositorySyncState(repository.path); });
+        this.repositories.forEach(repository => {
+            void this.loadRepositorySyncState(repository.path);
+            void this.loadRepositoryStashes(repository.path);
+        });
     }
 
     private get selectedRepositoryPath(): string | undefined {
@@ -529,7 +609,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         private readonly context: vscode.ExtensionContext,
         commitEditMsgEditor: GitCommitEditMsgEditor,
     ) {
-        this.displayMode = vscode.workspace.getConfiguration('fastergit').get<'tree' | 'flat'>('changedFilesDisplayMode', 'flat');
+        const configuration = vscode.workspace.getConfiguration('fastergit');
+        this.displayMode = configuration.get<'tree' | 'flat'>('changedFilesDisplayMode', 'flat');
+        this.showStashes = configuration.get<boolean>('showStashes', true);
         for (const [repositoryPath, target] of Object.entries(this.context.workspaceState.get<Record<string, StoredPushTarget>>('lastPushedTargets', {}))) {
             this.lastPushedTargetByRepository.set(repositoryPath, target);
         }
@@ -556,6 +638,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.uncommittedFilesWatcher,
             this.gitBackend,
         );
+        // Controller 默认关闭；在首次读取提交之前应用用户保存的选择，避免先发布无 stash 的图再闪烁重建。
+        this.commitController.setStashesVisible(this.showStashes);
         // Diff 面板顶部卡片变化时回写 selectedPath，驱动 Changed Files 高亮。
         this.mergeEditorSessions = new MergeEditorSessions(async repositoryPath => {
             await this.uncommittedFilesWatcher.refreshHeadBranch(repositoryPath);
@@ -621,12 +705,24 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             // 保持 selectedRepoSubscription 在构造阶段的订阅顺序；不要移到 Controller 创建之后。
             this.selectedRepoSubscription,
             this.reposLoadingSubscription,
+            this.repoHeadBranchWatcher.onEachRepoStashChanged(event => {
+                void this.loadRepositoryStashes(event.repositoryPath, true);
+            }),
             this.repoHeadBranchWatcher.onEachRepoRemoteRefsChanged(event => {
                 // 外部 fetch 只改写 refs/remotes/*, 不会触发 HEAD 事件; 仅刷新对应卡片的 ahead/behind。
                 this.invalidateRepositorySyncState([event.repositoryPath]);
                 void this.loadRepositorySyncState(event.repositoryPath);
             }),
             this.repoController.ontotalRepoListChanged(repositories => {
+                const known = new Set(repositories.map(repository => repository.path));
+                for (const cached of [...this.stashesByRepository.keys()]) {
+                    if (!known.has(cached)) {
+                        this.stashesByRepository.delete(cached);
+                        this.stashLoadingByRepository.delete(cached);
+                        this.stashLoadsInFlight?.delete(cached);
+                        this.commitController.forgetStashes(cached);
+                    }
+                }
                 this.totalRepoListSnapshot = [...repositories];
                 this.onDidChangeRepositoryStateEmitter.fire();
                 this.view?.webview.postMessage({
@@ -661,9 +757,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.commitController.onTotalCommitsChanged(() => {
                 const pendingPath = this.pendingRepositoryChangesDefaultPath;
                 if (pendingPath) {
-                    const latest = this.commitController.totalCommitList.find(commit =>
-                        commit.gitBranchOption?.repoOption.path === pendingPath,
-                    );
+                    const latest = this.commitController.latestCommitOf(pendingPath);
                     if (latest) {
                         this.pendingRepositoryChangesDefaultPath = undefined;
                         this.commitController.selectCommit(latest);
@@ -691,10 +785,20 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.schedulePushState();
             }),
             vscode.workspace.onDidChangeConfiguration(event => {
-                if (!event.affectsConfiguration('fastergit.changedFilesDisplayMode')) { return; }
-                // scope 为 application, 生效值只来自 Global, 与 update() 的写入目标一致, 回读值必然等于刚写入值。
-                this.displayMode = vscode.workspace.getConfiguration('fastergit').get<'tree' | 'flat'>('changedFilesDisplayMode', 'flat');
-                if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
+                const configuration = vscode.workspace.getConfiguration('fastergit');
+                if (event.affectsConfiguration('fastergit.changedFilesDisplayMode')) {
+                    // scope 为 application, 生效值只来自 Global, 与 update() 的写入目标一致, 回读值必然等于刚写入值。
+                    this.displayMode = configuration.get<'tree' | 'flat'>('changedFilesDisplayMode', 'flat');
+                    if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
+                }
+                if (event.affectsConfiguration('fastergit.showStashes')) {
+                    const visible = configuration.get<boolean>('showStashes', true);
+                    if (this.showStashes !== visible) {
+                        this.showStashes = visible;
+                        this.commitController.setStashesVisible(visible);
+                        this.schedulePushState();
+                    }
+                }
             }),
         );
         context.subscriptions.push(
@@ -1249,6 +1353,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     /** 每个仓库仅首次以当前项目中最新已加载的提交信息填充，之后完全由卡片输入状态接管。 */
     private initializeCommitMessagesFromProjectHistory(): void {
         for (const commit of this.commits) {
+            if (commit.isStash) { continue; }
             const repositoryPath = commit.gitBranchOption?.repoOption.path;
             // rawMessage 取自 git log %B, 是未经拆分/裁剪的原始提交信息, 原样还原用户当时的输入。
             const message = (commit.rawMessage ?? commit.message).replace(/\s+$/, '');
@@ -1455,11 +1560,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             && changes.changes.length === 0) {
             // The virtual row is now disabled. Do not leave it selected: move the
             // foreground back to this repository's newest history entry.
-            const latest = this.commitController.totalCommitList.find(commit =>
-                commit.gitBranchOption?.repoOption.path === selectedBranch.repoOption.path,
-            ) ?? this.commitController.searchedCommitList.find(commit =>
-                commit.gitBranchOption?.repoOption.path === selectedBranch.repoOption.path,
-            );
+            const latest = this.commitController.latestCommitOf(selectedBranch.repoOption.path);
             if (latest) {
                 this.commitController.selectCommit(latest);
                 store.setState({ workingTreeRows });
@@ -1776,6 +1877,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             } catch (error) {
                 console.warn(`无法刷新未提交文件: ${repositoryPath}`, error);
             }
+            // 手动刷新同时重读 stash: 文件监听在个别环境可能漏事件, 刷新按钮是兜底。
+            await this.loadRepositoryStashes(repositoryPath, true);
         };
         this.viewDataRefresh = Promise.resolve().then(async () => {
             const repositoryPaths = this.repositories.map(repository => repository.path);
@@ -1978,6 +2081,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             if (!branch) { return; }
             if (input.action === 'syncRefresh') {
                 await this.runCommitPanelPush([input.repositoryPath], true, false, true);
+                return;
+            }
+            if (input.action === 'stash') {
+                if (input.section !== 'staged' && input.section !== 'unstaged') { return; }
+                await this.runStashAction(input.repositoryPath, input.section);
                 return;
             }
             if (!['stage', 'unstage', 'discard'].includes(input.action)
@@ -2190,9 +2298,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 }
                 return;
             }
-            const latest = this.commitController.totalCommitList.find(commit =>
-                commit.gitBranchOption?.repoOption.path === repositoryPath,
-            );
+            const latest = this.commitController.latestCommitOf(repositoryPath);
             if (latest) {
                 this.pendingGitlinkWorktreeSnapshot = undefined;
                 this.commitController.selectCommit(latest);
@@ -2435,7 +2541,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             }
             case 'commitAction':
                 if (typeof effect.action === 'string' && typeof effect.hash === 'string' && typeof effect.repositoryPath === 'string') {
-                    this.gitActions.runCommitAction(effect.action, effect.hash, effect.repositoryPath);
+                    if (effect.action === 'stashApply' || effect.action === 'stashPop' || effect.action === 'stashDrop') {
+                        void this.runStashCommitAction(effect.action, effect.hash, effect.repositoryPath);
+                    } else if (effect.action === 'copyHash' || !this.isStashHash(effect.hash, effect.repositoryPath)) {
+                        // stash 提交不是历史提交: checkout / revert / reset 等对它没有意义，过期的菜单消息也不执行；只放行复制 hash。
+                        this.gitActions.runCommitAction(effect.action, effect.hash, effect.repositoryPath);
+                    }
                 }
                 break;
             case 'selectCommit':
@@ -2482,6 +2593,19 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             case 'workingTreeAction':
                 void this.runWorkingTreeAction(effect.action, effect.section, effect.path, undefined, effect.paths);
                 break;
+            case 'toggleStashes': {
+                const visible = typeof effect.visible === 'boolean' ? effect.visible : !this.showStashes;
+                this.showStashes = visible;
+                this.commitController.setStashesVisible(visible);
+                this.schedulePushState();
+                // application + Global: 跟随用户/profile，而不是某个仓库；下次打开视图或重启 VS Code 时直接恢复。
+                void vscode.workspace.getConfiguration('fastergit').update(
+                    'showStashes',
+                    visible,
+                    vscode.ConfigurationTarget.Global,
+                );
+                break;
+            }
             case 'workingTreeCommit':
                 if (typeof effect.action === 'string'
                     && typeof effect.repositoryPath === 'string'
@@ -2529,7 +2653,62 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     private findCommit(hash: string, repositoryPath: string): CommitMetadata | undefined {
-        return this.commitController.findCommit(hash, repositoryPath) ?? this.findCloudCommit(hash, repositoryPath);
+        return this.commitController.findCommit(hash, repositoryPath)
+            ?? this.findCloudCommit(hash, repositoryPath)
+            ?? this.findStashCommit(hash, repositoryPath);
+    }
+
+    /** stash 提交不在任何提交列表里；像云端提交一样合成一个挂在当前分支上的 CommitMetadata，才能被选中。 */
+    private findStashCommit(hash: string, repositoryPath: string): CommitMetadata | undefined {
+        const stash = this.stashesByRepository.get(repositoryPath)?.find(entry => entry.hash === hash);
+        if (!stash) { return undefined; }
+        const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+            .find(candidate => candidate.repoOption.path === repositoryPath)
+            ?? this.branchesController.getCurrentBranch(this.repositories.find(repository => repository.path === repositoryPath)!);
+        return new CommitMetadata({ ...stash, gitBranchOption: branch });
+    }
+
+    private isStashHash(hash: string, repositoryPath: string): boolean {
+        return this.stashesByRepository.get(repositoryPath)?.some(entry => entry.hash === hash) === true;
+    }
+
+    /** Coalesce overlapping refreshes, but re-read if invalidated during I/O. */
+    private async loadRepositoryStashes(repositoryPath: string, force = false): Promise<void> {
+        const rootUri = this.getRepoRootUri(repositoryPath);
+        if (!rootUri) { return; }
+        if (!force && this.stashesByRepository.has(repositoryPath)) { return; }
+        const loads = this.stashLoadsInFlight ??= new Map();
+        const pending = loads.get(repositoryPath);
+        if (pending) {
+            pending.dirty ||= force;
+            return pending.promise;
+        }
+        const request = { dirty: false, promise: Promise.resolve() };
+        loads.set(repositoryPath, request);
+        request.promise = (async () => {
+            do {
+                // Collapse same-turn watcher/explicit requests before starting I/O.
+                await Promise.resolve();
+                request.dirty = false;
+                const generation = (this.stashLoadingByRepository.get(repositoryPath) ?? 0) + 1;
+                this.stashLoadingByRepository.set(repositoryPath, generation);
+                const stashes = await getStashes(rootUri);
+                if (loads.get(repositoryPath) !== request
+                    || this.stashLoadingByRepository.get(repositoryPath) !== generation) { return; }
+                if (request.dirty) { continue; }
+                const previous = this.stashesByRepository.get(repositoryPath);
+                this.stashesByRepository.set(repositoryPath, stashes);
+                const unchanged = previous !== undefined
+                    && previous.length === stashes.length
+                    && previous.every((entry, index) => entry.hash === stashes[index].hash && entry.stashIndex === stashes[index].stashIndex);
+                if (unchanged) { return; }
+                this.commitController.setStashes(repositoryPath, stashes);
+                this.schedulePushState();
+            } while (request.dirty);
+        })().finally(() => {
+            if (loads.get(repositoryPath) === request) { loads.delete(repositoryPath); }
+        });
+        return request.promise;
     }
 
     /**
@@ -2894,7 +3073,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         // 同一条信息只保留首次出现(列表按时间倒序, 即最新一条)。
         const history = new Map<string, { shortHash: string; subject: string; message: string }>();
         for (const commit of this.commitController.totalCommitList) {
-            if (commit.gitBranchOption?.repoOption.path !== repositoryPath) { continue; }
+            if (commit.isStash || commit.gitBranchOption?.repoOption.path !== repositoryPath) { continue; }
             const message = (commit.rawMessage ?? commit.message).replace(/\s+$/, '');
             if (!message || history.has(message)) { continue; }
             history.set(message, { shortHash: commit.shortHash, subject: commit.message.trim(), message });
@@ -3265,11 +3444,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     private selectLatestCommitForRepository(repositoryPath: string): void {
-        const latest = this.commitController.totalCommitList.find(commit =>
-            commit.gitBranchOption?.repoOption.path === repositoryPath,
-        ) ?? this.commitController.searchedCommitList.find(commit =>
-            commit.gitBranchOption?.repoOption.path === repositoryPath,
-        );
+        const latest = this.commitController.latestCommitOf(repositoryPath);
         if (latest) {
             this.commitController.selectCommit(latest);
         }
@@ -3285,11 +3460,16 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
 
     private async runCommitPanelWorkingTreeAction(
         repositoryPath: string,
-        action: 'stage' | 'unstage' | 'discard',
+        action: 'stage' | 'unstage' | 'discard' | 'stash',
         section: 'conflict' | 'staged' | 'unstaged',
         paths: readonly string[],
         untrackedPaths: readonly string[],
     ): Promise<void> {
+        if (action === 'stash') {
+            // stash 范围由分组决定，不使用界面上传来的路径；以最新快照为准。
+            if (section !== 'conflict') { await this.runStashAction(repositoryPath, section); }
+            return;
+        }
         if (paths.length === 0 || (section === 'conflict' && action !== 'stage')) { return; }
         const rootUri = this.getRepoRootUri(repositoryPath);
         if (!rootUri) { return; }
@@ -3344,7 +3524,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         repositoryPath?: string,
         selectedPaths?: unknown,
     ): Promise<void> {
-        if ((action !== 'stage' && action !== 'unstage' && action !== 'discard')
+        if ((action !== 'stage' && action !== 'unstage' && action !== 'discard' && action !== 'stash')
             || (section !== 'conflict' && section !== 'staged' && section !== 'unstaged')
             || (section === 'conflict' && action !== 'stage')
             || (filePath !== undefined && typeof filePath !== 'string')
@@ -3355,6 +3535,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (!targetRepositoryPath) { return; }
         const rootUri = this.getRepoRootUri(targetRepositoryPath);
         if (!rootUri) { return; }
+        if (action === 'stash') {
+            if (section === 'conflict') { return; }
+            await this.runStashAction(targetRepositoryPath, section);
+            return;
+        }
         // 当前选中仓库用共用的 Store 清单; 其余 Commit 卡片仓库向 watcher 取各自清单。
         const useStore = targetRepositoryPath === this.commitController.uncommittedRepositoryPath;
         const branch = this.branches.find(b => b.kind === 'current' && b.repoOption.path === targetRepositoryPath);
@@ -3402,6 +3587,118 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             rootUri,
             gitlinkPaths,
             affectedSubmoduleRepositoryPaths: [...affectedSubmoduleRepositoryPaths],
+        });
+        void this.processWorkingTreeActionQueue();
+    }
+
+    /**
+     * stash 行右键菜单: apply / pop / drop。
+     * - apply、pop 会改写工作区和索引，进入工作区操作队列(与暂存、还原串行，并复用变更监听的刷新协调)；
+     * - drop 只删除条目、不碰工作区，确认后直接执行。
+     * stash 用提交 hash 定位: 弹窗期间别处可能已增删 stash，序号不可靠。
+     */
+    private async runStashCommitAction(action: 'stashApply' | 'stashPop' | 'stashDrop', hash: string, repositoryPath: string): Promise<void> {
+        const rootUri = this.getRepoRootUri(repositoryPath);
+        if (!rootUri) { return; }
+        const stash = this.stashesByRepository.get(repositoryPath)?.find(entry => entry.hash === hash);
+        if (!stash) {
+            void vscode.window.showWarningMessage('该 Stash 已不存在，列表已刷新。');
+            await this.loadRepositoryStashes(repositoryPath, true);
+            return;
+        }
+        if (action === 'stashDrop') {
+            const confirmLabel = '删除';
+            const choice = await vscode.window.showWarningMessage(
+                `删除 ${stash.stashRef}「${stash.message}」？`,
+                { modal: true, detail: `条目删除后，其提交对象在 Git 垃圾回收前仍可凭 hash 找回：${hash}` },
+                confirmLabel,
+            );
+            if (choice !== confirmLabel) { return; }
+            try {
+                await this.gitBackend.stashDrop(rootUri, hash);
+            } catch (error) {
+                void vscode.window.showErrorMessage(`Git 操作失败: ${error instanceof Error ? error.message : String(error)}`);
+            }
+            // 失败也重读: 常见原因是条目已被别处删除，缓存需要对齐。
+            await this.loadRepositoryStashes(repositoryPath, true);
+            if (!this.isStashHash(hash, repositoryPath)) { this.leaveRemovedStash(repositoryPath, stash); }
+            return;
+        }
+        let paths: string[];
+        try {
+            const files = await getStashFiles(rootUri, hash);
+            // 重命名要同时刷新旧路径，否则旧路径的状态会停留在界面上。
+            paths = [...new Set(files.flatMap(file => file.oldPath ? [file.path, file.oldPath] : [file.path]))];
+        } catch (error) {
+            void vscode.window.showErrorMessage(`Git 操作失败: ${error instanceof Error ? error.message : String(error)}`);
+            return;
+        }
+        this.workingTreeActionQueue.push({
+            action,
+            stashHash: hash,
+            section: 'unstaged',
+            paths,
+            untrackedPaths: new Set<string>(),
+            discardUntrackedToTrash: false,
+            rootUri,
+            gitlinkPaths: new Set<string>(),
+            affectedSubmoduleRepositoryPaths: [],
+        });
+        void this.processWorkingTreeActionQueue();
+    }
+
+    /**
+     * 当前选中的 stash 被删除(pop / drop)后，选中项要离开它：
+     * 控制器会保留列表之外的已选项，不处理的话变更文件区会一直显示一个已不存在的 stash。
+     * 优先回到它的基线提交，其次是仓库最新提交。
+     */
+    private leaveRemovedStash(repositoryPath: string, stash: StashEntry): void {
+        if (this.currentHash !== stash.hash || this.currentRepositoryPath !== repositoryPath) { return; }
+        const base = stash.parents[0];
+        const fallback = (base ? this.commitController.findCommit(base, repositoryPath) : undefined)
+            ?? this.commitController.latestCommitOf(repositoryPath);
+        if (fallback) { this.commitController.selectCommit(fallback); }
+    }
+
+    /**
+     * 分组头的 stash 按钮直接映射到原生 libgit2 语义，不做跨分组确认：
+     * - Unstaged: KEEP_INDEX | INCLUDE_UNTRACKED（等价于 stash -k -u）。
+     * - Staged: 仅保存 index（等价于 stash -S）。
+     */
+    private async runStashAction(repositoryPath: string, section: 'staged' | 'unstaged'): Promise<void> {
+        const rootUri = this.getRepoRootUri(repositoryPath);
+        if (!rootUri) { return; }
+        const read = async (): Promise<{ staged: string[]; unstaged: string[]; hasConflict: boolean } | undefined> => {
+            const useStore = repositoryPath === this.commitController.uncommittedRepositoryPath;
+            const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+                .find(candidate => candidate.repoOption.path === repositoryPath);
+            const changes = useStore
+                ? { staged: store.getState().stagedFiles, changes: store.getState().unstagedFiles }
+                : branch ? await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(branch).catch(() => undefined) : undefined;
+            if (!changes) { return undefined; }
+            const staged = changes.staged.filter(file => !file.isConflict).map(file => file.path);
+            const unstaged = changes.changes.filter(file => !file.isConflict).map(file => file.path);
+            const hasConflict = changes.staged.concat(changes.changes).some(file => file.isConflict);
+            return { staged, unstaged, hasConflict };
+        };
+        const current = await read();
+        if (!current) { void vscode.window.showWarningMessage('仓库状态尚未就绪，请稍后再试。'); return; }
+        if (current.hasConflict) {
+            void vscode.window.showWarningMessage('存在未解决的合并冲突，请先解决冲突后再 stash。');
+            return;
+        }
+        const paths = section === 'staged' ? current.staged : current.unstaged;
+        if (paths.length === 0) { return; }
+        this.workingTreeActionQueue.push({
+            action: 'stash',
+            stashScope: section,
+            section,
+            paths: [...new Set(paths)],
+            untrackedPaths: new Set<string>(),
+            discardUntrackedToTrash: false,
+            rootUri,
+            gitlinkPaths: new Set<string>(),
+            affectedSubmoduleRepositoryPaths: [],
         });
         void this.processWorkingTreeActionQueue();
     }
@@ -3494,16 +3791,30 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 while (this.workingTreeActionQueue.length > 0) {
                     const operation = this.workingTreeActionQueue.shift()!;
                     const currentBranches = this.uncommittedFilesWatcher.listCurrentHeadBranches();
-                    const mutationBranches = [operation.rootUri.toString(), ...operation.affectedSubmoduleRepositoryPaths]
-                        .flatMap(repositoryPath => currentBranches.filter(branch => branch.repoOption.path === repositoryPath));
-                    mutationBranches.forEach(branch => this.uncommittedFilesWatcher.beginWorkingTreeMutation(branch));
                     const rootRepositoryPath = operation.rootUri.toString();
+                    const mutationBranches = [rootRepositoryPath, ...operation.affectedSubmoduleRepositoryPaths]
+                        .flatMap(repositoryPath => currentBranches.filter(branch => branch.repoOption.path === repositoryPath));
+                    const rootBranch = mutationBranches.find(branch => branch.repoOption.path === rootRepositoryPath);
+                    const beforeChanges = rootBranch
+                        ? this.uncommittedFilesWatcher.getCachedUncommittedFilesByHeadBranch(rootBranch)
+                        : undefined;
+                    mutationBranches.forEach(branch => this.uncommittedFilesWatcher.beginWorkingTreeMutation(branch));
                     this.workingTreeUiMutations.add(rootRepositoryPath);
                     this.deferredWorkingTreeChanges.delete(rootRepositoryPath);
                     let mutationEnded = false;
+                    let projectedChanges: WorkingTreeChanges | undefined;
+                    let verificationPaths: readonly string[] = [];
                     const endMutation = async (progress?: vscode.Progress<{ message?: string }>): Promise<void> => {
                         await Promise.all(mutationBranches.map(branch => {
                             const isRootRepository = branch.repoOption.path === rootRepositoryPath;
+                            if (isRootRepository && projectedChanges) {
+                                return this.uncommittedFilesWatcher.completeWorkingTreeMutation(
+                                    branch,
+                                    projectedChanges,
+                                    operation.paths,
+                                    verificationPaths,
+                                );
+                            }
                             return this.uncommittedFilesWatcher.endWorkingTreeMutation(
                                 branch,
                                 isRootRepository ? operation.paths : [],
@@ -3519,7 +3830,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                         // though stage/discard changed their contents. In that case the watcher
                         // emits no list event; always reconcile the selected view from its
                         // post-mutation snapshot instead of leaving the old file cards onscreen.
-                        const rootBranch = mutationBranches.find(branch => branch.repoOption.path === rootRepositoryPath);
                         const currentChanges = rootBranch
                             ? this.uncommittedFilesWatcher.getCachedUncommittedFilesByHeadBranch(rootBranch)
                             : undefined;
@@ -3536,21 +3846,21 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                             location: vscode.ProgressLocation.Notification,
                             title: operation.action === 'stage'
                                 ? '添加文件'
-                                : operation.action === 'unstage' ? '取消暂存' : '还原更改',
+                                : operation.action === 'unstage' ? '取消暂存'
+                                    : operation.action === 'stash' ? '暂存到 Stash'
+                                        : operation.action === 'stashApply' ? '应用 Stash'
+                                            : operation.action === 'stashPop' ? '弹出 Stash' : '还原更改',
                             cancellable: false,
                         }, async progress => {
                             const total = operation.paths.length;
-                            for (let index = 0; index < total; index++) {
-                                const filePath = operation.paths[index];
-                                const actionMessage = operation.action === 'discard'
-                                    ? '还原文件'
-                                    : operation.action === 'stage'
-                                        ? (operation.untrackedPaths.has(filePath) ? '添加文件' : '更新文件')
-                                        : '取消暂存文件';
-                                progress.report({
-                                    message: `${index + 1}/${total} ${actionMessage}：${filePath}`,
-                                });
-                            }
+                            const actionMessage = operation.action === 'discard'
+                                ? '正在还原文件'
+                                : operation.action === 'stage'
+                                    ? '正在添加或更新文件'
+                                    : operation.action === 'stash' ? '正在创建 Stash'
+                                        : operation.action === 'stashApply' ? '正在应用 Stash'
+                                            : operation.action === 'stashPop' ? '正在弹出 Stash' : '正在取消暂存';
+                            progress.report({ message: `${actionMessage}（${total} 个文件）...` });
                             if (operation.action === 'discard') {
                                 const targetCommitByRepository = new Map<string, string>();
                                 const affectedRepositories = operation.affectedSubmoduleRepositoryPaths
@@ -3591,10 +3901,56 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                                     const targetCommit = targetCommitByRepository.get(repositoryPath);
                                     if (targetCommit) { await restoreSubmodule(repositoryUri, targetCommit); }
                                 }
+                            } else if (operation.action === 'stash') {
+                                const scope = operation.stashScope;
+                                if (!scope) { throw new Error('缺少 stash 范围'); }
+                                let result;
+                                try {
+                                    result = await this.gitBackend.stash(operation.rootUri, scope);
+                                } catch (error) {
+                                    // staged stash can create refs/stash and then fail while
+                                    // applying the staged patch in reverse. Reload before surfacing
+                                    // the libgit2 error so the visible list matches repository state.
+                                    await this.loadRepositoryStashes(operation.rootUri.toString(), true);
+                                    throw error;
+                                }
+                                if (beforeChanges) {
+                                    projectedChanges = projectStashChanges(
+                                        beforeChanges,
+                                        operation.paths,
+                                        scope,
+                                        result.skippedGitlinks,
+                                    );
+                                }
+                                if (result.skippedGitlinks.length > 0) {
+                                    void vscode.window.showWarningMessage(
+                                        `子模块变更不会被 stash，已保留在工作区：${result.skippedGitlinks.join('、')}`);
+                                }
+                                // refs/stash 监听通常会触发刷新; 这里主动读一次, 避免依赖文件系统事件的延迟。
+                                await this.loadRepositoryStashes(operation.rootUri.toString(), true);
+                            } else if (operation.action === 'stashApply' || operation.action === 'stashPop') {
+                                if (!operation.stashHash) { throw new Error('缺少 stash 标识'); }
+                                const repositoryPath = operation.rootUri.toString();
+                                const target = this.stashesByRepository.get(repositoryPath)?.find(entry => entry.hash === operation.stashHash);
+                                const result = operation.action === 'stashPop'
+                                    ? await this.gitBackend.stashPop(operation.rootUri, operation.stashHash)
+                                    : await this.gitBackend.stashApply(operation.rootUri, operation.stashHash);
+                                if (result.conflicts) {
+                                    void vscode.window.showWarningMessage(
+                                        '应用 Stash 后存在冲突，冲突文件已留在工作区。'
+                                        + (operation.action === 'stashPop' ? 'Stash 条目已保留，解决冲突后可手动删除。' : ''));
+                                }
+                                await this.loadRepositoryStashes(repositoryPath, true);
+                                if (result.dropped && target) { this.leaveRemovedStash(repositoryPath, target); }
                             } else if (operation.action === 'stage') {
                                 await this.gitBackend.stage(operation.rootUri, operation.paths);
                             } else {
                                 await this.gitBackend.unstage(operation.rootUri, operation.paths);
+                                if (beforeChanges) {
+                                    const projection = projectUnstageChanges(beforeChanges, operation.paths);
+                                    projectedChanges = projection.changes;
+                                    verificationPaths = projection.verificationPaths;
+                                }
                             }
                             progress.report({ message: '正在同步 Git 工作区状态...' });
                             await endMutation(progress);
@@ -3763,7 +4119,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         };
         try {
             // 提交文件元数据先到达；Diff 正文由 MultiDiff 按可视范围按需请求。
-            const files = await getCommitFiles(rootUri, hash, signal, reportProgress);
+            const files = repositoryPath && this.isStashHash(hash, repositoryPath)
+                ? await getStashFiles(rootUri, hash, signal)
+                : await getCommitFiles(rootUri, hash, signal, reportProgress);
             if (signal?.aborted || generation !== this.commitFilesGeneration) { return; }
             const metadata = files.map(file => new CommitFile({ ...file }));
             const selectedFile = metadata.find(file => (file.diffKey || file.path) === revealPath)

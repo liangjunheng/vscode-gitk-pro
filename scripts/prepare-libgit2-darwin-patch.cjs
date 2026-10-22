@@ -3,10 +3,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { toolsRoot } = require('./prepare-native-tools.cjs');
+const { STASH_PATCH_REVISION, applyStashPatch, stashPatchFiles } = require('./libgit2-stash-patch.cjs');
 
 const LIBGIT2_SYS_VERSION = '0.18.8+1.9.7';
-const PATCH_REVISION = 2;
-const STAMP_FILE = '.vscode-gitk-darwin-openssl-patch.json';
+const PATCH_REVISION = 3;
+const STAMP_FILE = '.vscode-gitk-libgit2-patch.json';
 
 const buildScriptReplacements = Object.freeze([
   Object.freeze([
@@ -71,8 +72,19 @@ function sha256(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }
 
+function buildCacheRoot() {
+  // OneDrive/DLP can deny directory renames used for atomic patch publication.
+  // Keep generated sources local on Windows; retain explicit tool-root overrides.
+  if (process.platform === 'win32' && !process.env.VSCODE_GITK_NATIVE_TOOLS) {
+    const local = process.env.LOCALAPPDATA || require('node:os').tmpdir();
+    const repositoryKey = crypto.createHash('sha256').update(path.resolve(__dirname, '..')).digest('hex').slice(0, 12);
+    return path.join(local, 'vscode-gitk-native-cache', repositoryKey);
+  }
+  return toolsRoot();
+}
+
 function assertInsideTools(candidate) {
-  const root = path.resolve(toolsRoot());
+  const root = path.resolve(buildCacheRoot());
   const resolved = path.resolve(candidate);
   if (resolved === root || !resolved.startsWith(`${root}${path.sep}`)) {
     throw new Error(`Refusing to modify a path outside the native tools directory: ${resolved}`);
@@ -84,25 +96,19 @@ function sleep(milliseconds) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
-function validPatch(directory) {
+function validPatch(directory, darwin) {
   const stampPath = path.join(directory, STAMP_FILE);
-  const buildScript = path.join(directory, 'build.rs');
-  const bindings = path.join(directory, 'lib.rs');
-  if (!fs.existsSync(stampPath) || !fs.existsSync(buildScript) || !fs.existsSync(bindings)) return false;
+  if (!fs.existsSync(stampPath)) return false;
   try {
     const stamp = JSON.parse(fs.readFileSync(stampPath, 'utf8'));
-    const contents = fs.readFileSync(buildScript, 'utf8');
-    const bindingContents = fs.readFileSync(bindings, 'utf8');
     return stamp.version === LIBGIT2_SYS_VERSION
       && stamp.patchRevision === PATCH_REVISION
-      && stamp.buildScriptSha256 === sha256(buildScript)
-      && stamp.bindingsSha256 === sha256(bindings)
-      && contents.includes('#define GIT_OPENSSL 1')
-      && contents.includes('#define GIT_SHA256_OPENSSL 1')
-      && !contents.includes('#define GIT_SECURE_TRANSPORT 1')
-      && !contents.includes('cargo:rustc-link-lib=framework=Security')
-      && !contents.includes('cargo:rustc-link-lib=framework=CoreFoundation')
-      && bindingContents.includes('GIT_REBASE_NO_OPERATION: usize = usize::MAX;');
+      && stamp.stashPatchRevision === STASH_PATCH_REVISION
+      && stamp.stashPatchImplementationSha256 === sha256(require.resolve('./libgit2-stash-patch.cjs'))
+      && stamp.darwin === darwin
+      && stamp.buildScriptSha256 === sha256(path.join(directory, 'build.rs'))
+      && stamp.bindingsSha256 === sha256(path.join(directory, 'lib.rs'))
+      && stashPatchFiles.every(file => stamp.stashFiles?.[file] === sha256(path.join(directory, file)));
   } catch {
     return false;
   }
@@ -147,10 +153,10 @@ function patchFile(file, replacements, label) {
   fs.writeFileSync(file, contents);
 }
 
-function prepareDarwinLibgit2Patch(manifest, env = process.env) {
-  const patchRoot = assertInsideTools(path.join(toolsRoot(), 'patched-crates'));
-  const destination = assertInsideTools(path.join(patchRoot, `libgit2-sys-${LIBGIT2_SYS_VERSION}`));
-  if (validPatch(destination)) return destination;
+function prepareLibgit2Patch(manifest, env = process.env, darwin = false) {
+  const patchRoot = assertInsideTools(path.join(buildCacheRoot(), 'patched-crates'));
+  const destination = assertInsideTools(path.join(patchRoot, `libgit2-sys-${LIBGIT2_SYS_VERSION}${darwin ? '' : '-stash'}`));
+  if (validPatch(destination, darwin)) return destination;
 
   fs.mkdirSync(patchRoot, { recursive: true });
   const lockDirectory = assertInsideTools(`${destination}.lock`);
@@ -162,7 +168,7 @@ function prepareDarwinLibgit2Patch(manifest, env = process.env) {
       ownsLock = true;
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
-      if (validPatch(destination)) return destination;
+      if (validPatch(destination, darwin)) return destination;
       if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${lockDirectory}`);
       sleep(250);
     }
@@ -170,22 +176,27 @@ function prepareDarwinLibgit2Patch(manifest, env = process.env) {
 
   const staging = assertInsideTools(`${destination}.tmp-${process.pid}-${Date.now()}`);
   try {
-    if (validPatch(destination)) return destination;
+    if (validPatch(destination, darwin)) return destination;
     const source = locateRegistryCrate(path.resolve(manifest), env);
     fs.cpSync(source, staging, { recursive: true });
     const buildScript = path.join(staging, 'build.rs');
     const bindings = path.join(staging, 'lib.rs');
-    patchFile(buildScript, buildScriptReplacements, 'build.rs');
+    if (darwin) patchFile(buildScript, buildScriptReplacements, 'build.rs');
     patchFile(bindings, bindingsReplacements, 'lib.rs');
+    applyStashPatch(staging);
     fs.writeFileSync(path.join(staging, STAMP_FILE), `${JSON.stringify({
       version: LIBGIT2_SYS_VERSION,
       patchRevision: PATCH_REVISION,
+      stashPatchRevision: STASH_PATCH_REVISION,
+      stashPatchImplementationSha256: sha256(require.resolve('./libgit2-stash-patch.cjs')),
+      darwin,
+      stashFiles: Object.fromEntries(stashPatchFiles.map(file => [file, sha256(path.join(staging, file))])),
       buildScriptSha256: sha256(buildScript),
       bindingsSha256: sha256(bindings),
     }, null, 2)}\n`);
     if (fs.existsSync(destination)) fs.rmSync(destination, { recursive: true, force: true });
     fs.renameSync(staging, destination);
-    console.log(`native: prepared Darwin OpenSSL libgit2 patch at ${destination}`);
+    console.log(`native: prepared libgit2 stash/filter patch at ${destination}`);
     return destination;
   } finally {
     if (fs.existsSync(staging)) fs.rmSync(staging, { recursive: true, force: true });
@@ -194,11 +205,20 @@ function prepareDarwinLibgit2Patch(manifest, env = process.env) {
 }
 
 
+function prepareDarwinLibgit2Patch(manifest, env = process.env) {
+  return prepareLibgit2Patch(manifest, env, true);
+}
+
 function prepareDarwinBuildWorkspace(repositoryRoot, vscodeTarget) {
   if (!/^darwin-(x64|arm64)$/.test(vscodeTarget)) {
     throw new Error(`Unexpected Darwin build workspace target: ${vscodeTarget}`);
   }
-  const workspace = assertInsideTools(path.join(toolsRoot(), 'build-workspaces', vscodeTarget));
+  return prepareBuildWorkspace(repositoryRoot, vscodeTarget);
+}
+
+function prepareBuildWorkspace(repositoryRoot, target) {
+  if (!/^[a-z][a-z0-9-]*$/.test(target)) throw new Error(`Invalid build workspace target: ${target}`);
+  const workspace = assertInsideTools(path.join(buildCacheRoot(), 'build-workspaces', target));
   if (fs.existsSync(workspace)) fs.rmSync(workspace, { recursive: true, force: true });
   const backend = path.join(workspace, 'git2-backend');
   const napiBuildPatch = path.join(workspace, 'napi-build-patch');
@@ -223,4 +243,6 @@ module.exports = {
   libgit2PatchConfig,
   prepareDarwinBuildWorkspace,
   prepareDarwinLibgit2Patch,
+  prepareLibgit2Patch,
+  prepareBuildWorkspace,
 };

@@ -44,6 +44,8 @@ jobs:
           echo "output=$output" >> "$GITHUB_OUTPUT"
       - name: Test the build-host native module
         run: npm run test:binding
+      - name: Check stash semantics through the built module
+        run: node scripts/test-stash-parity.cjs
       - name: Verify the VSIX contains all native modules
         shell: bash
         env:
@@ -101,3 +103,5 @@ jobs:
           path: lib
       - name: Load the packaged module without compiling
         run: node scripts/verify-native-platform.cjs ${{ matrix.target }} --load
+      - name: Check stash semantics on each native host
+        run: node scripts/test-stash-parity.cjs

@@ -5,7 +5,7 @@
 
 **在 VS Code 底部面板中浏览 Git 历史、审查多文件差异、管理多仓库变更。**
 
-提交图、分支管理、多仓库提交和合并冲突处理集中在同一个面板里，本地仓库读写由内置 libgit2 原生模块完成。
+提交图、分支与 Stash、多仓库提交和合并冲突处理集中在同一个面板里，本地仓库读写由内置 libgit2 原生模块完成。
 
 [![Visual Studio Marketplace](https://img.shields.io/visual-studio-marketplace/v/liangjunheng.fastergit?label=Marketplace&color=007ACC)](https://marketplace.visualstudio.com/items?itemName=liangjunheng.fastergit)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE.txt)
@@ -28,6 +28,7 @@ FasterGit 在 VS Code 底部面板中绘制彩色泳道提交图，并把历史�
 - 同时选择一个或多个本地或远程分支，查看组合后的提交历史。
 - 按哈希、父提交哈希、作者、邮箱、提交者、日期、标题、正文或引用名称搜索提交，多个关键词用空格分隔。
 - 展开提交，查看完整提交信息和元数据。
+- 可选择在 Commit 列表中显示 Stash。
 - 提交图刷新时保持当前可见提交的位置稳定。
 
 ### 变更文件与 Multi-Diff
@@ -44,12 +45,14 @@ FasterGit 在 VS Code 底部面板中绘制彩色泳道提交图，并把历史�
 - 对单个文件或整个分区执行暂存、取消暂存和放弃更改；放弃未跟踪文件时默认移入回收站。
 - 打开 Commit Panel，在一个编辑器页面里按仓库卡片分别编写提交信息、管理 Staged 与 Unstaged 列表。
 - 提交已暂存内容，或通过内置 `COMMIT_EDITMSG` 编辑流程执行 Amend，并可从历史提交信息中选取。
+- 对暂存区或未暂存区的更改单独执行 Stash。
 - 使用 `Ctrl+Enter` / `Cmd+Enter` 完成提交，使用 `Escape` 取消提交。
 
 ### 历史与仓库操作
 
 - 对选中的仓库执行 Fetch、Pull 和 Push。
 - 在提交上右键，执行 Checkout、Revert、Drop、Cherry-pick、Merge、Rebase 或 Reset，也可以基于该提交创建分支或添加标签。
+- 对 Stash 提交执行 Apply、Pop 或 Drop。
 - 在选中仓库的根目录打开终端。
 - 通过文件系统监听同步仓库、HEAD、Index 和工作区状态。
 
@@ -82,6 +85,7 @@ FasterGit 在 VS Code 底部面板中绘制彩色泳道提交图，并把历史�
 | 定位按钮 | 返回当前 HEAD 提交 |
 | 刷新 | 重新加载仓库、引用、提交和当前变更 |
 | Fetch / Pull / Push | 同步当前仓库 |
+| Stash | 在 Commit 列表中显示或隐藏 Stash |
 | Tree / Flat | 切换 Changed Files 的目录树或平铺布局 |
 
 ## 命令
@@ -106,6 +110,7 @@ FasterGit 在 VS Code 底部面板中绘制彩色泳道提交图，并把历史�
 | 设置项 | 可选值 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `fastergit.changedFilesDisplayMode` | `tree`、`flat` | `flat` | 控制 Changed Files 的布局。工具栏切换操作会写入 VS Code 全局用户设置。 |
+| `fastergit.showStashes` | `true`、`false` | `true` | 在 Commit 列表中显示 Stash，列表右上角的 Stash 按钮会同步更新此设置。 |
 | `fastergit.multiDiffRenderSideBySide` | `true`、`false` | `true` | Multi-Diff 面板是否使用双栏模式显示差异。 |
 | `fastergit.discardUntrackedChangesToTrash` | `true`、`false` | `true` | 还原未跟踪文件时移入回收站，而不是永久删除。回收站不可用的环境（远程、Snap）始终永久删除。 |
 | `fastergit.useSystemProxy` | `true`、`false` | `true` | 远程 Git 操作使用 VS Code `http.proxy`，或 Windows 用户级系统 HTTP/HTTPS 代理及 bypass 列表。 |

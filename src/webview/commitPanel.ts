@@ -67,7 +67,7 @@ type CommitPanelCallbacks = {
     readonly onSelectFile: (repositoryPath: string, section: 'conflict' | 'staged' | 'unstaged', path: string) => void;
     readonly onWorkingTreeAction: (
         repositoryPath: string,
-        action: 'stage' | 'unstage' | 'discard',
+        action: 'stage' | 'unstage' | 'discard' | 'stash',
         section: 'conflict' | 'staged' | 'unstaged',
         paths: readonly string[],
         untrackedPaths: readonly string[],
@@ -204,9 +204,10 @@ export class CommitPanel implements vscode.Disposable {
             && typeof data.path === 'string') {
             this.callbacks.onSelectFile(repo, data.section, data.path);
         } else if (data.type === 'workingTreeAction' && repo
-            && (data.action === 'stage' || data.action === 'unstage' || data.action === 'discard')
+            && (data.action === 'stage' || data.action === 'unstage' || data.action === 'discard' || data.action === 'stash')
             && (data.section === 'conflict' || data.section === 'staged' || data.section === 'unstaged')
             && (data.section !== 'conflict' || data.action === 'stage')
+            && (data.action !== 'stash' || data.section !== 'conflict')
             && Array.isArray(data.paths)
             && data.paths.every(filePath => typeof filePath === 'string')
             && Array.isArray(data.untrackedPaths)

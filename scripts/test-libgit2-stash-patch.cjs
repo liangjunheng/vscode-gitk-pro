@@ -1,0 +1,44 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const crypto = require('node:crypto');
+const { spawnSync } = require('node:child_process');
+const root = path.resolve(__dirname, '..');
+const manifest = path.join(root, 'native', 'git2-backend', 'Cargo.toml');
+const lock = path.join(path.dirname(manifest), 'Cargo.lock');
+const hash = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const beforeLock = hash(lock);
+const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'gitk-libgit2-patch-'));
+process.env.VSCODE_GITK_NATIVE_TOOLS = directory;
+const { prepareLibgit2Patch, prepareDarwinLibgit2Patch, prepareBuildWorkspace } = require('./prepare-libgit2-darwin-patch.cjs');
+const { applyStashPatch, stashPatchFiles } = require('./libgit2-stash-patch.cjs');
+const metadata = spawnSync('cargo', ['metadata', '--format-version', '1', '--locked', '--manifest-path', manifest], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+assert.equal(metadata.status, 0, metadata.stderr);
+const upstream = path.dirname(JSON.parse(metadata.stdout).packages.find(p => p.name === 'libgit2-sys').manifest_path);
+const upstreamHashes = stashPatchFiles.map(file => hash(path.join(upstream, file)));
+try {
+  const common = prepareLibgit2Patch(manifest);
+  const firstHashes = stashPatchFiles.map(file => hash(path.join(common, file)));
+  assert.notDeepEqual(firstHashes, upstreamHashes);
+  assert.equal(prepareLibgit2Patch(manifest), common, 'successful preparation is reusable');
+  const stash = path.join(common, stashPatchFiles[0]);
+  fs.appendFileSync(stash, '\n/* simulate corrupt generated cache */\n');
+  assert.equal(prepareLibgit2Patch(manifest), common);
+  assert.deepEqual(stashPatchFiles.map(file => hash(path.join(common, file))), firstHashes, 'corrupt cache must be rebuilt');
+  assert.throws(() => applyStashPatch(common), /context changed/, 'never silently apply the patch twice');
+  const darwin = prepareDarwinLibgit2Patch(manifest);
+  const build = fs.readFileSync(path.join(darwin, 'build.rs'), 'utf8');
+  assert.ok(!build.includes('#define GIT_SECURE_TRANSPORT 1'));
+  assert.ok(build.includes('#define GIT_SHA256_OPENSSL 1'));
+  assert.deepEqual(stashPatchFiles.map(file => hash(path.join(darwin, file))), firstHashes, 'common stash patch must be identical on Darwin');
+  const snapshot = prepareBuildWorkspace(root, 'test-patch');
+  assert.notEqual(snapshot, manifest); assert.equal(hash(path.join(path.dirname(snapshot), 'Cargo.lock')), beforeLock);
+  assert.throws(() => prepareBuildWorkspace(root, '../escape'), /Invalid/);
+  assert.equal(hash(lock), beforeLock, 'source Cargo.lock is never rewritten');
+  assert.deepEqual(stashPatchFiles.map(file => hash(path.join(upstream, file))), upstreamHashes, 'Cargo registry is never edited');
+  console.log('libgit2 patch tests passed: exact contexts, cache reuse/integrity, Darwin composition, registry/lock preservation, scoped snapshots.');
+} finally {
+  assert.ok(path.resolve(directory).startsWith(path.resolve(os.tmpdir()) + path.sep));
+  fs.rmSync(directory, { recursive: true, force: true });
+}

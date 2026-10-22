@@ -52,9 +52,9 @@ async function main() {
     ];
     const state = {
       repositoryChanges: [], branches: [branchOption(repoA, h('3'))], selectedBranches: ['refs/heads/main'], selectedRepositoryPaths: [repoA.path],
-      commits: commits.filter(c => !c.isStash),
+      commits,
       workingTreeRows: [{ hash: 'uncommitted', label: 'Uncommitted Changes', repositoryPath: repoA.path, headHash: h('3'), enabled: true, stagedCount: 1, changesCount: 1 }],
-      cloudGroups: [], showStashes: false, hiddenStashCount: 0, files: [], stagedFiles: [], unstagedFiles: [], filesLoading: false, filesMode: 'flat',
+      cloudGroups: [], showStashes: true, hiddenStashCount: 0, files: [], stagedFiles: [], unstagedFiles: [], filesLoading: false, filesMode: 'flat',
       selectedCommit: null, isLoading: false, hasMoreCommits: false,
     };
     const publish = () => page.evaluate(next => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state: next } })), JSON.parse(JSON.stringify(state)));
@@ -62,24 +62,34 @@ async function main() {
     await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'selectedRepoDisplayChanged', repository: { path: 'file:///stash/a', label: 'repo-a' } } })));
     await publish();
 
-    // 1) 开关: 在 @仓库名 这一行的最右侧, 默认不选中, 使用 inbox 图标
+    // 1) 开关: 在 @仓库名 这一行的最右侧, 默认选中, 使用 inbox 图标
     const toggle = page.locator('#stashListToggle');
     assert.equal(await toggle.count(), 1);
-    assert.equal(await toggle.getAttribute('aria-pressed'), 'false', 'not selected by default');
+    assert.equal(await toggle.getAttribute('aria-pressed'), 'true', 'selected by default');
     assert.equal(await toggle.locator('.codicon-inbox').count(), 1, 'the toggle uses the inbox codicon');
-    assert.equal(await page.locator('#commitVirtualRows .commit-row.stash').count(), 0, 'no stash row while the toggle is off');
+    assert.equal(await page.locator('#commitVirtualRows .commit-row.stash').count(), 1, 'the stash row is shown while the default toggle is on');
     assert.equal(await page.locator('#commitVirtualRows .commit-row:not(.stash)').count(), 3, 'ordinary commits are shown as usual');
-    assert.match(await toggle.getAttribute('title'), /^显示 Stash/, 'the tooltip offers to show them');
-    // 缺字段时同样视为未选中(旧版宿主不带 showStashes)
+    assert.equal(await toggle.getAttribute('title'), '在commit列表中显示stash提交（当前状态： 开）');
+    assert.equal(await toggle.getAttribute('aria-label'), '在commit列表中显示stash提交（当前状态： 开）');
+    // 缺字段时沿用新默认值“开”(兼容尚未下发 showStashes 的宿主状态)。
     delete state.showStashes; await publish();
-    assert.equal(await toggle.getAttribute('aria-pressed'), 'false', 'a missing showStashes field is treated as off');
-    state.showStashes = false;
-    // 点击开关: 发 toggleStashes(true); 宿主随后下发含 stash 行的提交图
+    assert.equal(await toggle.getAttribute('aria-pressed'), 'true', 'a missing showStashes field is treated as on');
+    state.showStashes = true;
+    // 点击关闭: 乐观更新描述, 宿主随后下发不含 stash 行的提交图。
+    await page.evaluate(() => { window.messages.length = 0; });
+    await toggle.click();
+    assert.deepEqual(await lastMessages('toggleStashes'), [{ type: 'toggleStashes', visible: false }]);
+    assert.equal(await toggle.getAttribute('aria-pressed'), 'false', 'the click clears the toggle right away');
+    assert.equal(await toggle.getAttribute('title'), '在commit列表中显示stash提交（当前状态： 关）');
+    assert.equal(await toggle.getAttribute('aria-label'), '在commit列表中显示stash提交（当前状态： 关）');
+    state.commits = commits.filter(c => !c.isStash); state.showStashes = false; await publish();
+    assert.equal(await page.locator('#commitVirtualRows .commit-row.stash').count(), 0, 'the stash row disappears once the host publishes the off state');
+    // 再次点击打开: 发 toggleStashes(true), 宿主重建的提交图恢复 stash 行。
     await page.evaluate(() => { window.messages.length = 0; });
     await toggle.click();
     assert.deepEqual(await lastMessages('toggleStashes'), [{ type: 'toggleStashes', visible: true }]);
-    assert.equal(await toggle.getAttribute('aria-pressed'), 'true', 'the click selects the toggle right away');
-    assert.match(await toggle.getAttribute('title'), /^隐藏 Stash/, 'and the tooltip now offers to hide them');
+    assert.equal(await toggle.getAttribute('aria-pressed'), 'true', 'the second click selects the toggle right away');
+    assert.equal(await toggle.getAttribute('title'), '在commit列表中显示stash提交（当前状态： 开）');
     state.commits = commits; state.showStashes = true; await publish();
     assert.equal(await toggle.getAttribute('aria-pressed'), 'true', 'host state keeps the toggle on');
     assert.equal(await page.locator('#commitVirtualRows .commit-row.stash').count(), 1, 'the stash row appears once the host publishes it');
@@ -452,7 +462,7 @@ async function main() {
     }
 
     assert.deepEqual(errors, [], 'no page errors: ' + errors.join('; '));
-    console.log('Stash UI passed: toggle at the far right of the repository row (off by default, shows the stash rows when selected), stash rows interleaved with a hollow side-branch diamond and a solid real-commit trunk, no separate group, a stash-only context menu (apply / pop / drop), hidden-count hint.');
+    console.log('Stash UI passed: toggle at the far right of the repository row (on by default, hides stash rows when cleared), stash rows interleaved with a hollow side-branch diamond and a solid real-commit trunk, no separate group, a stash-only context menu (apply / pop / drop), hidden-count hint.');
   } finally { await browser.close(); }
 }
 

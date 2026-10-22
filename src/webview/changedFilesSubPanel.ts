@@ -396,11 +396,13 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
     const hasSelected = sectionFiles.some(function(file) {
       return selectedWorkingTreeFiles.has(workingTreeSelectionKey(section, file.path));
     });
+    const hasConflicts = files.some(function(file) { return file.workingTreeKind === 'conflict'; });
+    const stashAction = hasConflicts ? '' : workingTreeActionButton('stash', section, '', 'archive', section === 'staged' ? 'Stash 已暂存的更改' : 'Stash 未暂存的更改');
     const actions = disabled ? '' : section === 'conflict'
       ? workingTreeActionButton('stage', section, '', 'add', '暂存全部冲突文件并标记冲突已解决')
       : section === 'staged'
-        ? workingTreeActionButton('unstage', section, '', 'remove', '取消暂存此分组的所有文件（全部移回 Unstaged Changes）')
-        : workingTreeActionButton('discard', section, '', 'discard', '放弃此分组所有文件的未暂存更改（不可撤销）') + workingTreeActionButton('stage', section, '', 'add', '暂存此分组的所有文件（全部移入 Staged Changes）');
+        ? stashAction + workingTreeActionButton('unstage', section, '', 'remove', '取消暂存此分组的所有文件（全部移回 Unstaged Changes）')
+        : stashAction + workingTreeActionButton('discard', section, '', 'discard', '放弃此分组所有文件的未暂存更改（不可撤销）') + workingTreeActionButton('stage', section, '', 'add', '暂存此分组的所有文件（全部移入 Staged Changes）');
     return '<section class="working-tree-section' + (hasSelected ? ' has-selected' : '') + '" data-section="' + section + '">' +
       '<div class="working-tree-section-header' + (disabled ? ' disabled' : '') + '" data-working-tree-section-toggle="' + section + '"><span class="working-tree-section-chevron codicon codicon-chevron-' + (collapsed ? 'right' : 'down') + '"></span><span class="working-tree-section-leading"><span class="working-tree-section-title">' + label + '</span><span class="working-tree-section-count">' + sectionFiles.length + '</span></span><span class="working-tree-section-actions">' + workingTreeActionsHTML(actions) + '</span></div>' +
       '<div class="working-tree-section-body"' + (collapsed ? ' hidden' : '') + '></div></section>';

@@ -1681,8 +1681,9 @@ async function verifyProvider() {
     pushTargetByRepository: new Map(), lastPushedTargetByRepository: new Map(),
     unpushedCommitCountByRepository: new Map([[repositories[1].path, 4]]),
     behindCommitCountByRepository: new Map([[repositories[1].path, 0]]), cloudCommitsByRepository: new Map(),
+    stashesByRepository: new Map(), stashLoadingByRepository: new Map(), showStashes: true,
     repositorySyncKeyByRepository: new Map(), repositorySyncStateLoadingByHead: new Set(), repositorySyncRevisionByRepository: new Map(),
-    loadRepositorySyncState: async () => {},
+    loadRepositorySyncState: async () => {}, loadRepositoryStashes: async () => {},
     schedulePushState: () => { syncStatePublishes++; }, commitPanel: { isVisible: () => false },
     repoSubmoduleWatcher: {
       findSubmoduleRepository: (_parent, file) => file === 'leaf-link' ? repositories[2] : file === 'parent-link' ? repositories[0] : undefined,
@@ -1690,7 +1691,8 @@ async function verifyProvider() {
     },
     commitPanelViewTitleController: { update() {} },
     branchesController: { clearRepositorySelection: () => {} },
-    commitController: { isLoading: false, searchedCommitList: [], displayedSearchKeywords: [], totalCommitList: [],
+    commitController: { isLoading: false, searchedCommitList: [], displayedSearchKeywords: [], totalCommitList: [], hiddenStashCounts: new Map(),
+      latestCommitOf: repositoryPath => provider.commitController.totalCommitList.find(commit => commit.gitBranchOption?.repoOption.path === repositoryPath),
       selectCommit: commit => { provider.commitController.selectedCommit = commit; return true; } },
     uncommittedFilesWatcher: {
       listCurrentHeadBranches: () => repositories.map(repoOption => ({ repoOption, name: 'refs/heads/main', label: 'deadbeef', kind: 'current', hash: 'd'.repeat(40) })),
@@ -2157,6 +2159,7 @@ async function verifyFocusedRefresh(Provider, repositories) {
       refreshUncommittedFilesByHeadBranch: async branch => steps.push(['status', branch.repoOption.path]),
     },
     selectedRepoTotalBranchWatcher: { refreshSelectedRepositories: () => steps.push(['branches']) },
+    loadRepositoryStashes: async repositoryPath => steps.push(['stash', repositoryPath]),
     commitController: { forceRefreshCurrentSelection: async worktreeAlreadyRefreshed => {
       historyRefreshModes.push(worktreeAlreadyRefreshed);
       steps.push(['history']);

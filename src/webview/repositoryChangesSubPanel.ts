@@ -461,6 +461,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     let sections = snapshot.kind === 'commit'
       ? [{ key: 'commit', label: '提交变更 ' + snapshot.commit.hash.slice(0, 8), files: snapshot.files }]
       : repoChangesSections(displayRepository);
+    const hasConflicts = sections.some(function(section) { return section.key === 'conflict' && section.files.length > 0; });
     const key = JSON.stringify([filesMode, repository.mergeOperation, repository.mergeOperationBusy, sections.map(function(section) { return [section.key, section.label, section.files]; })]);
     const selectionDropped = syncRepositorySelectionScope(repository.repositoryPath, snapshot);
     if (key === node.groupsKey) { if (selectionDropped) syncRepositoryMultiSelectionClasses(node, repository.repositoryPath); return; }
@@ -484,6 +485,8 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
         abort.disabled = !repository.mergeOperation || repository.mergeOperationBusy;
         actions.append(proceed, abort); header.append(actions);
       }
+      // stash 按钮位于“还原”(Unstaged) 和“取消暂存”(Staged) 的左侧。
+      if (!hasConflicts && (section.key === 'unstaged' || section.key === 'staged')) header.appendChild(repoChangesIcon('stash', 'archive', section.key === 'staged' ? 'Stash 已暂存的更改' : 'Stash 未暂存的更改'));
       if (section.key === 'unstaged') header.appendChild(repoChangesIcon('discard', 'discard', '还原所有文件'));
       if (section.key !== 'conflict' && section.key !== 'commit') header.appendChild(repoChangesIcon(section.key === 'staged' ? 'unstage' : 'stage', section.key === 'staged' ? 'remove' : 'add', section.key === 'staged' ? '取消暂存全部' : '暂存全部'));
       const rows = document.createElement('div'); rows.className = 'repo-group-files';

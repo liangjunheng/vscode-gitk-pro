@@ -5,7 +5,7 @@
 //! - staged:   手工构建标准双父 Stash commit，再用反向 staged diff 更新 index/worktree。
 //!
 //! Apply/Pop/Drop 全部通过 libgit2；应用前执行安全预检，避免 libgit2 在冲突时留下半应用工作区。
-use crate::filters::{apply_smudge_filters, ensure_stashable};
+use crate::filters::{ensure_stashable, stash_path_needs_builtin_filter};
 use crate::history::{delta_value, iso_time, signature_text};
 use crate::support::{
     NativeResult, format_git_error, open_repository, repository_root, string_arg,
@@ -142,22 +142,47 @@ fn remove_added_file(root: &Path, relative: &str) -> NativeResult<()> {
     Ok(())
 }
 
-fn restore_worktree_paths(repo: &Repository, paths: &[String]) -> NativeResult<()> {
-    for path in paths {
-        let mut checkout = CheckoutBuilder::new();
-        checkout
-            .force()
-            .recreate_missing(true)
-            .update_index(false)
-            .disable_pathspec_match(true)
-            .path(path);
-        repo.checkout_index(None, Some(&mut checkout))
-            .map_err(format_git_error)?;
+fn restore_worktree_paths(
+    repo: &Repository,
+    paths: &[String],
+    disable_filters: bool,
+) -> NativeResult<()> {
+    // An empty checkout pathspec means the entire repository, not no files.
+    if paths.is_empty() {
+        return Ok(());
     }
-    apply_smudge_filters(repo, paths)
+    let source = repo.index().map_err(format_git_error)?;
+    let mut sparse = git2::Index::new().map_err(format_git_error)?;
+    for path in paths {
+        if let Some(entry) = source.get_path(Path::new(path), 0) {
+            sparse.add(&entry).map_err(format_git_error)?;
+        }
+    }
+    let mut checkout = CheckoutBuilder::new();
+    checkout
+        .force()
+        .recreate_missing(true)
+        .update_index(false)
+        .disable_pathspec_match(true)
+        .disable_filters(disable_filters);
+    for path in paths {
+        checkout.path(path);
+    }
+    // ensure_stashable rejects external filters before the stash is created.
+    // Checkout already applies the built-in EOL/ident filters; do not read and
+    // rewrite every blob a second time through the shared smudge helper.
+    repo.checkout_index(Some(&mut sparse), Some(&mut checkout))
+        .map_err(format_git_error)
 }
 
-fn restore_staged_paths(repo: &Repository, paths: &[String]) -> NativeResult<()> {
+fn restore_staged_paths(
+    repo: &Repository,
+    paths: &[String],
+    filtered_paths: &BTreeSet<String>,
+) -> NativeResult<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
     let head = repo.revparse_single("HEAD").map_err(format_git_error)?;
     let head_tree = head.peel_to_tree().map_err(format_git_error)?;
     repo.reset_default(Some(&head), paths.iter().map(String::as_str))
@@ -166,7 +191,22 @@ fn restore_staged_paths(repo: &Repository, paths: &[String]) -> NativeResult<()>
         .iter()
         .cloned()
         .partition(|path| head_tree.get_path(Path::new(path)).is_ok());
-    restore_worktree_paths(repo, &existing)?;
+    // Restoring attributes can change the filters required by every sibling.
+    // In that case keep checkout's full filter handling and its original order.
+    if paths.iter().any(|path| {
+        Path::new(path).file_name().is_some_and(|name| {
+            name.to_string_lossy()
+                .eq_ignore_ascii_case(".gitattributes")
+        })
+    }) {
+        restore_worktree_paths(repo, &existing, false)?;
+    } else {
+        let (filtered, unfiltered): (Vec<_>, Vec<_>) = existing
+            .into_iter()
+            .partition(|path| filtered_paths.contains(path));
+        restore_worktree_paths(repo, &unfiltered, true)?;
+        restore_worktree_paths(repo, &filtered, false)?;
+    }
     let root = repository_root(repo)?;
     for path in &added {
         remove_added_file(&root, path)?;
@@ -195,6 +235,7 @@ fn create_staged_stash(
     repo: &Repository,
     signature: &git2::Signature<'_>,
     changes: &Changes,
+    filtered_paths: &BTreeSet<String>,
 ) -> NativeResult<Oid> {
     let head = repo.head().map_err(format_git_error)?;
     let base = head.peel_to_commit().map_err(format_git_error)?;
@@ -251,7 +292,7 @@ fn create_staged_stash(
         .iter()
         .any(|path| changes.unstaged.contains(path));
     if !overlaps_worktree {
-        restore_staged_paths(repo, regular_paths).map_err(|error| {
+        restore_staged_paths(repo, regular_paths, filtered_paths).map_err(|error| {
             format!("stash 已创建（{worktree_oid}），但还原已暂存修改失败: {error}")
         })?;
     } else if !regular_paths.is_empty() {
@@ -322,7 +363,12 @@ pub fn create(payload: &Value) -> NativeResult<Value> {
             .cloned()
             .collect::<Vec<_>>()
     };
-    ensure_stashable(&repo, &regular_files, "创建 stash")?;
+    let filter_flags = ensure_stashable(&repo, &regular_files, "创建 stash")?;
+    let filtered_paths = regular_files
+        .iter()
+        .zip(filter_flags)
+        .filter_map(|(path, flags)| stash_path_needs_builtin_filter(flags).then_some(path.clone()))
+        .collect::<BTreeSet<_>>();
 
     let oid = match scope {
         Scope::Unstaged => repo
@@ -332,7 +378,7 @@ pub fn create(payload: &Value) -> NativeResult<Value> {
                 Some(StashFlags::KEEP_INDEX | StashFlags::INCLUDE_UNTRACKED),
             )
             .map_err(stash_error)?,
-        Scope::Staged => create_staged_stash(&repo, &signature, &changes)?,
+        Scope::Staged => create_staged_stash(&repo, &signature, &changes, &filtered_paths)?,
     };
     Ok(json!({ "stash": oid.to_string(), "skippedGitlinks": skipped }))
 }
@@ -397,9 +443,13 @@ pub fn files(payload: &Value) -> NativeResult<Value> {
     let mut diff = repo
         .diff_tree_to_tree(Some(&base_tree), Some(&tree), Some(&mut options))
         .map_err(format_git_error)?;
-    let mut find = DiffFindOptions::new();
-    find.renames(true);
-    let _ = diff.find_similar(Some(&mut find));
+    if diff.deltas().any(|delta| delta.status() == Delta::Added)
+        && diff.deltas().any(|delta| delta.status() == Delta::Deleted)
+    {
+        let mut find = DiffFindOptions::new();
+        find.renames(true);
+        let _ = diff.find_similar(Some(&mut find));
+    }
     let mut values: Vec<Value> = diff.deltas().map(delta_value).collect();
 
     if commit.parent_count() >= 3 {
@@ -551,20 +601,26 @@ fn preflight_apply(repo: &Repository, stash: &Commit<'_>) -> NativeResult<()> {
         .filter(|path| root.join(path.as_str()).symlink_metadata().is_ok())
         .cloned()
         .collect::<BTreeSet<_>>();
-    let mut status_options = StatusOptions::new();
-    status_options
-        .include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .include_ignored(false)
-        .exclude_submodules(true);
-    let statuses = repo
-        .statuses(Some(&mut status_options))
-        .map_err(format_git_error)?;
-    for entry in statuses.iter() {
-        if is_worktree_change(entry.status()) {
-            let path = normalize(&String::from_utf8_lossy(entry.path_bytes()));
-            if touched.contains(&path) {
-                clashes.insert(path);
+    if !touched.is_empty() {
+        let mut status_options = StatusOptions::new();
+        status_options
+            .include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .include_ignored(false)
+            .exclude_submodules(true)
+            .disable_pathspec_match(true);
+        for path in &touched {
+            status_options.pathspec(path);
+        }
+        let statuses = repo
+            .statuses(Some(&mut status_options))
+            .map_err(format_git_error)?;
+        for entry in statuses.iter() {
+            if is_worktree_change(entry.status()) {
+                let path = normalize(&String::from_utf8_lossy(entry.path_bytes()));
+                if touched.contains(&path) {
+                    clashes.insert(path);
+                }
             }
         }
     }
@@ -579,7 +635,7 @@ fn preflight_apply(repo: &Repository, stash: &Commit<'_>) -> NativeResult<()> {
         .chain(untracked.iter())
         .cloned()
         .collect::<Vec<_>>();
-    ensure_stashable(repo, &paths, "应用 stash")
+    ensure_stashable(repo, &paths, "应用 stash").map(|_| ())
 }
 
 fn apply_error(error: git2::Error) -> String {
@@ -631,4 +687,28 @@ pub fn drop_stash(payload: &Value) -> NativeResult<Value> {
     let index = stash_index(&mut repo, hash)?;
     repo.stash_drop(index).map_err(format_git_error)?;
     Ok(json!({ "stash": hash }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_restore_never_checks_out_unrelated_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = Repository::init(directory.path()).unwrap();
+        let signature = git2::Signature::now("Stash Test", "stash@example.com").unwrap();
+        let path = directory.path().join("file");
+        std::fs::write(&path, "base\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("file")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &signature, &signature, "base", &tree, &[])
+            .unwrap();
+        std::fs::write(&path, "unrelated edit\n").unwrap();
+        restore_worktree_paths(&repo, &[], false).unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "unrelated edit\n");
+    }
 }

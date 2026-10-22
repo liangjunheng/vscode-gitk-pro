@@ -1162,9 +1162,10 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     var button = document.getElementById('stashListToggle');
     if (!button) return;
     button.setAttribute('aria-pressed', String(visible));
-    var base = visible ? '隐藏 Stash（穿插在提交之间）' : '显示 Stash（穿插在提交之间）';
+    var description = '在commit列表中显示stash提交（当前状态： ' + (visible ? '开' : '关') + '）';
+    button.setAttribute('aria-label', description);
     // 基线提交还没加载(或不在已选分支上)的 stash 无法穿插进图, 在这里如实告知。
-    button.title = hiddenCount > 0 ? base + '；另有 ' + hiddenCount + ' 个 Stash 的基线提交尚未加载，加载更多提交后显示' : base;
+    button.title = hiddenCount > 0 ? description + '；另有 ' + hiddenCount + ' 个 Stash 的基线提交尚未加载，加载更多提交后显示' : description;
     button.dataset.hidden = hiddenCount > 0 ? String(hiddenCount) : '';
   }
 

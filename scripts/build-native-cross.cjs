@@ -4,6 +4,8 @@ const { spawnSync } = require('node:child_process');
 const { targetDefinition } = require('./native-targets.cjs');
 const {
   libgit2PatchConfig,
+  prepareBuildWorkspace,
+  prepareLibgit2Patch,
   prepareDarwinBuildWorkspace,
   prepareDarwinLibgit2Patch,
 } = require('./prepare-libgit2-darwin-patch.cjs');
@@ -27,7 +29,7 @@ if (!definition || definition.rustTarget !== rustTarget) {
 }
 
 const manifest = path.join(root, 'native', 'git2-backend', 'Cargo.toml');
-let buildManifest = manifest;
+let buildManifest = prepareBuildWorkspace(root, vscodeTarget);
 const targetDirectory = process.env.VSCODE_GITK_CARGO_TARGET_DIR || path.join(root, 'native', 'git2-backend', 'target');
 fs.mkdirSync(targetDirectory, { recursive: true });
 const childEnv = {
@@ -76,7 +78,7 @@ if (reusableOpenSsl) {
   console.log(`${vscodeTarget}: reusing OpenSSL from ${reusableOpenSsl}`);
 }
 
-let darwinPatchConfig;
+let darwinPatchConfig = libgit2PatchConfig(prepareLibgit2Patch(manifest, childEnv));
 if (rustTarget.endsWith('-apple-darwin')) {
   childEnv.CFLAGS = [process.env.CFLAGS, '-DOPENSSL_NO_APPLE_CRYPTO_RANDOM'].filter(Boolean).join(' ');
   if (process.platform !== 'darwin') {

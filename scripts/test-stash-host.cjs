@@ -153,16 +153,16 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   assert.equal(published.state.showStashes, true, 'the fixture opts in so the list below can be exercised');
   // 夹具用 Object.create 绕过构造, 字段初始值不会执行; 真实默认值只能对编译产物做源码级断言(GitkViewProvider 的构造依赖整个扩展上下文, 无法在这里实例化)。
   const compiledProvider = require('node:fs').readFileSync(require.resolve('../out/webview/gitkViewProvider'), 'utf8');
-  assert.match(compiledProvider, /this\.showStashes = false;/, 'the provider field has a safe off fallback');
+  assert.match(compiledProvider, /this\.showStashes = false;/, 'the provider field keeps a safe pre-constructor fallback');
   assert.doesNotMatch(compiledProvider, /this\.showStashes = true;/);
-  assert.match(compiledProvider, /configuration\.get\(['"]showStashes['"], false\)/, 'the constructor restores the saved showStashes setting');
+  assert.match(compiledProvider, /configuration\.get\(['"]showStashes['"], true\)/, 'the constructor restores the saved showStashes setting with an on fallback');
   assert.match(compiledProvider, /affectsConfiguration\(['"]fastergit\.showStashes['"]\)/, 'external Settings changes update the live view');
   assert.match(compiledProvider, /\.update\([\s\S]*?['"]showStashes['"][\s\S]*?ConfigurationTarget\.Global/, 'the toolbar toggle persists globally');
   const packageJson = JSON.parse(require('node:fs').readFileSync(require('node:path').resolve(__dirname, '../package.json'), 'utf8'));
   assert.deepEqual(packageJson.contributes.configuration.properties['fastergit.showStashes'], {
-    type: 'boolean', default: false, scope: 'application',
+    type: 'boolean', default: true, scope: 'application',
     description: '在 Commit 列表中显示 Stash。列表右上角的 Stash 按钮会同步更新此设置。',
-  }, 'the preference is public in Settings and defaults to off');
+  }, 'the preference is public in Settings and defaults to on');
   const compiledCommitCard = require('node:fs').readFileSync(require.resolve('../out/webview/commitCardScript'), 'utf8');
   assert.match(compiledCommitCard, /stashStaged\.hidden=conflictCount>0;/, 'Commit Panel hides staged stash while conflicts exist');
   assert.match(compiledCommitCard, /stashUnstaged\.hidden=conflictCount>0;/, 'Commit Panel hides unstaged stash while conflicts exist');
@@ -417,6 +417,54 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   await provider.runStashCommitAction('stashDrop', stashHash, repoA.path);
   assert.ok(warnings.some(w => /ERROR Git 操作失败: no stashed state/.test(w)));
   assert.deepEqual(reloaded, [[repoA.path, true]], 'a failed drop still re-reads the list so the cache matches git');
+
+  // Overlapping watcher + explicit refresh requests share I/O, not merely publication.
+  const makeLoader = () => Object.assign(Object.create(GitkViewProvider.prototype), {
+    stashesByRepository: new Map(), stashLoadingByRepository: new Map(),
+    getRepoRootUri: path => vscode.Uri.parse(path),
+    commitController: { setStashes: (_path, entries) => loaderPublications.push(entries.map(entry => entry.hash)) },
+    schedulePushState() {},
+  });
+  const loaderPublications = [];
+  const tick = () => new Promise(resolve => setImmediate(resolve));
+  let reads = 0;
+  stashReadResult = async () => { reads++; return [newest]; };
+  const coalesced = makeLoader();
+  await Promise.all(Array.from({ length: 8 }, () => coalesced.loadRepositoryStashes(repoA.path, true)));
+  assert.equal(reads, 1, 'same-turn duplicate reloads issue one native read');
+  assert.deepEqual(loaderPublications, [[newest.hash]]);
+
+  let releaseFirst;
+  loaderPublications.length = 0; reads = 0;
+  stashReadResult = () => ++reads === 1 ? new Promise(resolve => { releaseFirst = resolve; }) : [older];
+  const invalidated = makeLoader();
+  const firstLoad = invalidated.loadRepositoryStashes(repoA.path, true);
+  await tick();
+  const followups = Array.from({ length: 8 }, () => invalidated.loadRepositoryStashes(repoA.path, true));
+  releaseFirst([newest]);
+  await Promise.all([firstLoad, ...followups]);
+  assert.equal(reads, 2, 'invalidations during I/O request exactly one fresh pass');
+  assert.deepEqual(loaderPublications, [[older.hash]], 'never publish the invalidated read');
+
+  loaderPublications.length = 0; reads = 0;
+  stashReadResult = async () => { if (++reads === 1) throw new Error('read failed'); return [older]; };
+  const retry = makeLoader();
+  const failures = await Promise.allSettled([retry.loadRepositoryStashes(repoA.path, true), retry.loadRepositoryStashes(repoA.path, true)]);
+  assert.ok(failures.every(result => result.status === 'rejected'));
+  await retry.loadRepositoryStashes(repoA.path, true);
+  assert.equal(reads, 2, 'a failed shared read must not poison later refreshes');
+
+  loaderPublications.length = 0; reads = 0;
+  stashReadResult = () => ++reads === 1 ? new Promise(resolve => { releaseFirst = resolve; }) : [older];
+  const removed = makeLoader();
+  const oldLoad = removed.loadRepositoryStashes(repoA.path, true);
+  await tick();
+  removed.stashLoadingByRepository.delete(repoA.path);
+  removed.stashLoadsInFlight.delete(repoA.path);
+  await removed.loadRepositoryStashes(repoA.path, true);
+  releaseFirst([newest]);
+  await oldLoad;
+  assert.deepEqual(loaderPublications, [[older.hash]], 'a removed/re-added repository rejects the previous load');
 
   console.log('Stash host passed: selection fallback, stateUpdate groups (toggle/search/multi-repo), stash file reader, fixed unstaged/staged native scopes without confirmation dialogs, conflict/empty guards, gitlink notice, error surfacing, queue routing, apply / pop / drop routing, confirmation, selection hand-off.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -27,8 +27,8 @@ export const COMMIT_CARD_SCRIPT = `
           '<button class="history-btn message-history-btn" type="button" title="历史提交信息"><span class="codicon codicon-history"></span></button>'+
         '</div>'+
         '<div class="section conflict" hidden><div class="section-title collapsible"><span class="left"><span class="codicon codicon-chevron-down conflict-chevron"></span><span>Merge Changes</span><span class="section-count-badge conflict-count" hidden></span></span><span class="section-actions conflict-actions"><button class="icon-btn conflict-all" data-action="stage" data-section="conflict" title="暂存所有文件并标记冲突已解决"><span class="codicon codicon-add"></span></button></span></div><div class="conflict-list"></div></div>'+
-        '<div class="section unstaged"><div class="section-title collapsible"><span class="left"><span class="codicon codicon-chevron-down unstaged-chevron"></span><span>Unstaged Changes</span><span class="section-count-badge unstaged-count" hidden></span></span><span class="section-actions unstaged-actions"><button class="icon-btn discard-all" data-action="discard" data-section="unstaged" title="还原所有文件"><span class="codicon codicon-discard"></span></button><button class="icon-btn stage-all" data-action="stage" data-section="unstaged" title="暂存所有文件"><span class="codicon codicon-add"></span></button></span></div><div class="unstaged-list"></div></div>'+
-        '<div class="section staged"><div class="section-title collapsible"><span class="left"><span class="codicon codicon-chevron-down staged-chevron"></span><span>Staged Changes</span><span class="section-count-badge staged-count" hidden></span></span><span class="section-actions staged-actions"><button class="icon-btn staged-all" data-action="unstage" data-section="staged" title="取消暂存所有文件"><span class="codicon codicon-remove"></span></button></span></div><div class="staged-list"></div></div>'+
+        '<div class="section unstaged"><div class="section-title collapsible"><span class="left"><span class="codicon codicon-chevron-down unstaged-chevron"></span><span>Unstaged Changes</span><span class="section-count-badge unstaged-count" hidden></span></span><span class="section-actions unstaged-actions"><button class="icon-btn stash-unstaged" data-action="stash" data-section="unstaged" title="Stash 未暂存的更改"><span class="codicon codicon-archive"></span></button><button class="icon-btn discard-all" data-action="discard" data-section="unstaged" title="还原所有文件"><span class="codicon codicon-discard"></span></button><button class="icon-btn stage-all" data-action="stage" data-section="unstaged" title="暂存所有文件"><span class="codicon codicon-add"></span></button></span></div><div class="unstaged-list"></div></div>'+
+        '<div class="section staged"><div class="section-title collapsible"><span class="left"><span class="codicon codicon-chevron-down staged-chevron"></span><span>Staged Changes</span><span class="section-count-badge staged-count" hidden></span></span><span class="section-actions staged-actions"><button class="icon-btn stash-staged" data-action="stash" data-section="staged" title="Stash 已暂存的更改"><span class="codicon codicon-archive"></span></button><button class="icon-btn staged-all" data-action="unstage" data-section="staged" title="取消暂存所有文件"><span class="codicon codicon-remove"></span></button></span></div><div class="staged-list"></div></div>'+
         '<div class="section committed" hidden><div class="section-title collapsible"><span class="left"><span class="codicon codicon-chevron-down committed-chevron"></span><span>Committed Changes</span><span class="section-count-badge committed-count" hidden></span></span></div><div class="committed-list"></div></div>'+
         '<div class="actions">'+
           '<span class="hint"></span>'+
@@ -352,10 +352,16 @@ export const COMMIT_CARD_SCRIPT = `
     stagedCount.textContent=card.stagedFiles.length?String(card.stagedFiles.length):'';
     stagedCount.hidden=card.stagedFiles.length===0;
     el.querySelector('.staged-all').disabled=card.stagedFiles.length===0;
+    const stashStaged=el.querySelector('.stash-staged');
+    stashStaged.hidden=conflictCount>0;
+    stashStaged.disabled=card.stagedFiles.length===0||conflictCount>0;
     const unstagedCount=el.querySelector('.unstaged-count');
     unstagedCount.textContent=card.unstagedFiles.length?String(card.unstagedFiles.length):'';
     unstagedCount.hidden=card.unstagedFiles.length===0;
     el.querySelector('.discard-all').disabled=card.unstagedFiles.length===0;
+    const stashUnstaged=el.querySelector('.stash-unstaged');
+    stashUnstaged.hidden=conflictCount>0;
+    stashUnstaged.disabled=card.unstagedFiles.length===0||conflictCount>0;
     el.querySelector('.stage-all').disabled=card.unstagedFiles.length===0;
     renderFileList(stagedList,card.stagedFiles,'staged',el.dataset.repo,el._state.selectedWorkingTreeFiles);
     renderFileList(unstagedList,card.unstagedFiles,'unstaged',el.dataset.repo,el._state.selectedWorkingTreeFiles);

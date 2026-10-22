@@ -185,6 +185,63 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         await this.requestRefresh(branch.repoOption.path);
     }
 
+
+    /**
+     * 完成一个已经能给出权威路径补丁的操作。先把补丁写入唯一缓存并发布；
+     * 只有无法从操作语义确定的少量路径才同步读取 status。操作自身触发的
+     * index/worktree 事件从 pending 集合移除，事务结束后的新事件仍会正常刷新。
+     */
+    async completeWorkingTreeMutation(
+        branch: GitBranchOption,
+        changes: WorkingTreeChanges,
+        affectedPaths: readonly string[],
+        verificationPaths: readonly string[] = [],
+    ): Promise<void> {
+        const repositoryPath = branch.repoOption.path;
+        const slot = this.slots.get(repositoryPath);
+        if (!slot || slot.branch?.hash !== branch.hash) {
+            throw new Error('该分支不是仓库当前 HEAD');
+        }
+        if (slot.mutationDepth === 0) {
+            throw new Error('工作区操作事务未开始');
+        }
+        slot.mutationDepth--;
+        if (slot.mutationDepth > 0) { return; }
+
+        const affected = new Set(affectedPaths);
+        affected.forEach(filePath => {
+            slot.pendingPaths?.delete(filePath);
+            slot.pendingWorkspaceContentPaths?.delete(filePath);
+            slot.indexChangedPaths.delete(filePath);
+        });
+        slot.indexRefreshPending = false;
+
+        const projected = this.withDirectChildGitlinkStates(repositoryPath, changes);
+        const changesByHash = this.changesByRepository.get(repositoryPath) ?? new Map<string, WorkingTreeChanges>();
+        const previous = changesByHash.get(branch.hash);
+        changesByHash.set(branch.hash, projected);
+        this.changesByRepository.set(repositoryPath, changesByHash);
+        if (previous?.equals(projected)) {
+            if (affectedPaths.length > 0) {
+                this.contentChangesEmitter.fire({ branch, changes: copyChanges(projected), affectedPaths });
+            }
+        } else {
+            this.changesEmitter.fire({ branch, changes: copyChanges(projected), affectedPaths });
+            void this.publishParentGitlinkProjection(branch);
+        }
+
+        if (verificationPaths.length > 0) {
+            const pendingPaths = slot.pendingPaths ?? new Set<string>();
+            verificationPaths.forEach(filePath => pendingPaths.add(filePath));
+            slot.pendingPaths = pendingPaths;
+            await this.requestRefresh(repositoryPath);
+        } else if (slot.fullRefreshPending
+            || (slot.pendingPaths?.size ?? 0) > 0
+            || (slot.pendingWorkspaceContentPaths?.size ?? 0) > 0) {
+            void this.requestRefresh(repositoryPath);
+        }
+    }
+
     dispose(): void {
         this.branchSubscription.dispose();
         this.workspaceWatchers.forEach(watcher => watcher.dispose());
