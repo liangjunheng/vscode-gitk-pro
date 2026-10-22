@@ -458,6 +458,40 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     return { title: title, body: body };
   }
 
+  var commitTagStateRequestId = 0;
+  function commitRowLocalTags(row) {
+    try {
+      var tags = JSON.parse(row.getAttribute('data-local-tags') || '[]');
+      return Array.isArray(tags) ? tags.filter(function(tag) { return typeof tag === 'string'; }) : [];
+    } catch (_) {
+      return [];
+    }
+  }
+  function setCommitTagActionAvailability(menu, state) {
+    var deleteTagButton = menu.querySelector('[data-commit-action="deleteTag"]');
+    var deleteRemoteTagButton = menu.querySelector('[data-commit-action="deleteRemoteTag"]');
+    var pushTagButton = menu.querySelector('[data-commit-action="pushTag"]');
+    if (!deleteTagButton || !deleteRemoteTagButton || !pushTagButton) return;
+    deleteTagButton.disabled = !(state.localTagCount > 0);
+    deleteRemoteTagButton.disabled = !(state.remoteTagCount > 0);
+    pushTagButton.disabled = !(state.pushableTagCount > 0);
+    var remoteLoadingSuffix = state.remoteLoading === true ? '（查询中…）' : '';
+    deleteRemoteTagButton.querySelector('span').textContent = 'delete remote tag' + remoteLoadingSuffix;
+    pushTagButton.querySelector('span').textContent = 'push tag' + remoteLoadingSuffix;
+    var errorTitle = state.remoteError ? '读取远程 Tag 失败：' + state.remoteError : '';
+    deleteRemoteTagButton.title = deleteRemoteTagButton.disabled ? errorTitle : '';
+    pushTagButton.title = pushTagButton.disabled ? errorTitle : '';
+  }
+  window.addEventListener('message', function(event) {
+    var msg = event.data;
+    if (!msg || msg.type !== 'commitTagState') return;
+    var menu = document.getElementById('commitContextMenu');
+    if (!menu.matches(':popover-open') || !commitContextTarget) return;
+    if (String(msg.requestId) !== menu.dataset.tagStateRequestId
+        || msg.hash !== commitContextTarget.hash || msg.repositoryPath !== commitContextTarget.repositoryPath) return;
+    setCommitTagActionAvailability(menu, msg);
+  });
+
   document.getElementById('commitSection').addEventListener('contextmenu', function(event) {
     if (event.target.closest('#searchInput')) {
       showRepositoryMessageContextMenu(event, document.getElementById('searchInput'));
@@ -481,6 +515,13 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     var isStashRow = row.classList.contains('stash');
     menu.querySelectorAll('.commit-only').forEach(function(item) { item.hidden = isStashRow; });
     menu.querySelectorAll('.stash-only').forEach(function(item) { item.hidden = !isStashRow; });
+    if (!isStashRow) {
+      var localTags = commitRowLocalTags(row);
+      var requestId = ++commitTagStateRequestId;
+      menu.dataset.tagStateRequestId = String(requestId);
+      setCommitTagActionAvailability(menu, { localTagCount: localTags.length, remoteTagCount: 0, pushableTagCount: 0, remoteLoading: true, remoteError: '' });
+      vscode.postMessage({ type: 'requestCommitTagState', requestId: requestId, hash: hash, repositoryPath: repositoryPath });
+    }
     var toggle = menu.querySelector('[data-commit-action="toggleDescription"]');
     var expanded = row.classList.contains('expanded');
     toggle.querySelector('span').textContent = expanded ? '关闭描述' : '展开描述';
@@ -596,6 +637,11 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     if (c.isStash) laneCount = stashBranchColumn(c) + 1;
     return laneColumnWidth(laneCount);
   }
+  function localTagNames(refs) {
+    return refs.filter(function(ref) { return ref.startsWith('tag: '); })
+      .map(function(ref) { return ref.slice(5); });
+  }
+
   // 每类 ref 最多渲染一个图标位：当前分支、Tag、本地分支、远程分支。
   // 分支分类严格来自 branches 元数据；Tag 来自原生层规范化后的 "tag: " 前缀。
   function categorizedRefs(refs, repositoryPath) {
@@ -694,7 +740,8 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     var selected = selectedCommitHash === c.hash && repositoryPath === selectedCommitRepositoryPath;
     // 描述只能在当前高亮 commit 上显示。
     var expanded = selected && expandedCommits.has(commitKey);
-    var html = '<div class="commit-row' + (cloud ? ' cloud' : '') + (stash ? ' stash' : '') + (expanded ? ' expanded' : '') + (selected ? ' selected' : '') + '" data-hash="' + escapeAttr(c.hash) + '" data-repository-path="' + escapeAttr(repositoryPath) + '"' + (cloud ? '' : ' data-row="' + i + '"') + ' data-has-description="true">';
+    var localTags = stash ? [] : localTagNames(c.refs || []);
+    var html = '<div class="commit-row' + (cloud ? ' cloud' : '') + (stash ? ' stash' : '') + (expanded ? ' expanded' : '') + (selected ? ' selected' : '') + '" data-hash="' + escapeAttr(c.hash) + '" data-repository-path="' + escapeAttr(repositoryPath) + '" data-local-tags="' + escapeAttr(JSON.stringify(localTags)) + '"' + (cloud ? '' : ' data-row="' + i + '"') + ' data-has-description="true">';
     var commitMessage = splitCommitMessage(c);
     // 每个分支类别独立展开；Commit 详情由行悬浮卡与展开描述提供。
     var refChipsHtml = (stash ? [] : categorizedRefs(c.refs || [], repositoryPath)).map(function(category) {

@@ -1828,6 +1828,28 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     private onMessage(message: unknown): void {
+        const tagStateRequest = message as { type?: unknown; requestId?: unknown; hash?: unknown; repositoryPath?: unknown };
+        if (tagStateRequest?.type === 'requestCommitTagState') {
+            const { requestId, hash, repositoryPath } = tagStateRequest;
+            if (typeof requestId !== 'number' || typeof hash !== 'string' || typeof repositoryPath !== 'string'
+                || !this.repositories.some(repository => repository.path === repositoryPath)) { return; }
+            void this.gitActions.getCommitTagState(hash, repositoryPath).then(state => {
+                this.view?.webview.postMessage({
+                    type: 'commitTagState', requestId, hash, repositoryPath,
+                    localTagCount: state?.localTags.length ?? 0,
+                    remoteTagCount: state?.remoteTags.length ?? 0,
+                    pushableTagCount: state?.pushableTags.length ?? 0,
+                    remoteError: state?.remoteErrors.map(error => `${error.remote}: ${error.message}`).join('\n') ?? '',
+                });
+            }).catch(error => {
+                this.view?.webview.postMessage({
+                    type: 'commitTagState', requestId, hash, repositoryPath,
+                    localTagCount: 0, remoteTagCount: 0, pushableTagCount: 0,
+                    remoteError: error instanceof Error ? error.message : String(error),
+                });
+            });
+            return;
+        }
         const input = message as GitkIntent;
         if (input?.type === 'repositoryChangesFile' || input?.type === 'repositoryChangesFileAction' || input?.type === 'repositoryChangesAction') {
             void this.handleRepositoryChangesIntent(input);

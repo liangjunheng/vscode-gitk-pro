@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { defaultPushTarget, getPushPlan, runGitSync, updateGitSubmodules, type PushTargetOption } from '../git/gitLogProvider';
-import { checkout, cherryPick, createBranch, createTag, merge, rebase, reset, revertCommit, stageAll, statusSummary, type NativePushResult } from '../git/gitNativeOperations';
+import { checkout, cherryPick, createBranch, createTag, deleteLocalTag, deleteRemoteTag, merge, pushTag as pushCommitTag, readCommitTagState, rebase, reset, revertCommit, stageAll, statusSummary, type CommitTagState, type NativePushResult, type RemoteTagRef } from '../git/gitNativeOperations';
 import { GitCommitEditMsgEditor } from '../webview/gitCommitEditMsgEditor';
 import { confirmPush, pickPushTargets, showPushResult } from './pushDialogs';
 
@@ -17,11 +17,29 @@ function formatPushResultDetail(results: readonly NativePushResult[] | undefined
     }).join('\n\n');
 }
 
+async function pickLocalTag(tags: readonly string[], placeHolder: string): Promise<string | undefined> {
+    if (tags.length === 0) { return undefined; }
+    if (tags.length === 1) { return tags[0]; }
+    const picked = await vscode.window.showQuickPick(tags.map(label => ({ label })), { placeHolder });
+    return picked?.label;
+}
+
+async function pickRemoteTag(tags: readonly RemoteTagRef[], placeHolder: string): Promise<RemoteTagRef | undefined> {
+    if (tags.length === 0) { return undefined; }
+    if (tags.length === 1) { return tags[0]; }
+    const picked = await vscode.window.showQuickPick(
+        tags.map(tag => ({ label: tag.name, description: tag.remote, tag })),
+        { placeHolder },
+    );
+    return picked?.tag;
+}
+
 /**
  * Git 操作执行器: 处理用户触发的 Git 命令 (tag, branch, checkout, merge, rebase, reset 等)
  */
 export class GitActionRunner {
     private syncInProgress = false;
+    private readonly pendingCommitTagStates = new Map<string, Promise<CommitTagState>>();
 
     constructor(
         private readonly getRootUri: (repositoryPath?: string) => vscode.Uri | undefined,
@@ -79,6 +97,19 @@ export class GitActionRunner {
         });
     }
 
+    async getCommitTagState(hash: string, repositoryPath: string): Promise<CommitTagState | undefined> {
+        const rootUri = this.getRootUri(repositoryPath);
+        if (!rootUri) { return undefined; }
+        const key = `${repositoryPath}:${hash}`;
+        const pending = this.pendingCommitTagStates.get(key);
+        if (pending) { return pending; }
+        const task = readCommitTagState(rootUri, hash).finally(() => {
+            if (this.pendingCommitTagStates.get(key) === task) { this.pendingCommitTagStates.delete(key); }
+        });
+        this.pendingCommitTagStates.set(key, task);
+        return task;
+    }
+
     async runCommitAction(action: string, hash: string, repositoryPath: string): Promise<void> {
         const rootUri = this.getRootUri(repositoryPath);
         if (!rootUri) { return; }
@@ -90,10 +121,56 @@ export class GitActionRunner {
         let didMutateRepository = false;
         try {
             switch (action) {
-                case 'addTag': {
+                case 'addTag': // 兼容旧 Webview 已排队的消息。
+                case 'createTag': {
                     const tagName = await vscode.window.showInputBox({ prompt: '输入新标签名称', validateInput: value => value.trim() ? undefined : '标签名称不能为空' });
                     if (!tagName) { return; }
                     await createTag(rootUri, tagName.trim(), hash, `Tag ${tagName.trim()}`);
+                    didMutateRepository = true;
+                    break;
+                }
+                case 'deleteTag': {
+                    const state = await readCommitTagState(rootUri, hash);
+                    if (state.localTags.length === 0) {
+                        void vscode.window.showWarningMessage('所选提交没有可删除的本地 Tag。');
+                        return;
+                    }
+                    const tagName = await pickLocalTag(state.localTags, '选择要删除的本地 Tag');
+                    if (!tagName) { return; }
+                    const confirmed = await vscode.window.showWarningMessage(
+                        `删除本地 Tag “${tagName}”？`, { modal: true }, '删除 Tag');
+                    if (confirmed !== '删除 Tag') { return; }
+                    await deleteLocalTag(rootUri, tagName);
+                    didMutateRepository = true;
+                    break;
+                }
+                case 'deleteRemoteTag': {
+                    const state = await readCommitTagState(rootUri, hash);
+                    if (state.remoteTags.length === 0) {
+                        void vscode.window.showWarningMessage('所选提交没有可删除的远程 Tag。');
+                        return;
+                    }
+                    const tag = await pickRemoteTag(state.remoteTags, '选择要删除的远程 Tag');
+                    if (!tag) { return; }
+                    const confirmed = await vscode.window.showWarningMessage(
+                        `从 ${tag.remote} 删除远程 Tag “${tag.name}”？`, { modal: true }, '删除远程 Tag');
+                    if (confirmed !== '删除远程 Tag') { return; }
+                    await deleteRemoteTag(rootUri, tag.remote, tag.name);
+                    didMutateRepository = true;
+                    break;
+                }
+                case 'pushTag': {
+                    const state = await readCommitTagState(rootUri, hash);
+                    if (state.pushableTags.length === 0) {
+                        void vscode.window.showWarningMessage('所选提交没有可推送的 Tag。');
+                        return;
+                    }
+                    const tag = await pickRemoteTag(state.pushableTags, '选择要推送的 Tag 和远程仓库');
+                    if (!tag) { return; }
+                    const confirmed = await vscode.window.showWarningMessage(
+                        `将本地 Tag “${tag.name}” 推送到 ${tag.remote}？`, { modal: true }, 'Push Tag');
+                    if (confirmed !== 'Push Tag') { return; }
+                    await pushCommitTag(rootUri, tag.remote, tag.name);
                     didMutateRepository = true;
                     break;
                 }

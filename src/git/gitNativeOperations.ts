@@ -101,7 +101,7 @@ function readSystemProxyShared(): Promise<SystemProxy> {
 }
 
 function isNetworkCommand(args: readonly string[]): boolean {
-    return ['fetch', 'pull', 'push', 'submodule'].includes(args[0] ?? '');
+    return ['fetch', 'pull', 'push', 'submodule', 'ls-remote'].includes(args[0] ?? '');
 }
 
 async function hasExplicitGitProxy(rootUri: vscode.Uri): Promise<boolean> {
@@ -175,6 +175,97 @@ export const commit = (rootUri: vscode.Uri, message: string, amend = false): Pro
     invokeNativeGit<string>('commit', { rootPath: rootUri.fsPath, message, amend });
 export const createTag = (rootUri: vscode.Uri, name: string, revision: string, message: string): Promise<string> =>
     invokeNativeGit<string>('createTag', { rootPath: rootUri.fsPath, name, revision, message });
+
+export interface RemoteTagRef {
+    readonly remote: string;
+    readonly name: string;
+}
+
+export interface CommitTagState {
+    readonly localTags: readonly string[];
+    readonly remoteTags: readonly RemoteTagRef[];
+    readonly pushableTags: readonly RemoteTagRef[];
+    readonly remoteErrors: readonly { remote: string; message: string }[];
+}
+
+type RemoteTagSnapshot = {
+    readonly remote: string;
+    readonly targetsByName: Map<string, string>;
+};
+
+function parseLocalTagTargets(output: string): Map<string, string> {
+    const targets = new Map<string, string>();
+    for (const line of output.split(/\r?\n/)) {
+        if (!line) { continue; }
+        const [name, peeled, direct] = line.split('\0');
+        if (name && (peeled || direct)) { targets.set(name, peeled || direct); }
+    }
+    return targets;
+}
+
+function parseRemoteTagTargets(output: string): Map<string, string> {
+    const direct = new Map<string, string>();
+    const peeled = new Map<string, string>();
+    for (const line of output.split(/\r?\n/)) {
+        const [hash, ref] = line.trim().split(/\s+/, 2);
+        if (!hash || !ref?.startsWith('refs/tags/')) { continue; }
+        const isPeeled = ref.endsWith('^{}');
+        const name = ref.slice('refs/tags/'.length, isPeeled ? -3 : undefined);
+        if (!name) { continue; }
+        (isPeeled ? peeled : direct).set(name, hash);
+    }
+    for (const [name, hash] of peeled) { direct.set(name, hash); }
+    return direct;
+}
+
+/** Read local tags and live remote-tag availability for one commit. Failed remotes stay unavailable instead of being guessed. */
+export async function readCommitTagState(rootUri: vscode.Uri, revision: string): Promise<CommitTagState> {
+    const [resolved, localOutput, remoteOutput] = await Promise.all([
+        invokeNativeGit<string[]>('resolveRevision', { rootPath: rootUri.fsPath, specs: [`${revision}^{commit}`] }),
+        runGitCli(rootUri, ['for-each-ref', '--format=%(refname:strip=2)%00%(*objectname)%00%(objectname)', 'refs/tags']),
+        runGitCli(rootUri, ['remote']),
+    ]);
+    const targetHash = resolved[0];
+    if (!targetHash) { throw new Error('无法解析所选提交'); }
+    const localTargets = parseLocalTagTargets(localOutput);
+    const localTags = [...localTargets]
+        .filter(([, hash]) => hash === targetHash)
+        .map(([name]) => name)
+        .sort((a, b) => a.localeCompare(b));
+    const remotes = remoteOutput.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+    const remoteErrors: Array<{ remote: string; message: string }> = [];
+    const snapshots = (await Promise.all(remotes.map(async remote => {
+        try {
+            const output = await runGitCli(rootUri, ['ls-remote', '--tags', remote]);
+            return { remote, targetsByName: parseRemoteTagTargets(output) } satisfies RemoteTagSnapshot;
+        } catch (error) {
+            remoteErrors.push({ remote, message: error instanceof Error ? error.message : String(error) });
+            return undefined;
+        }
+    }))).filter((value): value is RemoteTagSnapshot => Boolean(value));
+    const remoteTags: RemoteTagRef[] = [];
+    const pushableTags: RemoteTagRef[] = [];
+    for (const snapshot of snapshots) {
+        for (const [name, hash] of snapshot.targetsByName) {
+            if (hash === targetHash) { remoteTags.push({ remote: snapshot.remote, name }); }
+        }
+        for (const name of localTags) {
+            if (!snapshot.targetsByName.has(name)) { pushableTags.push({ remote: snapshot.remote, name }); }
+        }
+    }
+    const compare = (a: RemoteTagRef, b: RemoteTagRef): number =>
+        a.remote.localeCompare(b.remote) || a.name.localeCompare(b.name);
+    remoteTags.sort(compare);
+    pushableTags.sort(compare);
+    return { localTags, remoteTags, pushableTags, remoteErrors };
+}
+
+export const deleteLocalTag = (rootUri: vscode.Uri, name: string): Promise<void> =>
+    runGitCli(rootUri, ['tag', '--delete', '--', name]).then(() => undefined);
+export const deleteRemoteTag = (rootUri: vscode.Uri, remote: string, name: string): Promise<void> =>
+    runGitCli(rootUri, ['push', remote, `:refs/tags/${name}`]).then(() => undefined);
+export const pushTag = (rootUri: vscode.Uri, remote: string, name: string): Promise<void> =>
+    runGitCli(rootUri, ['push', remote, `refs/tags/${name}:refs/tags/${name}`]).then(() => undefined);
 export const createBranch = (rootUri: vscode.Uri, name: string, revision: string): Promise<void> =>
     invokeNativeGit<void>('createBranch', { rootPath: rootUri.fsPath, name, revision });
 export const checkout = (rootUri: vscode.Uri, revision: string, detach = false): Promise<void> =>

@@ -358,9 +358,9 @@ async function main() {
     await ordinary.click({ button: 'right' });
     menu = await menuState();
     assert.equal(menu.open, true);
-    assert.ok(menu.shown.includes('checkout') && menu.shown.includes('cherryPick') && menu.shown.includes('addTag'), 'an ordinary commit keeps its commit actions: ' + menu.shown);
+    assert.ok(menu.shown.includes('checkout') && menu.shown.includes('cherryPick') && menu.shown.includes('createTag') && menu.shown.includes('deleteTag') && menu.shown.includes('deleteRemoteTag') && menu.shown.includes('pushTag'), 'an ordinary commit keeps its commit and grouped tag actions: ' + menu.shown);
     assert.ok(!menu.shown.some(action => action.startsWith('stash')), 'and shows no stash action: ' + menu.shown);
-    assert.equal(menu.separators, 3, 'ordinary commits keep all three separators');
+    assert.equal(menu.separators, 4, 'ordinary commits keep the Tag actions in their own fourth group');
     await page.keyboard.press('Escape');
     assert.equal((await menuState()).open, false);
     // 复制 hash 对 stash 行同样可用
