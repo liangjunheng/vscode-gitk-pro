@@ -99,6 +99,8 @@ export const REPOSITORY_CHANGES_STYLES = `
   #repositoryGroupContextMenu:not(:popover-open), #repositoryMessageContextMenu:not(:popover-open) { display: none; }
   #repositoryGroupContextMenu button, #repositoryMessageContextMenu button { display: block; box-sizing: border-box; width: 100%; max-width: 100%; padding: 5px 8px; border: 0; border-radius: 3px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: transparent; text-align: left; font: inherit; }
   #repositoryGroupContextMenu button:hover, #repositoryMessageContextMenu button:hover { background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-menu-selectionForeground, var(--vscode-list-hoverForeground)); }
+  #repositoryFileContextMenu .repository-file-change-action { display: flex; align-items: center; gap: 6px; }
+  #repositoryFileContextMenu .repository-file-change-action .codicon { flex: 0 0 16px; width: 16px; text-align: center; }
   .repo-file-row:hover { background: var(--vscode-list-hoverBackground); border-radius: 3px; }
   .repo-file-row.selected, .repo-file-row.multi-selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); border-radius: 3px; }
   .repo-file-row.context-target, .repo-group-header.context-target { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); border-radius: 3px; outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
@@ -264,6 +266,26 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     button.innerHTML = '<span class="codicon codicon-' + icon + '" aria-hidden="true"></span>';
     return button;
   }
+  function decorateRepositoryFileChangeActions(menu, section, includeStash) {
+    const iconByAction = { stage: 'add', unstage: 'remove', discard: 'discard', stash: 'inbox' };
+    if (includeStash) {
+      const separator = menu.querySelector('[data-file-change-item].context-menu-separator');
+      if (separator) {
+        const stash = document.createElement('button');
+        stash.type = 'button'; stash.dataset.fileChangeAction = 'stash'; stash.setAttribute('data-file-change-item', '');
+        stash.textContent = section === 'staged' ? 'Stash 已暂存的更改' : 'Stash 未暂存的更改';
+        separator.before(stash);
+      }
+    }
+    menu.querySelectorAll('[data-file-change-action]').forEach(function(button) {
+      const icon = iconByAction[button.dataset.fileChangeAction];
+      if (!icon) return;
+      button.classList.add('repository-file-change-action');
+      const glyph = document.createElement('span');
+      glyph.className = 'codicon codicon-' + icon; glyph.setAttribute('aria-hidden', 'true');
+      button.prepend(glyph);
+    });
+  }
   function closeRepositoryGroupContextMenu() { if (repositoryGroupContextMenu.matches(':popover-open')) repositoryGroupContextMenu.hidePopover(); if (repositoryGroupContextHeader) repositoryGroupContextHeader.classList.remove('context-target'); repositoryGroupContextHeader = null; repositoryGroupContextTarget = null; }
   function closeRepositoryMessageContextMenu() { if (repositoryMessageContextMenu.matches(':popover-open')) repositoryMessageContextMenu.hidePopover(); repositoryMessageContextTarget = null; }
   function closeRepositoryFileContextMenu() { if (repositoryFileContextMenu.matches(':popover-open')) repositoryFileContextMenu.hidePopover(); if (repositoryFileContextRow) repositoryFileContextRow.classList.remove('context-target'); repositoryFileContextRow = null; repositoryFileContextTarget = null; }
@@ -311,6 +333,10 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     repositoryFileContextTarget = historical ? { kind: 'commit', hash: snapshot.commit.hash, repositoryPath: repositoryPath, path: filePath, paths: paths }
       : { kind: 'worktree', repositoryPath: repositoryPath, section: section, path: filePath, paths: paths, untrackedPaths: untrackedPaths };
     applyFileContextMenuStateForFiles(repositoryFileContextMenu, files, historical ? 'commit' : section);
+    if (!historical && (section === 'unstaged' || section === 'staged')) {
+      const hasConflicts = repository.staged.concat(repository.unstaged).some(function(item) { return item.isConflict; });
+      decorateRepositoryFileChangeActions(repositoryFileContextMenu, section, !hasConflicts);
+    }
     positionRepositoryContextMenu(repositoryFileContextMenu, event);
   }
   const repositoryFallbackSetiIconDefinitions = {

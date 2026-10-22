@@ -105,22 +105,27 @@ async function verifyWorktreeCard(browser, html) {
     // Group actions sit above the open items; they follow the clicked file's group and cover the whole selection.
     const openItems = ['打开文件', '打开文件 (修改前)', '打开文件 (修改后)', '通过文件管理器显示', '通过资源管理器视图显示', '复制文件', '复制文件路径', '复制文件相对路径'];
     await row('unstaged', 'c.cpp').click({ button: 'right' });
-    assert.deepEqual(await menu.locator('button:visible').allTextContents(), ['暂存', '还原', ...openItems], 'an unstaged file offers stage and discard above the open items');
-    assert.equal(await menu.evaluate(node => node.children[2].classList.contains('context-menu-separator')), true, 'a separator divides the group actions from the open items');
+    assert.deepEqual(await menu.locator('button:visible').allTextContents(), ['暂存', '还原', 'Stash 未暂存的更改', ...openItems], 'an unstaged file offers stage, discard and stash above the open items');
+    assert.deepEqual(await menu.locator('[data-file-change-action]').evaluateAll(nodes => nodes.map(node => node.querySelector('.codicon')?.className)), ['codicon codicon-add', 'codicon codicon-discard', 'codicon codicon-inbox'], 'unstaged actions use stage, discard and inbox icons');
+    assert.equal(await menu.evaluate(node => node.children[3].classList.contains('context-menu-separator')), true, 'a separator divides the group actions from the open items');
     await menu.locator('[data-file-change-action="stage"]').click();
     assert.deepEqual(await last(page), { type: 'repositoryChangesAction', repositoryPath, action: 'stage', section: 'unstaged', paths: ['a.cpp', 'c.cpp'], untrackedPaths: ['c.cpp'] }, 'stage covers the whole selection');
     assert.equal(await menu.isVisible(), false, 'choosing a group action closes the menu');
     await row('unstaged', 'c.cpp').click({ button: 'right' });
     await menu.locator('[data-file-change-action="discard"]').click();
     assert.deepEqual(await last(page), { type: 'repositoryChangesAction', repositoryPath, action: 'discard', section: 'unstaged', paths: ['a.cpp', 'c.cpp'], untrackedPaths: ['c.cpp'] }, 'discard covers the whole selection');
+    await row('unstaged', 'c.cpp').click({ button: 'right' });
+    await menu.locator('[data-file-change-action="stash"]').click();
+    assert.deepEqual(await last(page), { type: 'repositoryChangesAction', repositoryPath, action: 'stash', section: 'unstaged', paths: ['a.cpp', 'c.cpp'], untrackedPaths: ['c.cpp'] }, 'stash preserves the current repository-card selection in the intent');
     await row('unstaged', 'd.cpp').click({ button: 'right' });
     await menu.locator('[data-file-change-action="stage"]').click();
     assert.deepEqual(await last(page), { type: 'repositoryChangesAction', repositoryPath, action: 'stage', section: 'unstaged', paths: ['d.cpp'], untrackedPaths: [] }, 'an unselected file is staged alone');
     assert.deepEqual(await selectedNames(card, 'unstaged'), ['a.cpp', 'c.cpp'], 'a group action on an unselected file keeps the selection');
     // Re-opening the menu on another group never keeps the previous group's items.
     await row('staged', 's1.cpp').click({ button: 'right' });
-    assert.deepEqual(await menu.locator('button:visible').allTextContents(), ['取消暂存', ...openItems], 'a staged file offers unstage only');
-    assert.equal(await menu.locator('[data-file-change-item]').count(), 2, 'old group actions are replaced, not stacked');
+    assert.deepEqual(await menu.locator('button:visible').allTextContents(), ['取消暂存', 'Stash 已暂存的更改', ...openItems], 'a staged file offers unstage and stash');
+    assert.deepEqual(await menu.locator('[data-file-change-action]').evaluateAll(nodes => nodes.map(node => node.querySelector('.codicon')?.className)), ['codicon codicon-remove', 'codicon codicon-inbox'], 'staged actions use unstage and inbox icons');
+    assert.equal(await menu.locator('[data-file-change-item]').count(), 3, 'old group actions are replaced, not stacked');
     await menu.locator('[data-file-change-action="unstage"]').click();
     assert.deepEqual(await last(page), { type: 'repositoryChangesAction', repositoryPath, action: 'unstage', section: 'staged', paths: ['s1.cpp'], untrackedPaths: [] });
     // Only deleted files selected: nothing to open from disk.
