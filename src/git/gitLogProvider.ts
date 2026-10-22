@@ -431,15 +431,44 @@ interface GitlinkChange {
 
 interface NativeSubmoduleState {
     path: string;
+    absolutePath?: string;
     indexId?: string | null;
     workdirId?: string | null;
 }
 
 async function getSubmodulePathsNeedingUpdate(rootUri: vscode.Uri): Promise<string[]> {
+    const repositoryHasSubmoduleUpdate = async (
+        repositoryUri: vscode.Uri,
+        ancestors: ReadonlySet<string>,
+    ): Promise<boolean> => {
+        const key = repositoryKey(repositoryUri.fsPath);
+        if (ancestors.has(key)) { return false; }
+        const childAncestors = new Set(ancestors);
+        childAncestors.add(key);
+        const modules = await invokeNativeGit<NativeSubmoduleState[]>('submodules', { rootPath: repositoryUri.fsPath });
+        const updates = await Promise.all(modules.map(async module => {
+            if (Boolean(module.indexId) && module.indexId !== module.workdirId) { return true; }
+            if (!module.workdirId || !module.absolutePath) { return false; }
+            const childRoot = await resolveRepositoryRoot(module.absolutePath);
+            return childRoot
+                ? repositoryHasSubmoduleUpdate(vscode.Uri.file(childRoot), childAncestors)
+                : false;
+        }));
+        return updates.some(Boolean);
+    };
+
     const modules = await invokeNativeGit<NativeSubmoduleState[]>('submodules', { rootPath: rootUri.fsPath });
-    return modules
-        .filter(module => Boolean(module.indexId) && module.indexId !== module.workdirId)
-        .map(module => module.path);
+    const rootAncestors = new Set<string>([repositoryKey(rootUri.fsPath)]);
+    const paths = await Promise.all(modules.map(async module => {
+        if (!module.indexId) { return undefined; }
+        if (module.indexId !== module.workdirId) { return module.path; }
+        if (!module.workdirId || !module.absolutePath) { return undefined; }
+        const childRoot = await resolveRepositoryRoot(module.absolutePath);
+        if (!childRoot) { return undefined; }
+        // Nested paths belong to the child repository, so update their top-level owner from this root.
+        return await repositoryHasSubmoduleUpdate(vscode.Uri.file(childRoot), rootAncestors) ? module.path : undefined;
+    }));
+    return paths.filter((modulePath): modulePath is string => Boolean(modulePath));
 }
 
 async function getGitlinkChanges(rootUri: vscode.Uri, beforeHead: string, afterHead: string): Promise<GitlinkChange[]> {

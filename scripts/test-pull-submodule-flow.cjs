@@ -108,6 +108,85 @@ async function testPullChecksStaleSubmodulesWithoutHeadChange() {
     ]);
 }
 
+async function testPullChecksNestedUninitializedSubmodulesWithoutHeadChange() {
+    const rootPath = 'C:\\fixture';
+    const childPath = 'C:\\fixture\\modules\\parent';
+    const nestedLeftPath = `${childPath}\\nested\\left`;
+    const nestedRightPath = `${childPath}\\nested\\right`;
+    const progress = [];
+    const updateCalls = [];
+    const nestedScanStarts = [];
+    const nestedScanResolvers = new Map();
+    const head = 'a'.repeat(40);
+    const invokeNativeGit = async (operation, payload) => {
+        if (operation === 'head') return { hash: head };
+        if (operation === 'branches') return { local: [], remote: [] };
+        if (operation === 'discover') return { workdir: payload.path };
+        if (operation === 'submodules' && payload.rootPath === rootPath) return [
+            {
+                path: 'modules/parent',
+                absolutePath: childPath,
+                indexId: '1'.repeat(40),
+                workdirId: '1'.repeat(40),
+            },
+        ];
+        if (operation === 'submodules' && payload.rootPath === childPath) return [
+            {
+                path: 'nested/left',
+                absolutePath: nestedLeftPath,
+                indexId: '2'.repeat(40),
+                workdirId: '2'.repeat(40),
+            },
+            {
+                path: 'nested/right',
+                absolutePath: nestedRightPath,
+                indexId: '3'.repeat(40),
+                workdirId: '3'.repeat(40),
+            },
+        ];
+        if (operation === 'submodules' && (payload.rootPath === nestedLeftPath || payload.rootPath === nestedRightPath)) {
+            nestedScanStarts.push(payload.rootPath);
+            return new Promise(resolve => nestedScanResolvers.set(payload.rootPath, resolve));
+        }
+        throw new Error(`Unexpected native operation: ${operation}`);
+    };
+    const provider = loadFresh('../out/git/gitLogProvider', {
+        vscode: { Uri: { file: fsPath => ({ fsPath, toString: () => fsPath }) } },
+        './nativeGitBinding': { invokeNativeGit },
+        './gitNativeOperations': {
+            fetchRemotes: async () => {},
+            pull: async () => {},
+            push: async () => ({}),
+            updateSubmodules: async (_rootUri, paths) => updateCalls.push([...paths]),
+        },
+    });
+    const rootUri = { fsPath: rootPath, toString: () => rootPath };
+    const pending = provider.runGitSync(rootUri, 'pull', message => progress.push(message));
+    await new Promise(resolve => setImmediate(resolve));
+    nodeAssert.deepEqual([...nestedScanStarts].sort(), [nestedLeftPath, nestedRightPath].sort(),
+        'sibling repositories at the same recursive level are checked concurrently');
+
+    nestedScanResolvers.get(nestedLeftPath)([
+        {
+            path: 'missing',
+            absolutePath: `${nestedLeftPath}\\missing`,
+            indexId: '4'.repeat(40),
+            workdirId: null,
+        },
+    ]);
+    nestedScanResolvers.get(nestedRightPath)([]);
+    const result = await pending;
+    nodeAssert.equal(result.headChanged, false);
+    nodeAssert.equal(result.submodulesNeedUpdate, true);
+    nodeAssert.deepEqual(result.submodulePaths, ['modules/parent'],
+        'a deeply nested uninitialized module selects its top-level owner for recursive update');
+    nodeAssert.ok(progress.includes('正在检查子模块是否需要更新...'));
+
+    await provider.updateGitSubmodules(rootUri, result.submodulePaths);
+    nodeAssert.deepEqual(updateCalls, [['modules/parent']],
+        'updating the top-level owner lets --init --recursive initialize nested modules safely');
+}
+
 async function testPullPromptsBeforeUpdatingSubmodules() {
     let answer = '更新子模块';
     let events = [];
@@ -187,8 +266,9 @@ async function testPullPromptsBeforeUpdatingSubmodules() {
 async function main() {
     await testFetchesRootAndSubmodulesInParallel();
     await testPullChecksStaleSubmodulesWithoutHeadChange();
+    await testPullChecksNestedUninitializedSubmodulesWithoutHeadChange();
     await testPullPromptsBeforeUpdatingSubmodules();
-    console.log('Fetch/Pull submodule flow: parallel fetch, no-op check, confirmation, per-module progress, updated/skipped copy passed');
+    console.log('Fetch/Pull submodule flow: parallel fetch, recursive no-op check, confirmation, initialization, per-module progress, updated/skipped copy passed');
 }
 
 main().catch(error => {

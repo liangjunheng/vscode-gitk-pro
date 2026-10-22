@@ -9,6 +9,10 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitk-cli-remote-'));
 const origin = path.join(root, 'origin.git');
 const local = path.join(root, 'local');
 const other = path.join(root, 'other');
+const childOrigin = path.join(root, 'child.git');
+const childSeed = path.join(root, 'child-seed');
+const nestedOrigin = path.join(root, 'nested.git');
+const nestedSeed = path.join(root, 'nested-seed');
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
 
 function loadOperations(invokeNativeGit) {
@@ -82,9 +86,48 @@ async function main() {
         assert.equal(pushed.remote, 'origin');
         assert.equal(pushed.remoteBranch, branch);
 
-        await operations.updateSubmodules(rootUri);
+        execFileSync('git', ['init', '--bare', nestedOrigin]);
+        execFileSync('git', ['clone', nestedOrigin, nestedSeed]);
+        git(nestedSeed, 'config', 'user.name', 'Gitk Test');
+        git(nestedSeed, 'config', 'user.email', 'gitk@example.com');
+        fs.writeFileSync(path.join(nestedSeed, 'nested.txt'), 'nested\n');
+        git(nestedSeed, 'add', 'nested.txt');
+        git(nestedSeed, 'commit', '-m', 'nested');
+        git(nestedSeed, 'push', '-u', 'origin', 'HEAD');
+
+        execFileSync('git', ['init', '--bare', childOrigin]);
+        execFileSync('git', ['clone', childOrigin, childSeed]);
+        git(childSeed, 'config', 'user.name', 'Gitk Test');
+        git(childSeed, 'config', 'user.email', 'gitk@example.com');
+        fs.writeFileSync(path.join(childSeed, 'child.txt'), 'child\n');
+        git(childSeed, 'add', 'child.txt');
+        git(childSeed, 'commit', '-m', 'child');
+        execFileSync('git', ['-c', 'protocol.file.allow=always', '-C', childSeed,
+            'submodule', 'add', nestedOrigin, 'nested']);
+        git(childSeed, 'commit', '-m', 'add nested submodule');
+        git(childSeed, 'push', '-u', 'origin', 'HEAD');
+
+        execFileSync('git', ['-c', 'protocol.file.allow=always', '-C', local,
+            'submodule', 'add', childOrigin, 'modules/child']);
+        git(local, 'commit', '-m', 'add child submodule');
+        git(local, 'submodule', 'deinit', '-f', '--', 'modules/child');
+        assert.equal(fs.existsSync(path.join(local, 'modules', 'child', 'child.txt')), false,
+            'fixture starts with the child submodule uninitialized');
+
+        const previousAllowedProtocols = process.env.GIT_ALLOW_PROTOCOL;
+        process.env.GIT_ALLOW_PROTOCOL = 'file';
+        try {
+            await operations.updateSubmodules(rootUri, ['modules/child']);
+        } finally {
+            if (previousAllowedProtocols === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+            else process.env.GIT_ALLOW_PROTOCOL = previousAllowedProtocols;
+        }
+        assert.equal(fs.existsSync(path.join(local, 'modules', 'child', 'child.txt')), true,
+            'submodule update initializes the selected child before checkout');
+        assert.equal(fs.existsSync(path.join(local, 'modules', 'child', 'nested', 'nested.txt')), true,
+            'submodule update recursively initializes nested children');
         assert.deepEqual(nativeOperations, ['resolveRevision']);
-        console.log('Git CLI remote-operation tests passed: fetch single-flight/retry, pull, push, and submodule update bypass libgit2.');
+        console.log('Git CLI remote-operation tests passed: fetch single-flight/retry, pull, push, and recursive submodule initialization bypass libgit2.');
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }
