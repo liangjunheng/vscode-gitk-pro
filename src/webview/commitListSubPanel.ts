@@ -46,6 +46,16 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   .commit-row.expanded { user-select: text; }
   .commit-row.expanded .graph-svg { user-select: none; }
   .col-main .graph-svg { grid-column: 1; grid-row: 1 / -1; align-self: stretch; flex: 0 0 auto; }
+  /* Stash 的文字决定行高；泳道不参与 Grid 的固有尺寸计算，避免固定 SVG 高度反过来撑高文字行。 */
+  .commit-row.stash .col-main { position: relative; grid-template-columns: var(--stash-lane-width) minmax(0, 1fr); }
+  .commit-row.stash svg.graph-svg { position: absolute; top: 0; left: 0; height: 100%; min-height: 0; }
+  /* 普通提交展开时不让固定高度的泳道撑大详情行，父提交信息下方只保留既有 padding。 */
+  .commit-row.expanded:not(.stash):not(.cloud) .col-main { position: relative; grid-template-columns: var(--commit-lane-width) minmax(0, 1fr); }
+  .commit-row.expanded:not(.stash):not(.cloud) svg.graph-svg { position: absolute; top: 0; left: 0; }
+  /* 实线在相邻 SVG 交界处各多画半个线宽，避免缩放/图层裁剪留下发暗的像素缝；虚线端点不变。 */
+  .commit-row[data-row]:not(.stash) .col-main { overflow: clip; overflow-clip-margin: 1px; }
+  .commit-row[data-row]:not(.stash) svg.graph-svg { overflow: visible; }
+  .commit-row[data-row]:not(.stash) svg.graph-svg path:not([stroke-dasharray]) { stroke-linecap: square; }
   /* 搜索结果不展示拓扑，泳道和占位一起移除。 */
   #graph.without-lanes .graph-svg { display: none; }
   #graph.without-lanes .col-main { grid-template-columns: minmax(0, 1fr); }
@@ -676,13 +686,14 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
         + '<span class="commit-row-info-label">' + escapeHtml(info.label) + '</span></span>';
     }).join('');
     // col-main: SVG(仅泳道, 按本行泳道宽) + 摘要行 + 展开后的描述, 同属一个字段。
-    html += '<div class="col-main">';
+    html += '<div class="col-main"' + (!cloud ? ' style="' + (stash ? '--stash-lane-width' : '--commit-lane-width') + ':' + rowGraphW(c) + 'px"' : '') + '>';
     if (cloud) {
       html += '<span class="graph-svg">' + cloudRowSvg(cloud.layout, cloud.isLastOfGroup, cloud.connectsDown) + '</span>';
       html += '<div class="col-main-summary"><span class="commit-message-text">' + escapeHtml(commitMessage.title) + '</span></div>';
     } else {
       var rowW = rowGraphW(c);
-      html += '<svg class="graph-svg" width="' + rowW + '" height="' + ROW_H + '" viewBox="0 0 ' + rowW + ' ' + ROW_H + '"></svg>';
+      html += stash ? stashRowSvg(c, rowW)
+        : '<svg class="graph-svg" width="' + rowW + '" height="' + ROW_H + '" viewBox="0 0 ' + rowW + ' ' + ROW_H + '"></svg>';
       // stash 行: 标题前加 stash@{n} 徽章 (inbox 图标 + 引用名); 其他行没有前缀。
       var stashBadge = stash
         ? '<span class="stash-badge" title="' + escapeAttr(c.stashRef || '') + '"><span class="stash-badge-icon"><span class="codicon codicon-inbox" aria-hidden="true"></span></span><span class="stash-badge-text">' + escapeHtml(c.stashRef || '') + '</span></span>'
@@ -726,7 +737,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
       row.classList.remove('expanded');
       var svg = row.querySelector('svg');
       var index = Number(row.getAttribute('data-row'));
-      if (svg && Number.isInteger(index) && commits[index]) {
+      if (svg && Number.isInteger(index) && commits[index] && !commits[index].isStash) {
         var rowW = rowGraphW(commits[index]);
         svg.setAttribute('width', String(rowW));
         svg.setAttribute('height', String(ROW_H));
@@ -770,7 +781,7 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     var isWorkingTree = row.classList.contains('working-tree');
     var isCloud = row.classList.contains('cloud');
     var svg = row.querySelector('svg');
-    if (svg && !isWorkingTree && !isCloud) {
+    if (svg && !isWorkingTree && !isCloud && !row.classList.contains('stash')) {
       var idx = Number(row.getAttribute('data-row'));
       // 每行按自身泳道宽度绘制, 使描述紧贴泳道; graphW 仅作无对应 commit 时的兜底。
       var rowW = commits[idx] ? rowGraphW(commits[idx]) : graphW;
@@ -1185,10 +1196,9 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
       if (!key || height <= 0 || Math.abs((expandedCommitRowHeights.get(key) || ROW_H) - height) < .5) return;
       expandedCommitRowHeights.set(key, height);
       changed = true;
-      // 首次 setupRow 可能发生在长作者、日期等详情完成换行之前；此处已经拿到最终行高，直接重画一次。
-      // 不使用 ResizeObserver，避免持续观察与重复回调；只复用现有的测量阶段修正 SVG 高度。
+      // 此测量只为虚拟列表缓存高度；stash 的百分比泳道随布局自动伸缩，不再测量后重画。
       const svg = row.querySelector('svg.graph-svg');
-      if (svg && commits[index]) {
+      if (svg && commits[index] && !commits[index].isStash) {
         const rowW = rowGraphW(commits[index]);
         svg.setAttribute('width', String(rowW));
         svg.setAttribute('height', String(height));
@@ -1345,6 +1355,27 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     restoreVisibleCommitAnchor(graph, list, visibleCommitAnchor, scrollTop);
   }
 
+  // 固定节点坐标 + 自适应连线：无 viewBox 的 SVG 直接使用 CSS 像素；y2="100%" 始终是实际行底。
+  // SVG 绝对定位，不向 Grid 贡献固有高度。标题换行、作者标签动画、面板缩放都无需重画。
+  function stashRowSvg(c, graphW) {
+    const laneX = function(index) { return (index + 1) * LANE_W; };
+    const column = Math.max(0, Number(c.lane) || 0);
+    const x = laneX(column);
+    const y = ROW_H / 2;
+    const radius = DOT_R + 1.5;
+    const grey = 'var(--vscode-descriptionForeground, #999)';
+    let content = '';
+    // 真实泳道照常穿过；菱形所在列只画虚线，避免同列实线遮住虚线。
+    (c.outputSwimlanes || []).forEach(function(lane, index) {
+      if (index === column) return;
+      content += '<line x1="' + laneX(index) + '" y1="0" x2="' + laneX(index) + '" y2="100%" stroke="' + lane.color + '" stroke-width="1.5" stroke-linecap="round"/>';
+    });
+    content += '<path class="stash-link stash-link-up" d="M ' + x + ' 0 V ' + (y - radius) + '" fill="none" stroke="' + grey + '" ' + laneDashAttrs(0) + '/>';
+    content += '<line class="stash-link stash-link-down" x1="' + x + '" y1="' + (y + radius) + '" x2="' + x + '" y2="100%" stroke="' + grey + '" ' + laneDashAttrs(y + radius) + '/>';
+    content += '<path class="stash-node" d="M ' + x + ' ' + (y - radius) + ' L ' + (x + radius) + ' ' + y + ' L ' + x + ' ' + (y + radius) + ' L ' + (x - radius) + ' ' + y + ' Z" fill="var(--vscode-editor-background)" stroke="' + grey + '" stroke-width="1.5" stroke-linejoin="round"/>';
+    return '<svg class="graph-svg" width="' + graphW + '" height="100%">' + content + '</svg>';
+  }
+
   function drawSvg(svg, idx, graphW, rowH, laneW, dotR) {
     const c = commits[idx];
     const expanded = selectedCommitHash === c.hash
@@ -1380,34 +1411,6 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
       && nextCommit.gitBranchOption?.repoOption.path === c.gitBranchOption?.repoOption.path
       && laneX(Math.max(0, Number(nextCommit.lane) || 0)) === cx);
     const stashLinkGrey = 'var(--vscode-descriptionForeground, #999)';
-
-    // stash 不是侧枝, 也不在泳道状态机里: 它是挂在基线提交旁的一颗灰色空心菱形珠子。
-    // 画法: 经过这一行的泳道线照常画 (宿主传来的输入/输出泳道原样穿过), 菱形落在基线所在列上,
-    // 菱形上下各一段灰色虚线, 表示它与上下相邻行 (基线) 的挂靠关系, 不开新泳道、不占颜色。
-    if (c.isStash) {
-      const stashColumn = Math.max(0, Number(c.lane) || 0);
-      const sx = laneX(stashColumn);
-      const grey = 'var(--vscode-descriptionForeground, #999)';
-      let stashContent = '';
-      // 穿过这一行的泳道线: 输入=输出, 逐条竖直画满整行高度 (展开时画到 detailsBottom)。
-      // 菱形所在的那一列不画实线: 这一列上下只剩灰色虚线, 否则同一 x 上的实线会把虚线整个盖住, 看不出"挂靠"的虚线连接。
-      // 虚线的两端仍然落在行顶和行底, 与上下相邻行 (基线提交的实线 / 另一条 stash 的虚线) 的端点首尾相接。
-      for (let index = 0; index < outputSwimlanes.length; index++) {
-        if (index === stashColumn) { continue; }
-        stashContent += '<path d="M ' + laneX(index) + ' 0 V ' + detailsBottom + '" fill="none" stroke="' + outputSwimlanes[index].color + '" stroke-width="1.5" stroke-linecap="round"/>';
-      }
-      const d = dotR + 1.5;
-      const dashAttrs = function(startY) {
-        return ' fill="none" stroke="' + grey + '" ' + laneDashAttrs(startY);
-      };
-      // 虚线: 上 = 行顶 → 菱形上顶点; 下 = 菱形下顶点 → 行底 (展开描述时延伸到整行底部)。
-      stashContent += '<path class="stash-link stash-link-up" d="M ' + sx + ' 0 V ' + (y - d) + '"' + dashAttrs(0) + '/>';
-      stashContent += '<path class="stash-link stash-link-down" d="M ' + sx + ' ' + (y + d) + ' V ' + detailsBottom + '"' + dashAttrs(y + d) + '/>';
-      // 菱形: 空心。内部填编辑器背景色, 盖住这一列上穿过它的泳道线, 描边灰色。
-      stashContent += '<path class="stash-node" d="M ' + sx + ' ' + (y - d) + ' L ' + (sx + d) + ' ' + y + ' L ' + sx + ' ' + (y + d) + ' L ' + (sx - d) + ' ' + y + ' Z" fill="var(--vscode-editor-background)" stroke="' + grey + '" stroke-width="1.5" stroke-linejoin="round"/>';
-      svg.innerHTML = stashContent;
-      return;
-    }
 
     let outputIndex = 0;
 

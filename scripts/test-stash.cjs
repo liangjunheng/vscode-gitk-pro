@@ -4,7 +4,7 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 const { renderGitkWebviewHtml } = require('../out/webview/gitkWebviewDocument');
 
-// Stash UI: 选择器栏最右侧的开关（默认不选中）、穿插在提交之间的 stash 行（空心菱形节点、不独立成组）、三处分组头的 stash 按钮。
+// Stash UI: 列表开关、穿插的 stash 行、空心菱形、自适应连线和右键菜单。
 async function main() {
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   try {
@@ -22,8 +22,9 @@ async function main() {
     const measureStart = html.indexOf('function measureExpandedCommitRows()');
     const measureEnd = html.indexOf('function renderCommitVirtualWindow', measureStart);
     const measureSource = html.slice(measureStart, measureEnd);
-    assert.ok(measureStart >= 0 && measureSource.includes('expandedCommitRowHeights.set(key, height);')
-      && measureSource.includes('drawSvg(svg, index, rowW, ROW_H, LANE_W, DOT_R);'), 'a measured expanded height immediately redraws its SVG');
+    assert.ok(measureStart >= 0 && measureSource.includes('expandedCommitRowHeights.set(key, height);'),
+      'measurement still updates the virtual-list height cache');
+    assert.ok(measureSource.includes('!commits[index].isStash'), 'stash lanes never re-enter measured-height SVG redraw');
     assert.equal(measureSource.includes('new ResizeObserver'), false, 'expanded stash correction does not reintroduce the rejected persistent observer solution');
     for (const match of html.matchAll(/<script(?![^>]*type="application\/json")[^>]*>([\s\S]*?)<\/script>/g)) new Function(match[1]);
     await page.evaluate(() => {
@@ -155,9 +156,9 @@ async function main() {
     assert.ok(Math.abs(box.width - box.height) < 0.6, 'a diamond is as wide as it is tall: ' + JSON.stringify(box));
     // 灰色空心菱形 + 上下虚线: 上虚线 = 行顶 → 菱形上顶点, 下虚线 = 菱形下顶点 → 行底, 都是灰色虚线
     assert.equal(await stashRow.locator('svg path.stash-link-up').count(), 1, 'a dashed link above the diamond');
-    assert.equal(await stashRow.locator('svg path.stash-link-down').count(), 1, 'a dashed link below the diamond');
+    assert.equal(await stashRow.locator('svg .stash-link-down').count(), 1, 'a dashed link below the diamond');
     for (const name of ['up', 'down']) {
-      const link = await stashRow.locator('svg path.stash-link-' + name).evaluate(node => ({ dash: node.getAttribute('stroke-dasharray'), stroke: node.getAttribute('stroke') }));
+      const link = await stashRow.locator('svg .stash-link-' + name).evaluate(node => ({ dash: node.getAttribute('stroke-dasharray'), stroke: node.getAttribute('stroke') }));
       const dashPair = link.dash.split(' ').map(Number);
       assert.ok(dashPair.length === 2 && dashPair.every(v => v >= 2) && dashPair[0] === dashPair[1],
         name + ' link is dashed with an equal on/off step of at least 2px (the exact step is aligned to the row boundary): ' + link.dash);
@@ -165,7 +166,9 @@ async function main() {
     }
     const linkGeometry = await stashRow.locator('svg').evaluate(svg => {
       const num = s => Number(s);
-      const d = el => el.getAttribute('d').match(/-?[\d.]+/g).map(num);
+      const d = el => el instanceof SVGLineElement
+        ? [el.x1.baseVal.value, el.y1.baseVal.value, el.y2.baseVal.value]
+        : el.getAttribute('d').match(/-?[\d.]+/g).map(num);
       const up = d(svg.querySelector('.stash-link-up')), down = d(svg.querySelector('.stash-link-down')), node = d(svg.querySelector('.stash-node'));
       return { upFrom: up[1], upTo: up[2], downFrom: down[1], nodeTop: node[1], nodeBottom: node[5], x: [up[0], down[0], node[0]] };
     });
@@ -219,9 +222,10 @@ async function main() {
     {
       const readLinks = () => page.evaluate(() => [...document.querySelectorAll('#commitVirtualRows .commit-row')].map(row => {
         const svg = row.querySelector('svg.graph-svg');
-        const parse = el => el ? el.getAttribute('d').match(/-?[\d.]+/g).map(Number) : null;
-        const vb = svg.getAttribute('viewBox').split(' ').map(Number);
-        return { stash: row.classList.contains('stash'), height: row.getBoundingClientRect().height, viewBoxHeight: vb[3],
+        const parse = el => !el ? null : el instanceof SVGLineElement
+          ? [el.x1.baseVal.value, el.y1.baseVal.value, el.y2.baseVal.value]
+          : el.getAttribute('d').match(/-?[\d.]+/g).map(Number);
+        return { stash: row.classList.contains('stash'), height: row.getBoundingClientRect().height, svgHeight: svg.getBoundingClientRect().height,
           up: parse(svg.querySelector('.stash-link-up')), down: parse(svg.querySelector('.stash-link-down')), node: parse(svg.querySelector('.stash-node')) };
       }));
       const assertJoined = (rows, label) => {
@@ -231,8 +235,8 @@ async function main() {
           assert.equal(r.up[1], 0, label + ': upper dash starts at the very top of the row');
           assert.equal(r.up[2], r.node[1], label + ': upper dash ends at the diamond top vertex');
           assert.equal(r.down[1], r.node[5], label + ': lower dash starts at the diamond bottom vertex');
-          assert.equal(r.down[2], r.viewBoxHeight, label + ': lower dash reaches the very bottom of the row (' + r.viewBoxHeight + ')');
-          assert.ok(Math.abs(r.viewBoxHeight - r.height) < 1, label + ': the svg is as tall as the row, so the bottom of the dash is the bottom of the row');
+          assert.equal(r.down[2], r.svgHeight, label + ': lower dash reaches the very bottom of the row (' + r.svgHeight + ')');
+          assert.ok(Math.abs(r.svgHeight - r.height) < 1, label + ': the svg is as tall as the row, so the bottom of the dash is the bottom of the row');
         }
       };
       assertJoined(await readLinks(), 'collapsed');
@@ -258,7 +262,9 @@ async function main() {
         const box = svg.getBoundingClientRect();
         const read = el => {
           const dash = el.getAttribute('stroke-dasharray').split(' ').map(Number);
-          const nums = el.getAttribute('d').match(/-?[\d.]+/g).map(Number);
+          const nums = el instanceof SVGLineElement
+            ? [el.x1.baseVal.value, el.y1.baseVal.value, el.y2.baseVal.value]
+            : el.getAttribute('d').match(/-?[\d.]+/g).map(Number);
           return { dash, from: nums[1], to: nums[2], cap: el.getAttribute('stroke-linecap'),
             offset: Number(el.getAttribute('stroke-dashoffset')) };
         };
@@ -267,10 +273,6 @@ async function main() {
       // 统一样式契约: 每段都用固定的 2/2 + butt, 由 stroke-dashoffset 把相位锁到该段在行内的起点,
       // 因此所有段落(折叠/展开、stash/云端/未提交)共享同一条无限虚线的相位, 行边界处既不错位也不断口。
       const PERIOD = 4, ON = 2;
-      const inkAt = (link, offsetInSegment) => {
-        const phase = ((link.from % PERIOD) + PERIOD) % PERIOD;
-        return (((offsetInSegment + phase) % PERIOD) + PERIOD) % PERIOD < ON;
-      };
       for (const [name, link] of Object.entries({ up: dashPixels.up, down: dashPixels.down })) {
         assert.deepEqual(link.dash, [ON, PERIOD - ON], name + ': uses the single shared 2/2 lane dash: ' + JSON.stringify(link));
         assert.equal(link.cap, 'butt', name + ': butt caps keep the painted ends exactly on the row boundary');
@@ -334,15 +336,17 @@ async function main() {
           const stash = document.querySelector('#commitVirtualRows .commit-row[data-hash="' + stashHash + '"]');
           const base = document.querySelector('#commitVirtualRows .commit-row[data-hash="' + baseHash + '"]');
           const stashSvg = stash.querySelector('svg.graph-svg'), baseSvg = base.querySelector('svg.graph-svg');
-          const nums = el => el.getAttribute('d').match(/-?[0-9.]+/g).map(Number);
+          const nums = el => el instanceof SVGLineElement
+            ? [el.x1.baseVal.value, el.y1.baseVal.value, el.y2.baseVal.value]
+            : el.getAttribute('d').match(/-?[0-9.]+/g).map(Number);
           const down = nums(stashSvg.querySelector('.stash-link-down'));
           const cont = nums(baseSvg.querySelector('.stash-link-continuation'));
-          const stashVB = stashSvg.getAttribute('viewBox').split(' ').map(Number);
+          const stashViewportHeight = stashSvg.getBoundingClientRect().height;
           const stashBox = stash.getBoundingClientRect(), baseBox = base.getBoundingClientRect();
-          return { stashBottomPath: down[2], stashViewBoxBottom: stashVB[3], continuationStarts: cont[1], sameX: Math.abs(down[0] - cont[0]) < .01,
+          return { stashBottomPath: down[2], stashViewportBottom: stashViewportHeight, continuationStarts: cont[1], sameX: Math.abs(down[0] - cont[0]) < .01,
             adjacentRows: Math.abs(stashBox.bottom - baseBox.top) < 1, stashHeight: stashBox.height, stashSvgHeight: stashSvg.getBoundingClientRect().height };
         }, { stashHash: h('8'), baseHash: h('3') });
-        assert.equal(joined.stashBottomPath, joined.stashViewBoxBottom, label + ': stash lower dash reaches the row bottom');
+        assert.equal(joined.stashBottomPath, joined.stashViewportBottom, label + ': stash lower dash reaches the row bottom');
         assert.equal(joined.continuationStarts, 0, label + ': latest commit continuation starts at its row top');
         assert.equal(joined.sameX, true, label + ': both segments share one x');
         assert.equal(joined.adjacentRows, true, label + ': row bottom and next row top are adjacent');
@@ -509,7 +513,7 @@ async function main() {
     {
       const styles = await page.evaluate(() => {
         const seen = [];
-        document.querySelectorAll('.commit-row path[stroke-dasharray]').forEach(p => {
+        document.querySelectorAll('.commit-row [stroke-dasharray]').forEach(p => {
           const row = p.closest('.commit-row');
           seen.push({
             kind: row.classList.contains('cloud') ? 'cloud'
@@ -525,7 +529,7 @@ async function main() {
       });
       assert.ok(styles.length >= 2, 'several dashed lane segments are on screen: ' + JSON.stringify(styles));
       const kinds = new Set(styles.map(s => s.kind));
-      // 这个 harness 不驱动 cloudGroupsState(云端行由 test-cloud-commits.cjs 覆盖), 这里能看到的是
+      // 此处没有展开云端分组（由 test-cloud-commits.cjs / test-stash-lane-layout.cjs 覆盖），这里能看到的是
       // stash 行、未提交行和普通提交行的虚线; 至少要跨两种行类型, 否则"统一"没有意义。
       assert.ok(kinds.has('stash'), 'stash dashed lanes are included: ' + JSON.stringify([...kinds]));
       assert.ok(kinds.size >= 2, 'the check spans more than one row type: ' + JSON.stringify([...kinds]));
