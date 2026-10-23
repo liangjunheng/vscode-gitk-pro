@@ -13,8 +13,14 @@ export interface GitBackend extends vscode.Disposable {
     stage(rootUri: vscode.Uri, paths: readonly string[]): Promise<void>;
     unstage(rootUri: vscode.Uri, paths: readonly string[]): Promise<void>;
     discardWorktree(rootUri: vscode.Uri, paths: readonly string[]): Promise<void>;
-    /** 创建 stash：保留暂存区的 unstaged，或仅 staged；可选 paths 用于单文件 stash。 */
-    stash(rootUri: vscode.Uri, scope: StashScope, paths?: readonly string[]): Promise<StashResult>;
+    /** 创建 stash：unstaged 仅保存指定工作区文件；同文件 staged 内容须显式确认后才合入 unstaged 快照，index 始终保持不变。 */
+    stash(
+        rootUri: vscode.Uri,
+        scope: StashScope,
+        paths?: readonly string[],
+        mergeStagedIntoUnstaged?: boolean,
+        allUnstagedPaths?: boolean,
+    ): Promise<StashResult>;
     /**
      * 应用 stash 并保留条目（git stash apply）。stash 用提交 hash 标识：序号会随其他 stash 操作移位。
      */

@@ -299,8 +299,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         action: 'stage' | 'unstage' | 'discard' | 'stash' | 'stashApply' | 'stashRestore' | 'stashPop';
         /** 仅 stash: 要创建的 stash 范围。 */
         stashScope?: StashScope;
-        /** 仅单文件 stash: 原生后端的路径过滤；分组 stash 不传此字段。 */
+        /** 仅 stash: 原生后端精确保存的路径；unstaged 分组也始终传递。 */
         stashPaths?: readonly string[];
+        /** 仅 unstaged stash: 用户已确认把同文件的 staged 内容合入 unstaged 快照；原 index 保持不变。 */
+        stashMergeStagedIntoUnstaged?: boolean;
+        /** 仅 unstaged stash: 路径集合覆盖当前完整 Unstaged 分组，可跳过原生全状态扫描。 */
+        stashAllUnstagedPaths?: boolean;
         /** 仅 stashApply/stashRestore/stashPop: 目标 stash 的提交 hash(序号会随其他 stash 操作移位，hash 才稳定)。 */
         stashHash?: string;
         section: 'conflict' | 'staged' | 'unstaged';
@@ -3719,8 +3723,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     /**
-     * 分组头的 stash 按钮直接映射到原生 libgit2 语义，不做跨分组确认：
-     * - Unstaged: KEEP_INDEX | INCLUDE_UNTRACKED（等价于 stash -k -u）。
+     * - Unstaged: 只保存该分组的精确路径；同一文件也有 staged 修改时先列出并确认是否合入 unstaged 快照；Staged Changes 始终保持不变。
      * - Staged: 仅保存 index（等价于 stash -S）。
      */
     private async runStashAction(
@@ -3753,12 +3756,52 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const availablePathSet = new Set(availablePaths);
         const paths = requestedPaths
             ? [...new Set(requestedPaths.filter(filePath => availablePathSet.has(filePath)))]
-            : availablePaths;
+            : [...new Set(availablePaths)];
         if (paths.length === 0) { return; }
+        const allUnstagedPaths = section === 'unstaged'
+            && paths.length === availablePathSet.size
+            && paths.every(filePath => availablePathSet.has(filePath));
+        let mergeStagedIntoUnstaged = false;
+        if (section === 'unstaged') {
+            const staged = new Set(current.staged);
+            const overlapping = paths.filter(filePath => staged.has(filePath));
+            if (overlapping.length > 0) {
+                const primary = '合并修改并贮藏';
+                const unstagedOnly = '仅贮藏未暂存修改';
+                const repository = this.repositories.find(candidate => candidate.path === repositoryPath);
+                const repositoryName = repository?.label || path.basename(rootUri.fsPath);
+                const detail = [
+                    `仓库：${repositoryName}`,
+                    '',
+                    `以下 ${overlapping.length} 个文件同时包含已暂存和未暂存的修改：`,
+                    ...overlapping.map(filePath => `• ${filePath}`),
+                    '',
+                    '请选择本次贮藏方式。',
+                    '选择“合并修改并贮藏”后，已暂存内容会作为未暂存修改一并保存；当前已暂存区保持不变。',
+                ].join('\n');
+                const primaryItem: vscode.MessageItem = { title: primary };
+                const unstagedOnlyItem: vscode.MessageItem = { title: unstagedOnly };
+                const cancelItem: vscode.MessageItem = { title: '取消', isCloseAffordance: true };
+                const choice = await vscode.window.showWarningMessage(
+                    '确认贮藏未暂存修改冲突方案',
+                    { modal: true, detail },
+                    primaryItem,
+                    unstagedOnlyItem,
+                    cancelItem,
+                );
+                if (choice === primaryItem) {
+                    mergeStagedIntoUnstaged = true;
+                } else if (choice !== unstagedOnlyItem) {
+                    return;
+                }
+            }
+        }
         this.workingTreeActionQueue.push({
             action: 'stash',
             stashScope: section,
-            stashPaths: requestedPaths ? [...new Set(paths)] : undefined,
+            stashPaths: section === 'unstaged' || requestedPaths ? [...paths] : undefined,
+            stashMergeStagedIntoUnstaged: mergeStagedIntoUnstaged,
+            stashAllUnstagedPaths: allUnstagedPaths,
             section,
             paths: [...new Set(paths)],
             untrackedPaths: new Set<string>(),
@@ -3975,7 +4018,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                                 if (!scope) { throw new Error('缺少 stash 范围'); }
                                 let result;
                                 try {
-                                    result = await this.gitBackend.stash(operation.rootUri, scope, operation.stashPaths);
+                                    result = await this.gitBackend.stash(
+                                        operation.rootUri,
+                                        scope,
+                                        operation.stashPaths,
+                                        operation.stashMergeStagedIntoUnstaged,
+                                        operation.stashAllUnstagedPaths,
+                                    );
                                 } catch (error) {
                                     // staged stash can create refs/stash and then fail while
                                     // applying the staged patch in reverse. Reload before surfacing

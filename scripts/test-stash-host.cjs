@@ -3,7 +3,7 @@ const Module = require('node:module');
 
 // Stash 的宿主侧链路:
 //  1) 列表: 选中解析（stash 不在任何提交列表里）、stateUpdate 下发（开关/搜索/多仓库）、变更文件读取走 stash 专用读取。
-//  2) 动作: 分组头 stash 固定映射到 unstaged(-k -u) / staged(-S)，不弹确认框；覆盖队列执行与错误处理。
+//  2) 动作: unstaged 只保存该分组路径，重叠 staged 文件先列出确认；staged 保持 -S；覆盖队列与错误处理。
 class Emitter {
   listeners = new Set();
   event = listener => { this.listeners.add(listener); return { dispose: () => this.listeners.delete(listener) }; };
@@ -31,7 +31,11 @@ const vscode = {
   Uri: { parse: value => ({ toString: () => value, fsPath: value.replace(/^file:\/\//, '') }), file: p => ({ fsPath: p, toString: () => 'file://' + p }) },
   window: {
     showWarningMessage: (message, options, ...items) => {
-      if (options && options.modal) { dialogs.push({ message, items }); return Promise.resolve(dialogChoice); }
+      if (options && options.modal) {
+        dialogs.push({ message, options, items });
+        const selectedItem = items.find(item => item && typeof item === 'object' && item.title === dialogChoice);
+        return Promise.resolve(selectedItem || dialogChoice);
+      }
       warnings.push(message); return Promise.resolve(undefined);
     },
     showErrorMessage(message) { warnings.push('ERROR ' + message); }, showInformationMessage() {},
@@ -99,7 +103,11 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
     branchesController: { getCurrentBranch: repo => heads[repo.path], clearRepositorySelection() {} },
     getRepoRootUri: path => vscode.Uri.parse(path),
     gitBackend: {
-      stash: async (root, scope, paths) => { stashCalls.push([root.toString(), scope, ...(paths ? [[...paths]] : [])]); return backendStashImpl(root, scope, paths); },
+      stash: async (root, scope, paths, mergeStagedIntoUnstaged, allUnstagedPaths) => {
+        stashCalls.push([root.toString(), scope, paths ? [...paths] : undefined,
+          Boolean(mergeStagedIntoUnstaged), Boolean(allUnstagedPaths)]);
+        return backendStashImpl(root, scope, paths, mergeStagedIntoUnstaged, allUnstagedPaths);
+      },
       stashApply: async (root, hash) => { opCalls.push(['apply', root.toString(), hash]); return backendOpImpl('apply', hash); },
       stashRestorePaths: async (root, hash, paths) => { opCalls.push(['restore', root.toString(), hash, [...paths]]); },
       stashPop: async (root, hash) => { opCalls.push(['pop', root.toString(), hash]); return backendOpImpl('pop', hash); },
@@ -235,24 +243,24 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   };
   const run = async () => { await provider.runStashAction(repoA.path, runSection); await drain(); };
   let runSection = 'unstaged';
-  const reset = () => { stashCalls.length = 0; dialogs.length = 0; warnings.length = 0; provider.workingTreeActionQueue.length = 0; backendStashImpl = async () => ({ stash: 'x', skippedGitlinks: [] }); };
+  const reset = () => { stashCalls.length = 0; dialogs.length = 0; warnings.length = 0; dialogChoice = undefined; provider.workingTreeActionQueue.length = 0; backendStashImpl = async () => ({ stash: 'x', skippedGitlinks: [] }); };
 
-  // 5a) Unstaged 始终执行 libgit2 KEEP_INDEX | INCLUDE_UNTRACKED（stash -k -u），不弹窗。
+  // 5a) Unstaged 分组始终把该分组精确路径传给原生后端，不夹带 staged 文件。
   reset(); setSnapshot([], [file('b.txt'), file('u.txt', { isUntracked: true })]);
   await run();
   assert.equal(dialogs.length, 0);
-  assert.deepEqual(stashCalls, [[repoA.path, 'unstaged']]);
+  assert.deepEqual(stashCalls, [[repoA.path, 'unstaged', ['b.txt', 'u.txt'], false, true]]);
 
   // 5b) Staged 始终执行 staged-only Stash（stash -S），不弹窗。
   reset(); runSection = 'staged'; setSnapshot([file('a.txt')], []);
   await run();
   assert.equal(dialogs.length, 0);
-  assert.deepEqual(stashCalls, [[repoA.path, 'staged']]);
+  assert.deepEqual(stashCalls, [[repoA.path, 'staged', undefined, false, false]]);
 
   // 5b-file) 单文件 stash 只把按钮所在路径传给原生后端，不受多选集影响。
   reset(); runSection = 'unstaged'; setSnapshot([file('a.txt')], [file('b.txt'), file('c.txt')]);
   await provider.runStashAction(repoA.path, 'unstaged', ['b.txt']); await drain();
-  assert.deepEqual(stashCalls, [[repoA.path, 'unstaged', ['b.txt']]]);
+  assert.deepEqual(stashCalls, [[repoA.path, 'unstaged', ['b.txt'], false, false]]);
   let routedStash;
   const originalRunStashAction = provider.runStashAction;
   provider.runStashAction = async (...args) => { routedStash = args; };
@@ -263,21 +271,48 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   assert.deepEqual(routedStash, [repoA.path, 'unstaged', ['b.txt', 'c.txt']], 'right-click stash uses the selected paths even without a clicked path');
   provider.runStashAction = originalRunStashAction;
 
-  // 5c) 另一个分组有文件时也不跨作用域、不询问。
+  // 5c) 两组路径不重叠时不询问，unstaged 只传自己的文件。
   reset(); runSection = 'unstaged'; setSnapshot([file('a.txt')], [file('b.txt')]);
   await run();
   assert.equal(dialogs.length, 0);
-  assert.deepEqual(stashCalls, [[repoA.path, 'unstaged']]);
+  assert.deepEqual(stashCalls, [[repoA.path, 'unstaged', ['b.txt'], false, true]]);
   reset(); runSection = 'staged'; setSnapshot([file('a.txt')], [file('b.txt')]);
   await run();
   assert.equal(dialogs.length, 0);
-  assert.deepEqual(stashCalls, [[repoA.path, 'staged']]);
+  assert.deepEqual(stashCalls, [[repoA.path, 'staged', undefined, false, false]]);
 
-  // 5d) 同一文件同时有 staged/unstaged 修改时仍直接交给 staged-only 原生实现处理。
+  // 5d) Unstaged 与 staged 同文件时，弹窗完整列出多个文件；确认后只把内容合入 unstaged 快照，不改变 Staged 分组。
+  reset(); runSection = 'unstaged';
+  setSnapshot([file('c.txt'), file('a.txt'), file('d.txt')], [file('c.txt'), file('b.txt'), file('d.txt')]);
+  dialogChoice = '合并修改并贮藏';
+  await run();
+  assert.equal(dialogs.length, 1);
+  assert.equal(dialogs[0].message, '确认贮藏未暂存修改冲突方案');
+  assert.match(dialogs[0].options.detail, /仓库：a[\s\S]*以下 2 个文件同时包含已暂存和未暂存的修改：[\s\S]*• c\.txt[\s\S]*• d\.txt[\s\S]*请选择本次贮藏方式。[\s\S]*选择“合并修改并贮藏”后，已暂存内容会作为未暂存修改一并保存；当前已暂存区保持不变。/);
+  assert.deepEqual(dialogs[0].items, [
+    { title: '合并修改并贮藏' },
+    { title: '仅贮藏未暂存修改' },
+    { title: '取消', isCloseAffordance: true },
+  ], "the Chinese close affordance replaces VS Code default Cancel button");
+  assert.deepEqual(stashCalls, [[repoA.path, 'unstaged', ['c.txt', 'b.txt', 'd.txt'], true, true]]);
+
+  // 选择仅 Stash Unstaged 时继续操作，但不合入 staged 修改。
+  reset(); setSnapshot([file('c.txt')], [file('c.txt'), file('b.txt')]);
+  dialogChoice = '仅贮藏未暂存修改';
+  await run();
+  assert.deepEqual(stashCalls, [[repoA.path, 'unstaged', ['c.txt', 'b.txt'], false, true]]);
+
+  // 取消确认时不执行 stash。
+  reset(); setSnapshot([file('c.txt')], [file('c.txt'), file('b.txt')]);
+  dialogChoice = '取消';
+  await run();
+  assert.deepEqual(stashCalls, []);
+
+  // Staged 分组仍由 staged-only 原生实现处理，不弹交叉分组确认。
   reset(); runSection = 'staged'; setSnapshot([file('c.txt'), file('a.txt')], [file('c.txt'), file('b.txt')]);
   await run();
   assert.equal(dialogs.length, 0);
-  assert.deepEqual(stashCalls, [[repoA.path, 'staged']]);
+  assert.deepEqual(stashCalls, [[repoA.path, 'staged', undefined, false, false]]);
 
   // 5h) 冲突 -> 拒绝并提示
   runSection = 'unstaged';
@@ -515,5 +550,5 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   await oldLoad;
   assert.deepEqual(loaderPublications, [[older.hash]], 'a removed/re-added repository rejects the previous load');
 
-  console.log('Stash host passed: selection fallback, stateUpdate groups (toggle/search/multi-repo), stash file reader, fixed unstaged/staged native scopes without confirmation dialogs, conflict/empty guards, gitlink notice, error surfacing, queue routing, apply / pop / drop routing, confirmation, selection hand-off.');
+  console.log('Stash host passed: selection fallback, stateUpdate groups (toggle/search/multi-repo), stash file reader, unstaged-only path routing with multi-file overlap confirmation and staged-only routing, conflict/empty guards, gitlink notice, error surfacing, queue routing, apply / pop / drop routing, confirmation, selection hand-off.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

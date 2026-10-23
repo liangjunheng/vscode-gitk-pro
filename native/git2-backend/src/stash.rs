@@ -66,6 +66,24 @@ fn parse_paths(payload: &Value) -> NativeResult<Option<BTreeSet<String>>> {
     Ok(Some(paths))
 }
 
+fn merge_staged_into_unstaged_arg(payload: &Value) -> NativeResult<bool> {
+    match payload.get("mergeStagedIntoUnstaged") {
+        None => Ok(false),
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| "mergeStagedIntoUnstaged 必须是布尔值".to_owned()),
+    }
+}
+
+fn all_unstaged_paths_arg(payload: &Value) -> NativeResult<bool> {
+    match payload.get("allUnstagedPaths") {
+        None => Ok(false),
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| "allUnstagedPaths 必须是布尔值".to_owned()),
+    }
+}
+
 #[derive(Default, Clone)]
 struct Changes {
     staged: Vec<String>,
@@ -97,7 +115,7 @@ fn is_gitlink(index: &git2::Index, head_tree: &git2::Tree<'_>, path: &str) -> bo
             .is_ok_and(|entry| entry.filemode_raw() as u32 == GITLINK_MODE)
 }
 
-fn collect_changes(repo: &Repository) -> NativeResult<Changes> {
+fn collect_changes(repo: &Repository, include_unstaged: bool) -> NativeResult<Changes> {
     let head_tree = repo
         .head()
         .map_err(|_| NO_COMMIT.to_owned())?
@@ -126,29 +144,66 @@ fn collect_changes(repo: &Repository) -> NativeResult<Changes> {
         }
     }
 
-    let mut options = StatusOptions::new();
-    options
-        .include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .include_ignored(false)
-        .exclude_submodules(false);
-    let statuses = repo
-        .statuses(Some(&mut options))
-        .map_err(format_git_error)?;
-    let mut unstaged = BTreeSet::new();
-    for entry in statuses.iter() {
-        if is_worktree_change(entry.status()) {
-            unstaged.insert(normalize(&String::from_utf8_lossy(entry.path_bytes())));
+    if include_unstaged {
+        let mut options = StatusOptions::new();
+        options
+            .include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .include_ignored(false)
+            .exclude_submodules(false);
+        let statuses = repo
+            .statuses(Some(&mut options))
+            .map_err(format_git_error)?;
+        let mut unstaged = BTreeSet::new();
+        for entry in statuses.iter() {
+            if is_worktree_change(entry.status()) {
+                unstaged.insert(normalize(&String::from_utf8_lossy(entry.path_bytes())));
+            }
         }
-    }
-    for path in unstaged {
-        if is_gitlink(&index, &head_tree, &path) {
-            changes.unstaged_gitlinks.push(path);
-        } else {
-            changes.unstaged.push(path);
+        for path in unstaged {
+            if is_gitlink(&index, &head_tree, &path) {
+                changes.unstaged_gitlinks.push(path);
+            } else {
+                changes.unstaged.push(path);
+            }
         }
     }
     Ok(changes)
+}
+
+fn related_staged_paths(
+    repo: &Repository,
+    selected: &BTreeSet<String>,
+) -> NativeResult<Vec<String>> {
+    if selected.is_empty() {
+        return Ok(Vec::new());
+    }
+    let head_tree = repo
+        .head()
+        .map_err(|_| NO_COMMIT.to_owned())?
+        .peel_to_tree()
+        .map_err(format_git_error)?;
+    let index = repo.index().map_err(format_git_error)?;
+    let mut options = DiffOptions::new();
+    options.include_typechange(true);
+    let mut diff = repo
+        .diff_tree_to_index(Some(&head_tree), Some(&index), Some(&mut options))
+        .map_err(format_git_error)?;
+    let mut find = DiffFindOptions::new();
+    find.renames(true).renames_from_rewrites(true);
+    let _ = diff.find_similar(Some(&mut find));
+    let mut paths = BTreeSet::new();
+    for delta in diff.deltas() {
+        let candidates = [delta.old_file().path(), delta.new_file().path()]
+            .into_iter()
+            .flatten()
+            .map(|path| normalize(&path.to_string_lossy()))
+            .collect::<Vec<_>>();
+        if candidates.iter().any(|path| selected.contains(path)) {
+            paths.extend(candidates);
+        }
+    }
+    Ok(paths.into_iter().collect())
 }
 
 fn remove_added_file(root: &Path, relative: &str) -> NativeResult<()> {
@@ -615,19 +670,43 @@ fn create_staged_stash(
     Ok(worktree_oid)
 }
 
-fn create_unstaged_default_attributes(
+fn create_unstaged_paths(
     repo: &Repository,
     signature: &git2::Signature<'_>,
+    worktree_paths: &[String],
+    index_paths: &[String],
+    default_attributes: bool,
 ) -> NativeResult<Oid> {
+    let encode = |paths: &[String]| {
+        paths
+            .iter()
+            .map(|path| {
+                CString::new(path.as_bytes())
+                    .map_err(|_| format!("路径包含无效的 NUL 字符: {path}"))
+            })
+            .collect::<Result<Vec<_>, _>>()
+    };
+    let worktree = encode(worktree_paths)?;
+    let worktree_pointers = worktree
+        .iter()
+        .map(|path| path.as_ptr())
+        .collect::<Vec<_>>();
+    let index = encode(index_paths)?;
+    let index_pointers = index.iter().map(|path| path.as_ptr()).collect::<Vec<_>>();
     let mut output = [0 as c_char; 65];
     let flags = (StashFlags::KEEP_INDEX | StashFlags::INCLUDE_UNTRACKED).bits();
     let result = unsafe {
-        git_stash_save_default_attributes(
+        git_stash_save_unstaged_paths(
             output.as_mut_ptr(),
             output.len(),
             repo.raw().cast(),
             signature.raw().cast(),
             flags,
+            worktree_pointers.len(),
+            worktree_pointers.as_ptr(),
+            index_pointers.len(),
+            index_pointers.as_ptr(),
+            default_attributes,
         )
     };
     if result < 0 {
@@ -642,7 +721,7 @@ fn create_unstaged_default_attributes(
 pub fn create(payload: &Value) -> NativeResult<Value> {
     let root_path = string_arg(payload, "rootPath")?;
     let scope = parse_scope(payload)?;
-    let mut repo = open_repository(root_path)?;
+    let repo = open_repository(root_path)?;
     let index = repo.index().map_err(format_git_error)?;
     if index.has_conflicts() {
         return Err("存在未解决的合并冲突，请先解决冲突后再 stash".to_owned());
@@ -654,7 +733,28 @@ pub fn create(payload: &Value) -> NativeResult<Value> {
     }
     let signature = repo.signature().map_err(|_| NO_IDENTITY.to_owned())?;
     let paths = parse_paths(payload)?;
-    let all_changes = collect_changes(&repo)?;
+    let merge_staged_into_unstaged = merge_staged_into_unstaged_arg(payload)?;
+    let all_unstaged_paths = all_unstaged_paths_arg(payload)?;
+    if all_unstaged_paths && (scope != Scope::Unstaged || paths.is_none()) {
+        return Err("allUnstagedPaths 只允许与 unstaged 精确路径一起使用".to_owned());
+    }
+    let mut all_changes = collect_changes(&repo, !all_unstaged_paths)?;
+    if all_unstaged_paths {
+        let selected = paths.as_ref().expect("validated allUnstagedPaths");
+        let index = repo.index().map_err(format_git_error)?;
+        let head_tree = repo
+            .head()
+            .map_err(|_| NO_COMMIT.to_owned())?
+            .peel_to_tree()
+            .map_err(format_git_error)?;
+        for path in selected {
+            if is_gitlink(&index, &head_tree, path) {
+                all_changes.unstaged_gitlinks.push(path.clone());
+            } else {
+                all_changes.unstaged.push(path.clone());
+            }
+        }
+    }
     let mut changes = all_changes.clone();
     if let Some(selected_paths) = &paths {
         match scope {
@@ -732,10 +832,33 @@ pub fn create(payload: &Value) -> NativeResult<Value> {
             .collect::<Vec<_>>()
     };
     let filter_flags = ensure_stashable(&repo, &regular_files, "创建 stash")?;
+    let selected_unstaged = regular_files.iter().cloned().collect::<BTreeSet<_>>();
+    let staged_paths = all_changes
+        .staged
+        .iter()
+        .chain(all_changes.staged_gitlinks.iter())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let overlapping_staged = selected_unstaged
+        .intersection(&staged_paths)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    // These paths keep their full worktree contents in the stash worktree tree, but they
+    // are deliberately excluded from the stash index parent: applying the stash restores
+    // the combined contents as unstaged changes and never stages them.
+    let preserved_staged_worktree_paths = if scope == Scope::Unstaged && merge_staged_into_unstaged
+    {
+        related_staged_paths(&repo, &overlapping_staged)?
+    } else {
+        Vec::new()
+    };
     let isolation = if scope == Scope::Unstaged {
-        paths.as_ref().map_or(Ok(None), |selected_paths| {
-            isolate_unselected_unstaged(&repo, &all_changes.unstaged, selected_paths)
-        })?
+        Some(isolate_unselected_unstaged(
+            &repo,
+            &all_changes.unstaged,
+            &selected_unstaged,
+        )?)
+        .flatten()
     } else {
         None
     };
@@ -789,16 +912,20 @@ pub fn create(payload: &Value) -> NativeResult<Value> {
         Vec::new()
     };
     let oid_result = match scope {
-        Scope::Unstaged if default_attributes => {
-            create_unstaged_default_attributes(&repo, &signature)
-        }
-        Scope::Unstaged => repo
-            .stash_save2(
+        Scope::Unstaged => {
+            let index_paths = regular_files
+                .iter()
+                .filter(|path| !overlapping_staged.contains(*path))
+                .cloned()
+                .collect::<Vec<_>>();
+            create_unstaged_paths(
+                &repo,
                 &signature,
-                None,
-                Some(StashFlags::KEEP_INDEX | StashFlags::INCLUDE_UNTRACKED),
+                &preserved_staged_worktree_paths,
+                &index_paths,
+                default_attributes,
             )
-            .map_err(stash_error),
+        }
         Scope::Staged => create_staged_stash(
             &repo,
             &signature,
@@ -981,6 +1108,29 @@ pub fn restore_paths(payload: &Value) -> NativeResult<Value> {
     Ok(Value::Null)
 }
 
+fn stash_list_entry(repo: &Repository, index: usize, oid: Oid) -> Option<Value> {
+    let commit = repo.find_commit(oid).ok()?;
+    let author = commit.author();
+    let committer = commit.committer();
+    Some(json!({
+        "hash": oid.to_string(),
+        "shortHash": oid.to_string().chars().take(8).collect::<String>(),
+        "parents": commit.parent_ids().map(|id| id.to_string()).collect::<Vec<_>>(),
+        "author": signature_text(author.name_bytes(), "Unknown author"),
+        "authorEmail": signature_text(author.email_bytes(), ""),
+        "committer": signature_text(committer.name_bytes(), "Unknown committer"),
+        "committerEmail": signature_text(committer.email_bytes(), ""),
+        "authorDate": iso_time(author.when()),
+        "message": commit.summary().unwrap_or_default(),
+        "body": commit.body().unwrap_or_default(),
+        "rawMessage": String::from_utf8_lossy(commit.message_bytes()),
+        "refs": Vec::<String>::new(),
+        "commitTime": commit.time().seconds(),
+        "stashIndex": index,
+        "stashRef": format!("stash@{{{index}}}"),
+    }))
+}
+
 pub fn list(payload: &Value) -> NativeResult<Value> {
     let root_path = string_arg(payload, "rootPath")?;
     let mut repo = open_repository(root_path)?;
@@ -990,31 +1140,48 @@ pub fn list(payload: &Value) -> NativeResult<Value> {
         true
     })
     .map_err(format_git_error)?;
-    let mut result = Vec::with_capacity(entries.len());
-    for (index, oid) in entries {
-        let Ok(commit) = repo.find_commit(oid) else {
-            continue;
-        };
-        let author = commit.author();
-        let committer = commit.committer();
-        result.push(json!({
-            "hash": oid.to_string(),
-            "shortHash": oid.to_string().chars().take(8).collect::<String>(),
-            "parents": commit.parent_ids().map(|id| id.to_string()).collect::<Vec<_>>(),
-            "author": signature_text(author.name_bytes(), "Unknown author"),
-            "authorEmail": signature_text(author.email_bytes(), ""),
-            "committer": signature_text(committer.name_bytes(), "Unknown committer"),
-            "committerEmail": signature_text(committer.email_bytes(), ""),
-            "authorDate": iso_time(author.when()),
-            "message": commit.summary().unwrap_or_default(),
-            "body": commit.body().unwrap_or_default(),
-            "rawMessage": String::from_utf8_lossy(commit.message_bytes()),
-            "refs": Vec::<String>::new(),
-            "commitTime": commit.time().seconds(),
-            "stashIndex": index,
-            "stashRef": format!("stash@{{{index}}}"),
-        }));
+    if entries.len() < 32 {
+        return Ok(Value::Array(
+            entries
+                .into_iter()
+                .filter_map(|(index, oid)| stash_list_entry(&repo, index, oid))
+                .collect(),
+        ));
     }
+
+    let git_dir = repo.path().to_path_buf();
+    let worker_count = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(1)
+        .min(8)
+        .min(entries.len());
+    let chunk_size = entries.len().div_ceil(worker_count);
+    let result = std::thread::scope(|scope| {
+        let handles = entries
+            .chunks(chunk_size)
+            .map(|chunk| {
+                let git_dir = &git_dir;
+                scope.spawn(move || {
+                    let repo = Repository::open(git_dir).map_err(format_git_error)?;
+                    Ok::<_, String>(
+                        chunk
+                            .iter()
+                            .filter_map(|(index, oid)| stash_list_entry(&repo, *index, *oid))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut values = Vec::with_capacity(entries.len());
+        for handle in handles {
+            values.extend(
+                handle
+                    .join()
+                    .map_err(|_| "读取 stash 列表的工作线程异常".to_owned())??,
+            );
+        }
+        Ok::<_, String>(values)
+    })?;
     Ok(Value::Array(result))
 }
 
@@ -1204,12 +1371,17 @@ unsafe extern "C" {
         path_count: usize,
         paths: *const *const c_char,
     ) -> i32;
-    fn git_stash_save_default_attributes(
+    fn git_stash_save_unstaged_paths(
         output: *mut c_char,
         output_size: usize,
         repository: *mut c_void,
         stasher: *const c_void,
         flags: u32,
+        worktree_path_count: usize,
+        worktree_paths: *const *const c_char,
+        index_path_count: usize,
+        index_paths: *const *const c_char,
+        default_attributes: bool,
     ) -> i32;
 }
 
@@ -1326,7 +1498,17 @@ fn apply_error(error: git2::Error) -> String {
     }
 }
 
+fn stash_reinstate_index(repo: &Repository) -> NativeResult<bool> {
+    let config = repo.config().map_err(format_git_error)?;
+    match config.get_bool("stash.index") {
+        Ok(value) => Ok(value),
+        Err(error) if error.code() == ErrorCode::NotFound => Ok(false),
+        Err(error) => Err(format_git_error(error)),
+    }
+}
+
 fn apply_by_hash(repo: &mut Repository, hash: &str) -> NativeResult<bool> {
+    let reinstate_index = stash_reinstate_index(repo)?;
     let index = stash_index(repo, hash)?;
     let oid = parse_stash_hash(hash)?;
     let plan = {
@@ -1334,8 +1516,15 @@ fn apply_by_hash(repo: &mut Repository, hash: &str) -> NativeResult<bool> {
         preflight_apply(repo, &commit)?
     };
     let mut checkout = CheckoutBuilder::new();
-    checkout.disable_filters(matches!(plan.filters, ApplyFilters::Disabled));
+    checkout
+        .ancestor_label("Stash base")
+        .our_label("Updated upstream")
+        .their_label("Stashed changes")
+        .disable_filters(matches!(plan.filters, ApplyFilters::Disabled));
     let mut options = StashApplyOptions::new();
+    if reinstate_index {
+        options.reinstantiate_index();
+    }
     options.checkout_options(checkout);
     if matches!(plan.filters, ApplyFilters::DefaultAttributes) {
         let options_ptr = options.raw() as *const _ as *const c_void;
