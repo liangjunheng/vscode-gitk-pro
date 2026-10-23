@@ -3237,7 +3237,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const choice = await confirmSync(confirmRows, [...pullTargetByRepository].map(([repositoryPath, target]) => {
                 const label = repositoryLabelOf(repositoryPath);
                 return `${label ? `${label}：` : ''}${target.remoteName}`;
-            }));
+            }), this.repositories.find(repository => repository.path === rootRepositoryPath)?.label
+                ?? path.basename(rootUri.fsPath));
             if (!choice) { return; }
             syncing = choice === 'sync';
             // 仅推送: 跳过拉取, 后面的进度、结果与重读都按普通推送执行。

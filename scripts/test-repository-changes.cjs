@@ -1580,7 +1580,7 @@ async function verifyProvider() {
         ...load.call(this, name, ...args),
         pickPushTargets: async (_plan, defaultTargets) => { pushTargetDefaults = defaultTargets; return selectedPushTargetsResult; },
         confirmPush: async rows => { confirmRows = rows; confirmOptions = undefined; return true; },
-        confirmSync: async (rows, pullFrom) => { confirmRows = rows; confirmOptions = { pullFrom }; return syncChoice; },
+        confirmSync: async (rows, pullFrom, repositoryLabel) => { confirmRows = rows; confirmOptions = { pullFrom, repositoryLabel }; return syncChoice; },
         showPushResult: async (title, detail) => { pushResultNotices.push([title, detail]); },
       };
       if (name === '../git/gitNativeOperations') return {
@@ -1642,21 +1642,24 @@ async function verifyProvider() {
     modal: true,
     detail: '需要推送的分支：\nink_dev → origin/ink_master\nchild：ink_dev → upstream/develop',
   }, 'modal detail lists each branch on its own line');
-  // 同步确认: 三个按钮分别是"同步"、"仅推送"和"取消"; 普通推送确认仍只有"推送"和"取消"。
+  // 同步确认: 顶部显示仓库名，并始终提供同步/仅推送/取消。
   const syncRow = { source: pushDialogPlan.source, target: pushDialogPlan.targets[0] };
   confirmationChoice = '同步';
-  assert.equal(await confirmSync([syncRow], ['origin/ink_master', 'child：upstream/develop']), 'sync');
+  assert.equal(await confirmSync([syncRow], ['origin/ink_master', 'child：upstream/develop'], 'inkengine'), 'sync');
   const syncConfirmation = confirmationDialogs.at(-1);
   assert.equal(syncConfirmation.message, '确认同步');
-  assert.deepEqual(syncConfirmation.items, [{ title: '同步' }, { title: '仅推送' }, { title: '取消', isCloseAffordance: true }], 'sync confirmation exposes sync, push-only, and cancel actions');
-  assert.equal(syncConfirmation.options.detail, '先拉取：\norigin/ink_master\nchild：upstream/develop\n\n需要推送的分支：\nink_dev → origin/ink_master', 'pull targets come before the push list');
+  assert.deepEqual(syncConfirmation.items, [{ title: '同步' }, { title: '仅推送' }, { title: '取消', isCloseAffordance: true }], 'sync confirmation always exposes sync, push-only, and cancel actions');
+  assert.equal(syncConfirmation.options.detail, '仓库名：inkengine\n\n先拉取：\norigin/ink_master\nchild：upstream/develop\n\n需要推送的分支：\nink_dev → origin/ink_master', 'repository name appears above the pull and push sections');
   confirmationChoice = '仅推送';
-  assert.equal(await confirmSync([syncRow], []), 'push');
-  assert.equal(confirmationDialogs.at(-1).options.detail, '先拉取：\n无可拉取的远程分支，将直接推送\n\n需要推送的分支：\nink_dev → origin/ink_master', 'without an upstream the dialog says nothing will be pulled');
+  assert.equal(await confirmSync([syncRow], [], 'inkengine'), 'push');
+  const noPullConfirmation = confirmationDialogs.at(-1);
+  assert.equal(noPullConfirmation.message, '确认同步');
+  assert.deepEqual(noPullConfirmation.items, [{ title: '同步' }, { title: '仅推送' }, { title: '取消', isCloseAffordance: true }], 'without a pull target the dialog keeps all sync actions');
+  assert.equal(noPullConfirmation.options.detail, '仓库名：inkengine\n\n先拉取：\n无可拉取的远程分支，将直接推送\n\n需要推送的分支：\nink_dev → origin/ink_master', 'without a pull target the dialog explains that sync will directly push');
   confirmationChoice = '取消';
-  assert.equal(await confirmSync([syncRow], []), undefined, 'cancel returns no choice');
+  assert.equal(await confirmSync([syncRow], [], 'inkengine'), undefined, 'cancel returns no choice');
   confirmationChoice = undefined;
-  assert.equal(await confirmSync([syncRow], []), undefined, 'closing the dialog returns no choice');
+  assert.equal(await confirmSync([syncRow], [], 'inkengine'), undefined, 'closing the dialog returns no choice');
   confirmationChoice = '取消';
   assert.equal(await confirmPush([{ source: pushDialogPlan.source, target: pushDialogPlan.targets[0] }]), false);
   confirmationChoice = undefined;
@@ -2002,7 +2005,7 @@ async function verifyProvider() {
   await provider.runCommitPanelPush([childPath], true, false);
   // 确认行用的是 HEAD 现场读到的分支名与 hash, 而不是目标里的任何字段。
   assert.deepEqual(confirmRows.map(row => [row.source.branchName, row.source.hash, row.target.remoteName]), [['main', 'a'.repeat(40), 'origin/main']]);
-  assert.deepEqual(confirmOptions, { pullFrom: ['origin/main'] }, 'sync confirmation lists the upstream it pulls before pushing');
+  assert.deepEqual(confirmOptions, { pullFrom: ['origin/main'], repositoryLabel: 'child' }, 'sync confirmation lists the repository and upstream it pulls before pushing');
   assert.equal(checkouts.length, checkoutCountBeforePush, 'sync does not switch branches');
   assert.deepEqual(pulls, [[childPath, 'origin', 'main', undefined, { autostash: true }]], 'sync pulls the bound upstream once, with autostash so a dirty worktree cannot block it');
   assert.deepEqual(pushes.at(-1), [childPath, 'origin', 'main', 'main', 'a'.repeat(40)], 'sync sends the current HEAD to the selected remote branch, carrying branch name and hash in separate fields');
@@ -2032,18 +2035,18 @@ async function verifyProvider() {
   assert.deepEqual(syncHistoryRefreshes, ['history'], 'history refreshes once');
   assert.equal(provider.unpushedCommitCountByRepository.has(childPath) || provider.behindCommitCountByRepository.has(childPath), false, 'cached ahead/behind counts are dropped so the card badge is recomputed');
   assert.ok(syncStatePublishes > 0, 'sync state cache invalidation republishes the card so ahead/behind is reread even when HEAD is unchanged');
-  // 没有勾选 upstream 时没有可拉取的来源: 同步入口仍是三按钮, "同步"只推送, 标题仍按同步表述。
+  // 没有勾选 upstream 时没有可拉取的来源: 同步入口仍保留全部按钮，“同步”会直接推送。
   resetSyncState();
   selectedPushTargetsResult = [pushTargetFixture[0]];
   await provider.runCommitPanelPush([childPath], true, false);
   assert.deepEqual(pulls, [], 'unticking the upstream leaves nothing to pull from');
-  assert.deepEqual(confirmOptions, { pullFrom: [] });
+  assert.deepEqual(confirmOptions, { pullFrom: [], repositoryLabel: 'child' });
   assert.equal(pushResultNotices.at(-1)[0], 'Git Sync 已完成');
   // 选择"仅推送": 不拉取, 对所有勾选分支推送当前 HEAD, 结果按普通推送表述且不重读未拉取的仓库。
   resetSyncState(); syncChoice = 'push';
   selectedPushTargetsResult = [pushTargetFixture[0], pushTargetFixture[1]];
   await provider.runCommitPanelPush([childPath], true, false);
-  assert.deepEqual(confirmOptions, { pullFrom: ['origin/main'] }, 'the dialog still lists what sync would have pulled');
+  assert.deepEqual(confirmOptions, { pullFrom: ['origin/main'], repositoryLabel: 'child' }, 'the dialog lists the repository name and what sync would have pulled');
   assert.deepEqual(pulls, [], 'push-only never pulls');
   assert.deepEqual(pushes.map(entry => entry.slice(1)), [['fork', 'main', 'main', 'a'.repeat(40)], ['origin', 'main', 'main', 'a'.repeat(40)]], 'push-only sends the unpulled HEAD to every ticked branch');
   assert.equal(pushResultNotices.at(-1)[0], 'Git Push 已完成');

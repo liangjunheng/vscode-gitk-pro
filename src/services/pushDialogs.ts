@@ -136,18 +136,23 @@ export async function confirmPush(rows: readonly PushConfirmRow[]): Promise<bool
 export type SyncChoice = 'sync' | 'push';
 
 /**
- * 同步确认弹窗: 同步 / 仅推送 / 取消。
- * pullFrom 是「同步」会先拉取的远程分支(多仓库时已带仓库名前缀); 取消项同时承接 Esc 和关闭操作, 返回 undefined。
+ * 同步确认弹窗始终显示「同步 / 仅推送 / 取消」。
+ * pullFrom 是「同步」会先拉取的远程分支(多仓库时已带仓库名前缀); repositoryLabel 显示在弹窗内容顶部。
  */
-export async function confirmSync(rows: readonly PushConfirmRow[], pullFrom: readonly string[]): Promise<SyncChoice | undefined> {
+export async function confirmSync(
+    rows: readonly PushConfirmRow[],
+    pullFrom: readonly string[],
+    repositoryLabel?: string,
+): Promise<SyncChoice | undefined> {
     const syncItem: vscode.MessageItem = { title: '同步' };
     const pushOnlyItem: vscode.MessageItem = { title: '仅推送' };
     const cancelItem: vscode.MessageItem = { title: '取消', isCloseAffordance: true };
+    const repositoryDetail = repositoryLabel ? `仓库名：${repositoryLabel}\n\n` : '';
     const choice = await vscode.window.showInformationMessage(
         '确认同步',
         {
             modal: true,
-            detail: `先拉取：\n${pullFrom.length > 0 ? pullFrom.join('\n') : '无可拉取的远程分支，将直接推送'}\n\n需要推送的分支：\n${rows.map(describePushConfirmationRow).join('\n')}`,
+            detail: `${repositoryDetail}先拉取：\n${pullFrom.length > 0 ? pullFrom.join('\n') : '无可拉取的远程分支，将直接推送'}\n\n需要推送的分支：\n${rows.map(describePushConfirmationRow).join('\n')}`,
         },
         syncItem,
         pushOnlyItem,
