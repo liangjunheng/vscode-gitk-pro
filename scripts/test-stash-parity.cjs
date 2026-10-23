@@ -70,25 +70,50 @@ function snapshot(root) {
 async function invoke(binding, root, operation, payload = {}) {
   return JSON.parse(await binding.invoke(operation, JSON.stringify({ rootPath: root, ...payload })));
 }
+function rawStashFiles(root, revision) {
+  const raw = git(root, ['stash', 'show', '--include-untracked', '--raw', '-z', '--no-abbrev', '--find-renames', revision]).stdout;
+  const values = raw.split('\0');
+  const files = [];
+  for (let index = 0; index < values.length;) {
+    const header = values[index++];
+    if (!header) continue;
+    const [oldMode, newMode, oldObjectId, newObjectId, statusText] = header.slice(1).split(' ');
+    const oldPath = values[index++];
+    const renamed = statusText[0] === 'R' || statusText[0] === 'C';
+    const filePath = renamed ? values[index++] : oldPath;
+    files.push({
+      path: filePath, status: statusText[0], oldPath: renamed ? oldPath : null,
+      oldObjectId, newObjectId, oldMode, newMode,
+      isGitlink: oldMode === '160000' || newMode === '160000',
+    });
+  }
+  return files.sort((left, right) => left.path.localeCompare(right.path));
+}
 async function runParity() {
   const binding = loadBinding();
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'gitk-stash-parity-'));
   let passed = 0;
   const check = async (name, action) => { await action(); passed++; console.log(`PASS ${name}`); };
   try {
-    await check('staged attribute restoration keeps canonical checkout filters', async () => {
+    await check('staged attribute restoration matches Git bytes for root and nested rules', async () => {
       for (const prefix of ['', 'nested/']) {
-        const root = fixture(path.join(scratch, prefix ? 'restore-nested-attrs' : 'restore-root-attrs'));
-        const attrs = `${prefix}.gitattributes`, file = `${prefix}a`;
-        write(root, attrs, (prefix ? '' : '* -filter\n') + 'a text eol=crlf\n');
-        write(root, file, 'base\r\n');
-        git(root, ['add', '-A']); git(root, ['commit', '-q', '-m', 'attributes baseline']);
-        write(root, attrs, prefix ? '' : '* -filter\n'); write(root, file, 'staged\n');
-        git(root, ['add', '-A']); write(root, 'b', 'unrelated dirty\n');
-        await invoke(binding, root, 'stashCreate', { scope: 'staged' });
-        assert.equal(fs.readFileSync(path.join(root, file), 'utf8'), 'base\r\n');
-        assert.equal(fs.readFileSync(path.join(root, 'b'), 'utf8'), 'unrelated dirty\n');
-        assert.equal(git(root, ['diff', '--cached', '--name-only']).stdout, '');
+        const prepare = root => {
+          fixture(root);
+          const attrs = `${prefix}.gitattributes`, file = `${prefix}a`;
+          write(root, attrs, (prefix ? '' : '* -filter\n') + 'a text eol=crlf\n');
+          write(root, file, 'base\r\n');
+          git(root, ['add', '-A']); git(root, ['commit', '-q', '-m', 'attributes baseline']);
+          write(root, attrs, prefix ? '' : '* -filter\n'); write(root, file, 'staged\n');
+          git(root, ['add', '-A']); write(root, 'b', 'unrelated dirty\n');
+        };
+        const label = prefix ? 'nested' : 'root';
+        const cli = path.join(scratch, `restore-${label}-attrs-cli`);
+        const native = path.join(scratch, `restore-${label}-attrs-native`);
+        prepare(cli); prepare(native);
+        const expected = git(cli, ['stash', 'push', '--staged'], true);
+        let error; try { await invoke(binding, native, 'stashCreate', { scope: 'staged' }); } catch (caught) { error = caught; }
+        assert.equal(Boolean(error), expected.code !== 0, error?.message || expected.stderr);
+        assert.deepEqual(snapshot(native), snapshot(cli));
       }
     });
     await check('keep-index restores canonical filtered staged-only contents', async () => {
@@ -119,14 +144,23 @@ async function runParity() {
       assert.deepEqual(snapshot(native), snapshot(cli));
     });
     await check('attribute batches do not survive subsequent operations', async () => {
-      const root = fixture(path.join(scratch, 'fresh-attribute-batches'));
-      write(root, 'a', 'first\n'); await invoke(binding, root, 'stashCreate', { scope: 'unstaged' });
-      git(root, ['config', 'filter.unsupported.clean', 'must-not-run']);
-      write(root, '.gitattributes', '* -filter\na filter=unsupported\n'); write(root, 'a', 'second\n');
-      const beforeRef = git(root, ['rev-parse', 'refs/stash']).stdout;
-      await assert.rejects(() => invoke(binding, root, 'stashCreate', { scope: 'unstaged' }), /外部 Git filter/);
-      assert.equal(git(root, ['rev-parse', 'refs/stash']).stdout, beforeRef);
-      assert.equal(fs.readFileSync(path.join(root, 'a'), 'utf8'), 'second\n');
+      const prepare = async root => {
+        fixture(root);
+        write(root, 'a', 'first\n');
+        if (root.endsWith('-native')) await invoke(binding, root, 'stashCreate', { scope: 'unstaged' });
+        else git(root, ['stash', 'push', '-q', '-k', '-u']);
+        write(root, '.git/fail.js', 'process.exit(1)');
+        git(root, ['config', 'filter.fresh.clean', 'node .git/fail.js']);
+        git(root, ['config', 'filter.fresh.required', 'true']);
+        write(root, '.gitattributes', '* -filter\na filter=fresh\n'); write(root, 'a', 'second\n');
+      };
+      const cli = path.join(scratch, 'fresh-attribute-batches-cli');
+      const native = path.join(scratch, 'fresh-attribute-batches-native');
+      await prepare(cli); await prepare(native);
+      const expected = git(cli, ['stash', 'push', '-k', '-u'], true);
+      let error; try { await invoke(binding, native, 'stashCreate', { scope: 'unstaged' }); } catch (caught) { error = caught; }
+      assert.equal(Boolean(error), expected.code !== 0, error?.message || expected.stderr);
+      assert.deepEqual(snapshot(native), snapshot(cli));
     });
     const scenarios = [
       { name: 'plain' }, { name: 'autocrlf', auto: 'true' }, { name: 'input', auto: 'input' },
@@ -137,6 +171,9 @@ async function runParity() {
       { name: 'literal', kind: 'literal' }, { name: 'overlap', kind: 'overlap' },
       { name: 'attribute-change', kind: 'attribute', attrs: 'a text eol=crlf\n' },
       { name: 'index-deleted-recreated', kind: 'recreated' },
+      { name: 'file-to-directory', kind: 'file-to-dir' },
+      { name: 'mode-and-content', kind: 'mode' },
+      { name: 'intent-to-add', kind: 'intent' },
     ];
     for (const scope of ['unstaged', 'staged']) for (const scenario of scenarios) {
       await check(`${scope}/${scenario.name}`, async () => {
@@ -149,9 +186,12 @@ async function runParity() {
           else if (scenario.kind === 'rename') fs.renameSync(path.join(root, 'a'), path.join(root, 'renamed'));
           else if (scenario.kind === 'literal') { write(root, '[literal]', edit); write(root, 'space name', edit); }
           else if (scenario.kind === 'recreated') { git(root, ['rm', '--cached', 'a']); write(root, 'a', edit); }
+          else if (scenario.kind === 'file-to-dir') { fs.unlinkSync(path.join(root, 'a')); write(root, 'a/inside', edit); }
+          else if (scenario.kind === 'mode') { git(root, ['update-index', '--chmod=+x', 'a']); write(root, 'a', edit); }
+          else if (scenario.kind === 'intent') { write(root, 'ita', 'intent\n'); git(root, ['add', '-N', 'ita']); }
           else write(root, 'a', edit);
           if (scenario.kind === 'attribute') { write(root, '.gitattributes', '* -filter\na text eol=lf\n'); write(root, 'a', 'staged\n'); }
-          if (scope === 'staged' && scenario.kind !== 'recreated') git(root, ['add', '-A']);
+          if (scope === 'staged' && !['recreated', 'intent'].includes(scenario.kind)) git(root, ['add', '-A']);
           if (scenario.kind === 'overlap') {
             if (scope === 'unstaged') git(root, ['add', 'a']);
             write(root, 'a', edit + (crlf ? 'unstaged\r\n' : 'unstaged\n'));
@@ -166,19 +206,85 @@ async function runParity() {
         try { await invoke(binding, native, 'stashCreate', { scope }); } catch (error) { actualError = error; }
         assert.equal(Boolean(actualError), expected.code !== 0, actualError?.message || expected.stderr);
         const nativeSnapshot = snapshot(native), cliSnapshot = snapshot(cli);
-        if (scope === 'staged' && scenario.kind === 'attribute') {
-          // Git's reverse-patch implementation may leave LF after restoring an
-          // eol=crlf attribute. The existing native backend deliberately checks
-          // out the canonical CRLF form. Preserve that policy, filtered content,
-          // tree, index and status rather than introducing an unrelated change.
-          assert.equal(nativeSnapshot.files.a, Buffer.from('base\r\n').toString('hex'));
-          const normalize = hex => Buffer.from(hex, 'hex').toString('utf8').replace(/\r\n/g, '\n');
-          assert.equal(normalize(nativeSnapshot.files.a), normalize(cliSnapshot.files.a));
-          nativeSnapshot.files.a = cliSnapshot.files.a;
-        }
         assert.deepEqual(nativeSnapshot, cliSnapshot, `${scope}/${scenario.name} must match trees, bytes, index and status`);
       });
     }
+    await check('no matching changes succeeds without creating a stash', async () => {
+      for (const scope of ['unstaged', 'staged']) {
+        const cli = fixture(path.join(scratch, `empty-${scope}-cli`));
+        const native = fixture(path.join(scratch, `empty-${scope}-native`));
+        const expected = git(cli, ['stash', 'push', ...(scope === 'staged' ? ['--staged'] : ['-k', '-u'])], true);
+        const result = await invoke(binding, native, 'stashCreate', { scope });
+        assert.equal(expected.code, 0);
+        assert.equal(result.created, false);
+        assert.equal(result.stash, '');
+        assert.deepEqual(snapshot(native), snapshot(cli));
+      }
+    });
+    await check('staged stash preserves a separated unstaged hunk in the same file', async () => {
+      const prepare = root => {
+        fixture(root);
+        write(root, 'a', Array.from({ length: 20 }, (_, index) => `line ${index}\n`).join(''));
+        git(root, ['add', 'a']); git(root, ['commit', '-q', '-m', 'lines']);
+        const staged = Array.from({ length: 20 }, (_, index) => index === 1 ? 'staged line\n' : `line ${index}\n`).join('');
+        write(root, 'a', staged); git(root, ['add', 'a']);
+        write(root, 'a', staged.replace('line 18\n', 'unstaged line\n'));
+      };
+      const cli = path.join(scratch, 'separated-hunks-cli'), native = path.join(scratch, 'separated-hunks-native');
+      prepare(cli); prepare(native);
+      const expected = git(cli, ['stash', 'push', '--staged'], true);
+      let error; try { await invoke(binding, native, 'stashCreate', { scope: 'staged' }); } catch (caught) { error = caught; }
+      assert.equal(Boolean(error), expected.code !== 0, error?.message || expected.stderr);
+      assert.deepEqual(snapshot(native), snapshot(cli));
+    });
+    await check('apply and pop preserve non-overlapping staged changes like Git', async () => {
+      for (const operation of ['stashApply', 'stashPop']) {
+        const prepare = root => {
+          fixture(root); write(root, 'a', 'saved\n'); git(root, ['stash', 'push', '-q', '-u']);
+          write(root, 'b', 'local staged\n'); git(root, ['add', 'b']);
+        };
+        const cli = path.join(scratch, `${operation}-staged-cli`), native = path.join(scratch, `${operation}-staged-native`);
+        prepare(cli); prepare(native);
+        const hash = git(native, ['rev-parse', 'refs/stash']).stdout;
+        const expected = git(cli, ['stash', operation === 'stashPop' ? 'pop' : 'apply'], true);
+        let error; try { await invoke(binding, native, operation, { stash: hash }); } catch (caught) { error = caught; }
+        assert.equal(Boolean(error), expected.code !== 0, error?.message || expected.stderr);
+        assert.deepEqual(snapshot(native), snapshot(cli));
+      }
+    });
+    await check('apply/pop preserve builtin EOL and ident checkout filters', async () => {
+      for (const operation of ['stashApply', 'stashPop']) {
+        for (const variant of ['crlf', 'ident']) {
+          const root = fixture(path.join(scratch, operation + '-' + variant),
+            variant === 'crlf' ? 'a text eol=crlf\n' : 'a ident\n');
+          write(root, 'a', variant === 'crlf' ? 'saved\r\n' : '$Id$\nchange\n');
+          git(root, ['stash', 'push', '-q', '-u']);
+          const hash = git(root, ['rev-parse', 'refs/stash']).stdout;
+          const index = git(root, ['write-tree']).stdout;
+          const result = await invoke(binding, root, operation, { stash: hash });
+          const contents = fs.readFileSync(path.join(root, 'a'), 'utf8');
+          if (variant === 'crlf') assert.equal(contents, 'saved\r\n');
+          else assert.match(contents, /\$Id: [0-9a-f]+ \$/);
+          assert.equal(git(root, ['write-tree']).stdout, index);
+          assert.equal(result.conflicts, false);
+          assert.equal((await invoke(binding, root, 'stashList')).length, operation === 'stashPop' ? 0 : 1);
+        }
+      }
+    });
+    await check('apply/pop retain filtering on merge-generated renamed paths', async () => {
+      for (const operation of ['stashApply', 'stashPop']) {
+        const root = fixture(path.join(scratch, operation + '-renamed-filter'), 'moved text eol=crlf\n');
+        write(root, 'a', 'saved\n');
+        git(root, ['stash', 'push', '-q', '-u']);
+        const hash = git(root, ['rev-parse', 'refs/stash']).stdout;
+        git(root, ['mv', 'a', 'moved']); git(root, ['commit', '-q', '-m', 'rename after stash']);
+        git(root, ['checkout', '--', 'moved']);
+        const result = await invoke(binding, root, operation, { stash: hash });
+        assert.equal(result.conflicts, false);
+        assert.equal(fs.readFileSync(path.join(root, 'moved'), 'utf8'), 'saved\r\n');
+        assert.equal(fs.existsSync(path.join(root, 'a')), false);
+      }
+    });
     await check('apply/pop/drop, sparse safety and stable hashes', async () => {
       const root = fixture(path.join(scratch, 'operations'));
       write(root, 'a', 'saved\n'); write(root, 'saved-new', 'new\n');
@@ -190,7 +296,7 @@ async function runParity() {
       assert.equal(applied.dropped, false); assert.equal(applied.conflicts, false);
       assert.equal((await invoke(binding, root, 'stashList')).length, 1);
       assert.equal(fs.readFileSync(path.join(root, 'unrelated/99'), 'utf8'), 'local 99\n');
-      await assert.rejects(() => invoke(binding, root, 'stashApply', { stash: stash.stash }), /已存在或有本地修改|暂存区/);
+      await assert.rejects(() => invoke(binding, root, 'stashApply', { stash: stash.stash }), /冲突|已存在或有本地修改|暂存区/);
       git(root, ['reset', '--hard', '-q']); git(root, ['clean', '-fdq']);
       const popped = await invoke(binding, root, 'stashPop', { stash: stash.stash });
       assert.equal(popped.dropped, true); assert.equal((await invoke(binding, root, 'stashList')).length, 0);
@@ -203,27 +309,136 @@ async function runParity() {
       await assert.rejects(() => invoke(binding, root, 'stashDrop', { stash: first.stash }), /已不存在/);
       await assert.rejects(() => invoke(binding, root, 'stashApply', { stash: 'stash@{0}' }), /无效/);
     });
-    await check('literal apply preflight, conflicts and overwrite protection', async () => {
-      const root = fixture(path.join(scratch, 'literal-apply'));
-      write(root, '[literal]', 'saved\n'); const stash = await invoke(binding, root, 'stashCreate', { scope: 'unstaged' });
-      write(root, '[literal]', 'do not overwrite\n');
-      await assert.rejects(() => invoke(binding, root, 'stashPop', { stash: stash.stash }), /已存在或有本地修改/);
-      assert.equal(fs.readFileSync(path.join(root, '[literal]'), 'utf8'), 'do not overwrite\n');
-      assert.equal((await invoke(binding, root, 'stashList')).length, 1);
-      git(root, ['reset', '--hard', '-q']);
-      write(root, 'b', 'staged local\n'); git(root, ['add', 'b']);
-      await assert.rejects(() => invoke(binding, root, 'stashApply', { stash: stash.stash }), /暂存区/);
+    await check('apply/pop conflict and untracked-overwrite outcomes match Git', async () => {
+      for (const operation of ['stashApply', 'stashPop']) for (const kind of ['tracked-conflict', 'untracked-collision']) {
+        const prepare = root => {
+          fixture(root);
+          if (kind === 'tracked-conflict') write(root, '[literal]', 'saved\n');
+          else write(root, 'saved-new', 'saved new\n');
+          git(root, ['stash', 'push', '-q', '-u']);
+          if (kind === 'tracked-conflict') write(root, '[literal]', 'local\n');
+          else write(root, 'saved-new', 'local new\n');
+        };
+        const cli = path.join(scratch, `${operation}-${kind}-cli`);
+        const native = path.join(scratch, `${operation}-${kind}-native`);
+        prepare(cli); prepare(native);
+        const hash = git(native, ['rev-parse', 'refs/stash']).stdout;
+        const expected = git(cli, ['stash', operation === 'stashPop' ? 'pop' : 'apply'], true);
+        let error; try { await invoke(binding, native, operation, { stash: hash }); } catch (caught) { error = caught; }
+        assert.equal(Boolean(error), expected.code !== 0, error?.message || expected.stderr);
+        assert.deepEqual(snapshot(native), snapshot(cli));
+      }
     });
-    await check('filter/TSD safety remains before mutation', async () => {
+    await check('TSD safety remains before mutation', async () => {
       const root = fixture(path.join(scratch, 'safety'));
       write(root, 'a', '%TSD-Header-###%opaque');
       await assert.rejects(() => invoke(binding, root, 'stashCreate', { scope: 'unstaged' }), /透明加密/);
       assert.deepEqual(await invoke(binding, root, 'stashList'), []);
-      write(root, 'a', 'real changes\n');
-      write(root, '.gitattributes', 'a filter=unsupported\n');
-      git(root, ['config', 'filter.unsupported.clean', 'must-not-be-executed']);
-      await assert.rejects(() => invoke(binding, root, 'stashCreate', { scope: 'unstaged' }), /外部 Git filter/);
-      assert.deepEqual(await invoke(binding, root, 'stashList'), []);
+    });
+    await check('core.eol, safecrlf, attributesfile and info attributes match Git', async () => {
+      const variants = ['core-eol-crlf', 'core-eol-lf', 'attributesfile', 'info-attributes', 'safecrlf'];
+      const prepare = (root, variant, scope) => {
+        fixture(root);
+        if (variant === 'core-eol-crlf' || variant === 'core-eol-lf') {
+          git(root, ['config', 'core.autocrlf', 'false']);
+          git(root, ['config', 'core.eol', variant.endsWith('crlf') ? 'crlf' : 'lf']);
+          write(root, '.gitattributes', '* -filter\na text\n');
+        } else if (variant === 'attributesfile') {
+          write(root, '.git/custom-attributes', 'a text eol=crlf\n');
+          git(root, ['config', 'core.attributesfile', path.join(root, '.git', 'custom-attributes')]);
+        } else if (variant === 'info-attributes') {
+          write(root, '.git/info/attributes', 'a text eol=crlf\n');
+        }
+        write(root, 'a', 'configured base\n'); git(root, ['add', '-A']); git(root, ['commit', '-q', '-m', 'configured base']);
+        if (variant === 'safecrlf') {
+          git(root, ['config', 'core.autocrlf', 'true']);
+          git(root, ['config', 'core.safecrlf', 'true']);
+        }
+        write(root, 'a', 'configured dirty\n');
+        if (scope === 'staged') git(root, ['add', 'a'], true);
+      };
+      for (const variant of variants) for (const scope of ['unstaged', 'staged']) {
+        const cli = path.join(scratch, `${variant}-${scope}-cli`), native = path.join(scratch, `${variant}-${scope}-native`);
+        prepare(cli, variant, scope); prepare(native, variant, scope);
+        const expected = git(cli, ['stash', 'push', ...(scope === 'staged' ? ['--staged'] : ['-k', '-u'])], true);
+        let error; try { await invoke(binding, native, 'stashCreate', { scope }); } catch (caught) { error = caught; }
+        assert.equal(Boolean(error), expected.code !== 0, error?.message || expected.stderr);
+        assert.deepEqual(snapshot(native), snapshot(cli));
+      }
+    });
+    await check('external clean/smudge filters affect create and apply like Git', async () => {
+      const prepare = root => {
+        fixture(root);
+        write(root, '.git/upper.js', "let b=[];process.stdin.on('data',x=>b.push(x));process.stdin.on('end',()=>process.stdout.write(Buffer.concat(b).toString().toUpperCase()));");
+        write(root, '.git/lower.js', "let b=[];process.stdin.on('data',x=>b.push(x));process.stdin.on('end',()=>process.stdout.write(Buffer.concat(b).toString().toLowerCase()));");
+        git(root, ['config', 'filter.case.clean', 'node .git/upper.js']);
+        git(root, ['config', 'filter.case.smudge', 'node .git/lower.js']);
+        git(root, ['config', 'filter.case.required', 'true']);
+        write(root, '.gitattributes', 'a filter=case\n'); write(root, 'a', 'base lower\n');
+        git(root, ['add', '-A']); git(root, ['commit', '-q', '-m', 'filtered base']);
+      };
+      for (const scope of ['unstaged', 'staged']) {
+        const cli = path.join(scratch, `external-${scope}-cli`), native = path.join(scratch, `external-${scope}-native`);
+        prepare(cli); prepare(native);
+        write(cli, 'a', 'dirty lower\n'); write(native, 'a', 'dirty lower\n');
+        if (scope === 'staged') { git(cli, ['add', 'a']); git(native, ['add', 'a']); }
+        const expected = git(cli, ['stash', 'push', ...(scope === 'staged' ? ['--staged'] : ['-k', '-u'])], true);
+        let error; try { await invoke(binding, native, 'stashCreate', { scope }); } catch (caught) { error = caught; }
+        assert.equal(Boolean(error), expected.code !== 0, error?.message || expected.stderr);
+        assert.deepEqual(snapshot(native), snapshot(cli));
+      }
+      for (const operation of ['stashApply', 'stashPop']) {
+        const cli = path.join(scratch, `external-${operation}-cli`), native = path.join(scratch, `external-${operation}-native`);
+        prepare(cli); prepare(native);
+        write(cli, 'a', 'saved lower\n'); write(native, 'a', 'saved lower\n');
+        git(cli, ['stash', 'push', '-q', '-u']); git(native, ['stash', 'push', '-q', '-u']);
+        const hash = git(native, ['rev-parse', 'refs/stash']).stdout;
+        const expected = git(cli, ['stash', operation === 'stashPop' ? 'pop' : 'apply'], true);
+        let error; try { await invoke(binding, native, operation, { stash: hash }); } catch (caught) { error = caught; }
+        assert.equal(Boolean(error), expected.code !== 0, error?.message || expected.stderr);
+        assert.deepEqual(snapshot(native), snapshot(cli));
+      }
+    });
+    await check('filter.process clean/smudge affects stash like Git', async () => {
+      const processScript = String.raw`let input=Buffer.alloc(0), group=[], state='hello', request={};
+const packet=data=>{const b=Buffer.from(data);process.stdout.write(Buffer.from((b.length+4).toString(16).padStart(4,'0')));process.stdout.write(b)};
+const flush=()=>process.stdout.write('0000');
+function respond(content){packet('status=success\n');flush();for(let i=0;i<content.length;i+=65000)packet(content.subarray(i,i+65000));flush();packet('status=success\n');flush()}
+function done(){if(state==='hello'){packet('git-filter-server\n');packet('version=2\n');flush();state='capabilities'}else if(state==='capabilities'){packet('capability=clean\n');packet('capability=smudge\n');flush();state='request'}else if(state==='request'){request={};for(const value of group){const text=value.toString();if(text.startsWith('command='))request.command=text.slice(8).trim()}state='content'}else{const content=Buffer.concat(group);respond(Buffer.from(request.command==='clean'?content.toString().toUpperCase():content.toString().toLowerCase()));state='request'}group=[]}
+process.stdin.on('data',chunk=>{input=Buffer.concat([input,chunk]);while(input.length>=4){const length=parseInt(input.subarray(0,4).toString(),16);if(length===0){input=input.subarray(4);done();continue}if(input.length<length)break;group.push(input.subarray(4,length));input=input.subarray(length)}});`;
+      const prepare = root => {
+        fixture(root); write(root, '.git/process.js', processScript);
+        git(root, ['config', 'filter.proc.process', 'node .git/process.js']);
+        git(root, ['config', 'filter.proc.required', 'true']);
+        write(root, '.gitattributes', 'a filter=proc\n'); write(root, 'a', 'base lower\n');
+        git(root, ['add', '-A']); git(root, ['commit', '-q', '-m', 'process base']);
+        write(root, 'a', 'dirty lower\n');
+      };
+      const cli = path.join(scratch, 'process-filter-cli'), native = path.join(scratch, 'process-filter-native');
+      prepare(cli); prepare(native);
+      const expected = git(cli, ['stash', 'push', '-k', '-u'], true);
+      let error; try { await invoke(binding, native, 'stashCreate', { scope: 'unstaged' }); } catch (caught) { error = caught; }
+      assert.equal(Boolean(error), expected.code !== 0, error?.message || expected.stderr);
+      assert.deepEqual(snapshot(native), snapshot(cli));
+    });
+    await check('required external filter failure leaves stash state unchanged like Git', async () => {
+      const prepare = root => {
+        fixture(root);
+        write(root, '.git/upper.js', "let b=[];process.stdin.on('data',x=>b.push(x));process.stdin.on('end',()=>process.stdout.write(Buffer.concat(b).toString().toUpperCase()));");
+        write(root, '.git/fail.js', 'process.exit(1)');
+        git(root, ['config', 'filter.upper.clean', 'node .git/upper.js']);
+        git(root, ['config', 'filter.upper.required', 'true']);
+        git(root, ['config', 'filter.fail.clean', 'node .git/fail.js']);
+        git(root, ['config', 'filter.fail.required', 'true']);
+        write(root, '.gitattributes', 'a filter=upper\nb filter=fail\n');
+        write(root, 'a', 'dirty lower\n'); write(root, 'b', 'dirty failing\n');
+      };
+      const cli = path.join(scratch, 'required-filter-cli'), native = path.join(scratch, 'required-filter-native');
+      prepare(cli); prepare(native);
+      const expected = git(cli, ['stash', 'push', '-k', '-u'], true);
+      let error; try { await invoke(binding, native, 'stashCreate', { scope: 'unstaged' }); } catch (caught) { error = caught; }
+      assert.equal(Boolean(error), expected.code !== 0, error?.message || expected.stderr);
+      assert.deepEqual(snapshot(native), snapshot(cli));
     });
     await check('rename file metadata and untracked third parent', async () => {
       const root = fixture(path.join(scratch, 'metadata'));
@@ -232,14 +447,34 @@ async function runParity() {
       const stash = await invoke(binding, root, 'stashCreate', { scope: 'unstaged' });
       const files = await invoke(binding, root, 'stashFiles', { revision: stash.stash });
       assert.ok(files.some(file => file.path === 'new' && file.status === 'A'));
-      assert.ok(files.some(file => file.path === 'a' && file.status === 'D'));
-      assert.ok(files.some(file => file.path === 'renamed' && file.status === 'A'));
+      assert.ok(files.some(file => file.path === 'renamed' && file.oldPath === 'a' && file.status === 'R'));
       await invoke(binding, root, 'stashDrop', { stash: stash.stash });
       fs.renameSync(path.join(root, 'a'), path.join(root, 'renamed'));
       git(root, ['add', '-A']);
       const staged = await invoke(binding, root, 'stashCreate', { scope: 'staged' });
       const stagedFiles = await invoke(binding, root, 'stashFiles', { revision: staged.stash });
       assert.ok(stagedFiles.some(file => file.status === 'R' && file.oldPath === 'a' && file.path === 'renamed'));
+    });
+    await check('stash list and files match Git command output', async () => {
+      const root = fixture(path.join(scratch, 'list-files-parity'));
+      fs.renameSync(path.join(root, 'a'), path.join(root, 'renamed'));
+      write(root, 'b', 'modified\n'); write(root, 'new', 'untracked\n');
+      git(root, ['stash', 'push', '-q', '-u']);
+      write(root, 'c', 'second\n'); git(root, ['stash', 'push', '-q']);
+      const expectedList = git(root, ['stash', 'list', '--format=%H%x00%gd%x00%s%x00']).stdout
+        .split('\0').filter(Boolean).reduce((rows, value, index, all) => {
+          if (index % 3 === 0) rows.push({ hash: value.trim(), stashRef: all[index + 1].trim(), message: all[index + 2].trim() });
+          return rows;
+        }, []);
+      const actualList = (await invoke(binding, root, 'stashList'))
+        .map(entry => ({ hash: entry.hash, stashRef: entry.stashRef, message: entry.message }));
+      assert.deepEqual(actualList, expectedList);
+      for (const entry of actualList) {
+        const expectedFiles = rawStashFiles(root, entry.hash);
+        const actualFiles = (await invoke(binding, root, 'stashFiles', { revision: entry.hash }))
+          .sort((left, right) => left.path.localeCompare(right.path));
+        assert.deepEqual(actualFiles, expectedFiles);
+      }
     });
     await check('large stash list and hash-based drop', async () => {
       const root = fixture(path.join(scratch, 'large-list'));
@@ -265,29 +500,46 @@ async function runParity() {
       const remaining = await invoke(binding, root, 'stashList');
       assert.equal(remaining.length, ids.length - 1); assert.ok(!remaining.some(entry => entry.hash === ids[10]));
     });
-    await check('Gitlink-only staged restore and unstaged submodule preservation', async () => {
+    await check('gitlink-only and mixed staged stash/apply match Git', async () => {
       const source = fixture(path.join(scratch, 'child-source'));
       const first = git(source, ['rev-parse', 'HEAD']).stdout;
       git(source, ['commit', '--allow-empty', '-q', '-m', 'child second']);
-      const second = git(source, ['rev-parse', 'HEAD']).stdout;
-      const root = fixture(path.join(scratch, 'gitlinks'));
+      const prepare = (root, variant) => {
+        fixture(root);
+        git(root, ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', source, 'child']);
+        git(root, ['commit', '-q', '-m', 'add child']);
+        git(path.join(root, 'child'), ['checkout', '-q', first]);
+        git(root, ['add', 'child']);
+        if (variant === 'regular-staged') { write(root, 'a', 'regular staged\n'); git(root, ['add', 'a']); }
+        if (variant === 'tracked-unstaged' || variant === 'regular-staged') write(root, 'b', 'must remain unstaged\n');
+      };
+      for (const variant of ['only-gitlink', 'tracked-unstaged', 'regular-staged']) {
+        const cli = path.join(scratch, `gitlink-${variant}-cli`);
+        const native = path.join(scratch, `gitlink-${variant}-native`);
+        prepare(cli, variant); prepare(native, variant);
+        const expected = git(cli, ['stash', 'push', '--staged'], true);
+        const result = await invoke(binding, native, 'stashCreate', { scope: 'staged' });
+        assert.equal(expected.code, 0);
+        assert.equal(result.created, git(cli, ['rev-parse', '--verify', 'refs/stash'], true).code === 0);
+        assert.deepEqual(snapshot(native), snapshot(cli));
+        if (result.created) {
+          const applied = git(cli, ['stash', 'apply'], true);
+          let error; try { await invoke(binding, native, 'stashApply', { stash: result.stash }); } catch (caught) { error = caught; }
+          assert.equal(Boolean(error), applied.code !== 0, error?.message || applied.stderr);
+          assert.deepEqual(snapshot(native), snapshot(cli));
+        }
+      }
+    });
+    await check('unstaged stash preserves submodule worktree changes', async () => {
+      const source = fixture(path.join(scratch, 'dirty-child-source'));
+      const root = fixture(path.join(scratch, 'dirty-gitlink-parent'));
       git(root, ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', source, 'child']);
       git(root, ['commit', '-q', '-m', 'add child']);
       const child = path.join(root, 'child');
-      git(child, ['checkout', '-q', first]); git(root, ['add', 'child']);
-      write(root, 'b', 'must remain unstaged\n');
-      const staged = await invoke(binding, root, 'stashCreate', { scope: 'staged' });
-      assert.equal(git(root, ['rev-parse', ':child']).stdout, second);
-      assert.equal(git(child, ['rev-parse', 'HEAD']).stdout, first);
-      assert.equal(fs.readFileSync(path.join(root, 'b'), 'utf8'), 'must remain unstaged\n');
-      const files = await invoke(binding, root, 'stashFiles', { revision: staged.stash });
-      assert.ok(files.some(file => file.path === 'child' && file.isGitlink));
-      await assert.rejects(() => invoke(binding, root, 'stashApply', { stash: staged.stash }), /子模块指针/);
       write(child, 'a', 'child edit must stay\n'); write(root, 'a', 'parent edit\n');
       const unstaged = await invoke(binding, root, 'stashCreate', { scope: 'unstaged' });
       assert.ok(unstaged.skippedGitlinks.includes('child'));
       assert.equal(fs.readFileSync(path.join(child, 'a'), 'utf8'), 'child edit must stay\n');
-      assert.equal(git(child, ['rev-parse', 'HEAD']).stdout, first);
     });
     if (process.platform !== 'win32') await check('symlink contents and executable modes', async () => {
       for (const scope of ['unstaged', 'staged']) {

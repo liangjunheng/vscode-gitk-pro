@@ -20,6 +20,8 @@ const upstreamHashes = stashPatchFiles.map(file => hash(path.join(upstream, file
 try {
   const common = prepareLibgit2Patch(manifest);
   const firstHashes = stashPatchFiles.map(file => hash(path.join(common, file)));
+  const stamp = JSON.parse(fs.readFileSync(path.join(common, '.vscode-gitk-libgit2-patch.json'), 'utf8'));
+  assert.equal(stamp.stashPatchDataSha256, hash(path.join(root, 'scripts', 'libgit2-stash-performance.patch')));
   assert.notDeepEqual(firstHashes, upstreamHashes);
   assert.equal(prepareLibgit2Patch(manifest), common, 'successful preparation is reusable');
   const stash = path.join(common, stashPatchFiles[0]);

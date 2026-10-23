@@ -1,6 +1,8 @@
 use crate::support::{NativeResult, format_git_error, repository_root};
-use git2::{AttrCheckFlags, AttrValue, Index, Repository};
+use git2::{AttrCheckFlags, AttrValue, Binding, Index, Repository};
+use std::ffi::{CString, c_void};
 use std::io::Write;
+use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -319,56 +321,197 @@ pub fn apply_clean_filters(
     Ok(())
 }
 
-fn repo_has_external_filters(repo: &Repository) -> bool {
-    let Ok(config) = repo.config() else {
-        return true;
-    };
-    let Ok(mut entries) = config.entries(Some(r"^filter\..*\.(clean|smudge|process)$")) else {
-        return true;
-    };
-    entries.next().is_some()
+const STASH_FILTER_EXTERNAL: u8 = 1 << 0;
+const STASH_FILTER_BUILTIN: u8 = 1 << 1;
+const STASH_FILTER_DEFAULT_ATTRIBUTES: u8 = 1 << 2;
+
+unsafe extern "C" {
+    fn git_stash_filter_flags_from_workdir(
+        output: *mut u8,
+        repository: *mut c_void,
+        path_count: usize,
+        paths: *const *const c_char,
+    ) -> i32;
 }
 
-fn uses_external_filter(repo: &Repository, path: &Path) -> bool {
-    let Some(name) = attribute_string(repo, path, "filter") else {
-        return false;
+pub fn stash_filter_flags(repo: &Repository, paths: &[String]) -> NativeResult<Vec<u8>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let encoded = paths
+        .iter()
+        .map(|path| {
+            CString::new(path.as_bytes()).map_err(|_| format!("路径包含无效的 NUL 字符: {path}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let pointers = encoded.iter().map(|path| path.as_ptr()).collect::<Vec<_>>();
+    let mut flags = vec![0u8; paths.len()];
+    // SAFETY: all C strings, the pointer array and the output buffer remain
+    // alive and fixed for the duration of this synchronous libgit2 call.
+    let result = unsafe {
+        git_stash_filter_flags_from_workdir(
+            flags.as_mut_ptr(),
+            repo.raw().cast(),
+            pointers.len(),
+            pointers.as_ptr(),
+        )
     };
-    let Ok(config) = repo.config() else {
-        return true;
-    };
-    ["clean", "smudge", "process"].iter().any(|direction| {
-        config
-            .get_string(&format!("filter.{name}.{direction}"))
-            .is_ok()
-    })
+    if result < 0 {
+        return Err(format!(
+            "读取 Git attributes 失败（libgit2 error {result}）"
+        ));
+    }
+    Ok(flags)
 }
 
-/// libgit2 stash does not execute configured external filter processes. Refuse
-/// those paths, and unreadable transparent-encryption payloads, before any
-/// stash ref or worktree state is changed.
-pub fn ensure_stashable(repo: &Repository, paths: &[String], operation: &str) -> NativeResult<()> {
+/// Inspect stash paths before mutation. External filters are returned to the
+/// caller for explicit clean/smudge execution; unreadable transparent-encryption
+/// payloads are rejected before refs or worktree state change.
+pub fn ensure_stashable(
+    repo: &Repository,
+    paths: &[String],
+    operation: &str,
+) -> NativeResult<Vec<u8>> {
     use std::io::Read;
 
     let root = repository_root(repo)?;
-    let may_have_external_filters = repo_has_external_filters(repo);
-    for value in paths {
-        let path = Path::new(value);
-        if may_have_external_filters && uses_external_filter(repo, path) {
+    let flags = stash_filter_flags(repo, paths)?;
+    if paths.is_empty() {
+        return Ok(flags);
+    }
+    let worker_count = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(1)
+        .min(16)
+        .min(paths.len());
+    let chunk_size = paths.len().div_ceil(worker_count);
+    let encrypted = std::thread::scope(|scope| {
+        let handles = paths
+            .chunks(chunk_size)
+            .enumerate()
+            .map(|(chunk_index, chunk)| {
+                let root = &root;
+                scope.spawn(move || {
+                    for (offset, value) in chunk.iter().enumerate() {
+                        let mut header = [0u8; 16];
+                        if let Ok(mut file) = std::fs::File::open(root.join(Path::new(value))) {
+                            let read = file.read(&mut header).unwrap_or(0);
+                            if header[..read].starts_with(b"%TSD-Header-###%") {
+                                return Some((chunk_index * chunk_size + offset, value.clone()));
+                            }
+                        }
+                    }
+                    None
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut encrypted = None;
+        for handle in handles {
+            let result = handle
+                .join()
+                .map_err(|_| "stash 文件安全预检线程异常".to_owned())?;
+            if result.as_ref().is_some_and(|item| {
+                encrypted
+                    .as_ref()
+                    .is_none_or(|current: &(usize, String)| item.0 < current.0)
+            }) {
+                encrypted = result;
+            }
+        }
+        Ok::<_, String>(encrypted)
+    })?;
+    if let Some((_, value)) = encrypted {
+        return Err(format!(
+            "{value} 受到透明加密保护，当前进程无法读取明文，已拒绝{operation}"
+        ));
+    }
+    Ok(flags)
+}
+
+pub fn stash_path_uses_external_filter(flags: u8) -> bool {
+    flags & STASH_FILTER_EXTERNAL != 0
+}
+
+fn stash_filterable_worktree_file(index: &Index, absolute: &Path, relative: &Path) -> bool {
+    if index
+        .get_path(relative, 0)
+        .is_some_and(|entry| entry.mode == 0o120000 || entry.mode == 0o160000)
+    {
+        return false;
+    }
+    std::fs::symlink_metadata(absolute).is_ok_and(|metadata| metadata.file_type().is_file())
+}
+
+pub fn clean_worktree_for_stash(
+    repo: &Repository,
+    paths: &[String],
+) -> NativeResult<Vec<(PathBuf, Vec<u8>)>> {
+    let root = repository_root(repo)?;
+    let index = repo.index().map_err(format_git_error)?;
+    let mut backups = Vec::new();
+    let result = (|| {
+        for value in paths {
+            let relative = PathBuf::from(value);
+            let absolute = root.join(&relative);
+            if !stash_filterable_worktree_file(&index, &absolute, &relative) {
+                continue;
+            }
+            let input = std::fs::read(&absolute)
+                .map_err(|error| format!("读取 {} 失败: {error}", absolute.display()))?;
+            let clean = clean_data(repo, &relative, &input)?;
+            if clean != input {
+                std::fs::write(&absolute, &clean)
+                    .map_err(|error| format!("写入 {} 失败: {error}", absolute.display()))?;
+                backups.push((absolute, input));
+            }
+        }
+        Ok::<(), String>(())
+    })();
+    if let Err(error) = result {
+        if let Err(restore_error) = restore_worktree_backups(backups) {
             return Err(format!(
-                "{value} 使用了外部 Git filter（如 LFS），libgit2 在「{operation}」时不会执行它们，已拒绝以免破坏文件内容"
+                "{error}；同时还原 filter 输入失败: {restore_error}"
             ));
         }
-        let mut header = [0u8; 16];
-        if let Ok(mut file) = std::fs::File::open(root.join(path)) {
-            let read = file.read(&mut header).unwrap_or(0);
-            if header[..read].starts_with(b"%TSD-Header-###%") {
-                return Err(format!(
-                    "{value} 受到透明加密保护，当前进程无法读取明文，已拒绝{operation}"
-                ));
-            }
+        return Err(error);
+    }
+    Ok(backups)
+}
+
+pub fn restore_worktree_backups(backups: Vec<(PathBuf, Vec<u8>)>) -> NativeResult<()> {
+    for (path, contents) in backups {
+        std::fs::write(&path, contents)
+            .map_err(|error| format!("还原 {} 失败: {error}", path.display()))?;
+    }
+    Ok(())
+}
+
+pub fn smudge_worktree_paths(repo: &Repository, paths: &[String]) -> NativeResult<()> {
+    let root = repository_root(repo)?;
+    let index = repo.index().map_err(format_git_error)?;
+    for value in paths {
+        let relative = PathBuf::from(value);
+        let absolute = root.join(&relative);
+        if !stash_filterable_worktree_file(&index, &absolute, &relative) {
+            continue;
+        }
+        let input = std::fs::read(&absolute)
+            .map_err(|error| format!("读取 {} 失败: {error}", absolute.display()))?;
+        let output = smudge_data(repo, &relative, &input)?;
+        if output != input {
+            std::fs::write(&absolute, output)
+                .map_err(|error| format!("写入 {} 失败: {error}", absolute.display()))?;
         }
     }
     Ok(())
+}
+
+pub fn stash_path_needs_builtin_filter(flags: u8) -> bool {
+    flags & STASH_FILTER_BUILTIN != 0
+}
+
+pub fn stash_path_uses_default_attributes(flags: u8) -> bool {
+    flags & STASH_FILTER_DEFAULT_ATTRIBUTES != 0 && flags & STASH_FILTER_EXTERNAL == 0
 }
 
 pub fn apply_smudge_filters(repo: &Repository, paths: &[String]) -> NativeResult<()> {

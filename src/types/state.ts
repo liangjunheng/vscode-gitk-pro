@@ -25,7 +25,7 @@ export type GitkIntent =
     | { type: 'updateCommitMessage'; repositoryPath: unknown; message: unknown }
     | { type: 'repositoryChangesFile'; repositoryPath: string; section: 'conflict' | 'staged' | 'unstaged'; path: string }
     | { type: 'repositoryChangesFileAction'; repositoryPath: string; section: 'conflict' | 'staged' | 'unstaged'; path: string; paths?: string[]; action: 'openFile' | 'openBefore' | 'openAfter' | 'revealInOS' | 'revealInExplorer' | 'copy' | 'copyPath' | 'copyRelativePath' }
-    | { type: 'repositoryChangesAction'; repositoryPath: string; action: string; section?: 'conflict' | 'staged' | 'unstaged'; paths?: string[]; untrackedPaths?: string[] }
+    | { type: 'repositoryChangesAction'; repositoryPath: string; action: string; section?: 'conflict' | 'staged' | 'unstaged'; hash?: string; path?: string; paths?: string[]; untrackedPaths?: string[] }
     | { type: 'rendered'; target: unknown; fileCount: unknown }
     | { type: 'openCommitEditor'; amend: unknown; repositoryPath: unknown }
     | { type: 'openCommitPanel' }
@@ -70,7 +70,7 @@ export interface AppState {
     filesLoading: boolean;
     commitEditorLoading: boolean;
     selectedPath: string | undefined;
-    selectedCommit: { key: string; hash: string; repositoryPath: string; kind: ChangeSetMode } | null;
+    selectedCommit: { key: string; hash: string; repositoryPath: string; kind: ChangeSetMode; isStash?: boolean; stashRef?: string } | null;
     displayMode: 'tree' | 'flat';
 
     // 搜索

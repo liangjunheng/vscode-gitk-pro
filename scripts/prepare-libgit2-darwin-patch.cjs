@@ -8,6 +8,7 @@ const { STASH_PATCH_REVISION, applyStashPatch, stashPatchFiles } = require('./li
 const LIBGIT2_SYS_VERSION = '0.18.8+1.9.7';
 const PATCH_REVISION = 3;
 const STAMP_FILE = '.vscode-gitk-libgit2-patch.json';
+const STASH_PATCH_DATA = path.join(__dirname, 'libgit2-stash-performance.patch');
 
 const buildScriptReplacements = Object.freeze([
   Object.freeze([
@@ -105,6 +106,7 @@ function validPatch(directory, darwin) {
       && stamp.patchRevision === PATCH_REVISION
       && stamp.stashPatchRevision === STASH_PATCH_REVISION
       && stamp.stashPatchImplementationSha256 === sha256(require.resolve('./libgit2-stash-patch.cjs'))
+      && stamp.stashPatchDataSha256 === sha256(STASH_PATCH_DATA)
       && stamp.darwin === darwin
       && stamp.buildScriptSha256 === sha256(path.join(directory, 'build.rs'))
       && stamp.bindingsSha256 === sha256(path.join(directory, 'lib.rs'))
@@ -189,6 +191,7 @@ function prepareLibgit2Patch(manifest, env = process.env, darwin = false) {
       patchRevision: PATCH_REVISION,
       stashPatchRevision: STASH_PATCH_REVISION,
       stashPatchImplementationSha256: sha256(require.resolve('./libgit2-stash-patch.cjs')),
+      stashPatchDataSha256: sha256(STASH_PATCH_DATA),
       darwin,
       stashFiles: Object.fromEntries(stashPatchFiles.map(file => [file, sha256(path.join(staging, file))])),
       buildScriptSha256: sha256(buildScript),

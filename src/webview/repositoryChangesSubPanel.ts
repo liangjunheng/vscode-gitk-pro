@@ -94,7 +94,17 @@ export const REPOSITORY_CHANGES_STYLES = `
   .repo-file-folder { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); font-size: 11px; }
   .repo-file-status { flex: 0 0 13px; text-align: center; margin-left: auto; }
   .repo-file-row .toolbar-icon { width: 22px; height: 22px; flex: 0 0 22px; border: 0; cursor: pointer; }
-  .repo-file-actions { display: flex; gap: 4px; }
+  .repo-file-actions { display: none; align-items: center; align-self: stretch; gap: 4px; border-radius: 0 3px 3px 0; }
+  .repo-file-row:hover .repo-file-actions,
+  .repo-file-row.selected .repo-file-actions,
+  .repo-file-row.multi-selected .repo-file-actions,
+  .repo-file-row.context-target .repo-file-actions { display: flex; }
+  .repo-file-row.selected .repo-file-actions,
+  .repo-file-row.multi-selected .repo-file-actions,
+  .repo-file-row.context-target .repo-file-actions { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+  .repo-file-row.selected .repo-file-actions .toolbar-icon,
+  .repo-file-row.multi-selected .repo-file-actions .toolbar-icon,
+  .repo-file-row.context-target .repo-file-actions .toolbar-icon { color: inherit; }
   #repositoryGroupContextMenu, #repositoryMessageContextMenu { position: fixed; z-index: 20; box-sizing: border-box; width: max-content; min-width: 160px; max-width: calc(100vw - 8px); max-height: calc(100vh - 8px); overflow-y: auto; margin: 0; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border)); border-radius: 5px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 4px 14px rgba(0, 0, 0, .28); }
   #repositoryGroupContextMenu:not(:popover-open), #repositoryMessageContextMenu:not(:popover-open) { display: none; }
   #repositoryGroupContextMenu button, #repositoryMessageContextMenu button { display: block; box-sizing: border-box; width: 100%; max-width: 100%; padding: 5px 8px; border: 0; border-radius: 3px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: transparent; text-align: left; font: inherit; }
@@ -267,7 +277,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     return button;
   }
   function decorateRepositoryFileChangeActions(menu, section, includeStash) {
-    const iconByAction = { stage: 'add', unstage: 'remove', discard: 'discard', stash: 'inbox' };
+    const iconByAction = { stage: 'add', unstage: 'remove', discard: 'discard', stash: 'inbox', restoreStash: 'discard' };
     if (includeStash) {
       const separator = menu.querySelector('[data-file-change-item].context-menu-separator');
       if (separator) {
@@ -285,6 +295,15 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       glyph.className = 'codicon codicon-' + icon; glyph.setAttribute('aria-hidden', 'true');
       button.prepend(glyph);
     });
+  }
+  function decorateRepositoryStashRestoreAction(menu) {
+    const separator = menu.querySelector('.context-menu-separator');
+    if (!separator) return;
+    const restore = document.createElement('button');
+    restore.type = 'button'; restore.dataset.fileChangeAction = 'restoreStash'; restore.setAttribute('data-file-change-item', '');
+    restore.classList.add('repository-file-change-action');
+    restore.innerHTML = '<span class="codicon codicon-discard" aria-hidden="true"></span><span>还原贮藏</span>';
+    separator.before(restore);
   }
   function closeRepositoryGroupContextMenu() { if (repositoryGroupContextMenu.matches(':popover-open')) repositoryGroupContextMenu.hidePopover(); if (repositoryGroupContextHeader) repositoryGroupContextHeader.classList.remove('context-target'); repositoryGroupContextHeader = null; repositoryGroupContextTarget = null; }
   function closeRepositoryMessageContextMenu() { if (repositoryMessageContextMenu.matches(':popover-open')) repositoryMessageContextMenu.hidePopover(); repositoryMessageContextTarget = null; }
@@ -330,12 +349,14 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     const untrackedPaths = files.filter(function(item) { return item.isUntracked; }).map(function(item) { return item.path; });
     event.preventDefault(); closeAllContextMenus(repositoryFileContextMenu);
     repositoryFileContextRow = row; row.classList.add('context-target');
-    repositoryFileContextTarget = historical ? { kind: 'commit', hash: snapshot.commit.hash, repositoryPath: repositoryPath, path: filePath, paths: paths }
+    repositoryFileContextTarget = historical ? { kind: 'commit', hash: snapshot.commit.hash, isStash: snapshot.commit.isStash === true, repositoryPath: repositoryPath, path: filePath, paths: paths }
       : { kind: 'worktree', repositoryPath: repositoryPath, section: section, path: filePath, paths: paths, untrackedPaths: untrackedPaths };
     applyFileContextMenuStateForFiles(repositoryFileContextMenu, files, historical ? 'commit' : section);
     if (!historical && (section === 'unstaged' || section === 'staged')) {
       const hasConflicts = repository.staged.concat(repository.unstaged).some(function(item) { return item.isConflict; });
       decorateRepositoryFileChangeActions(repositoryFileContextMenu, section, !hasConflicts);
+    } else if (historical && snapshot.commit.isStash === true) {
+      decorateRepositoryStashRestoreAction(repositoryFileContextMenu);
     }
     positionRepositoryContextMenu(repositoryFileContextMenu, event);
   }
@@ -458,8 +479,9 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     const displayRepository = snapshot.kind === 'worktree'
       ? { ...repository, staged: snapshot.staged || [], unstaged: snapshot.unstaged || [] }
       : repository;
+    const stashSnapshot = snapshot.kind === 'commit' && snapshot.commit.isStash === true;
     let sections = snapshot.kind === 'commit'
-      ? [{ key: 'commit', label: '提交变更 ' + snapshot.commit.hash.slice(0, 8), files: snapshot.files }]
+      ? [{ key: 'commit', label: stashSnapshot ? '贮藏变更' : '提交变更 ' + snapshot.commit.hash.slice(0, 8), files: snapshot.files }]
       : repoChangesSections(displayRepository);
     const hasConflicts = sections.some(function(section) { return section.key === 'conflict' && section.files.length > 0; });
     const key = JSON.stringify([filesMode, repository.mergeOperation, repository.mergeOperationBusy, sections.map(function(section) { return [section.key, section.label, section.files]; })]);
@@ -485,6 +507,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
         abort.disabled = !repository.mergeOperation || repository.mergeOperationBusy;
         actions.append(proceed, abort); header.append(actions);
       }
+      if (stashSnapshot && section.key === 'commit') header.appendChild(repoChangesIcon('restoreStash', 'discard', '还原全部贮藏变更'));
       // stash 按钮位于“还原”(Unstaged) 和“取消暂存”(Staged) 的左侧。
       if (!hasConflicts && (section.key === 'unstaged' || section.key === 'staged')) header.appendChild(repoChangesIcon('stash', 'archive', section.key === 'staged' ? 'Stash 已暂存的更改' : 'Stash 未暂存的更改'));
       if (section.key === 'unstaged') header.appendChild(repoChangesIcon('discard', 'discard', '还原所有文件'));
@@ -515,7 +538,9 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
         button.innerHTML = repositoryFileIconHTML(file) + '<span class="repo-file-name">' + escapeHtml(file.path.slice(slash + 1)) + '</span><span class="repo-file-folder">' + escapeHtml(slash < 0 ? '' : file.path.slice(0, slash)) + '</span><span class="repo-file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span>';
         row.appendChild(button);
         const actions = document.createElement('span'); actions.className = 'repo-file-actions';
-        // Same order as the group header (discard, then stage) so the icons of a row sit under the matching header icons.
+        if (stashSnapshot && section.key === 'commit') actions.appendChild(repoChangesIcon('restoreStash', 'discard', '还原贮藏'));
+        // 与分组头保持相同顺序；stash 与分组头一样在存在冲突时隐藏。
+        if (!hasConflicts && (section.key === 'unstaged' || section.key === 'staged')) actions.appendChild(repoChangesIcon('stash', 'archive', section.key === 'staged' ? 'Stash 当前文件的已暂存更改' : 'Stash 当前文件的未暂存更改'));
         if (section.key === 'unstaged') actions.appendChild(repoChangesIcon('discard', 'discard', '放弃此文件变更'));
         if (section.key !== 'commit') actions.appendChild(repoChangesIcon(section.key === 'staged' ? 'unstage' : 'stage', section.key === 'staged' ? 'remove' : 'add', section.key === 'staged' ? '取消暂存' : '暂存'));
         row.appendChild(actions); container.appendChild(row);
@@ -822,10 +847,23 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       else vscode.postMessage({ type: 'repositoryChangesFile', repositoryPath: repositoryPath, section: section, path: filePath });
       return;
     }
+    const snapshot = currentRepositorySnapshot(node, repository);
+    if (action === 'restoreStash' && snapshot.kind === 'commit' && snapshot.commit.isStash === true && section === 'commit') {
+      const paths = filePath
+        ? repositorySelectedPaths(repositoryPath, section, filePath, group)
+        : snapshot.files.map(function(file) { return file.path; });
+      vscode.postMessage({ type: 'repositoryChangesAction', repositoryPath: repositoryPath, action: 'restoreStash', hash: snapshot.commit.hash, paths: paths });
+      return;
+    }
     const sectionFiles = repoChangesSections(repository).find(function(item) { return item.key === section; }).files;
-    // A file button acts on the whole selection when its row is part of it; a group button always acts on the whole group.
-    const paths = filePath ? repositorySelectedPaths(repositoryPath, section, filePath, group) : sectionFiles.map(function(file) { return file.path; });
-    vscode.postMessage({ type: 'repositoryChangesAction', repositoryPath: repositoryPath, action: action, section: section, paths: paths, untrackedPaths: sectionFiles.filter(function(file) { return file.isUntracked; }).map(function(file) { return file.path; }) });
+    // A file button acts on the current selection when the clicked row belongs to it; otherwise it acts alone.
+    const fileActionPaths = filePath
+      ? repositorySelectedPaths(repositoryPath, section, filePath, group)
+      : sectionFiles.map(function(file) { return file.path; });
+    const selectedFileStash = action === 'stash' && Boolean(filePath);
+    const untrackedScope = selectedFileStash ? sectionFiles.filter(function(file) { return fileActionPaths.indexOf(file.path) >= 0; }) : sectionFiles;
+    const untrackedPaths = untrackedScope.filter(function(file) { return file.isUntracked; }).map(function(file) { return file.path; });
+    vscode.postMessage({ type: 'repositoryChangesAction', repositoryPath: repositoryPath, action: action, section: section, path: selectedFileStash ? filePath : undefined, paths: fileActionPaths, untrackedPaths: untrackedPaths });
   });
   repositoryChangesList.addEventListener('contextmenu', function(event) {
     const row = event.target.closest('.repo-file-row');
@@ -855,6 +893,12 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
   });
   repositoryFileContextMenu.addEventListener('click', function(event) {
     const changeButton = event.target.closest('[data-file-change-action]');
+    if (changeButton && repositoryFileContextTarget && repositoryFileContextTarget.isStash === true && changeButton.dataset.fileChangeAction === 'restoreStash') {
+      vscode.postMessage({ type: 'repositoryChangesAction', repositoryPath: repositoryFileContextTarget.repositoryPath, action: 'restoreStash',
+        hash: repositoryFileContextTarget.hash, paths: repositoryFileContextTarget.paths });
+      closeRepositoryFileContextMenu();
+      return;
+    }
     if (changeButton && repositoryFileContextTarget && repositoryFileContextTarget.kind === 'worktree') {
       // Same intent as the row and group buttons, so the host confirms a discard and re-reads the group; it covers the whole selection.
       vscode.postMessage({ type: 'repositoryChangesAction', repositoryPath: repositoryFileContextTarget.repositoryPath, action: changeButton.dataset.fileChangeAction,

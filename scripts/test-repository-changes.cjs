@@ -1369,8 +1369,13 @@ async function verifyMultiDiffLinkage(page, state, publish, repositories) {
   assert.equal(await oldRow.locator('.repo-file').evaluate(node => node === document.activeElement), true, 'scroll feedback must not forcibly blur the clicked control');
   assert.equal(await oldRow.evaluate(row => row.classList.contains('selected')), false);
   assert.equal(await oldRow.evaluate(row => getComputedStyle(row).backgroundColor), 'rgba(0, 0, 0, 0)', 'pointer focus must not leave a faint selection background on the old file');
-  assert.equal(await oldRow.locator('.repo-file-actions').evaluate(node => getComputedStyle(node).visibility), 'visible', 'file action affordances remain visible after pointer focus moves');
+  assert.equal(await oldRow.locator('.repo-file-actions').evaluate(node => getComputedStyle(node).display), 'none', 'hidden file actions release their layout width when the row is neither selected nor hovered');
   await assertCount(root.locator('.repo-file-row.selected'), 1);
+  const selectedColors = await root.locator('.repo-file-row.selected').evaluate(row => ({
+    row: getComputedStyle(row).backgroundColor,
+    actions: getComputedStyle(row.querySelector('.repo-file-actions')).backgroundColor,
+  }));
+  assert.equal(selectedColors.actions, selectedColors.row, 'the selected row action area uses the same highlight background as the file area');
   await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'selectedPathChanged', selectedPath: 'unstaged:folder/file-33.cpp' } })));
   state.selectedPath = 'unstaged:folder/file-33.cpp';
   await publish();

@@ -99,8 +99,9 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
     branchesController: { getCurrentBranch: repo => heads[repo.path], clearRepositorySelection() {} },
     getRepoRootUri: path => vscode.Uri.parse(path),
     gitBackend: {
-      stash: async (root, scope) => { stashCalls.push([root.toString(), scope]); return backendStashImpl(root, scope); },
+      stash: async (root, scope, paths) => { stashCalls.push([root.toString(), scope, ...(paths ? [[...paths]] : [])]); return backendStashImpl(root, scope, paths); },
       stashApply: async (root, hash) => { opCalls.push(['apply', root.toString(), hash]); return backendOpImpl('apply', hash); },
+      stashRestorePaths: async (root, hash, paths) => { opCalls.push(['restore', root.toString(), hash, [...paths]]); },
       stashPop: async (root, hash) => { opCalls.push(['pop', root.toString(), hash]); return backendOpImpl('pop', hash); },
       stashDrop: async (root, hash) => { opCalls.push(['drop', root.toString(), hash]); return backendOpImpl('drop', hash); },
       stage: async () => {},
@@ -168,6 +169,12 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   assert.match(compiledCommitCard, /stashUnstaged\.hidden=conflictCount>0;/, 'Commit Panel hides unstaged stash while conflicts exist');
   const compiledChangedFiles = require('node:fs').readFileSync(require.resolve('../out/webview/changedFilesSubPanel'), 'utf8');
   assert.match(compiledChangedFiles, /const stashAction\s*=\s*hasConflicts\s*\?\s*['"]{2}\s*:/, 'Changed Files omits stash actions while conflicts exist');
+  const compiledRepositoryChanges = require('node:fs').readFileSync(require.resolve('../out/webview/repositoryChangesSubPanel'), 'utf8');
+  assert.match(compiledRepositoryChanges, /stashSnapshot\s*\?\s*['"]贮藏变更['"]/, 'a repository card names a selected stash section 贮藏变更');
+  assert.match(compiledRepositoryChanges, /repoChangesIcon\(['"]restoreStash['"],\s*['"]discard['"],\s*['"]还原全部贮藏变更['"]\)/, 'a stash section has a restore-all action');
+  assert.match(compiledRepositoryChanges, /repoChangesIcon\(['"]restoreStash['"],\s*['"]discard['"],\s*['"]还原贮藏['"]\)/, 'every stash file has a restore action');
+  assert.match(compiledRepositoryChanges, /restore\.innerHTML[^;]+还原贮藏/, 'the stash file context menu exposes 还原贮藏');
+  assert.match(compiledProvider, /isStash:\s*selectedCommitMetadata\.isStash\s*===\s*true/, 'selected stash identity is published to repository cards');
 
   assert.equal('stashGroups' in published.state, false, 'there is no separate stash group payload any more');
   assert.equal(published.state.hiddenStashCount, 0);
@@ -242,6 +249,20 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   assert.equal(dialogs.length, 0);
   assert.deepEqual(stashCalls, [[repoA.path, 'staged']]);
 
+  // 5b-file) 单文件 stash 只把按钮所在路径传给原生后端，不受多选集影响。
+  reset(); runSection = 'unstaged'; setSnapshot([file('a.txt')], [file('b.txt'), file('c.txt')]);
+  await provider.runStashAction(repoA.path, 'unstaged', ['b.txt']); await drain();
+  assert.deepEqual(stashCalls, [[repoA.path, 'unstaged', ['b.txt']]]);
+  let routedStash;
+  const originalRunStashAction = provider.runStashAction;
+  provider.runStashAction = async (...args) => { routedStash = args; };
+  await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', repositoryPath: repoA.path, action: 'stash', section: 'unstaged', path: 'b.txt', paths: ['b.txt', 'c.txt'] });
+  assert.deepEqual(routedStash, [repoA.path, 'unstaged', ['b.txt', 'c.txt']], 'repository-card stash keeps the current multi-selection');
+  routedStash = undefined;
+  await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', repositoryPath: repoA.path, action: 'stash', section: 'unstaged', paths: ['b.txt', 'c.txt'] });
+  assert.deepEqual(routedStash, [repoA.path, 'unstaged', ['b.txt', 'c.txt']], 'right-click stash uses the selected paths even without a clicked path');
+  provider.runStashAction = originalRunStashAction;
+
   // 5c) 另一个分组有文件时也不跨作用域、不询问。
   reset(); runSection = 'unstaged'; setSnapshot([file('a.txt')], [file('b.txt')]);
   await run();
@@ -289,6 +310,16 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   assert.deepEqual(completedMutations[0].changes.staged.map(item => item.path), []);
   assert.deepEqual(completedMutations[0].changes.changes.map(item => item.path), ['b.txt']);
   assert.deepEqual(completedMutations[0].verificationPaths, []);
+
+  // 5m) Git-compatible no-op success must not project files away.
+  reset(); completedMutations.length = 0;
+  cachedSnapshot = { staged: [file('a.txt')], changes: [file('b.txt')] };
+  runSection = 'staged'; setSnapshot(cachedSnapshot.staged, cachedSnapshot.changes);
+  backendStashImpl = async () => ({ stash: '', created: false, skippedGitlinks: [] });
+  await run();
+  assert.equal(completedMutations.length, 0, 'no-op stash publishes no mutation projection');
+  assert.deepEqual(store.getState().stagedFiles.map(item => item.path), ['a.txt']);
+  assert.deepEqual(store.getState().unstagedFiles.map(item => item.path), ['b.txt']);
 
   completedMutations.length = 0; opCalls.length = 0;
   cachedSnapshot = { staged: [file('a.txt')], changes: [file('b.txt')] };
@@ -338,7 +369,21 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   assert.deepEqual(ordinaryRuns.map(args => args[0]), ['copyHash', 'checkout'], 'copy hash works on a stash and ordinary commits are untouched');
   delete provider.runStashCommitAction;
 
-  // 7b) apply / pop 入队, 不弹窗; 队列里是 stashApply / stashPop, 不会落入默认的取消暂存分支
+  // 7b) 仓库卡片的贮藏还原支持行按钮、右键菜单与多选路径。
+  let routedRestore;
+  const originalRunStashRestorePaths = provider.runStashRestorePaths;
+  provider.runStashRestorePaths = async (...args) => { routedRestore = args; };
+  await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', repositoryPath: repoA.path, action: 'restoreStash', hash: stashHash, paths: ['stashed.txt', 'new-name.txt'] });
+  assert.deepEqual(routedRestore, [stashHash, repoA.path, ['stashed.txt', 'new-name.txt']], 'repository-card stash restore preserves the selected files');
+  provider.runStashRestorePaths = originalRunStashRestorePaths;
+  provider.processWorkingTreeActionQueue = async () => {};
+  resetOps(); setStashList([newest, older]);
+  await provider.runStashRestorePaths(stashHash, repoA.path, ['new-name.txt']);
+  assert.equal(provider.workingTreeActionQueue.length, 1);
+  assert.equal(provider.workingTreeActionQueue[0].action, 'stashRestore');
+  assert.deepEqual(provider.workingTreeActionQueue[0].paths.sort(), ['new-name.txt', 'old-name.txt'], 'renamed stash files restore both path sides');
+
+  // 7c) apply / pop 入队, 不弹窗; 队列里是 stashApply / stashPop, 不会落入默认的取消暂存分支
   provider.processWorkingTreeActionQueue = async () => {};
   for (const [action, expected] of [['stashApply', 'stashApply'], ['stashPop', 'stashPop']]) {
     resetOps(); setStashList([newest, older]);
@@ -364,6 +409,10 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
     await new Promise(resolve => setImmediate(resolve));
   };
   const queue = async (action) => { await provider.runStashCommitAction(action, stashHash, repoA.path); await drainQueue(); };
+  resetOps(); setStashList([newest, older]); reloaded = [];
+  await provider.runStashRestorePaths(stashHash, repoA.path, ['stashed.txt']); await drainQueue();
+  assert.deepEqual(opCalls, [['restore', repoA.path, stashHash, ['stashed.txt']]], 'selected stash files are restored without applying or deleting the whole stash');
+
   resetOps(); setStashList([newest, older]); reloaded = [];
   await queue('stashApply');
   assert.deepEqual(opCalls, [['apply', repoA.path, stashHash]]);

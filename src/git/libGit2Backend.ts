@@ -94,12 +94,21 @@ export class LibGit2Backend implements GitBackend {
         await invokeNativeGit('restoreWorktree', { rootPath: rootUri.fsPath, paths });
     }
 
-    async stash(rootUri: vscode.Uri, scope: StashScope): Promise<StashResult> {
-        return invokeNativeGit<StashResult>('stashCreate', { rootPath: rootUri.fsPath, scope });
+    async stash(rootUri: vscode.Uri, scope: StashScope, paths?: readonly string[]): Promise<StashResult> {
+        return invokeNativeGit<StashResult>('stashCreate', {
+            rootPath: rootUri.fsPath,
+            scope,
+            ...(paths ? { paths: [...paths] } : {}),
+        });
     }
 
     async stashApply(rootUri: vscode.Uri, stash: string): Promise<StashApplyResult> {
         return invokeNativeGit<StashApplyResult>('stashApply', { rootPath: rootUri.fsPath, stash });
+    }
+
+    async stashRestorePaths(rootUri: vscode.Uri, stash: string, paths: readonly string[]): Promise<void> {
+        if (paths.length === 0) { return; }
+        await invokeNativeGit('stashRestorePaths', { rootPath: rootUri.fsPath, stash, paths: [...paths] });
     }
 
     async stashPop(rootUri: vscode.Uri, stash: string): Promise<StashApplyResult> {

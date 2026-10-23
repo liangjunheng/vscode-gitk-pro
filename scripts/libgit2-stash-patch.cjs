@@ -3,13 +3,73 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const STASH_PATCH_REVISION = 2;
-const stashPatchFiles = ['libgit2/src/libgit2/stash.c', 'libgit2/src/libgit2/blob.c', 'libgit2/src/libgit2/blob.h'];
+const STASH_PATCH_REVISION = 3;
+const stashPatchFiles = [
+  'libgit2/src/libgit2/stash.c', 'libgit2/src/libgit2/blob.c', 'libgit2/src/libgit2/blob.h',
+  'libgit2/src/libgit2/attr.c', 'libgit2/src/libgit2/attr_file.h',
+  'libgit2/src/libgit2/checkout.c', 'libgit2/src/libgit2/filter.c', 'libgit2/src/libgit2/filter.h',
+];
 function replaceOnce(contents, before, after, label) {
   if (!contents.includes(before) || contents.indexOf(before) !== contents.lastIndexOf(before)) {
     throw new Error(`libgit2 1.9.7 stash patch context changed: ${label}`);
   }
   return contents.replace(before, after);
+}
+
+function applyUnifiedPatch(directory, patchText) {
+  const lines = patchText.replaceAll('\r\n', '\n').split('\n');
+  let cursor = 0;
+  while (cursor < lines.length) {
+    if (!lines[cursor]) { cursor++; continue; }
+    if (!lines[cursor].startsWith('--- a/')) {
+      throw new Error('libgit2 1.9.7 stash patch context changed: malformed performance patch');
+    }
+    const oldPath = lines[cursor++].slice('--- a/'.length);
+    const newLine = lines[cursor++];
+    if (newLine !== '+++ b/' + oldPath) {
+      throw new Error('libgit2 1.9.7 stash patch context changed: performance patch path');
+    }
+    const file = path.join(directory, oldPath);
+    const source = fs.readFileSync(file, 'utf8').replaceAll('\r\n', '\n').split('\n');
+    const output = [];
+    let sourceIndex = 0;
+    while (cursor < lines.length && !lines[cursor].startsWith('--- a/')) {
+      if (!lines[cursor]) { cursor++; continue; }
+      const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(lines[cursor++]);
+      if (!match) throw new Error('libgit2 1.9.7 stash patch context changed: performance hunk');
+      const oldStart = Number(match[1]) - 1;
+      while (sourceIndex < oldStart) output.push(source[sourceIndex++]);
+      let oldCount = 0;
+      let newCount = 0;
+      while (cursor < lines.length && !lines[cursor].startsWith('@@ ') && !lines[cursor].startsWith('--- a/')) {
+        const line = lines[cursor++];
+        if (!line || line === '\\ No newline at end of file') continue;
+        const marker = line[0];
+        const contents = line.slice(1);
+        if (marker === ' ' || marker === '-') {
+          if (source[sourceIndex] !== contents) {
+            throw new Error('libgit2 1.9.7 stash patch context changed: ' + oldPath);
+          }
+          sourceIndex++;
+          oldCount++;
+        }
+        if (marker === ' ' || marker === '+') {
+          output.push(contents);
+          newCount++;
+        }
+        if (![' ', '-', '+'].includes(marker)) {
+          throw new Error('libgit2 1.9.7 stash patch context changed: performance marker');
+        }
+      }
+      const expectedOld = Number(match[2] || 1);
+      const expectedNew = Number(match[4] || 1);
+      if (oldCount !== expectedOld || newCount !== expectedNew) {
+        throw new Error('libgit2 1.9.7 stash patch context changed: performance counts');
+      }
+    }
+    output.push(...source.slice(sourceIndex));
+    fs.writeFileSync(file, output.join('\n'));
+  }
 }
 
 function applyStashPatch(directory) {
@@ -485,6 +545,7 @@ cleanup:
       "stash scoped capture/checkout 767"
     ]
   ]);
+  applyUnifiedPatch(directory, fs.readFileSync(path.join(__dirname, 'libgit2-stash-performance.patch'), 'utf8'));
 }
 
 module.exports = { STASH_PATCH_REVISION, applyStashPatch, stashPatchFiles };

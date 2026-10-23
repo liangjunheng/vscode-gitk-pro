@@ -52,6 +52,7 @@ fn is_mutating_operation(operation: &str) -> bool {
             | "restoreAll"
             | "stashCreate"
             | "stashApply"
+            | "stashRestorePaths"
             | "stashPop"
             | "stashDrop"
             | "commit"
@@ -103,6 +104,7 @@ fn dispatch_operation(operation: &str, payload: &Value) -> std::result::Result<V
         "restoreAll" => mutations::restore_all(payload),
         "stashCreate" => stash::create(payload),
         "stashApply" => stash::apply(payload),
+        "stashRestorePaths" => stash::restore_paths(payload),
         "stashPop" => stash::pop(payload),
         "stashDrop" => stash::drop_stash(payload),
         "stashList" => stash::list(payload),
