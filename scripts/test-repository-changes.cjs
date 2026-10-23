@@ -1649,13 +1649,13 @@ async function verifyProvider() {
   const syncConfirmation = confirmationDialogs.at(-1);
   assert.equal(syncConfirmation.message, '确认同步');
   assert.deepEqual(syncConfirmation.items, [{ title: '同步' }, { title: '仅推送' }, { title: '取消', isCloseAffordance: true }], 'sync confirmation always exposes sync, push-only, and cancel actions');
-  assert.equal(syncConfirmation.options.detail, '仓库名：inkengine\n\n先拉取：\norigin/ink_master\nchild：upstream/develop\n\n需要推送的分支：\nink_dev → origin/ink_master', 'repository name appears above the pull and push sections');
+  assert.equal(syncConfirmation.options.detail, '仓库名：inkengine\n\n先拉取：\norigin/ink_master\nchild：upstream/develop\n\n需要推送的分支：\nink_dev → origin/ink_master\n\n同步按钮：先拉取，再推送。', 'the sync explanation appears immediately above the modal actions');
   confirmationChoice = '仅推送';
   assert.equal(await confirmSync([syncRow], [], 'inkengine'), 'push');
   const noPullConfirmation = confirmationDialogs.at(-1);
   assert.equal(noPullConfirmation.message, '确认同步');
   assert.deepEqual(noPullConfirmation.items, [{ title: '同步' }, { title: '仅推送' }, { title: '取消', isCloseAffordance: true }], 'without a pull target the dialog keeps all sync actions');
-  assert.equal(noPullConfirmation.options.detail, '仓库名：inkengine\n\n先拉取：\n无可拉取的远程分支，将直接推送\n\n需要推送的分支：\nink_dev → origin/ink_master', 'without a pull target the dialog explains that sync will directly push');
+  assert.equal(noPullConfirmation.options.detail, '仓库名：inkengine\n\n先拉取：\n无可拉取的远程分支，将直接推送\n\n需要推送的分支：\nink_dev → origin/ink_master\n\n同步按钮：先拉取，再推送。', 'the sync explanation remains above the actions when there is no pull target');
   confirmationChoice = '取消';
   assert.equal(await confirmSync([syncRow], [], 'inkengine'), undefined, 'cancel returns no choice');
   confirmationChoice = undefined;

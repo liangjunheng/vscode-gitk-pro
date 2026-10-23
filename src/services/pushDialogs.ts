@@ -152,7 +152,7 @@ export async function confirmSync(
         '确认同步',
         {
             modal: true,
-            detail: `${repositoryDetail}先拉取：\n${pullFrom.length > 0 ? pullFrom.join('\n') : '无可拉取的远程分支，将直接推送'}\n\n需要推送的分支：\n${rows.map(describePushConfirmationRow).join('\n')}`,
+            detail: `${repositoryDetail}先拉取：\n${pullFrom.length > 0 ? pullFrom.join('\n') : '无可拉取的远程分支，将直接推送'}\n\n需要推送的分支：\n${rows.map(describePushConfirmationRow).join('\n')}\n\n同步按钮：先拉取，再推送。`,
         },
         syncItem,
         pushOnlyItem,
