@@ -153,7 +153,7 @@
       }
     ],
     "viewsContainers": {
-      "panel": [
+      "activitybar": [
         {
           "id": "fastergit",
           "title": "FasterGit",

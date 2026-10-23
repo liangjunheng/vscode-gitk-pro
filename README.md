@@ -3,7 +3,7 @@
 
 # FasterGit
 
-**在 VS Code 底部面板中浏览 Git 历史、审查多文件差异、管理多仓库变更。**
+**在 VS Code 左侧活动栏中浏览 Git 历史、审查多文件差异、管理多仓库变更。**
 
 提交图、分支与 Stash、多仓库提交和合并冲突处理集中在同一个面板里，本地仓库读写由内置 libgit2 原生模块完成。
 
@@ -15,7 +15,7 @@
 
 ## 项目简介
 
-FasterGit 在 VS Code 底部面板中绘制彩色泳道提交图，并把历史浏览、变更文件列表和多文件差异编辑器联动起来。插件会发现当前工作区中的仓库及已初始化子模块，在同一界面里完成日常 Git 操作，不需要在终端和多个视图之间来回切换。
+FasterGit 在 VS Code 左侧活动栏中绘制彩色泳道提交图，并把历史浏览、变更文件列表和多文件差异编辑器联动起来。插件会发现当前工作区中的仓库及已初始化子模块，在同一界面里完成日常 Git 操作，不需要在终端和多个视图之间来回切换。
 
 本地仓库的发现、历史读取和写入由随扩展分发的 libgit2 原生模块完成。Fetch、Pull、Push、子模块更新以及继续或中止合并操作会调用系统 Git CLI，以复用你已有的凭据和网络配置。插件面向桌面版 VS Code 设计。
 
@@ -69,7 +69,7 @@ FasterGit 在 VS Code 底部面板中绘制彩色泳道提交图，并把历史�
 ## 快速开始
 
 1. 打开包含 Git 仓库的文件夹或工作区。
-2. 打开底部面板并选择 **FasterGit**，或从命令面板运行 **FasterGit: Open Panel**。
+2. 点击左侧活动栏的 **FasterGit** 图标，或从命令面板运行 **FasterGit: Open Panel**。
 3. 从仓库选择器中选择仓库或已初始化子模块。
 4. 选择需要查看历史的一个或多个分支。
 5. 选择提交，加载 Changed Files 列表和 Multi-Diff 视图。
@@ -92,7 +92,7 @@ FasterGit 在 VS Code 底部面板中绘制彩色泳道提交图，并把历史�
 
 | 命令 | 功能 |
 | --- | --- |
-| `FasterGit: Open Panel` | 聚焦 FasterGit 底部面板 |
+| `FasterGit: Open Panel` | 聚焦左侧活动栏中的 FasterGit 视图 |
 | `FasterGit: Open Commit Panel` | 打开多仓库 Commit Panel |
 
 ## 快捷键
@@ -175,7 +175,7 @@ src/
   services/                    Git 操作与共享应用服务
   store/                       集中式应用状态与副作用
   webview/                     提交图与 Multi-Diff 界面
-media/                         产品图标、面板图标、Codicons 与 Monaco 资源
+media/                         产品图标、活动栏图标、Codicons 与 Monaco 资源
 lib/<target>/                  按 VS Code 平台划分的原生模块构建输出
 scripts/                       构建期资源脚本
 ```

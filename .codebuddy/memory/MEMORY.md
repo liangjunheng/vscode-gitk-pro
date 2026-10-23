@@ -21,7 +21,7 @@
 
 ## 图标资产
 - `media/fastergit-logo.svg/.png`：256×256 彩色扩展图标。
-- `media/fastergit-sidebar.svg/.png`：24×24 单色 Panel 图标，由 `package.json` 的 `viewsContainers.panel` / `views` 使用。
+- `media/fastergit-sidebar.svg/.png`：24×24 单色 Panel 图标，由 `package.json` 的 `viewsContainers.activitybar` / `views` 使用。
 
 ## 环境与文件安全
 - VS Code：`C:\Users\JUNHENG.LIANG\AppData\Local\Programs\Microsoft VS Code\Code.exe`；`code` 不在 PATH。
