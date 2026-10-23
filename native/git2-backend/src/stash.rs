@@ -1357,6 +1357,7 @@ enum ApplyFilters {
 struct ApplyPlan {
     filters: ApplyFilters,
     external_paths: Vec<String>,
+    checkout_paths: Vec<String>,
 }
 
 unsafe extern "C" {
@@ -1482,9 +1483,19 @@ fn preflight_apply(repo: &Repository, stash: &Commit<'_>) -> NativeResult<ApplyP
     } else {
         ApplyFilters::Standard
     };
+    let checkout_paths = if fixed_base
+        && diff
+            .deltas()
+            .all(|delta| delta.status() != Delta::Typechange)
+    {
+        paths
+    } else {
+        Vec::new()
+    };
     Ok(ApplyPlan {
         filters,
         external_paths,
+        checkout_paths,
     })
 }
 
@@ -1521,6 +1532,12 @@ fn apply_by_hash(repo: &mut Repository, hash: &str) -> NativeResult<bool> {
         .our_label("Updated upstream")
         .their_label("Stashed changes")
         .disable_filters(matches!(plan.filters, ApplyFilters::Disabled));
+    if !plan.checkout_paths.is_empty() {
+        checkout.disable_pathspec_match(true);
+        for path in &plan.checkout_paths {
+            checkout.path(path);
+        }
+    }
     let mut options = StashApplyOptions::new();
     if reinstate_index {
         options.reinstantiate_index();
