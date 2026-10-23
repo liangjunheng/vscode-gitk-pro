@@ -109,14 +109,15 @@ async function main() {
     assert.deepEqual(order, ['commit:c3 newest', 'stash:WIP on main: stash tip', 'commit:c2 base of stash', 'commit:c1'], 'the stash row sits between its neighbours, right above its base commit');
     const stashRow = page.locator('#commitVirtualRows .commit-row.stash');
     assert.equal(await stashRow.count(), 1);
-    // 标题前的 stash@{n} 徽章 (截图风格): 左侧洋红图标块里放 inbox 图标, 右侧深灰底放引用名, 整体灰色 1px 描边的圆角矩形
+    // 标题前的 stash@{n} 徽章: 不再显示图标，只保留左右 4px 内边距的紧凑引用名标签。
     {
       const badge = stashRow.locator('.stash-badge');
       assert.equal(await badge.count(), 1, 'one badge in front of the title');
       assert.equal(await stashRow.locator('.stash-ref').count(), 0, 'the old plain-text prefix is gone');
       assert.equal(await badge.locator('.stash-badge-text').textContent(), 'stash@{0}', 'the badge text is the stash reference');
-      assert.equal(await badge.locator('.stash-badge-icon .codicon-inbox').count(), 1, 'the icon block holds the inbox codicon');
-      // 徽章在标题前面: 同一个摘要容器里, 徽章是标题的前一个兄弟节点, 且徽章右边缘 <= 标题左边缘
+      assert.equal(await badge.locator('.stash-badge-icon').count(), 0, 'the prefix badge has no icon block');
+      assert.equal(await badge.locator('.codicon').count(), 0, 'the prefix badge has no logo glyph');
+      // 徽章在标题前面: 同一个摘要容器里, 徽章是标题的前一个兄弟节点, 且徽章右边缘 <= 标题左边缘。
       const order = await stashRow.locator('.col-main-summary').evaluate(summary => {
         const kids = [...summary.children].map(el => el.className.split(' ')[0]);
         const badge = summary.querySelector('.stash-badge').getBoundingClientRect(); const title = summary.querySelector('.commit-message-text').getBoundingClientRect();
@@ -124,35 +125,19 @@ async function main() {
       });
       assert.deepEqual(order.kids, ['stash-badge', 'commit-message-text'], 'the badge comes first, then the title');
       assert.ok(order.gap >= 4 && order.gap <= 8, 'a small gap separates the badge from the title: ' + order.gap);
-      // 样式逐项对照截图量到的值
       const look = await badge.evaluate(el => {
-        const css = node => getComputedStyle(node);
-        const box = el.getBoundingClientRect(); const icon = el.querySelector('.stash-badge-icon'); const text = el.querySelector('.stash-badge-text');
-        return { border: css(el).borderTopColor + ' ' + css(el).borderTopWidth + ' ' + css(el).borderTopStyle, radius: css(el).borderTopLeftRadius, height: box.height,
-          iconBg: css(icon).backgroundColor, iconColor: css(icon.querySelector('.codicon')).color, textBg: css(text).backgroundColor, textColor: css(text).color,
-          iconRight: icon.getBoundingClientRect().right, textLeft: text.getBoundingClientRect().left };
+        const badgeCss = getComputedStyle(el); const text = el.querySelector('.stash-badge-text'); const textCss = getComputedStyle(text);
+        return { border: badgeCss.borderTopColor + ' ' + badgeCss.borderTopWidth + ' ' + badgeCss.borderTopStyle,
+          radius: badgeCss.borderTopLeftRadius, height: el.getBoundingClientRect().height, textBg: textCss.backgroundColor, textColor: textCss.color,
+          paddingLeft: textCss.paddingLeft, paddingRight: textCss.paddingRight };
       });
       assert.equal(look.border, 'rgb(105, 105, 105) 1px solid', 'grey 1px outline');
       assert.equal(look.radius, '4px', 'rounded rectangle');
       assert.equal(look.height, 20, 'same height as the other chips in the list');
-      assert.equal(look.iconBg, 'rgb(217, 0, 143)', 'magenta icon block');
-      assert.equal(look.iconColor, 'rgb(24, 24, 24)', 'dark inbox glyph, matching the editor background in the screenshot theme');
       assert.equal(look.textBg, 'rgb(34, 35, 36)', 'dark grey text area');
       assert.equal(look.textColor, 'rgb(187, 190, 191)', 'light grey text');
-      assert.ok(Math.abs(look.iconRight - look.textLeft) < 0.6, 'the icon block and the text area touch, no gap between them');
-      // 渲染后的像素: 图标块的底色真的是洋红, 且里面有深色的 inbox 字形 (不是白色图标)
-      const iconBox = await badge.locator('.stash-badge-icon').boundingBox();
-      const png = (await page.screenshot({ clip: { x: Math.floor(iconBox.x), y: Math.floor(iconBox.y), width: Math.ceil(iconBox.width), height: Math.ceil(iconBox.height) } })).toString('base64');
-      const pixels = await page.evaluate(async b64 => {
-        const img = new Image(); img.src = 'data:image/png;base64,' + b64; await img.decode();
-        const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0);
-        const px = ctx.getImageData(0, 0, c.width, c.height).data; let magenta = 0, dark = 0, white = 0;
-        for (let i = 0; i < px.length; i += 4) { const [r, g, b] = [px[i], px[i + 1], px[i + 2]]; if (r > 190 && g < 40 && b > 110 && b < 170) magenta++; if (r < 70 && g < 70 && b < 70) dark++; if (r > 200 && g > 200 && b > 200) white++; }
-        return { magenta, dark, white, w: c.width, h: c.height };
-      }, png);
-      assert.ok(pixels.magenta > 150, 'the icon block is really painted magenta: ' + JSON.stringify(pixels));
-      assert.ok(pixels.dark >= 5, 'and carries a dark inbox glyph on it: ' + JSON.stringify(pixels));
-      assert.ok(pixels.white < 5, 'the glyph is not white: ' + JSON.stringify(pixels));
+      assert.equal(look.paddingLeft, '4px', 'left text padding is compact');
+      assert.equal(look.paddingRight, '4px', 'right text padding is compact');
     }
 
     // 3) 空心菱形节点 + 泳道线: 与圆点区分, 并且真的画进了图里

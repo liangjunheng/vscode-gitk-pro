@@ -182,12 +182,9 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   .cloud-commit-group-title { padding: 2px 10px; color: var(--vscode-descriptionForeground); font-size: calc(var(--vscode-font-size, 13px) - 1px); }
   /* Stash 用独立的灰色空心菱形侧枝展示；只加宽这一行，不改变任何真实提交的泳道或缩进。 */
   .commit-row.stash .commit-message-text { color: var(--vscode-descriptionForeground); }
-  /* stash@{n} 徽章 (标题前): 灰色 1px 描边的圆角矩形, 左侧洋红图标块放 inbox 图标, 右侧深灰底放引用名。
-     颜色/比例取自用户给的截图: 描边 #696969, 图标块 #d9008f, 文字区底 #222324 (比列表背景 #121314 略亮), 文字 #bbbebf。 */
+  /* stash@{n} 徽章 (标题前): 移除图标，仅保留紧凑的引用名标签。 */
   .stash-badge { display: inline-flex; flex: 0 0 auto; align-items: stretch; height: 20px; margin-right: 6px; box-sizing: border-box; border: 1px solid var(--stash-badge-border, #696969); border-radius: 4px; overflow: hidden; font-size: calc(var(--vscode-font-size, 13px) - 1px); line-height: 18px; user-select: none; }
-  .stash-badge-icon { display: inline-flex; flex: 0 0 18px; align-items: center; justify-content: center; width: 18px; background: var(--stash-badge-accent, #d9008f); color: var(--vscode-editor-background, #121314); }
-  .stash-badge-icon .codicon { font-size: 12px; line-height: 1; }
-  .stash-badge-text { display: inline-flex; align-items: center; padding: 0 7px; background: var(--stash-badge-background, #222324); color: var(--stash-badge-foreground, #bbbebf); font-family: var(--vscode-editor-font-family, monospace); white-space: nowrap; }
+  .stash-badge-text { display: inline-flex; align-items: center; padding: 0 4px; background: var(--stash-badge-background, #222324); color: var(--stash-badge-foreground, #bbbebf); font-family: var(--vscode-editor-font-family, monospace); white-space: nowrap; }
 `;
 
 /** Commit 列表子面板的结构片段。 */
@@ -767,9 +764,9 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
       var rowW = rowGraphW(c);
       html += stash ? stashRowSvg(c, rowW, i)
         : '<svg class="graph-svg" width="' + rowW + '" height="' + ROW_H + '"></svg>';
-      // stash 行: 标题前加 stash@{n} 徽章 (inbox 图标 + 引用名); 其他行没有前缀。
+      // stash 行: 标题前加紧凑的 stash@{n} 引用名徽章; 其他行没有前缀。
       var stashBadge = stash
-        ? '<span class="stash-badge" title="' + escapeAttr(c.stashRef || '') + '"><span class="stash-badge-icon"><span class="codicon codicon-inbox" aria-hidden="true"></span></span><span class="stash-badge-text">' + escapeHtml(c.stashRef || '') + '</span></span>'
+        ? '<span class="stash-badge" title="' + escapeAttr(c.stashRef || '') + '"><span class="stash-badge-text">' + escapeHtml(c.stashRef || '') + '</span></span>'
         : '';
       html += '<div class="col-main-summary">' + stashBadge + '<span class="commit-message-text">' + escapeHtml(commitMessage.title) + '</span></div>';
     }
