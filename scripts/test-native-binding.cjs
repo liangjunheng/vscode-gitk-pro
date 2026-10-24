@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { loadNativeGitBinding } = require('../out/git/nativeGitBinding');
+const { loadNativeGitBinding, invokeNativeGitMutation } = require('../out/git/nativeGitBinding');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitk-binding-'));
 const git = (...args) => execFileSync('git', ['-C', root, ...args], {
@@ -12,9 +12,11 @@ const git = (...args) => execFileSync('git', ['-C', root, ...args], {
 }).trim();
 const binding = loadNativeGitBinding();
 const invoke = async (operation, payload = {}) => JSON.parse(await binding.invoke(operation, JSON.stringify({ rootPath: root, ...payload })));
+const invokeMutation = async (operation, payload = {}) => invokeNativeGitMutation(operation, { rootPath: root, ...payload });
 (async () => {
   try {
     git('init');
+    assert.equal(typeof binding.invokeMutation, 'function');
     git('config', 'user.name', 'Gitk Test');
     git('config', 'user.email', 'gitk@example.com');
     git('config', 'core.autocrlf', 'false');
@@ -54,8 +56,8 @@ const invoke = async (operation, payload = {}) => JSON.parse(await binding.invok
     fs.writeFileSync(path.join(root, 'example.gkt'), 'two\n');
     for (let round = 0; round < 12; round++) {
       const readers = Array.from({ length: 8 }, () => invoke('status'));
-      if (round % 2 === 0) await invoke('stage', { paths: ['example.gkt'] });
-      else await invoke('unstage', { paths: ['example.gkt'] });
+      if (round % 2 === 0) await invokeMutation('stage', { paths: ['example.gkt'] });
+      else await invokeMutation('unstage', { paths: ['example.gkt'] });
       for (const snapshot of await Promise.all(readers)) {
         const paths = [...snapshot.staged, ...snapshot.changes].map(file => file.path);
         assert.ok(paths.includes('example.gkt'), `concurrent snapshot lost example.gkt: ${JSON.stringify(snapshot)}`);
@@ -68,7 +70,8 @@ const invoke = async (operation, payload = {}) => JSON.parse(await binding.invok
     const discovered = await invoke('discover', { path: root });
     assert.ok(discovered.gitDir && discovered.workdir);
     await assert.rejects(() => invoke('doesNotExist'), /不支持的 libgit2 操作/);
-    console.log('N-API binding smoke test passed: status, serialized mutations, commit, history, discover, errors');
+    await assert.rejects(() => invokeMutation('status'), /invokeMutation 只允许修改操作/);
+    console.log('N-API binding smoke test passed: status, priority mutations, commit, history, discover, errors');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

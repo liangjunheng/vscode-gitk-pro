@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { CommitFile, WorkingTreeChanges, type FileStatus } from '../types';
 import type { GitBackend, StashApplyResult, StashResult, StashScope } from './gitBackend';
-import { invokeNativeGit } from './nativeGitBinding';
+import { invokeNativeGit, invokeNativeGitMutation } from './nativeGitBinding';
 
 interface NativeCommitFile {
     path: string;
@@ -81,17 +81,17 @@ export class LibGit2Backend implements GitBackend {
 
     async stage(rootUri: vscode.Uri, paths: readonly string[]): Promise<void> {
         if (paths.length === 0) { return; }
-        await invokeNativeGit('stage', { rootPath: rootUri.fsPath, paths });
+        await invokeNativeGitMutation('stage', { rootPath: rootUri.fsPath, paths });
     }
 
     async unstage(rootUri: vscode.Uri, paths: readonly string[]): Promise<void> {
         if (paths.length === 0) { return; }
-        await invokeNativeGit('unstage', { rootPath: rootUri.fsPath, paths });
+        await invokeNativeGitMutation('unstage', { rootPath: rootUri.fsPath, paths });
     }
 
     async discardWorktree(rootUri: vscode.Uri, paths: readonly string[]): Promise<void> {
         if (paths.length === 0) { return; }
-        await invokeNativeGit('restoreWorktree', { rootPath: rootUri.fsPath, paths });
+        await invokeNativeGitMutation('restoreWorktree', { rootPath: rootUri.fsPath, paths });
     }
 
     async stash(
@@ -101,7 +101,7 @@ export class LibGit2Backend implements GitBackend {
         mergeStagedIntoUnstaged = false,
         allUnstagedPaths = false,
     ): Promise<StashResult> {
-        return invokeNativeGit<StashResult>('stashCreate', {
+        return invokeNativeGitMutation<StashResult>('stashCreate', {
             rootPath: rootUri.fsPath,
             scope,
             ...(paths ? { paths: [...paths] } : {}),
@@ -110,20 +110,20 @@ export class LibGit2Backend implements GitBackend {
     }
 
     async stashApply(rootUri: vscode.Uri, stash: string): Promise<StashApplyResult> {
-        return invokeNativeGit<StashApplyResult>('stashApply', { rootPath: rootUri.fsPath, stash });
+        return invokeNativeGitMutation<StashApplyResult>('stashApply', { rootPath: rootUri.fsPath, stash });
     }
 
     async stashRestorePaths(rootUri: vscode.Uri, stash: string, paths: readonly string[]): Promise<void> {
         if (paths.length === 0) { return; }
-        await invokeNativeGit('stashRestorePaths', { rootPath: rootUri.fsPath, stash, paths: [...paths] });
+        await invokeNativeGitMutation('stashRestorePaths', { rootPath: rootUri.fsPath, stash, paths: [...paths] });
     }
 
     async stashPop(rootUri: vscode.Uri, stash: string): Promise<StashApplyResult> {
-        return invokeNativeGit<StashApplyResult>('stashPop', { rootPath: rootUri.fsPath, stash });
+        return invokeNativeGitMutation<StashApplyResult>('stashPop', { rootPath: rootUri.fsPath, stash });
     }
 
     async stashDrop(rootUri: vscode.Uri, stash: string): Promise<void> {
-        await invokeNativeGit('stashDrop', { rootPath: rootUri.fsPath, stash });
+        await invokeNativeGitMutation('stashDrop', { rootPath: rootUri.fsPath, stash });
     }
 
     dispose(): void {}

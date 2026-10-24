@@ -13,7 +13,10 @@ mod status;
 mod submodule;
 mod support;
 
-use napi::{Env, Error, Result, Task, bindgen_prelude::AsyncTask};
+use napi::{
+    Env, Error, Result, Task,
+    bindgen_prelude::{AsyncTask, spawn_blocking},
+};
 use napi_derive::napi;
 use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
@@ -132,6 +135,24 @@ fn dispatch_operation(operation: &str, payload: &Value) -> std::result::Result<V
     }
 }
 
+fn execute_operation(operation: &str, payload_text: &str) -> Result<String> {
+    let payload: Value = serde_json::from_str(payload_text)
+        .map_err(|error| Error::from_reason(format!("参数 JSON 无效: {error}")))?;
+    let result = if let Some(lock) = repository_lock(&payload) {
+        if is_mutating_operation(operation) {
+            let _guard = lock.write();
+            dispatch_operation(operation, &payload)
+        } else {
+            let _guard = lock.read();
+            dispatch_operation(operation, &payload)
+        }
+    } else {
+        dispatch_operation(operation, &payload)
+    }
+    .map_err(Error::from_reason)?;
+    serde_json::to_string(&result).map_err(|error| Error::from_reason(error.to_string()))
+}
+
 pub struct InvokeTask {
     operation: String,
     payload: String,
@@ -142,21 +163,7 @@ impl Task for InvokeTask {
     type JsValue = String;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let payload: Value = serde_json::from_str(&self.payload)
-            .map_err(|error| Error::from_reason(format!("参数 JSON 无效: {error}")))?;
-        let result = if let Some(lock) = repository_lock(&payload) {
-            if is_mutating_operation(&self.operation) {
-                let _guard = lock.write();
-                dispatch_operation(&self.operation, &payload)
-            } else {
-                let _guard = lock.read();
-                dispatch_operation(&self.operation, &payload)
-            }
-        } else {
-            dispatch_operation(&self.operation, &payload)
-        }
-        .map_err(Error::from_reason)?;
-        serde_json::to_string(&result).map_err(|error| Error::from_reason(error.to_string()))
+        execute_operation(&self.operation, &self.payload)
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
@@ -167,6 +174,18 @@ impl Task for InvokeTask {
 #[napi]
 pub fn invoke(operation: String, payload: String) -> AsyncTask<InvokeTask> {
     AsyncTask::new(InvokeTask { operation, payload })
+}
+
+#[napi]
+pub async fn invoke_mutation(operation: String, payload: String) -> Result<String> {
+    if !is_mutating_operation(&operation) {
+        return Err(Error::from_reason(format!(
+            "invokeMutation 只允许修改操作: {operation}"
+        )));
+    }
+    spawn_blocking(move || execute_operation(&operation, &payload))
+        .await
+        .map_err(|error| Error::from_reason(format!("Native Git 修改线程异常: {error}")))?
 }
 
 #[napi]
