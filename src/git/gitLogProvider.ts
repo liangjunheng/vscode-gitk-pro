@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { invokeNativeGit } from './nativeGitBinding';
+import { invokeNativeGit, invokeNativeGitPriorityRead } from './nativeGitBinding';
 import { fetchRemotes, pull as pullNative, push as pushNative, updateSubmodules as updateSubmodulesNative, type NativePushResult } from './gitNativeOperations';
 // 类型定义统一从 types/ 导入, 消除重复
 export type { ChangeSetMode, FileStatus, GitBranchOption, GitRepositoryOption, GitRepositoryState, WorkingTreeChanges } from '../types';
@@ -676,7 +676,7 @@ interface NativeStashEntry extends NativeCommitMetadata {
  */
 export async function getStashes(rootUri: vscode.Uri): Promise<StashEntry[]> {
     try {
-        const entries = await invokeNativeGit<NativeStashEntry[]>('stashList', { rootPath: rootUri.fsPath });
+        const entries = await invokeNativeGitPriorityRead<NativeStashEntry[]>('stashList', { rootPath: rootUri.fsPath });
         return entries.map(entry => new CommitMetadata({
             ...fromNativeCommit(entry),
             isStash: true,
@@ -738,7 +738,7 @@ export async function isGitRepo(rootUri: vscode.Uri): Promise<boolean> {
 /** stash 的变更文件: 基线到 stash 树的差异，加上未跟踪文件。 */
 export async function getStashFiles(rootUri: vscode.Uri, hash: string, signal?: AbortSignal): Promise<CommitFile[]> {
     throwIfAborted(signal);
-    const files = await invokeNativeGit<Array<Partial<CommitFile> & { path: string }>>('stashFiles', {
+    const files = await invokeNativeGitPriorityRead<Array<Partial<CommitFile> & { path: string }>>('stashFiles', {
         rootPath: rootUri.fsPath,
         revision: hash,
     });

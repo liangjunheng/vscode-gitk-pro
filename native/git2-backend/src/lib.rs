@@ -189,6 +189,18 @@ pub async fn invoke_mutation(operation: String, payload: String) -> Result<Strin
 }
 
 #[napi]
+pub async fn invoke_priority_read(operation: String, payload: String) -> Result<String> {
+    if is_mutating_operation(&operation) {
+        return Err(Error::from_reason(format!(
+            "invokePriorityRead 只允许读取操作: {operation}"
+        )));
+    }
+    spawn_blocking(move || execute_operation(&operation, &payload))
+        .await
+        .map_err(|error| Error::from_reason(format!("Native Git 优先读取线程异常: {error}")))?
+}
+
+#[napi]
 pub fn libgit2_version() -> String {
     let (major, minor, patch) = git2::Version::get().libgit2_version();
     format!("{major}.{minor}.{patch}")

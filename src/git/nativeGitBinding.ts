@@ -6,6 +6,7 @@ interface NativeGitBinding {
     libgit2Version(): string;
     invoke(operation: string, payload: string): Promise<string>;
     invokeMutation?(operation: string, payload: string): Promise<string>;
+    invokePriorityRead?(operation: string, payload: string): Promise<string>;
 }
 
 const nativeBindingFiles = {
@@ -89,6 +90,15 @@ export async function invokeNativeGitMutation<T>(operation: string, payload: obj
     const input = JSON.stringify(payload);
     const output = binding.invokeMutation
         ? await binding.invokeMutation(operation, input)
+        : await binding.invoke(operation, input);
+    return JSON.parse(output) as T;
+}
+
+export async function invokeNativeGitPriorityRead<T>(operation: string, payload: object): Promise<T> {
+    const binding = loadNativeGitBinding();
+    const input = JSON.stringify(payload);
+    const output = binding.invokePriorityRead
+        ? await binding.invokePriorityRead(operation, input)
         : await binding.invoke(operation, input);
     return JSON.parse(output) as T;
 }

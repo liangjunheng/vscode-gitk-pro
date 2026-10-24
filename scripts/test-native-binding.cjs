@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { loadNativeGitBinding, invokeNativeGitMutation } = require('../out/git/nativeGitBinding');
+const { loadNativeGitBinding, invokeNativeGitMutation, invokeNativeGitPriorityRead } = require('../out/git/nativeGitBinding');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitk-binding-'));
 const git = (...args) => execFileSync('git', ['-C', root, ...args], {
@@ -13,10 +13,12 @@ const git = (...args) => execFileSync('git', ['-C', root, ...args], {
 const binding = loadNativeGitBinding();
 const invoke = async (operation, payload = {}) => JSON.parse(await binding.invoke(operation, JSON.stringify({ rootPath: root, ...payload })));
 const invokeMutation = async (operation, payload = {}) => invokeNativeGitMutation(operation, { rootPath: root, ...payload });
+const invokePriorityRead = async (operation, payload = {}) => invokeNativeGitPriorityRead(operation, { rootPath: root, ...payload });
 (async () => {
   try {
     git('init');
     assert.equal(typeof binding.invokeMutation, 'function');
+    assert.equal(typeof binding.invokePriorityRead, 'function');
     git('config', 'user.name', 'Gitk Test');
     git('config', 'user.email', 'gitk@example.com');
     git('config', 'core.autocrlf', 'false');
@@ -67,10 +69,12 @@ const invokeMutation = async (operation, payload = {}) => invokeNativeGitMutatio
       assert.equal(current.changes.some(file => file.path === 'example.gkt'), round % 2 !== 0);
     }
 
+    assert.deepEqual(await invokePriorityRead('stashList'), []);
     const discovered = await invoke('discover', { path: root });
     assert.ok(discovered.gitDir && discovered.workdir);
     await assert.rejects(() => invoke('doesNotExist'), /不支持的 libgit2 操作/);
     await assert.rejects(() => invokeMutation('status'), /invokeMutation 只允许修改操作/);
+    await assert.rejects(() => invokePriorityRead('stage', { paths: ['example.gkt'] }), /invokePriorityRead 只允许读取操作/);
     console.log('N-API binding smoke test passed: status, priority mutations, commit, history, discover, errors');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
