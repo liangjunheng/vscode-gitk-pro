@@ -2374,3 +2374,255 @@
  	capture_paths.count = capture_path_count;
  	capture_paths.strings = (char **)capture_path_values;
  	preserve_paths.count = preserve_path_count;
+--- a/libgit2/src/libgit2/stash.c
++++ b/libgit2/src/libgit2/stash.c
+@@ -789,7 +789,14 @@ cleanup:
+ 	return error;
+ }
+ 
+-static int build_untracked_tree_exact(
++#ifdef GIT_THREADS
++static int build_untracked_tree_exact_parallel(
++	git_tree **tree_out,
++	git_repository *repo,
++	const git_strarray *paths);
++#endif
++
++static int build_untracked_tree_exact_serial(
+ 	git_tree **tree_out,
+ 	git_repository *repo,
+ 	const git_strarray *paths,
+@@ -849,6 +856,25 @@ cleanup:
+ 	return error;
+ }
+ 
++static int build_untracked_tree_exact(
++	git_tree **tree_out,
++	git_repository *repo,
++	const git_strarray *paths,
++	uint32_t flags)
++{
++#ifdef GIT_THREADS
++	int error;
++
++	if (flags & GIT_STASH_DEFAULT_ATTRIBUTES) {
++		error = build_untracked_tree_exact_parallel(tree_out, repo, paths);
++		if (error != GIT_ENOTSUPPORTED)
++			return error;
++		git_error_clear();
++	}
++#endif
++	return build_untracked_tree_exact_serial(tree_out, repo, paths, flags);
++}
++
+ static int commit_untracked_exact(
+ 	git_commit **u_commit,
+ 	git_repository *repo,
+@@ -1108,58 +1134,26 @@ cleanup:
+ 	return NULL;
+ }
+ 
+-static int stash_update_index_from_exact_paths_parallel(
++static int stash_capture_paths_parallel(
+ 	git_repository *repo,
+-	git_index *index,
+ 	const git_strarray *paths,
+-	const git_strarray *preserve_paths)
++	stash_parallel_result *results,
++	size_t capture_count,
++	bool default_builtin)
+ {
+-	stash_parallel_result *results = NULL;
+ 	stash_parallel_worker *workers = NULL;
+-	git_index *repo_index = NULL;
+-	git_str full_path = GIT_STR_INIT;
+-	int cpu_count, auto_crlf = GIT_AUTO_CRLF_FALSE;
+-	size_t i, worker_count, chunk_size, started = 0, capture_count = 0;
++	int cpu_count;
++	size_t i, worker_count, chunk_size, started = 0;
+ 	int error = 0;
+ 
+-	if ((error = git_repository_index__weakptr(&repo_index, repo)) < 0 ||
+-		(error = git_repository__configmap_lookup(
+-			&auto_crlf, repo, GIT_CONFIGMAP_AUTO_CRLF)) < 0)
+-		goto cleanup;
+-	results = git__calloc(paths->count, sizeof(stash_parallel_result));
+-	GIT_ERROR_CHECK_ALLOC(results);
+-	for (i = 0; i < paths->count; i++) {
+-		struct stat st;
+-		bool tracked = stash_index_has_path_or_descendant(index, paths->strings[i]) ||
+-			stash_index_has_path_or_descendant(repo_index, paths->strings[i]);
+-		git_str_clear(&full_path);
+-		if ((error = git_str_joinpath(
+-			&full_path, git_repository_workdir(repo), paths->strings[i])) < 0)
+-			goto cleanup;
+-		if (p_lstat(git_str_cstr(&full_path), &st) < 0) {
+-			if (errno != ENOENT && errno != ENOTDIR) {
+-				error = -1;
+-				goto cleanup;
+-			}
+-			git_error_clear();
+-			results[i].action = tracked ? STASH_PARALLEL_REMOVE : STASH_PARALLEL_SKIP;
+-		} else if (!tracked || S_ISDIR(st.st_mode)) {
+-			results[i].action = STASH_PARALLEL_SKIP;
+-		} else {
+-			results[i].action = STASH_PARALLEL_CAPTURE;
+-			capture_count++;
+-		}
+-	}
+ 	if (!capture_count)
+-		goto apply;
++		return 0;
+ 	cpu_count = git__online_cpus();
+ 	worker_count = capture_count;
+ 	if (cpu_count > 0 && worker_count > (size_t)cpu_count)
+ 		worker_count = (size_t)cpu_count;
+-	if (worker_count < 2) {
+-		error = GIT_ENOTSUPPORTED;
+-		goto cleanup;
+-	}
++	if (worker_count < 2)
++		return GIT_ENOTSUPPORTED;
+ 	workers = git__calloc(worker_count, sizeof(stash_parallel_worker));
+ 	GIT_ERROR_CHECK_ALLOC(workers);
+ 	chunk_size = (paths->count + worker_count - 1) / worker_count;
+@@ -1171,7 +1165,7 @@ static int stash_update_index_from_exact_paths_parallel(
+ 		workers[i].end = workers[i].start + chunk_size;
+ 		if (workers[i].end > paths->count)
+ 			workers[i].end = paths->count;
+-		workers[i].default_builtin = auto_crlf != GIT_AUTO_CRLF_FALSE;
++		workers[i].default_builtin = default_builtin;
+ 		if ((error = git_thread_create(
+ 			&workers[i].thread, stash_capture_worker, &workers[i])) < 0) {
+ 			error = GIT_ENOTSUPPORTED;
+@@ -1191,7 +1185,56 @@ static int stash_update_index_from_exact_paths_parallel(
+ 		}
+ 	}
+ 
+-apply:
++cleanup:
++	git__free(workers);
++	return error;
++}
++
++static int stash_update_index_from_exact_paths_parallel(
++	git_repository *repo,
++	git_index *index,
++	const git_strarray *paths,
++	const git_strarray *preserve_paths)
++{
++	stash_parallel_result *results = NULL;
++	git_index *repo_index = NULL;
++	git_str full_path = GIT_STR_INIT;
++	int auto_crlf = GIT_AUTO_CRLF_FALSE;
++	size_t i, capture_count = 0;
++	int error = 0;
++
++	if ((error = git_repository_index__weakptr(&repo_index, repo)) < 0 ||
++		(error = git_repository__configmap_lookup(
++			&auto_crlf, repo, GIT_CONFIGMAP_AUTO_CRLF)) < 0)
++		goto cleanup;
++	results = git__calloc(paths->count, sizeof(stash_parallel_result));
++	GIT_ERROR_CHECK_ALLOC(results);
++	for (i = 0; i < paths->count; i++) {
++		struct stat st;
++		bool tracked = stash_index_has_path_or_descendant(index, paths->strings[i]) ||
++			stash_index_has_path_or_descendant(repo_index, paths->strings[i]);
++		git_str_clear(&full_path);
++		if ((error = git_str_joinpath(
++			&full_path, git_repository_workdir(repo), paths->strings[i])) < 0)
++			goto cleanup;
++		if (p_lstat(git_str_cstr(&full_path), &st) < 0) {
++			if (errno != ENOENT && errno != ENOTDIR) {
++				error = -1;
++				goto cleanup;
++			}
++			git_error_clear();
++			results[i].action = tracked ? STASH_PARALLEL_REMOVE : STASH_PARALLEL_SKIP;
++		} else if (!tracked || S_ISDIR(st.st_mode)) {
++			results[i].action = STASH_PARALLEL_SKIP;
++		} else {
++			results[i].action = STASH_PARALLEL_CAPTURE;
++			capture_count++;
++		}
++	}
++	if ((error = stash_capture_paths_parallel(
++		repo, paths, results, capture_count,
++		auto_crlf != GIT_AUTO_CRLF_FALSE)) < 0)
++		goto cleanup;
+ 	for (i = 0; i < paths->count; i++) {
+ 		if (results[i].action == STASH_PARALLEL_REMOVE) {
+ 			if ((error = stash_remove_index_path(index, paths->strings[i])) < 0)
+@@ -1221,7 +1264,70 @@ apply:
+ 
+ cleanup:
+ 	git_str_dispose(&full_path);
+-	git__free(workers);
++	git__free(results);
++	return error;
++}
++
++static int build_untracked_tree_exact_parallel(
++	git_tree **tree_out,
++	git_repository *repo,
++	const git_strarray *paths)
++{
++	stash_parallel_result *results = NULL;
++	git_index *index = NULL, *repo_index = NULL;
++	git_str full_path = GIT_STR_INIT;
++	int auto_crlf = GIT_AUTO_CRLF_FALSE;
++	size_t i, capture_count = 0;
++	int error = 0;
++
++	*tree_out = NULL;
++	if ((error = git_index__new(&index, repo->oid_type)) < 0 ||
++		(error = git_repository_index__weakptr(&repo_index, repo)) < 0 ||
++		(error = git_repository__configmap_lookup(
++			&auto_crlf, repo, GIT_CONFIGMAP_AUTO_CRLF)) < 0)
++		goto cleanup;
++	results = git__calloc(paths->count, sizeof(stash_parallel_result));
++	GIT_ERROR_CHECK_ALLOC(results);
++	for (i = 0; i < paths->count; i++) {
++		struct stat st;
++		if (git_index_get_bypath(repo_index, paths->strings[i], 0) != NULL)
++			continue;
++		git_str_clear(&full_path);
++		if ((error = git_str_joinpath(
++			&full_path, git_repository_workdir(repo), paths->strings[i])) < 0)
++			goto cleanup;
++		if (p_lstat(git_str_cstr(&full_path), &st) < 0) {
++			if (errno == ENOENT || errno == ENOTDIR) {
++				git_error_clear();
++				continue;
++			}
++			error = -1;
++			goto cleanup;
++		}
++		if (S_ISDIR(st.st_mode))
++			continue;
++		results[i].action = STASH_PARALLEL_CAPTURE;
++		capture_count++;
++	}
++	if ((error = stash_capture_paths_parallel(
++		repo, paths, results, capture_count,
++		auto_crlf != GIT_AUTO_CRLF_FALSE)) < 0)
++		goto cleanup;
++	for (i = 0; i < paths->count; i++) {
++		git_index_entry entry = {{0}};
++		if (results[i].action != STASH_PARALLEL_CAPTURE)
++			continue;
++		entry.path = paths->strings[i];
++		entry.mode = results[i].mode;
++		git_oid_cpy(&entry.id, &results[i].id);
++		if ((error = git_index_add(index, &entry)) < 0)
++			goto cleanup;
++	}
++	error = build_tree_from_index(tree_out, repo, index);
++
++cleanup:
++	git_str_dispose(&full_path);
++	git_index_free(index);
+ 	git__free(results);
+ 	return error;
+ }
+

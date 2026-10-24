@@ -6,10 +6,9 @@
 //!
 //! Apply/Pop/Drop 全部通过 libgit2；应用前执行安全预检，避免 libgit2 在冲突时留下半应用工作区。
 use crate::filters::{
-    clean_worktree_for_stash, ensure_stashable, ensure_stashable_with_flags,
-    restore_worktree_backups, smudge_worktree_paths, stash_filter_flags,
-    stash_path_needs_builtin_filter, stash_path_uses_default_attributes,
-    stash_path_uses_external_filter,
+    clean_worktree_for_stash, ensure_stashable, restore_worktree_backups, smudge_worktree_paths,
+    stash_filter_flags_and_ensure_stashable, stash_path_needs_builtin_filter,
+    stash_path_uses_default_attributes, stash_path_uses_external_filter,
 };
 use crate::history::{delta_value, iso_time, signature_text};
 use crate::support::{
@@ -904,7 +903,12 @@ pub fn create(payload: &Value) -> NativeResult<Value> {
             .into_iter()
             .collect::<Vec<_>>(),
     };
-    let default_flags = stash_filter_flags(&repo, &default_paths)?;
+    let default_flags = stash_filter_flags_and_ensure_stashable(
+        &repo,
+        &default_paths,
+        &regular_files,
+        "创建 stash",
+    )?;
     let flags_by_path = default_paths
         .iter()
         .zip(default_flags.iter().copied())
@@ -918,7 +922,6 @@ pub fn create(payload: &Value) -> NativeResult<Value> {
                 .ok_or_else(|| format!("缺少 stash filter 标志: {path}"))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    ensure_stashable_with_flags(&repo, &regular_files, &filter_flags, "创建 stash")?;
     let external_paths = regular_files
         .iter()
         .zip(filter_flags.iter().copied())
@@ -1203,12 +1206,43 @@ pub fn list(payload: &Value) -> NativeResult<Value> {
         true
     })
     .map_err(format_git_error)?;
-    Ok(Value::Array(
-        entries
-            .into_iter()
-            .filter_map(|(index, oid)| stash_list_entry(&repo, index, oid))
-            .collect(),
-    ))
+
+    if entries.is_empty() {
+        return Ok(Value::Array(Vec::new()));
+    }
+    let worker_count = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(1)
+        .min(entries.len());
+    let git_dir = repo.path().to_path_buf();
+    let chunk_size = entries.len().div_ceil(worker_count);
+    let result = std::thread::scope(|scope| {
+        let handles = entries
+            .chunks(chunk_size)
+            .map(|chunk| {
+                let git_dir = &git_dir;
+                scope.spawn(move || {
+                    let repo = Repository::open(git_dir).map_err(format_git_error)?;
+                    Ok::<_, String>(
+                        chunk
+                            .iter()
+                            .filter_map(|(index, oid)| stash_list_entry(&repo, *index, *oid))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut values = Vec::with_capacity(entries.len());
+        for handle in handles {
+            values.extend(
+                handle
+                    .join()
+                    .map_err(|_| "读取 stash 列表的工作线程异常".to_owned())??,
+            );
+        }
+        Ok::<_, String>(values)
+    })?;
+    Ok(Value::Array(result))
 }
 
 fn coalesce_exact_renames(values: &mut Vec<Value>) {

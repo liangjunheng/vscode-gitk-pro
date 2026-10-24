@@ -367,21 +367,12 @@ pub fn stash_filter_flags(repo: &Repository, paths: &[String]) -> NativeResult<V
 /// Inspect stash paths before mutation. External filters are returned to the
 /// caller for explicit clean/smudge execution; unreadable transparent-encryption
 /// payloads are rejected before refs or worktree state change.
-pub fn ensure_stashable_with_flags(
-    repo: &Repository,
-    paths: &[String],
-    flags: &[u8],
-    operation: &str,
-) -> NativeResult<()> {
+fn ensure_stashable_paths(root: &Path, paths: &[String], operation: &str) -> NativeResult<()> {
     use std::io::Read;
 
-    if flags.len() != paths.len() {
-        return Err("stash filter 标志数量与路径数量不一致".to_owned());
-    }
     if paths.is_empty() {
         return Ok(());
     }
-    let root = repository_root(repo)?;
     let worker_count = std::thread::available_parallelism()
         .map(|value| value.get())
         .unwrap_or(1)
@@ -392,7 +383,6 @@ pub fn ensure_stashable_with_flags(
             .chunks(chunk_size)
             .enumerate()
             .map(|(chunk_index, chunk)| {
-                let root = &root;
                 scope.spawn(move || {
                     for (offset, value) in chunk.iter().enumerate() {
                         let mut header = [0u8; 16];
@@ -430,16 +420,32 @@ pub fn ensure_stashable_with_flags(
     Ok(())
 }
 
+pub fn stash_filter_flags_and_ensure_stashable(
+    repo: &Repository,
+    flag_paths: &[String],
+    scan_paths: &[String],
+    operation: &str,
+) -> NativeResult<Vec<u8>> {
+    let root = repository_root(repo)?;
+    std::thread::scope(|scope| {
+        let scan = scope.spawn(|| ensure_stashable_paths(&root, scan_paths, operation));
+        let flags = stash_filter_flags(repo, flag_paths);
+        let scan_result = scan
+            .join()
+            .map_err(|_| "stash 文件安全预检线程异常".to_owned());
+        let flags = flags?;
+        scan_result??;
+        Ok(flags)
+    })
+}
+
 pub fn ensure_stashable(
     repo: &Repository,
     paths: &[String],
     operation: &str,
 ) -> NativeResult<Vec<u8>> {
-    let flags = stash_filter_flags(repo, paths)?;
-    ensure_stashable_with_flags(repo, paths, &flags, operation)?;
-    Ok(flags)
+    stash_filter_flags_and_ensure_stashable(repo, paths, paths, operation)
 }
-
 pub fn stash_path_uses_external_filter(flags: u8) -> bool {
     flags & STASH_FILTER_EXTERNAL != 0
 }

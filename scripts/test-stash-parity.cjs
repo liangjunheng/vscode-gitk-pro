@@ -172,19 +172,25 @@ async function runParity() {
       });
       assert.deepEqual(snapshot(fast), snapshot(normal));
     });
-    await check('default-attribute unstaged capture matches Git with parallel hashing', async () => {
+    await check('default-attribute tracked and untracked capture matches Git with parallel hashing', async () => {
       const parallelPathCount = Math.max(2, os.availableParallelism());
       const prepare = root => {
         fixture(root, '', 'true');
         for (let index = 0; index < parallelPathCount; index++) write(root, `parallel/${index}`, `base ${index}\n`);
         git(root, ['add', '-A']); git(root, ['commit', '-q', '-m', 'parallel base']);
-        for (let index = 0; index < parallelPathCount; index++) write(root, `parallel/${index}`, `dirty ${index}\n`.repeat(40));
+        for (let index = 0; index < parallelPathCount; index++) {
+          write(root, `parallel/${index}`, `dirty ${index}\n`.repeat(40));
+          write(root, `parallel-new/${index}`, `untracked ${index}\n`.repeat(40));
+        }
       };
       const cli = path.join(scratch, 'parallel-capture-cli');
       const native = path.join(scratch, 'parallel-capture-native');
       prepare(cli); prepare(native);
       git(cli, ['stash', 'push', '-q', '-k', '-u']);
-      const paths = Array.from({ length: parallelPathCount }, (_, index) => `parallel/${index}`);
+      const paths = [
+        ...Array.from({ length: parallelPathCount }, (_, index) => `parallel/${index}`),
+        ...Array.from({ length: parallelPathCount }, (_, index) => `parallel-new/${index}`),
+      ];
       await invoke(binding, native, 'stashCreate', { scope: 'unstaged', paths, allUnstagedPaths: true });
       assert.deepEqual(snapshot(native), snapshot(cli));
     });
