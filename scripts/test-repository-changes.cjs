@@ -1351,6 +1351,10 @@ async function verifyMultiDiffLinkage(page, state, publish, repositories) {
   assert.equal(await rootRows.last().evaluate(row => { const target = row.getBoundingClientRect(); const list = document.getElementById('repositoryChangesList'); const bounds = list.getBoundingClientRect(); return target.top >= bounds.top && target.bottom <= bounds.top + list.clientHeight + 1; }), true, 'offscreen MultiDiff file is revealed in repository list');
   await root.locator('.repo-group[data-section="unstaged"] .repo-group-toggle').click();
   await root.locator('.repo-changes-toggle').click();
+  await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'selectedPathChanged', selectedPath: 'unstaged:folder/file-34.cpp' } })));
+  assert.equal(await root.locator('.repo-changes-body').isVisible(), false, 'late file-selection feedback does not reopen a repository after collapse cleared its focus');
+  assert.equal(await root.evaluate(node => node.classList.contains('focused')), false, 'collapsed repository remains unfocused after late file-selection feedback');
+  assert.equal(await rootRows.nth(34).evaluate(row => row.classList.contains('selected')), true, 'late feedback may still synchronize the hidden file-row selection');
   // Re-establish host-owned diff context while leaving the locally folded card unchanged.
   await publish();
   const beforeCollapsedFeedback = await page.evaluate(() => window.messages.length);

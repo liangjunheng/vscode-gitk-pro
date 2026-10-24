@@ -584,7 +584,9 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     // While a multi-selection is active, the host's single selection only shows on a row that belongs to it.
     const showSelected = !repositorySelectionAnchors.has(repositoryPath) || row.classList.contains('multi-selected');
     row.classList.toggle('selected', showSelected); row.querySelector('.repo-file').classList.toggle('selected', showSelected);
-    if (!reveal) return;
+    // File-selection feedback can arrive after the user has collapsed and blurred the card.
+    // Reveal through this linkage only while repository selection still owns the focus.
+    if (!reveal || focusedRepositoryChangesPath !== repositoryPath) return;
     repositoryChangesCollapsed.delete(repositoryPath);
     const group = row.closest('.repo-group');
     repositoryGroupsCollapsed.delete(repositoryPath + String.fromCharCode(0) + group.dataset.section);
