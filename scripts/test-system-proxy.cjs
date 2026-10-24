@@ -60,6 +60,8 @@ async function testWindowsSystemProxy() {
     await operations.fetchRemotes({ fsPath: 'C:/repo' }, 'origin');
     const git = calls.find(call => call.file === 'git' && call.args.includes('fetch'));
     assert.ok(git, 'fetch starts Git CLI');
+    assert.deepEqual(git.args, ['-C', 'C:/repo', 'fetch', '--prune', '--no-recurse-submodules', 'origin'],
+        'Fetch leaves recursive submodule scheduling to the extension');
     assert.equal(git.options.env.HTTP_PROXY, 'http://proxy-http:8080');
     assert.equal(git.options.env.HTTPS_PROXY, 'http://proxy-https:8443');
     assert.equal(git.options.env.NO_PROXY, '*.corp,localhost,127.0.0.1,::1');
@@ -73,8 +75,12 @@ async function testConcurrentFetchWaveSharesSystemProxyLookup() {
         'a parallel repository wave reads the five Windows proxy values once, not once per repository');
     assert.equal(calls.filter(call => call.file === 'git' && call.args.includes('config')).length, 6,
         'repository-specific Git proxy configuration is still checked independently');
-    assert.equal(calls.filter(call => call.file === 'git' && call.args.includes('fetch')).length, 6,
+    const fetchCalls = calls.filter(call => call.file === 'git' && call.args.includes('fetch'));
+    assert.equal(fetchCalls.length, 6,
         'distinct repositories still start independent fetch commands');
+    assert.deepEqual(fetchCalls.map(call => call.args.slice(2)), Array.from({ length: 6 }, () =>
+        ['fetch', '--all', '--prune', '--no-recurse-submodules']),
+        'every full Fetch leaves recursive submodule scheduling to the extension');
     assert.equal(calls.length, 17, 'six repositories use 17 child processes instead of the previous 42');
 }
 

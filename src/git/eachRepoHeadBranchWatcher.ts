@@ -174,6 +174,7 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
                 new vscode.RelativePattern(vscode.Uri.file(gitDir), '{refs/stash,logs/refs/stash,packed-refs}'),
             );
             let stashNotifyTimer: ReturnType<typeof setTimeout> | undefined;
+            let remoteRefsNotifyTimer: ReturnType<typeof setTimeout> | undefined;
             const notifyStashChanged = () => {
                 if (stashNotifyTimer) { return; }
                 stashNotifyTimer = setTimeout(() => {
@@ -187,14 +188,23 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
                 if (currentRepository) { void this.enqueueHeadRead(key, currentRepository); }
             };
             const notifyRemoteRefsChanged = () => {
-                const currentRepository = this.repositories.get(key);
-                if (currentRepository) { this.remoteRefsChangedEmitter.fire({ repositoryPath: currentRepository.path }); }
+                // One Fetch can rewrite several loose refs plus packed-refs. Wait until that burst is quiet
+                // so ahead/behind and cloud commits are reloaded once for the repository.
+                if (remoteRefsNotifyTimer) { clearTimeout(remoteRefsNotifyTimer); }
+                remoteRefsNotifyTimer = setTimeout(() => {
+                    remoteRefsNotifyTimer = undefined;
+                    const currentRepository = this.repositories.get(key);
+                    if (currentRepository) { this.remoteRefsChangedEmitter.fire({ repositoryPath: currentRepository.path }); }
+                }, 75);
             };
             return vscode.Disposable.from(
                 headWatcher,
                 remoteRefsWatcher,
                 stashWatcher,
-                { dispose: () => { if (stashNotifyTimer) { clearTimeout(stashNotifyTimer); stashNotifyTimer = undefined; } } },
+                { dispose: () => {
+                    if (stashNotifyTimer) { clearTimeout(stashNotifyTimer); stashNotifyTimer = undefined; }
+                    if (remoteRefsNotifyTimer) { clearTimeout(remoteRefsNotifyTimer); remoteRefsNotifyTimer = undefined; }
+                } },
                 stashWatcher.onDidCreate(notifyStashChanged),
                 stashWatcher.onDidChange(notifyStashChanged),
                 stashWatcher.onDidDelete(notifyStashChanged),

@@ -297,9 +297,11 @@ export function fetchRemotes(rootUri: vscode.Uri, remote?: string): Promise<void
     const key = JSON.stringify([repositoryKey, remote ?? null]);
     const pending = pendingFetches.get(key);
     if (pending) { return pending; }
+    // Submodules are discovered and fetched by the extension's parallel repository scheduler.
+    // Keep Git from recursively fetching the same repositories again inside each parent Fetch.
     const cliArgs = remote
-        ? ['fetch', '--prune', remote]
-        : ['fetch', '--all', '--prune'];
+        ? ['fetch', '--prune', '--no-recurse-submodules', remote]
+        : ['fetch', '--all', '--prune', '--no-recurse-submodules'];
     const task = runGitCli(rootUri, cliArgs).then(() => undefined).finally(() => {
         if (pendingFetches.get(key) === task) { pendingFetches.delete(key); }
     });
