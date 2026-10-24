@@ -2299,12 +2299,40 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
                 .find(candidate => candidate.repoOption.path === repositoryPath);
             if (!branch) { return; }
+            // The card already renders this published snapshot. If it is dirty, select the same
+            // Uncommitted Changes identity before waiting for a redundant watcher read.
+            const publishedRepository = store.getState().commitRepositories
+                .find(candidate => candidate.repositoryPath === repositoryPath);
+            const publishedChanges = publishedRepository
+                && (publishedRepository.staged.length > 0 || publishedRepository.unstaged.length > 0)
+                ? new WorkingTreeChanges({
+                    staged: publishedRepository.staged.map(file => new CommitFile({ ...file })),
+                    changes: publishedRepository.unstaged.map(file => new CommitFile({ ...file })),
+                })
+                : undefined;
+            let publishedSelectionChanged = false;
+            if (publishedChanges) {
+                this.pendingGitlinkWorktreeSnapshot = { repositoryPath, branch, changes: publishedChanges };
+                publishedSelectionChanged = this.commitController.selectCommit(new CommitMetadata({ hash: 'uncommitted', gitBranchOption: branch }));
+                this.repositoryCardDisplayLocks?.delete(repositoryPath);
+                this.schedulePushState();
+                if (!publishedSelectionChanged) { this.pendingGitlinkWorktreeSnapshot = undefined; }
+            }
             const selectedBranch = await this.selectCommitPanelRepository(branch, abortController.signal);
             if (!selectedBranch || abortController.signal.aborted) { return; }
+            if (publishedChanges && !publishedSelectionChanged) {
+                await this.selectWorkingTreeChanges(publishedChanges, false, false);
+            }
             const changes = await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(selectedBranch);
             if (abortController.signal.aborted) { return; }
             const hasChanges = changes.staged.length > 0 || changes.changes.length > 0;
             if (hasChanges) {
+                if (publishedChanges) {
+                    if (!publishedChanges.equals(changes)) {
+                        await this.selectWorkingTreeChanges(changes, false, false);
+                    }
+                    return;
+                }
                 this.pendingGitlinkWorktreeSnapshot = { repositoryPath, branch: selectedBranch, changes };
                 const changed = this.commitController.selectCommit(new CommitMetadata({ hash: 'uncommitted', gitBranchOption: selectedBranch }));
                 // Uncommitted Changes is this card's final selection: release the lock so its Commit controls

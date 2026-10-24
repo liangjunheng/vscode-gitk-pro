@@ -1829,7 +1829,7 @@ async function verifyProvider() {
   const selections = [];
   provider.repoController = {
     get selectedRepoList() { return repoSelection; },
-    selectRepositories: value => { repoSelection = value; selections.push(value); },
+    selectRepositories: value => { repoSelection = value; selectedPathsForTest = value.map(repository => repository.path); selections.push(value); },
   };
   provider.commitController.totalCommitList = [{ hash: 'clean-latest', message: 'latest clean commit', gitBranchOption: { repoOption: repositories[2] } }];
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', action: 'terminal', repositoryPath: repositories[1].path });
@@ -1907,8 +1907,23 @@ async function verifyProvider() {
   await provider.handleCommitFileAction({ type: 'commitFileAction', action: 'copyRelativePath', hash: 'other-commit', repositoryPath: repositories[1].path, path: 'history.cpp' });
   assert.equal(clipboardWrites.at(-1), '/fixture/child/history.cpp', 'stale normal-commit identity is rejected');
   assert.match(errorMessages.at(-1), /提交或文件已更新/);
-  await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', repositoryPath: repositories[1].path, action: 'focus' });
+  const readFocusedChanges = provider.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch;
+  let releaseFocusedChanges;
+  provider.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch = branch => branch.repoOption.path === repositories[1].path
+    ? new Promise(resolve => { releaseFocusedChanges = resolve; })
+    : readFocusedChanges(branch);
+  const pendingDirtyFocus = provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', repositoryPath: repositories[1].path, action: 'focus' });
+  await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(selections, [[repositories[1]]], 'focus uses authoritative selection pipeline that drives commit history');
+  assert.equal(provider.commitController.selectedCommit.hash, 'uncommitted', 'the published dirty-card snapshot selects Uncommitted Changes before the watcher read completes');
+  assert.equal(provider.repositoryCardDisplayLocks.has(repositories[1].path), false, 'the dirty card releases its controls before the watcher read completes');
+  provider.pushStateToWebview();
+  assert.deepEqual(published.state.selectedRepositoryPaths, [repositories[1].path], 'the first selectable snapshot already targets the dirty repository');
+  assert.equal(published.state.selectedCommit.hash, 'uncommitted', 'the first selectable snapshot already highlights Uncommitted Changes');
+  assert.equal(published.state.repositoryCardDisplayLocks.includes(repositories[1].path), false, 'the first selectable snapshot already exposes the editor and Commit controls');
+  releaseFocusedChanges({ staged: [], changes: [{ path: 'same.cpp', status: 'M' }] });
+  await pendingDirtyFocus;
+  provider.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch = readFocusedChanges;
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', repositoryPath: repositories[1].path, action: 'focus' });
   assert.equal(selections.length, 1, 'repeated focus must not restart commit reads');
   assert.equal(provider.repositoryCardDisplayLocks.has(repositories[1].path), false, 'a repository with worktree changes releases its display lock once the worktree is the final selection');
