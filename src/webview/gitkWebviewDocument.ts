@@ -173,7 +173,7 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR
       const previousFileRepositoryPath = selectedCommitRepositoryPath;
       selectedCommitRepositoryPath = state.selectedCommit ? state.selectedCommit.repositoryPath : '';
       selectedRepositoryCommitDetails = state.selectedCommit || null;
-      selectedRepositoryPaths = state.selectedRepositoryPaths || [];
+      applyRepositoryChangesSelectionSnapshot(state.selectedRepositoryPaths || []);
       const repositorySelectionEcho = Boolean(pendingRepositoryFileSelection
         && pendingRepositoryFileSelection.repositoryPath === selectedCommitRepositoryPath
         && pendingRepositoryFileSelection.diffKey === selectedPath);

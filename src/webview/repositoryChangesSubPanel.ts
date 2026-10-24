@@ -136,6 +136,8 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
   repositoryMessageContextMenu.id = 'repositoryMessageContextMenu'; repositoryMessageContextMenu.setAttribute('popover', 'manual'); repositoryMessageContextMenu.innerHTML = '<button type="button" data-repository-message-action="cut">剪切</button><button type="button" data-repository-message-action="copy">复制</button><button type="button" data-repository-message-action="paste">粘贴</button><div class="context-menu-separator"></div><button type="button" data-repository-message-action="selectAll">全选</button>'; document.body.append(repositoryMessageContextMenu);
   const repositoryFileContextMenu = createFileContextMenu('repositoryFileContextMenu');
   const repositoryChangesCollapsed = new Set();
+  // A collapse wins over in-flight focus snapshots until the host confirms deselection.
+  const repositoryChangesBlurPending = new Set();
   const repositoryChangesInitialized = new Set();
   const repositoryGroupsCollapsed = new Set();
   const repositoryFoldersCollapsed = new Set();
@@ -238,7 +240,14 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
   }
   let focusedRepositoryChangesPath = '';
   let repositoryChangesRevealPath = '';
+  function applyRepositoryChangesSelectionSnapshot(paths) {
+    selectedRepositoryPaths = paths;
+    repositoryChangesBlurPending.forEach(function(repositoryPath) {
+      if (!paths.includes(repositoryPath)) repositoryChangesBlurPending.delete(repositoryPath);
+    });
+  }
   function revealRepositoryChanges(repositoryPath) {
+    repositoryChangesBlurPending.delete(repositoryPath);
     repositoryChangesCollapsed.delete(repositoryPath);
     focusedRepositoryChangesPath = repositoryPath;
     repositoryChangesRevealPath = repositoryPath;
@@ -257,6 +266,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
   }
   function focusRepositoryChanges(repositoryPath) {
     if (repositoryChangesCollapsed.has(repositoryPath) || focusedRepositoryChangesPath === repositoryPath) return;
+    repositoryChangesBlurPending.delete(repositoryPath);
     const keepControls = repositoryKeepsCommitControls(repositoryChangesNodes.get(repositoryPath),
       repositoryChanges.find(function(item) { return item.repositoryPath === repositoryPath; }));
     // Otherwise hide Commit controls in the same event turn as expansion; the host later confirms
@@ -605,8 +615,9 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
   }
   function renderRepositoryChanges() {
     const list = document.getElementById('repositoryChangesList');
+    const selectedRepositoryPath = selectedRepositoryPaths.length === 1 ? selectedRepositoryPaths[0] : '';
     focusedRepositoryChangesPath = repositoryChangesRevealPath
-      || (selectedRepositoryPaths.length === 1 ? selectedRepositoryPaths[0] : '');
+      || (selectedRepositoryPath && !repositoryChangesBlurPending.has(selectedRepositoryPath) ? selectedRepositoryPath : '');
     const paths = new Set(repositoryChanges.map(function(repository) { return repository.repositoryPath; }));
     repositoryChangesNodes.forEach(function(node, repositoryPath) { if (!paths.has(repositoryPath)) { node.card.remove(); repositoryChangesNodes.delete(repositoryPath); } });
     repositoryChanges.forEach(function(repository, index) {
@@ -800,6 +811,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     }
     if (action === 'toggle') {
       if (repositoryChangesCollapsed.has(repositoryPath)) repositoryChangesCollapsed.delete(repositoryPath); else repositoryChangesCollapsed.add(repositoryPath);
+      if (repositoryChangesCollapsed.has(repositoryPath)) repositoryChangesBlurPending.add(repositoryPath);
       if (repositoryChangesCollapsed.has(repositoryPath) && focusedRepositoryChangesPath === repositoryPath) {
         focusedRepositoryChangesPath = '';
         repositoryChangesNodes.forEach(function(node) { node.card.classList.remove('focused'); });
@@ -825,6 +837,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     if (['commit', 'amend', 'push', 'syncCommit'].includes(action)) { postRepositoryCommit(card, action); return; }
     if (action === 'worktree') {
       card.classList.remove('transitioning');
+      repositoryChangesBlurPending.delete(repositoryPath);
       repositoryChangesCollapsed.delete(repositoryPath);
       focusedRepositoryChangesPath = repositoryPath;
       repositoryChangesNodes.forEach(function(node, path) { node.card.classList.toggle('focused', path === repositoryPath); });
