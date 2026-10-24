@@ -3776,8 +3776,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     `以下 ${overlapping.length} 个文件同时包含已暂存和未暂存的修改：`,
                     ...overlapping.map(filePath => `• ${filePath}`),
                     '',
-                    '请选择本次贮藏方式。',
-                    '选择“合并修改并贮藏”后，已暂存内容会作为未暂存修改一并保存；当前已暂存区保持不变。',
+                    '请选择本次贮藏方式：',
+                    '• 仅贮藏未暂存修改：只保存未暂存差异，已暂存内容不会进入贮藏。',
+                    '• 合并修改并贮藏：保存这些文件的完整修改，包括已暂存和未暂存内容。',
+                    '无论选择哪一种方式，当前暂存区都保持不变。',
                 ].join('\n');
                 const primaryItem: vscode.MessageItem = { title: primary };
                 const unstagedOnlyItem: vscode.MessageItem = { title: unstagedOnly };

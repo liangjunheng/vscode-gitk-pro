@@ -195,12 +195,33 @@ async function runParity() {
       const unstagedOnly = await invoke(binding, root, 'stashCreate', { scope: 'unstaged', paths: ['a', 'c'] });
       assert.notEqual(unstagedOnly.stash, '');
       assert.equal(git(root, ['status', '--porcelain=v1']).stdout, 'M  a\nM  c');
+      assert.equal(git(root, ['show', `${unstagedOnly.stash}^2:a`]).stdout, 'staged a');
+      assert.equal(git(root, ['show', `${unstagedOnly.stash}^2:c`]).stdout, 'staged c');
+      assert.equal(git(root, ['show', `${unstagedOnly.stash}:a`]).stdout, 'staged a\nunstaged a');
+      assert.match(
+        git(root, ['show', '-s', '--format=%s', `${unstagedOnly.stash}^2`]).stdout,
+        /^unstaged-only index on /,
+      );
+      const unstagedFiles = await invoke(binding, root, 'stashFiles', { revision: unstagedOnly.stash });
+      assert.deepEqual(unstagedFiles.map(file => file.path).sort(), ['a', 'c']);
+      for (const file of unstagedFiles) {
+        assert.equal(file.oldObjectId, git(root, ['rev-parse', `${unstagedOnly.stash}^2:${file.path}`]).stdout);
+      }
+      await invoke(binding, root, 'stashApply', { stash: unstagedOnly.stash });
+      assert.equal(git(root, ['status', '--porcelain=v1']).stdout, 'MM a\nMM c');
+      assert.equal(fs.readFileSync(path.join(root, 'a'), 'utf8'), 'staged a\nunstaged a\n');
+      assert.equal(fs.readFileSync(path.join(root, 'c'), 'utf8'), 'staged c\nunstaged c\n');
       git(root, ['reset', '--hard', '-q']);
       write(root, 'a', 'staged a\n'); write(root, 'c', 'staged c\n'); git(root, ['add', 'a', 'c']);
       write(root, 'a', 'staged a\nunstaged a\n'); write(root, 'c', 'staged c\nunstaged c\n');
       const result = await invoke(binding, root, 'stashCreate', {
         scope: 'unstaged', paths: ['a', 'c'], mergeStagedIntoUnstaged: true,
       });
+      assert.doesNotMatch(
+        git(root, ['show', '-s', '--format=%s', `${result.stash}^2`]).stdout,
+        /^unstaged-only index on /,
+        'merged stash must keep full-file apply semantics',
+      );
       assert.deepEqual(
         git(root, ['diff-tree', '--no-commit-id', '--name-only', '-r', `${result.stash}^1`, `${result.stash}^2`]).stdout.split(/\r?\n/).filter(Boolean),
         [],
@@ -224,6 +245,14 @@ async function runParity() {
         assert.equal(git(root, ['diff', '--cached', '--name-only']).stdout, '');
         assert.equal(applied.dropped, operation === 'stashPop');
       }
+
+      const onlyRoot = fixture(path.join(scratch, 'custom-unstaged-only-index'));
+      write(onlyRoot, 'a', 'staged\n'); git(onlyRoot, ['add', 'a']); write(onlyRoot, 'a', 'staged\nunstaged\n');
+      const onlyStash = await invoke(binding, onlyRoot, 'stashCreate', { scope: 'unstaged' });
+      git(onlyRoot, ['config', 'stash.index', 'true']);
+      await invoke(binding, onlyRoot, 'stashApply', { stash: onlyStash.stash });
+      assert.equal(git(onlyRoot, ['status', '--porcelain=v1']).stdout, 'MM a', 'only-unstaged apply must preserve the existing staged baseline');
+      assert.equal(fs.readFileSync(path.join(onlyRoot, 'a'), 'utf8'), 'staged\nunstaged\n');
 
       const root = fixture(path.join(scratch, 'custom-stash-index'));
       write(root, 'a', 'staged\n'); git(root, ['add', 'a']); write(root, 'a', 'staged\nunstaged\n');

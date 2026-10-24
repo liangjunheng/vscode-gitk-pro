@@ -29,6 +29,15 @@ use std::path::{Path, PathBuf};
 const GITLINK_MODE: u32 = 0o160000;
 const NO_COMMIT: &str = "仓库还没有任何提交，无法 stash";
 const NO_IDENTITY: &str = "无法确定提交者身份，请先配置 user.name 和 user.email";
+const UNSTAGED_ONLY_INDEX_PREFIX: &str = "unstaged-only index on ";
+
+fn is_unstaged_only_stash(stash: &Commit<'_>) -> bool {
+    stash.parent(1).ok().is_some_and(|index_parent| {
+        index_parent
+            .message_bytes()
+            .starts_with(UNSTAGED_ONLY_INDEX_PREFIX.as_bytes())
+    })
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Scope {
@@ -674,6 +683,7 @@ fn create_staged_stash(
 fn create_unstaged_paths(
     repo: &Repository,
     signature: &git2::Signature<'_>,
+    index_base_paths: &[String],
     capture_paths: &[String],
     preserve_paths: &[String],
     reset_paths: &[String],
@@ -688,6 +698,11 @@ fn create_unstaged_paths(
             })
             .collect::<Result<Vec<_>, _>>()
     };
+    let index_base = encode(index_base_paths)?;
+    let index_base_pointers = index_base
+        .iter()
+        .map(|path| path.as_ptr())
+        .collect::<Vec<_>>();
     let capture = encode(capture_paths)?;
     let capture_pointers = capture.iter().map(|path| path.as_ptr()).collect::<Vec<_>>();
     let preserve = encode(preserve_paths)?;
@@ -706,6 +721,8 @@ fn create_unstaged_paths(
             repo.raw().cast(),
             signature.raw().cast(),
             flags,
+            index_base_pointers.len(),
+            index_base_pointers.as_ptr(),
             capture_pointers.len(),
             capture_pointers.as_ptr(),
             preserve_pointers.len(),
@@ -851,9 +868,19 @@ pub fn create(payload: &Value) -> NativeResult<Value> {
     // These paths keep their full worktree contents in the stash worktree tree, but they
     // are deliberately excluded from the stash index parent: applying the stash restores
     // the combined contents as unstaged changes and never stages them.
+    let related_staged_worktree_paths = if scope == Scope::Unstaged {
+        related_staged_paths(&repo, &overlapping_staged)?
+    } else {
+        Vec::new()
+    };
+    let index_base_paths = if scope == Scope::Unstaged && !merge_staged_into_unstaged {
+        related_staged_worktree_paths.clone()
+    } else {
+        Vec::new()
+    };
     let preserved_staged_worktree_paths = if scope == Scope::Unstaged && merge_staged_into_unstaged
     {
-        related_staged_paths(&repo, &overlapping_staged)?
+        related_staged_worktree_paths
     } else {
         Vec::new()
     };
@@ -950,6 +977,7 @@ pub fn create(payload: &Value) -> NativeResult<Value> {
             create_unstaged_paths(
                 &repo,
                 &signature,
+                &index_base_paths,
                 &capture_paths,
                 &preserved_staged_worktree_paths,
                 &reset_paths,
@@ -1039,8 +1067,13 @@ pub fn restore_paths(payload: &Value) -> NativeResult<Value> {
         return Err("存在未解决的合并冲突，请先解决冲突后再还原贮藏".to_owned());
     }
     let stash_tree = commit.tree().map_err(format_git_error)?;
+    let base_parent = if is_unstaged_only_stash(&commit) {
+        1
+    } else {
+        0
+    };
     let base_tree = commit
-        .parent(0)
+        .parent(base_parent)
         .and_then(|parent| parent.tree())
         .map_err(format_git_error)?;
     let mut options = DiffOptions::new();
@@ -1281,7 +1314,9 @@ fn coalesce_exact_renames(values: &mut Vec<Value>) {
     }
 }
 
-/// stash 提交的变更文件：第 1 个父提交（基线）到 stash 树的差异，外加第 3 个父提交里的未跟踪文件。
+/// stash 提交的变更文件：普通 stash 使用第 1 个父提交作为基线；
+/// “仅贮藏未暂存修改”使用第 2 个父提交，以免把已暂存差异显示为贮藏内容。
+/// 最后再合并第 3 个父提交里的未跟踪文件。
 pub fn files(payload: &Value) -> NativeResult<Value> {
     let root_path = string_arg(payload, "rootPath")?;
     let revision = string_arg(payload, "revision")?;
@@ -1295,8 +1330,13 @@ pub fn files(payload: &Value) -> NativeResult<Value> {
         return Err(format!("{revision} 不是 stash 提交"));
     }
     let tree = commit.tree().map_err(format_git_error)?;
+    let base_parent = if is_unstaged_only_stash(&commit) {
+        1
+    } else {
+        0
+    };
     let base_tree = commit
-        .parent(0)
+        .parent(base_parent)
         .and_then(|parent| parent.tree())
         .map_err(format_git_error)?;
     let mut options = DiffOptions::new();
@@ -1408,6 +1448,8 @@ unsafe extern "C" {
         repository: *mut c_void,
         stasher: *const c_void,
         flags: u32,
+        index_base_path_count: usize,
+        index_base_paths: *const *const c_char,
         capture_path_count: usize,
         capture_paths: *const *const c_char,
         preserve_path_count: usize,
@@ -1431,8 +1473,9 @@ fn preflight_apply(repo: &Repository, stash: &Commit<'_>) -> NativeResult<ApplyP
         .map_err(|_| "仓库还没有任何提交，无法应用 stash".to_owned())?
         .peel_to_tree()
         .map_err(format_git_error)?;
+    let base_parent = if is_unstaged_only_stash(stash) { 1 } else { 0 };
     let base_tree = stash
-        .parent(0)
+        .parent(base_parent)
         .and_then(|parent| parent.tree())
         .map_err(format_git_error)?;
     let tree = stash.tree().map_err(format_git_error)?;

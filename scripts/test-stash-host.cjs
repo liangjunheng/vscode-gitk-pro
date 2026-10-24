@@ -288,7 +288,7 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   await run();
   assert.equal(dialogs.length, 1);
   assert.equal(dialogs[0].message, '确认贮藏未暂存修改冲突方案');
-  assert.match(dialogs[0].options.detail, /仓库：a[\s\S]*以下 2 个文件同时包含已暂存和未暂存的修改：[\s\S]*• c\.txt[\s\S]*• d\.txt[\s\S]*请选择本次贮藏方式。[\s\S]*选择“合并修改并贮藏”后，已暂存内容会作为未暂存修改一并保存；当前已暂存区保持不变。/);
+  assert.match(dialogs[0].options.detail, /仓库：a[\s\S]*以下 2 个文件同时包含已暂存和未暂存的修改：[\s\S]*• c\.txt[\s\S]*• d\.txt[\s\S]*请选择本次贮藏方式：[\s\S]*仅贮藏未暂存修改：只保存未暂存差异，已暂存内容不会进入贮藏。[\s\S]*合并修改并贮藏：保存这些文件的完整修改，包括已暂存和未暂存内容。[\s\S]*无论选择哪一种方式，当前暂存区都保持不变。/);
   assert.deepEqual(dialogs[0].items, [
     { title: '合并修改并贮藏' },
     { title: '仅贮藏未暂存修改' },

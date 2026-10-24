@@ -2256,3 +2256,121 @@
  
  cleanup:
  	git_tree_free(base);
+--- a/libgit2/src/libgit2/stash.c
++++ b/libgit2/src/libgit2/stash.c
+@@ -617,7 +617,8 @@ static int commit_index_from_paths(
+ 	const git_strarray *paths,
+ 	const git_signature *stasher,
+ 	const char *message,
+-	const git_commit *parent)
++	const git_commit *parent,
++	bool unstaged_only)
+ {
+ 	git_index *index = NULL;
+ 	git_tree *base_tree = NULL, *i_tree = NULL;
+@@ -630,7 +631,8 @@ static int commit_index_from_paths(
+ 		(error = git_index_read_tree(index, base_tree)) < 0 ||
+ 		(error = stash_update_index_from_index_paths(index, source, paths)) < 0 ||
+ 		(error = build_tree_from_index(&i_tree, repo, index)) < 0 ||
+-		(error = git_str_printf(&msg, "index on %s\n", message)) < 0 ||
++		(error = git_str_printf(&msg, unstaged_only ?
++			"unstaged-only index on %s\n" : "index on %s\n", message)) < 0 ||
+ 		(error = git_commit_create(
+ 			&i_commit_oid, repo, NULL, stasher, stasher, NULL,
+ 			git_str_cstr(&msg), i_tree, 1, &parent)) < 0 ||
+@@ -1842,7 +1844,8 @@ static int stash_save_with_opts_scoped_index(
+ 		if ((error = commit_index(&reset_commit, repo, index, opts->stasher,
+ 				  git_str_cstr(&msg), b_commit)) < 0 ||
+ 			(error = commit_index_from_paths(&i_commit, repo, index, scoped_index_paths,
+-				  opts->stasher, git_str_cstr(&msg), b_commit)) < 0)
++				  opts->stasher, git_str_cstr(&msg), b_commit,
++				  !preserve_paths || preserve_paths->count == 0)) < 0)
+ 			goto cleanup;
+ 	} else if ((error = commit_index(&i_commit, repo, index, opts->stasher,
+ 				  git_str_cstr(&msg), b_commit)) < 0) {
+@@ -1953,6 +1956,23 @@ cleanup:
+ 	return error;
+ }
+ 
++static bool stash_is_unstaged_only(git_commit *stash_commit)
++{
++	git_commit *index_commit = NULL;
++	const char *message;
++	bool result = false;
++
++	if (git_commit_parent(&index_commit, stash_commit, 1) < 0) {
++		git_error_clear();
++		return false;
++	}
++	message = git_commit_message(index_commit);
++	result = message && !strncmp(message, "unstaged-only index on ",
++		strlen("unstaged-only index on "));
++	git_commit_free(index_commit);
++	return result;
++}
++
+ static int retrieve_stash_trees(
+ 	git_tree **out_stash_tree,
+ 	git_tree **out_base_tree,
+@@ -2205,6 +2225,7 @@ int git_stash_apply(
+ 	git_index *unstashed_index = NULL;
+ 	git_index *modified_index = NULL;
+ 	git_index *untracked_index = NULL;
++	bool unstaged_only = false;
+ 	int error;
+ 
+ 	GIT_ERROR_CHECK_VERSION(given_opts, GIT_STASH_APPLY_OPTIONS_VERSION, "git_stash_apply_options");
+@@ -2217,6 +2238,7 @@ int git_stash_apply(
+ 	/* Retrieve commit corresponding to the given stash */
+ 	if ((error = retrieve_stash_commit(&stash_commit, repo, index)) < 0)
+ 		goto cleanup;
++	unstaged_only = stash_is_unstaged_only(stash_commit);
+ 
+ 	/* Retrieve all trees in the stash */
+ 	if ((error = retrieve_stash_trees(
+@@ -2231,7 +2253,7 @@ int git_stash_apply(
+ 	NOTIFY_PROGRESS(opts, GIT_STASH_APPLY_PROGRESS_ANALYZE_INDEX);
+ 
+ 	/* Restore index if required */
+-	if ((opts.flags & GIT_STASH_APPLY_REINSTATE_INDEX) &&
++	if (!unstaged_only && (opts.flags & GIT_STASH_APPLY_REINSTATE_INDEX) &&
+ 		git_oid_cmp(git_tree_id(stash_parent_tree), git_tree_id(index_tree))) {
+ 
+ 		if ((error = merge_index_and_tree(
+@@ -2246,7 +2268,7 @@ int git_stash_apply(
+ 	/* Otherwise, stage any new files in the stash tree.  (Note: their
+ 	 * previously unstaged contents are staged, not the previously staged.)
+ 	 */
+-	} else if ((opts.flags & GIT_STASH_APPLY_REINSTATE_INDEX) == 0) {
++	} else if (!unstaged_only && (opts.flags & GIT_STASH_APPLY_REINSTATE_INDEX) == 0) {
+ 		if ((error = stage_new_files(&stash_adds, repo,
+ 				stash_parent_tree, stash_tree)) < 0)
+ 			goto cleanup;
+@@ -2260,7 +2282,8 @@ int git_stash_apply(
+ 
+ 	/* Restore modified files in workdir */
+ 	if ((error = merge_index_and_tree(
+-			&modified_index, repo, stash_parent_tree, repo_index, stash_tree)) < 0)
++			&modified_index, repo, unstaged_only ? index_tree : stash_parent_tree,
++			repo_index, stash_tree)) < 0)
+ 		goto cleanup;
+ 
+ 	/* If applicable, restore untracked / ignored files in workdir */
+@@ -2335,6 +2358,8 @@ int git_stash_save_unstaged_paths(
+ 	git_repository *repo,
+ 	const git_signature *stasher,
+ 	uint32_t flags,
++	size_t index_base_path_count,
++	const char **index_base_path_values,
+ 	size_t capture_path_count,
+ 	const char **capture_path_values,
+ 	size_t preserve_path_count,
+@@ -2350,6 +2375,8 @@ int git_stash_save_unstaged_paths(
+ 
+ 	opts.stasher = stasher;
+ 	opts.flags = flags | (default_attributes ? GIT_STASH_DEFAULT_ATTRIBUTES : 0);
++	scoped_index_paths.count = index_base_path_count;
++	scoped_index_paths.strings = (char **)index_base_path_values;
+ 	capture_paths.count = capture_path_count;
+ 	capture_paths.strings = (char **)capture_path_values;
+ 	preserve_paths.count = preserve_path_count;
