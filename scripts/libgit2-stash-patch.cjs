@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const STASH_PATCH_REVISION = 4;
+const STASH_PATCH_REVISION = 5;
 const stashPatchFiles = [
   'libgit2/src/libgit2/stash.c', 'libgit2/src/libgit2/blob.c', 'libgit2/src/libgit2/blob.h',
   'libgit2/src/libgit2/attr.c', 'libgit2/src/libgit2/attr_file.h',

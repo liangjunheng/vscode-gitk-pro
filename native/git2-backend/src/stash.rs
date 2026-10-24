@@ -6,8 +6,9 @@
 //!
 //! Apply/Pop/Drop 全部通过 libgit2；应用前执行安全预检，避免 libgit2 在冲突时留下半应用工作区。
 use crate::filters::{
-    clean_worktree_for_stash, ensure_stashable, restore_worktree_backups, smudge_worktree_paths,
-    stash_filter_flags, stash_path_needs_builtin_filter, stash_path_uses_default_attributes,
+    clean_worktree_for_stash, ensure_stashable, ensure_stashable_with_flags,
+    restore_worktree_backups, smudge_worktree_paths, stash_filter_flags,
+    stash_path_needs_builtin_filter, stash_path_uses_default_attributes,
     stash_path_uses_external_filter,
 };
 use crate::history::{delta_value, iso_time, signature_text};
@@ -673,8 +674,9 @@ fn create_staged_stash(
 fn create_unstaged_paths(
     repo: &Repository,
     signature: &git2::Signature<'_>,
-    worktree_paths: &[String],
-    index_paths: &[String],
+    capture_paths: &[String],
+    preserve_paths: &[String],
+    reset_paths: &[String],
     default_attributes: bool,
 ) -> NativeResult<Oid> {
     let encode = |paths: &[String]| {
@@ -686,13 +688,15 @@ fn create_unstaged_paths(
             })
             .collect::<Result<Vec<_>, _>>()
     };
-    let worktree = encode(worktree_paths)?;
-    let worktree_pointers = worktree
+    let capture = encode(capture_paths)?;
+    let capture_pointers = capture.iter().map(|path| path.as_ptr()).collect::<Vec<_>>();
+    let preserve = encode(preserve_paths)?;
+    let preserve_pointers = preserve
         .iter()
         .map(|path| path.as_ptr())
         .collect::<Vec<_>>();
-    let index = encode(index_paths)?;
-    let index_pointers = index.iter().map(|path| path.as_ptr()).collect::<Vec<_>>();
+    let reset = encode(reset_paths)?;
+    let reset_pointers = reset.iter().map(|path| path.as_ptr()).collect::<Vec<_>>();
     let mut output = [0 as c_char; 65];
     let flags = (StashFlags::KEEP_INDEX | StashFlags::INCLUDE_UNTRACKED).bits();
     let result = unsafe {
@@ -702,10 +706,12 @@ fn create_unstaged_paths(
             repo.raw().cast(),
             signature.raw().cast(),
             flags,
-            worktree_pointers.len(),
-            worktree_pointers.as_ptr(),
-            index_pointers.len(),
-            index_pointers.as_ptr(),
+            capture_pointers.len(),
+            capture_pointers.as_ptr(),
+            preserve_pointers.len(),
+            preserve_pointers.as_ptr(),
+            reset_pointers.len(),
+            reset_pointers.as_ptr(),
             default_attributes,
         )
     };
@@ -831,7 +837,6 @@ pub fn create(payload: &Value) -> NativeResult<Value> {
             .cloned()
             .collect::<Vec<_>>()
     };
-    let filter_flags = ensure_stashable(&repo, &regular_files, "创建 stash")?;
     let selected_unstaged = regular_files.iter().cloned().collect::<BTreeSet<_>>();
     let staged_paths = all_changes
         .staged
@@ -862,11 +867,6 @@ pub fn create(payload: &Value) -> NativeResult<Value> {
     } else {
         None
     };
-    let external_paths = regular_files
-        .iter()
-        .zip(filter_flags.iter().copied())
-        .filter_map(|(path, flags)| stash_path_uses_external_filter(flags).then_some(path.clone()))
-        .collect::<Vec<_>>();
     let default_paths = match scope {
         Scope::Staged => regular_files.clone(),
         Scope::Unstaged => regular_files
@@ -877,11 +877,26 @@ pub fn create(payload: &Value) -> NativeResult<Value> {
             .into_iter()
             .collect::<Vec<_>>(),
     };
-    let default_flags = if default_paths == regular_files {
-        filter_flags.clone()
-    } else {
-        stash_filter_flags(&repo, &default_paths)?
-    };
+    let default_flags = stash_filter_flags(&repo, &default_paths)?;
+    let flags_by_path = default_paths
+        .iter()
+        .zip(default_flags.iter().copied())
+        .collect::<BTreeMap<_, _>>();
+    let filter_flags = regular_files
+        .iter()
+        .map(|path| {
+            flags_by_path
+                .get(path)
+                .copied()
+                .ok_or_else(|| format!("缺少 stash filter 标志: {path}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    ensure_stashable_with_flags(&repo, &regular_files, &filter_flags, "创建 stash")?;
+    let external_paths = regular_files
+        .iter()
+        .zip(filter_flags.iter().copied())
+        .filter_map(|(path, flags)| stash_path_uses_external_filter(flags).then_some(path.clone()))
+        .collect::<Vec<_>>();
     let default_attributes = !default_paths.is_empty()
         && !default_paths.iter().any(|path| {
             Path::new(path).file_name().is_some_and(|name| {
@@ -913,16 +928,31 @@ pub fn create(payload: &Value) -> NativeResult<Value> {
     };
     let oid_result = match scope {
         Scope::Unstaged => {
-            let index_paths = regular_files
+            let capture_paths = regular_files
                 .iter()
-                .filter(|path| !overlapping_staged.contains(*path))
+                .chain(preserved_staged_worktree_paths.iter())
                 .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let reset_paths = capture_paths
+                .iter()
+                .chain(changes.staged.iter().filter(|path| {
+                    flags_by_path.get(*path).is_some_and(|flags| {
+                        stash_path_needs_builtin_filter(*flags)
+                            || stash_path_uses_external_filter(*flags)
+                    })
+                }))
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
                 .collect::<Vec<_>>();
             create_unstaged_paths(
                 &repo,
                 &signature,
+                &capture_paths,
                 &preserved_staged_worktree_paths,
-                &index_paths,
+                &reset_paths,
                 default_attributes,
             )
         }
@@ -1378,10 +1408,12 @@ unsafe extern "C" {
         repository: *mut c_void,
         stasher: *const c_void,
         flags: u32,
-        worktree_path_count: usize,
-        worktree_paths: *const *const c_char,
-        index_path_count: usize,
-        index_paths: *const *const c_char,
+        capture_path_count: usize,
+        capture_paths: *const *const c_char,
+        preserve_path_count: usize,
+        preserve_paths: *const *const c_char,
+        reset_path_count: usize,
+        reset_paths: *const *const c_char,
         default_attributes: bool,
     ) -> i32;
 }

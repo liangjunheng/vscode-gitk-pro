@@ -367,18 +367,21 @@ pub fn stash_filter_flags(repo: &Repository, paths: &[String]) -> NativeResult<V
 /// Inspect stash paths before mutation. External filters are returned to the
 /// caller for explicit clean/smudge execution; unreadable transparent-encryption
 /// payloads are rejected before refs or worktree state change.
-pub fn ensure_stashable(
+pub fn ensure_stashable_with_flags(
     repo: &Repository,
     paths: &[String],
+    flags: &[u8],
     operation: &str,
-) -> NativeResult<Vec<u8>> {
+) -> NativeResult<()> {
     use std::io::Read;
 
-    let root = repository_root(repo)?;
-    let flags = stash_filter_flags(repo, paths)?;
-    if paths.is_empty() {
-        return Ok(flags);
+    if flags.len() != paths.len() {
+        return Err("stash filter 标志数量与路径数量不一致".to_owned());
     }
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let root = repository_root(repo)?;
     let worker_count = std::thread::available_parallelism()
         .map(|value| value.get())
         .unwrap_or(1)
@@ -425,6 +428,16 @@ pub fn ensure_stashable(
             "{value} 受到透明加密保护，当前进程无法读取明文，已拒绝{operation}"
         ));
     }
+    Ok(())
+}
+
+pub fn ensure_stashable(
+    repo: &Repository,
+    paths: &[String],
+    operation: &str,
+) -> NativeResult<Vec<u8>> {
+    let flags = stash_filter_flags(repo, paths)?;
+    ensure_stashable_with_flags(repo, paths, &flags, operation)?;
     Ok(flags)
 }
 

@@ -1267,3 +1267,992 @@
  int git_stash_foreach(
  	git_repository *repo,
  	git_stash_cb callback,
+--- a/libgit2/src/libgit2/stash.c
++++ b/libgit2/src/libgit2/stash.c
+@@ -845,8 +845,117 @@
+ 
+ 	return git_diff__merge_like_cgit(a, b, pool);
+ }
+ 
++static int stash_remove_index_path(git_index *index, const char *path)
++{
++	int error;
++
++	error = git_index_remove_bypath(index, path);
++	if (error == GIT_ENOTFOUND) {
++		git_error_clear();
++		error = 0;
++	}
++	if (error < 0)
++		return error;
++	error = git_index_remove_directory(index, path, 0);
++	if (error == GIT_ENOTFOUND) {
++		git_error_clear();
++		error = 0;
++	}
++	return error;
++}
++
++static int stash_update_index_from_exact_paths(
++	git_repository *repo,
++	git_index *index,
++	const git_strarray *paths,
++	bool default_attributes)
++{
++	git_attr_session attr_session = {0};
++	git_filter_session filter_session = GIT_FILTER_SESSION_INIT;
++	git_str full_path = GIT_STR_INIT;
++	int auto_crlf = GIT_AUTO_CRLF_FALSE;
++	bool default_builtin = true;
++	size_t i;
++	int error = 0;
++
++	if ((error = git_attr_session__init(&attr_session, repo)) < 0)
++		goto cleanup;
++	filter_session.attr_session = &attr_session;
++	if (default_attributes) {
++		if ((error = git_repository__configmap_lookup(
++			&auto_crlf, repo, GIT_CONFIGMAP_AUTO_CRLF)) < 0)
++			goto cleanup;
++		default_builtin = auto_crlf != GIT_AUTO_CRLF_FALSE;
++		filter_session.options.flags |= GIT_FILTER_STASH_DEFAULT_ATTRIBUTES;
++	}
++	for (i = 0; i < paths->count; i++) {
++		struct stat st;
++		git_str_clear(&full_path);
++		if ((error = git_str_joinpath(
++			&full_path, git_repository_workdir(repo), paths->strings[i])) < 0)
++			goto cleanup;
++		if (p_lstat(git_str_cstr(&full_path), &st) < 0) {
++			if (errno != ENOENT && errno != ENOTDIR) {
++				error = -1;
++				goto cleanup;
++			}
++			git_error_clear();
++			if ((error = stash_remove_index_path(index, paths->strings[i])) < 0)
++				goto cleanup;
++			continue;
++		}
++		if (S_ISDIR(st.st_mode)) {
++			if ((error = git_index_remove_bypath(index, paths->strings[i])) == GIT_ENOTFOUND) {
++				git_error_clear();
++				error = 0;
++			}
++			if (error < 0)
++				goto cleanup;
++			continue;
++		}
++		if ((error = git_index_remove_directory(index, paths->strings[i], 0)) == GIT_ENOTFOUND) {
++			git_error_clear();
++			error = 0;
++		}
++		if (error < 0 ||
++			(error = stash_to_index(repo, index, paths->strings[i], &filter_session,
++				default_attributes, default_builtin)) < 0)
++			goto cleanup;
++	}
++
++cleanup:
++	git_str_dispose(&full_path);
++	git_attr_session__free(&attr_session);
++	return error;
++}
++
++static int build_workdir_tree_exact(
++	git_tree **tree_out,
++	git_repository *repo,
++	git_commit *b_commit,
++	const git_strarray *paths,
++	uint32_t flags)
++{
++	git_index *index = NULL;
++	git_tree *base = NULL;
++	int error;
++
++	if ((error = git_commit_tree(&base, b_commit)) < 0 ||
++		(error = git_index__new(&index, repo->oid_type)) < 0 ||
++		(error = git_index_read_tree(index, base)) < 0 ||
++		(error = stash_update_index_from_exact_paths(
++			repo, index, paths, (flags & GIT_STASH_DEFAULT_ATTRIBUTES) != 0)) < 0 ||
++		(error = build_tree_from_index(tree_out, repo, index)) < 0)
++		goto cleanup;
++
++cleanup:
++	git_tree_free(base);
++	git_index_free(index);
++	return error;
++}
++
+ static int build_workdir_tree(
+ 	git_tree **tree_out,
+ 	git_repository *repo,
+ 	git_index *i_index,
+@@ -967,14 +1076,20 @@
+ 		goto cleanup;
+ 
+ 	git_index__set_ignore_case(i_index, ignorecase);
+ 
+-	if ((error = build_workdir_tree(&w_tree, repo, i_index, b_commit, flags)) < 0)
+-		goto cleanup;
+-	if (reset_commit &&
+-		(error = normalize_scoped_worktree_tree(
+-			&w_tree, repo, i_commit, reset_commit, preserve_worktree_paths)) < 0)
+-		goto cleanup;
++	if (reset_commit && preserve_worktree_paths) {
++		if ((error = build_workdir_tree_exact(
++			&w_tree, repo, b_commit, preserve_worktree_paths, flags)) < 0)
++			goto cleanup;
++	} else {
++		if ((error = build_workdir_tree(&w_tree, repo, i_index, b_commit, flags)) < 0)
++			goto cleanup;
++		if (reset_commit &&
++			(error = normalize_scoped_worktree_tree(
++				&w_tree, repo, i_commit, reset_commit, preserve_worktree_paths)) < 0)
++			goto cleanup;
++	}
+ 
+ 	error = build_stash_commit_from_tree(
+ 		w_commit_oid,
+ 		repo,
+@@ -1225,9 +1340,10 @@
+ }
+ 
+ static int reset_index_and_workdir(
+     git_repository *repo, git_commit *commit, uint32_t flags,
+-    const git_oid *worktree_id, git_commit *untracked_commit)
++    const git_oid *worktree_id, git_commit *untracked_commit,
++    const git_strarray *selected_paths)
+ {
+     git_checkout_options opts = GIT_CHECKOUT_OPTIONS_INIT;
+     git_diff_options diff_opts = GIT_DIFF_OPTIONS_INIT;
+     git_commit *worktree_commit = NULL, *base_commit = NULL;
+@@ -1248,8 +1364,21 @@
+     if (flags & GIT_STASH_INCLUDE_IGNORED)
+         opts.checkout_strategy |= GIT_CHECKOUT_REMOVE_IGNORED;
+     if (!worktree_id)
+         return git_checkout_tree(repo, (git_object *)commit, &opts);
++    if (selected_paths) {
++        if ((error = git_commit_tree(&target, commit)) < 0)
++            goto cleanup;
++        if (flags & GIT_STASH_DEFAULT_ATTRIBUTES)
++            error = stash_reset_default_attribute_paths(
++                repo, target, selected_paths->count, selected_paths->strings);
++        else {
++            opts.paths = *selected_paths;
++            opts.checkout_strategy |= GIT_CHECKOUT_DISABLE_PATHSPEC_MATCH;
++            error = git_checkout_tree(repo, (git_object *)commit, &opts);
++        }
++        goto cleanup;
++    }
+ 
+     diff_opts.flags = GIT_DIFF_INCLUDE_TYPECHANGE | GIT_DIFF_INCLUDE_TYPECHANGE_TREES | GIT_DIFF_IGNORE_SUBMODULES;
+     if ((error = git_commit_tree(&target, commit)) < 0 ||
+         (error = git_commit_lookup(&worktree_commit, repo, worktree_id)) < 0 ||
+@@ -1446,9 +1575,10 @@
+ 	if (!(opts->flags & GIT_STASH_KEEP_ALL) &&
+ 	    (error = reset_index_and_workdir(repo,
+ 		  (opts->flags & GIT_STASH_KEEP_INDEX) ?
+ 			(reset_commit ? reset_commit : i_commit) : b_commit,
+-		  opts->flags, has_paths ? NULL : out, u_commit)) < 0)
++		  opts->flags, has_paths ? NULL : out, u_commit,
++		  scoped_index_paths ? preserve_worktree_paths : NULL)) < 0)
+ 		goto cleanup;
+ 
+ cleanup:
+ 	git_str_dispose(&msg);
+@@ -1887,27 +2017,23 @@
+ 	size_t output_size,
+ 	git_repository *repo,
+ 	const git_signature *stasher,
+ 	uint32_t flags,
+-	size_t worktree_path_count,
+-	const char **worktree_paths,
+-	size_t index_path_count,
+-	const char **index_paths,
++	size_t path_count,
++	const char **paths,
+ 	bool default_attributes)
+ {
+ 	git_stash_save_options opts = GIT_STASH_SAVE_OPTIONS_INIT;
+-	git_strarray scoped_index_paths = {0}, preserve_worktree_paths = {0};
++	git_strarray scoped_index_paths = {0}, selected_paths = {0};
+ 	git_oid oid;
+ 	int error;
+ 
+ 	opts.stasher = stasher;
+ 	opts.flags = flags | (default_attributes ? GIT_STASH_DEFAULT_ATTRIBUTES : 0);
+-	preserve_worktree_paths.count = worktree_path_count;
+-	preserve_worktree_paths.strings = (char **)worktree_paths;
+-	scoped_index_paths.count = index_path_count;
+-	scoped_index_paths.strings = (char **)index_paths;
++	selected_paths.count = path_count;
++	selected_paths.strings = (char **)paths;
+ 	if ((error = stash_save_with_opts_scoped_index(
+-		&oid, repo, &opts, &scoped_index_paths, &preserve_worktree_paths)) < 0)
++		&oid, repo, &opts, &scoped_index_paths, &selected_paths)) < 0)
+ 		return error;
+ 	git_oid_tostr(output, output_size, &oid);
+ 	return 0;
+ }
+--- a/libgit2/src/libgit2/stash.c
++++ b/libgit2/src/libgit2/stash.c
+@@ -1076,18 +1076,18 @@
+ 		goto cleanup;
+ 
+ 	git_index__set_ignore_case(i_index, ignorecase);
+ 
+-	if (reset_commit && preserve_worktree_paths) {
++	if (reset_commit && capture_paths) {
+ 		if ((error = build_workdir_tree_exact(
+-			&w_tree, repo, b_commit, preserve_worktree_paths, flags)) < 0)
++			&w_tree, repo, b_commit, capture_paths, flags)) < 0)
+ 			goto cleanup;
+ 	} else {
+ 		if ((error = build_workdir_tree(&w_tree, repo, i_index, b_commit, flags)) < 0)
+ 			goto cleanup;
+ 		if (reset_commit &&
+ 			(error = normalize_scoped_worktree_tree(
+-				&w_tree, repo, i_commit, reset_commit, preserve_worktree_paths)) < 0)
++				&w_tree, repo, i_commit, reset_commit, capture_paths)) < 0)
+ 			goto cleanup;
+ 	}
+ 
+ 	error = build_stash_commit_from_tree(
+@@ -1489,9 +1489,10 @@
+ 	git_oid *out,
+ 	git_repository *repo,
+ 	const git_stash_save_options *opts,
+ 	const git_strarray *scoped_index_paths,
+-	const git_strarray *preserve_worktree_paths)
++	const git_strarray *capture_paths,
++	const git_strarray *reset_paths)
+ {
+ 	git_index *index = NULL, *paths_index = NULL;
+ 	git_commit *b_commit = NULL, *i_commit = NULL, *u_commit = NULL, *reset_commit = NULL;
+ 	git_str msg = GIT_STR_INIT;
+@@ -1576,9 +1577,9 @@
+ 	    (error = reset_index_and_workdir(repo,
+ 		  (opts->flags & GIT_STASH_KEEP_INDEX) ?
+ 			(reset_commit ? reset_commit : i_commit) : b_commit,
+ 		  opts->flags, has_paths ? NULL : out, u_commit,
+-		  scoped_index_paths ? preserve_worktree_paths : NULL)) < 0)
++		  scoped_index_paths ? reset_paths : NULL)) < 0)
+ 		goto cleanup;
+ 
+ cleanup:
+ 	git_str_dispose(&msg);
+@@ -1598,9 +1599,9 @@
+ 	git_oid *out,
+ 	git_repository *repo,
+ 	const git_stash_save_options *opts)
+ {
+-	return stash_save_with_opts_scoped_index(out, repo, opts, NULL, NULL);
++	return stash_save_with_opts_scoped_index(out, repo, opts, NULL, NULL, NULL);
+ }
+ 
+ static int retrieve_stash_commit(
+ 	git_commit **commit,
+@@ -2017,23 +2018,27 @@
+ 	size_t output_size,
+ 	git_repository *repo,
+ 	const git_signature *stasher,
+ 	uint32_t flags,
+-	size_t path_count,
+-	const char **paths,
++	size_t capture_path_count,
++	const char **capture_path_values,
++	size_t reset_path_count,
++	const char **reset_path_values,
+ 	bool default_attributes)
+ {
+ 	git_stash_save_options opts = GIT_STASH_SAVE_OPTIONS_INIT;
+-	git_strarray scoped_index_paths = {0}, selected_paths = {0};
++	git_strarray scoped_index_paths = {0}, capture_paths = {0}, reset_paths = {0};
+ 	git_oid oid;
+ 	int error;
+ 
+ 	opts.stasher = stasher;
+ 	opts.flags = flags | (default_attributes ? GIT_STASH_DEFAULT_ATTRIBUTES : 0);
+-	selected_paths.count = path_count;
+-	selected_paths.strings = (char **)paths;
++	capture_paths.count = capture_path_count;
++	capture_paths.strings = (char **)capture_path_values;
++	reset_paths.count = reset_path_count;
++	reset_paths.strings = (char **)reset_path_values;
+ 	if ((error = stash_save_with_opts_scoped_index(
+-		&oid, repo, &opts, &scoped_index_paths, &selected_paths)) < 0)
++		&oid, repo, &opts, &scoped_index_paths, &capture_paths, &reset_paths)) < 0)
+ 		return error;
+ 	git_oid_tostr(output, output_size, &oid);
+ 	return 0;
+ }
+--- a/libgit2/src/libgit2/stash.c
++++ b/libgit2/src/libgit2/stash.c
+@@ -1061,9 +1061,9 @@
+ 	git_commit *i_commit,
+ 	git_commit *b_commit,
+ 	git_commit *u_commit,
+ 	git_commit *reset_commit,
+-	const git_strarray *preserve_worktree_paths,
++	const git_strarray *capture_paths,
+ 	uint32_t flags)
+ {
+ 	git_index *i_index = NULL, *r_index = NULL;
+ 	git_tree *w_tree = NULL;
+@@ -1549,9 +1549,9 @@
+ 
+ 	if (!has_paths) {
+ 		if ((error = commit_worktree(out, repo, opts->stasher, git_str_cstr(&msg),
+ 					     i_commit, b_commit, u_commit, reset_commit,
+-					     preserve_worktree_paths, opts->flags)) < 0)
++					     capture_paths, opts->flags)) < 0)
+ 			goto cleanup;
+ 	} else {
+ 		if ((error = git_index__new(&paths_index, repo->oid_type)) < 0 ||
+ 		    (error = retrieve_head(&head, repo)) < 0 ||
+--- a/libgit2/src/libgit2/stash.c
++++ b/libgit2/src/libgit2/stash.c
+@@ -872,15 +872,17 @@
+ 	bool default_attributes)
+ {
+ 	git_attr_session attr_session = {0};
+ 	git_filter_session filter_session = GIT_FILTER_SESSION_INIT;
++	git_index *repo_index = NULL;
+ 	git_str full_path = GIT_STR_INIT;
+ 	int auto_crlf = GIT_AUTO_CRLF_FALSE;
+ 	bool default_builtin = true;
+ 	size_t i;
+ 	int error = 0;
+ 
+-	if ((error = git_attr_session__init(&attr_session, repo)) < 0)
++	if ((error = git_attr_session__init(&attr_session, repo)) < 0 ||
++		(error = git_repository_index__weakptr(&repo_index, repo)) < 0)
+ 		goto cleanup;
+ 	filter_session.attr_session = &attr_session;
+ 	if (default_attributes) {
+ 		if ((error = git_repository__configmap_lookup(
+@@ -890,8 +892,10 @@
+ 		filter_session.options.flags |= GIT_FILTER_STASH_DEFAULT_ATTRIBUTES;
+ 	}
+ 	for (i = 0; i < paths->count; i++) {
+ 		struct stat st;
++		bool tracked = git_index_get_bypath(index, paths->strings[i], 0) != NULL ||
++			git_index_get_bypath(repo_index, paths->strings[i], 0) != NULL;
+ 		git_str_clear(&full_path);
+ 		if ((error = git_str_joinpath(
+ 			&full_path, git_repository_workdir(repo), paths->strings[i])) < 0)
+ 			goto cleanup;
+@@ -904,8 +908,10 @@
+ 			if ((error = stash_remove_index_path(index, paths->strings[i])) < 0)
+ 				goto cleanup;
+ 			continue;
+ 		}
++		if (!tracked)
++			continue;
+ 		if (S_ISDIR(st.st_mode)) {
+ 			if ((error = git_index_remove_bypath(index, paths->strings[i])) == GIT_ENOTFOUND) {
+ 				git_error_clear();
+ 				error = 0;
+--- a/libgit2/src/libgit2/stash.c
++++ b/libgit2/src/libgit2/stash.c
+@@ -864,8 +864,24 @@
+ 	}
+ 	return error;
+ }
+ 
++static bool stash_index_has_path_or_descendant(git_index *index, const char *path)
++{
++	git_str prefix = GIT_STR_INIT;
++	bool found;
++
++	if (git_index_get_bypath(index, path, 0) != NULL)
++		return true;
++	if (git_str_printf(&prefix, "%s/", path) < 0)
++		return false;
++	found = git_index_find_prefix(NULL, index, git_str_cstr(&prefix)) == 0;
++	if (!found)
++		git_error_clear();
++	git_str_dispose(&prefix);
++	return found;
++}
++
+ static int stash_update_index_from_exact_paths(
+ 	git_repository *repo,
+ 	git_index *index,
+ 	const git_strarray *paths,
+@@ -892,10 +908,10 @@
+ 		filter_session.options.flags |= GIT_FILTER_STASH_DEFAULT_ATTRIBUTES;
+ 	}
+ 	for (i = 0; i < paths->count; i++) {
+ 		struct stat st;
+-		bool tracked = git_index_get_bypath(index, paths->strings[i], 0) != NULL ||
+-			git_index_get_bypath(repo_index, paths->strings[i], 0) != NULL;
++		bool tracked = stash_index_has_path_or_descendant(index, paths->strings[i]) ||
++			stash_index_has_path_or_descendant(repo_index, paths->strings[i]);
+ 		git_str_clear(&full_path);
+ 		if ((error = git_str_joinpath(
+ 			&full_path, git_repository_workdir(repo), paths->strings[i])) < 0)
+ 			goto cleanup;
+@@ -910,17 +926,10 @@
+ 			continue;
+ 		}
+ 		if (!tracked)
+ 			continue;
+-		if (S_ISDIR(st.st_mode)) {
+-			if ((error = git_index_remove_bypath(index, paths->strings[i])) == GIT_ENOTFOUND) {
+-				git_error_clear();
+-				error = 0;
+-			}
+-			if (error < 0)
+-				goto cleanup;
++		if (S_ISDIR(st.st_mode))
+ 			continue;
+-		}
+ 		if ((error = git_index_remove_directory(index, paths->strings[i], 0)) == GIT_ENOTFOUND) {
+ 			git_error_clear();
+ 			error = 0;
+ 		}
+--- a/libgit2/src/libgit2/stash.c
++++ b/libgit2/src/libgit2/stash.c
+@@ -884,8 +884,9 @@
+ static int stash_update_index_from_exact_paths(
+ 	git_repository *repo,
+ 	git_index *index,
+ 	const git_strarray *paths,
++	const git_strarray *preserve_paths,
+ 	bool default_attributes)
+ {
+ 	git_attr_session attr_session = {0};
+ 	git_filter_session filter_session = GIT_FILTER_SESSION_INIT;
+@@ -936,8 +937,18 @@
+ 		if (error < 0 ||
+ 			(error = stash_to_index(repo, index, paths->strings[i], &filter_session,
+ 				default_attributes, default_builtin)) < 0)
+ 			goto cleanup;
++		if (stash_path_list_contains(preserve_paths, paths->strings[i])) {
++			const git_index_entry *repo_entry = git_index_get_bypath(repo_index, paths->strings[i], 0);
++			const git_index_entry *captured = git_index_get_bypath(index, paths->strings[i], 0);
++			if (repo_entry && captured && repo_entry->mode != captured->mode) {
++				git_index_entry replacement = *captured;
++				replacement.mode = repo_entry->mode;
++				if ((error = git_index_add(index, &replacement)) < 0)
++					goto cleanup;
++			}
++		}
+ 	}
+ 
+ cleanup:
+ 	git_str_dispose(&full_path);
+@@ -949,8 +960,9 @@
+ 	git_tree **tree_out,
+ 	git_repository *repo,
+ 	git_commit *b_commit,
+ 	const git_strarray *paths,
++	const git_strarray *preserve_paths,
+ 	uint32_t flags)
+ {
+ 	git_index *index = NULL;
+ 	git_tree *base = NULL;
+@@ -959,9 +971,10 @@
+ 	if ((error = git_commit_tree(&base, b_commit)) < 0 ||
+ 		(error = git_index__new(&index, repo->oid_type)) < 0 ||
+ 		(error = git_index_read_tree(index, base)) < 0 ||
+ 		(error = stash_update_index_from_exact_paths(
+-			repo, index, paths, (flags & GIT_STASH_DEFAULT_ATTRIBUTES) != 0)) < 0 ||
++			repo, index, paths, preserve_paths,
++			(flags & GIT_STASH_DEFAULT_ATTRIBUTES) != 0)) < 0 ||
+ 		(error = build_tree_from_index(tree_out, repo, index)) < 0)
+ 		goto cleanup;
+ 
+ cleanup:
+@@ -1077,8 +1090,9 @@
+ 	git_commit *b_commit,
+ 	git_commit *u_commit,
+ 	git_commit *reset_commit,
+ 	const git_strarray *capture_paths,
++	const git_strarray *preserve_paths,
+ 	uint32_t flags)
+ {
+ 	git_index *i_index = NULL, *r_index = NULL;
+ 	git_tree *w_tree = NULL;
+@@ -1093,9 +1107,9 @@
+ 	git_index__set_ignore_case(i_index, ignorecase);
+ 
+ 	if (reset_commit && capture_paths) {
+ 		if ((error = build_workdir_tree_exact(
+-			&w_tree, repo, b_commit, capture_paths, flags)) < 0)
++			&w_tree, repo, b_commit, capture_paths, preserve_paths, flags)) < 0)
+ 			goto cleanup;
+ 	} else {
+ 		if ((error = build_workdir_tree(&w_tree, repo, i_index, b_commit, flags)) < 0)
+ 			goto cleanup;
+@@ -1505,8 +1519,9 @@
+ 	git_repository *repo,
+ 	const git_stash_save_options *opts,
+ 	const git_strarray *scoped_index_paths,
+ 	const git_strarray *capture_paths,
++	const git_strarray *preserve_paths,
+ 	const git_strarray *reset_paths)
+ {
+ 	git_index *index = NULL, *paths_index = NULL;
+ 	git_commit *b_commit = NULL, *i_commit = NULL, *u_commit = NULL, *reset_commit = NULL;
+@@ -1564,9 +1579,9 @@
+ 
+ 	if (!has_paths) {
+ 		if ((error = commit_worktree(out, repo, opts->stasher, git_str_cstr(&msg),
+ 					     i_commit, b_commit, u_commit, reset_commit,
+-					     capture_paths, opts->flags)) < 0)
++					     capture_paths, preserve_paths, opts->flags)) < 0)
+ 			goto cleanup;
+ 	} else {
+ 		if ((error = git_index__new(&paths_index, repo->oid_type)) < 0 ||
+ 		    (error = retrieve_head(&head, repo)) < 0 ||
+@@ -1614,9 +1629,9 @@
+ 	git_oid *out,
+ 	git_repository *repo,
+ 	const git_stash_save_options *opts)
+ {
+-	return stash_save_with_opts_scoped_index(out, repo, opts, NULL, NULL, NULL);
++	return stash_save_with_opts_scoped_index(out, repo, opts, NULL, NULL, NULL, NULL);
+ }
+ 
+ static int retrieve_stash_commit(
+ 	git_commit **commit,
+@@ -2035,25 +2050,30 @@
+ 	const git_signature *stasher,
+ 	uint32_t flags,
+ 	size_t capture_path_count,
+ 	const char **capture_path_values,
++	size_t preserve_path_count,
++	const char **preserve_path_values,
+ 	size_t reset_path_count,
+ 	const char **reset_path_values,
+ 	bool default_attributes)
+ {
+ 	git_stash_save_options opts = GIT_STASH_SAVE_OPTIONS_INIT;
+-	git_strarray scoped_index_paths = {0}, capture_paths = {0}, reset_paths = {0};
++	git_strarray scoped_index_paths = {0}, capture_paths = {0}, preserve_paths = {0}, reset_paths = {0};
+ 	git_oid oid;
+ 	int error;
+ 
+ 	opts.stasher = stasher;
+ 	opts.flags = flags | (default_attributes ? GIT_STASH_DEFAULT_ATTRIBUTES : 0);
+ 	capture_paths.count = capture_path_count;
+ 	capture_paths.strings = (char **)capture_path_values;
++	preserve_paths.count = preserve_path_count;
++	preserve_paths.strings = (char **)preserve_path_values;
+ 	reset_paths.count = reset_path_count;
+ 	reset_paths.strings = (char **)reset_path_values;
+ 	if ((error = stash_save_with_opts_scoped_index(
+-		&oid, repo, &opts, &scoped_index_paths, &capture_paths, &reset_paths)) < 0)
++		&oid, repo, &opts, &scoped_index_paths, &capture_paths,
++		&preserve_paths, &reset_paths)) < 0)
+ 		return error;
+ 	git_oid_tostr(output, output_size, &oid);
+ 	return 0;
+ }
+--- a/libgit2/src/libgit2/stash.c
++++ b/libgit2/src/libgit2/stash.c
+@@ -783,8 +783,98 @@
+ cleanup:
+ 	git_diff_free(diff);
+ 	git_tree_free(i_tree);
+ 	git_index_free(i_index);
++	return error;
++}
++
++static int build_untracked_tree_exact(
++	git_tree **tree_out,
++	git_repository *repo,
++	const git_strarray *paths,
++	uint32_t flags)
++{
++	git_attr_session attr_session = {0};
++	git_filter_session filter_session = GIT_FILTER_SESSION_INIT;
++	git_index *index = NULL, *repo_index = NULL;
++	git_str full_path = GIT_STR_INIT;
++	int auto_crlf = GIT_AUTO_CRLF_FALSE;
++	bool default_attributes = (flags & GIT_STASH_DEFAULT_ATTRIBUTES) != 0;
++	bool default_builtin = true;
++	size_t i, added = 0;
++	int error = 0;
++
++	*tree_out = NULL;
++	if ((error = git_index__new(&index, repo->oid_type)) < 0 ||
++		(error = git_repository_index__weakptr(&repo_index, repo)) < 0 ||
++		(error = git_attr_session__init(&attr_session, repo)) < 0)
++		goto cleanup;
++	filter_session.attr_session = &attr_session;
++	if (default_attributes) {
++		if ((error = git_repository__configmap_lookup(
++			&auto_crlf, repo, GIT_CONFIGMAP_AUTO_CRLF)) < 0)
++			goto cleanup;
++		default_builtin = auto_crlf != GIT_AUTO_CRLF_FALSE;
++		filter_session.options.flags |= GIT_FILTER_STASH_DEFAULT_ATTRIBUTES;
++	}
++	for (i = 0; i < paths->count; i++) {
++		struct stat st;
++		if (git_index_get_bypath(repo_index, paths->strings[i], 0) != NULL)
++			continue;
++		git_str_clear(&full_path);
++		if ((error = git_str_joinpath(
++			&full_path, git_repository_workdir(repo), paths->strings[i])) < 0)
++			goto cleanup;
++		if (p_lstat(git_str_cstr(&full_path), &st) < 0) {
++			if (errno == ENOENT || errno == ENOTDIR) {
++				git_error_clear();
++				continue;
++			}
++			error = -1;
++			goto cleanup;
++		}
++		if (S_ISDIR(st.st_mode))
++			continue;
++		if ((error = stash_to_index(repo, index, paths->strings[i], &filter_session,
++			default_attributes, default_builtin)) < 0)
++			goto cleanup;
++		added++;
++	}
++	if (added)
++		error = build_tree_from_index(tree_out, repo, index);
++
++cleanup:
++	git_str_dispose(&full_path);
++	git_attr_session__free(&attr_session);
++	git_index_free(index);
++	return error;
++}
++
++static int commit_untracked_exact(
++	git_commit **u_commit,
++	git_repository *repo,
++	const git_signature *stasher,
++	const char *message,
++	const git_strarray *paths,
++	uint32_t flags)
++{
++	git_tree *u_tree = NULL;
++	git_oid u_commit_oid;
++	git_str msg = GIT_STR_INIT;
++	int error;
++
++	if ((error = build_untracked_tree_exact(&u_tree, repo, paths, flags)) < 0 || !u_tree)
++		goto cleanup;
++	if ((error = git_str_printf(&msg, "untracked files on %s\n", message)) < 0 ||
++		(error = git_commit_create(
++			&u_commit_oid, repo, NULL, stasher, stasher, NULL,
++			git_str_cstr(&msg), u_tree, 0, NULL)) < 0 ||
++		(error = git_commit_lookup(u_commit, repo, &u_commit_oid)) < 0)
++		goto cleanup;
++
++cleanup:
++	git_tree_free(u_tree);
++	git_str_dispose(&msg);
+ 	return error;
+ }
+ 
+ static int commit_untracked(
+@@ -1568,12 +1658,18 @@
+ 				  git_str_cstr(&msg), b_commit)) < 0) {
+ 		goto cleanup;
+ 	}
+ 
+-	if ((opts->flags & (GIT_STASH_INCLUDE_UNTRACKED | GIT_STASH_INCLUDE_IGNORED)) &&
+-	    (error = commit_untracked(&u_commit, repo, opts->stasher,
+-			  git_str_cstr(&msg), i_commit, opts->flags)) < 0)
+-		goto cleanup;
++	if (opts->flags & (GIT_STASH_INCLUDE_UNTRACKED | GIT_STASH_INCLUDE_IGNORED)) {
++		if (scoped_index_paths && capture_paths)
++			error = commit_untracked_exact(&u_commit, repo, opts->stasher,
++				git_str_cstr(&msg), capture_paths, opts->flags);
++		else
++			error = commit_untracked(&u_commit, repo, opts->stasher,
++				git_str_cstr(&msg), i_commit, opts->flags);
++		if (error < 0)
++			goto cleanup;
++	}
+ 
+ 	if ((error = prepare_worktree_commit_message(&msg, opts->message)) < 0)
+ 		goto cleanup;
+ 
+--- a/libgit2/src/libgit2/stash.c
++++ b/libgit2/src/libgit2/stash.c
+@@ -799,9 +799,9 @@
+ 	git_str full_path = GIT_STR_INIT;
+ 	int auto_crlf = GIT_AUTO_CRLF_FALSE;
+ 	bool default_attributes = (flags & GIT_STASH_DEFAULT_ATTRIBUTES) != 0;
+ 	bool default_builtin = true;
+-	size_t i, added = 0;
++	size_t i;
+ 	int error = 0;
+ 
+ 	*tree_out = NULL;
+ 	if ((error = git_index__new(&index, repo->oid_type)) < 0 ||
+@@ -836,12 +836,10 @@
+ 			continue;
+ 		if ((error = stash_to_index(repo, index, paths->strings[i], &filter_session,
+ 			default_attributes, default_builtin)) < 0)
+ 			goto cleanup;
+-		added++;
+-	}
+-	if (added)
+-		error = build_tree_from_index(tree_out, repo, index);
++	}
++	error = build_tree_from_index(tree_out, repo, index);
+ 
+ cleanup:
+ 	git_str_dispose(&full_path);
+ 	git_attr_session__free(&attr_session);
+--- a/libgit2/src/libgit2/stash.c
++++ b/libgit2/src/libgit2/stash.c
+@@ -1185,21 +1185,19 @@
+ 	git_index *i_index = NULL, *r_index = NULL;
+ 	git_tree *w_tree = NULL;
+ 	int error = 0, ignorecase;
+ 
+-	if ((error = git_repository_index(&r_index, repo) < 0) ||
+-	    (error = git_index__new(&i_index, repo->oid_type)) < 0 ||
+-	    (error = git_index__fill(i_index, &r_index->entries) < 0) ||
+-	    (error = git_repository__configmap_lookup(&ignorecase, repo, GIT_CONFIGMAP_IGNORECASE)) < 0)
+-		goto cleanup;
+-
+-	git_index__set_ignore_case(i_index, ignorecase);
+-
+ 	if (reset_commit && capture_paths) {
+ 		if ((error = build_workdir_tree_exact(
+ 			&w_tree, repo, b_commit, capture_paths, preserve_paths, flags)) < 0)
+ 			goto cleanup;
+ 	} else {
++		if ((error = git_repository_index(&r_index, repo) < 0) ||
++		    (error = git_index__new(&i_index, repo->oid_type)) < 0 ||
++		    (error = git_index__fill(i_index, &r_index->entries) < 0) ||
++		    (error = git_repository__configmap_lookup(&ignorecase, repo, GIT_CONFIGMAP_IGNORECASE)) < 0)
++			goto cleanup;
++		git_index__set_ignore_case(i_index, ignorecase);
+ 		if ((error = build_workdir_tree(&w_tree, repo, i_index, b_commit, flags)) < 0)
+ 			goto cleanup;
+ 		if (reset_commit &&
+ 			(error = normalize_scoped_worktree_tree(
+--- a/libgit2/src/libgit2/stash.c
++++ b/libgit2/src/libgit2/stash.c
+@@ -1043,8 +1043,190 @@
+ 	git_attr_session__free(&attr_session);
+ 	return error;
+ }
+ 
++#ifdef GIT_THREADS
++
++enum stash_parallel_action {
++	STASH_PARALLEL_SKIP = 0,
++	STASH_PARALLEL_REMOVE = 1,
++	STASH_PARALLEL_CAPTURE = 2,
++};
++
++typedef struct {
++	enum stash_parallel_action action;
++	git_oid id;
++	git_filemode_t mode;
++	int error;
++} stash_parallel_result;
++
++typedef struct {
++	git_thread thread;
++	const char *repository_path;
++	const git_strarray *paths;
++	stash_parallel_result *results;
++	size_t start, end;
++	bool default_builtin;
++} stash_parallel_worker;
++
++static void *stash_capture_worker(void *payload)
++{
++	stash_parallel_worker *worker = payload;
++	git_repository *repo = NULL;
++	git_index *repo_index = NULL;
++	git_attr_session attr_session = {0};
++	git_filter_session filter_session = GIT_FILTER_SESSION_INIT;
++	size_t i;
++	int error = 0;
++
++	if ((error = git_repository_open(&repo, worker->repository_path)) < 0 ||
++		(error = git_repository_index__weakptr(&repo_index, repo)) < 0 ||
++		(error = git_attr_session__init(&attr_session, repo)) < 0)
++		goto cleanup;
++	filter_session.attr_session = &attr_session;
++	filter_session.options.flags |= GIT_FILTER_STASH_DEFAULT_ATTRIBUTES;
++	for (i = worker->start; i < worker->end; i++) {
++		git_index_entry entry = {{0}};
++		struct stat st;
++		if (worker->results[i].action != STASH_PARALLEL_CAPTURE)
++			continue;
++		if ((error = git_blob__create_from_paths_with_session(
++			&entry.id, &st, repo, NULL, worker->paths->strings[i], 0,
++			worker->default_builtin, &filter_session)) < 0) {
++			worker->results[i].error = error;
++			goto cleanup;
++		}
++		git_index_entry__init_from_stat(&entry, &st, true);
++		git_oid_cpy(&worker->results[i].id, &entry.id);
++		worker->results[i].mode = entry.mode;
++	}
++
++cleanup:
++	git_attr_session__free(&attr_session);
++	git_repository_free(repo);
++	return NULL;
++}
++
++static int stash_update_index_from_exact_paths_parallel(
++	git_repository *repo,
++	git_index *index,
++	const git_strarray *paths,
++	const git_strarray *preserve_paths)
++{
++	stash_parallel_result *results = NULL;
++	stash_parallel_worker *workers = NULL;
++	git_index *repo_index = NULL;
++	git_str full_path = GIT_STR_INIT;
++	int cpu_count, auto_crlf = GIT_AUTO_CRLF_FALSE;
++	size_t i, worker_count, chunk_size, started = 0, capture_count = 0;
++	int error = 0;
++
++	if ((error = git_repository_index__weakptr(&repo_index, repo)) < 0 ||
++		(error = git_repository__configmap_lookup(
++			&auto_crlf, repo, GIT_CONFIGMAP_AUTO_CRLF)) < 0)
++		goto cleanup;
++	results = git__calloc(paths->count, sizeof(stash_parallel_result));
++	GIT_ERROR_CHECK_ALLOC(results);
++	for (i = 0; i < paths->count; i++) {
++		struct stat st;
++		bool tracked = stash_index_has_path_or_descendant(index, paths->strings[i]) ||
++			stash_index_has_path_or_descendant(repo_index, paths->strings[i]);
++		git_str_clear(&full_path);
++		if ((error = git_str_joinpath(
++			&full_path, git_repository_workdir(repo), paths->strings[i])) < 0)
++			goto cleanup;
++		if (p_lstat(git_str_cstr(&full_path), &st) < 0) {
++			if (errno != ENOENT && errno != ENOTDIR) {
++				error = -1;
++				goto cleanup;
++			}
++			git_error_clear();
++			results[i].action = tracked ? STASH_PARALLEL_REMOVE : STASH_PARALLEL_SKIP;
++		} else if (!tracked || S_ISDIR(st.st_mode)) {
++			results[i].action = STASH_PARALLEL_SKIP;
++		} else {
++			results[i].action = STASH_PARALLEL_CAPTURE;
++			capture_count++;
++		}
++	}
++	if (!capture_count)
++		goto apply;
++	cpu_count = git__online_cpus();
++	worker_count = capture_count < 8 ? capture_count : 8;
++	if (cpu_count > 0 && worker_count > (size_t)cpu_count)
++		worker_count = (size_t)cpu_count;
++	if (worker_count < 2) {
++		error = GIT_ENOTSUPPORTED;
++		goto cleanup;
++	}
++	workers = git__calloc(worker_count, sizeof(stash_parallel_worker));
++	GIT_ERROR_CHECK_ALLOC(workers);
++	chunk_size = (paths->count + worker_count - 1) / worker_count;
++	for (i = 0; i < worker_count; i++) {
++		workers[i].repository_path = git_repository_path(repo);
++		workers[i].paths = paths;
++		workers[i].results = results;
++		workers[i].start = i * chunk_size;
++		workers[i].end = workers[i].start + chunk_size;
++		if (workers[i].end > paths->count)
++			workers[i].end = paths->count;
++		workers[i].default_builtin = auto_crlf != GIT_AUTO_CRLF_FALSE;
++		if ((error = git_thread_create(
++			&workers[i].thread, stash_capture_worker, &workers[i])) < 0) {
++			error = GIT_ENOTSUPPORTED;
++			break;
++		}
++		started++;
++	}
++	for (i = 0; i < started; i++)
++		git_thread_join(&workers[i].thread, NULL);
++	if (error < 0)
++		goto cleanup;
++	for (i = 0; i < paths->count; i++) {
++		if (results[i].error < 0) {
++			git_error_set(GIT_ERROR_STASH, "cannot capture '%s'", paths->strings[i]);
++			error = results[i].error;
++			goto cleanup;
++		}
++	}
++
++apply:
++	for (i = 0; i < paths->count; i++) {
++		if (results[i].action == STASH_PARALLEL_REMOVE) {
++			if ((error = stash_remove_index_path(index, paths->strings[i])) < 0)
++				goto cleanup;
++		} else if (results[i].action == STASH_PARALLEL_CAPTURE) {
++			const git_index_entry *existing = git_index_get_bypath(index, paths->strings[i], 0);
++			const git_index_entry *repo_entry = git_index_get_bypath(repo_index, paths->strings[i], 0);
++			git_index_entry entry = {{0}};
++			if ((error = git_index_remove_directory(index, paths->strings[i], 0)) == GIT_ENOTFOUND) {
++				git_error_clear();
++				error = 0;
++			}
++			if (error < 0)
++				goto cleanup;
++			entry.path = paths->strings[i];
++			entry.mode = results[i].mode;
++			git_oid_cpy(&entry.id, &results[i].id);
++			if (repo_index->distrust_filemode && existing &&
++				S_ISREG(existing->mode) && S_ISREG(entry.mode))
++				entry.mode = existing->mode;
++			if (stash_path_list_contains(preserve_paths, paths->strings[i]) && repo_entry)
++				entry.mode = repo_entry->mode;
++			if ((error = git_index_add(index, &entry)) < 0)
++				goto cleanup;
++		}
++	}
++
++cleanup:
++	git_str_dispose(&full_path);
++	git__free(workers);
++	git__free(results);
++	return error;
++}
++
++#endif
++
+ static int build_workdir_tree_exact(
+ 	git_tree **tree_out,
+ 	git_repository *repo,
+ 	git_commit *b_commit,
+@@ -1057,13 +1239,25 @@
+ 	int error;
+ 
+ 	if ((error = git_commit_tree(&base, b_commit)) < 0 ||
+ 		(error = git_index__new(&index, repo->oid_type)) < 0 ||
+-		(error = git_index_read_tree(index, base)) < 0 ||
+-		(error = stash_update_index_from_exact_paths(
++		(error = git_index_read_tree(index, base)) < 0)
++		goto cleanup;
++#ifdef GIT_THREADS
++	if ((flags & GIT_STASH_DEFAULT_ATTRIBUTES) && paths->count >= 128) {
++		error = stash_update_index_from_exact_paths_parallel(
++			repo, index, paths, preserve_paths);
++		if (error == GIT_ENOTSUPPORTED) {
++			git_error_clear();
++			error = stash_update_index_from_exact_paths(
++				repo, index, paths, preserve_paths, true);
++		}
++	} else
++#endif
++		error = stash_update_index_from_exact_paths(
+ 			repo, index, paths, preserve_paths,
+-			(flags & GIT_STASH_DEFAULT_ATTRIBUTES) != 0)) < 0 ||
+-		(error = build_tree_from_index(tree_out, repo, index)) < 0)
++			(flags & GIT_STASH_DEFAULT_ATTRIBUTES) != 0);
++	if (error < 0 || (error = build_tree_from_index(tree_out, repo, index)) < 0)
+ 		goto cleanup;
+ 
+ cleanup:
+ 	git_tree_free(base);
