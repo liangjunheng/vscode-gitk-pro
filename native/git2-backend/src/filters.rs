@@ -385,7 +385,6 @@ pub fn ensure_stashable_with_flags(
     let worker_count = std::thread::available_parallelism()
         .map(|value| value.get())
         .unwrap_or(1)
-        .min(16)
         .min(paths.len());
     let chunk_size = paths.len().div_ceil(worker_count);
     let encrypted = std::thread::scope(|scope| {

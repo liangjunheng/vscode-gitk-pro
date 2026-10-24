@@ -2147,7 +2147,7 @@
 +	if (!capture_count)
 +		goto apply;
 +	cpu_count = git__online_cpus();
-+	worker_count = capture_count < 8 ? capture_count : 8;
++	worker_count = capture_count;
 +	if (cpu_count > 0 && worker_count > (size_t)cpu_count)
 +		worker_count = (size_t)cpu_count;
 +	if (worker_count < 2) {
@@ -2236,7 +2236,7 @@
 +		(error = git_index_read_tree(index, base)) < 0)
 +		goto cleanup;
 +#ifdef GIT_THREADS
-+	if ((flags & GIT_STASH_DEFAULT_ATTRIBUTES) && paths->count >= 128) {
++	if (flags & GIT_STASH_DEFAULT_ATTRIBUTES) {
 +		error = stash_update_index_from_exact_paths_parallel(
 +			repo, index, paths, preserve_paths);
 +		if (error == GIT_ENOTSUPPORTED) {

@@ -1203,49 +1203,12 @@ pub fn list(payload: &Value) -> NativeResult<Value> {
         true
     })
     .map_err(format_git_error)?;
-    if entries.len() < 32 {
-        return Ok(Value::Array(
-            entries
-                .into_iter()
-                .filter_map(|(index, oid)| stash_list_entry(&repo, index, oid))
-                .collect(),
-        ));
-    }
-
-    let git_dir = repo.path().to_path_buf();
-    let worker_count = std::thread::available_parallelism()
-        .map(|value| value.get())
-        .unwrap_or(1)
-        .min(8)
-        .min(entries.len());
-    let chunk_size = entries.len().div_ceil(worker_count);
-    let result = std::thread::scope(|scope| {
-        let handles = entries
-            .chunks(chunk_size)
-            .map(|chunk| {
-                let git_dir = &git_dir;
-                scope.spawn(move || {
-                    let repo = Repository::open(git_dir).map_err(format_git_error)?;
-                    Ok::<_, String>(
-                        chunk
-                            .iter()
-                            .filter_map(|(index, oid)| stash_list_entry(&repo, *index, *oid))
-                            .collect::<Vec<_>>(),
-                    )
-                })
-            })
-            .collect::<Vec<_>>();
-        let mut values = Vec::with_capacity(entries.len());
-        for handle in handles {
-            values.extend(
-                handle
-                    .join()
-                    .map_err(|_| "读取 stash 列表的工作线程异常".to_owned())??,
-            );
-        }
-        Ok::<_, String>(values)
-    })?;
-    Ok(Value::Array(result))
+    Ok(Value::Array(
+        entries
+            .into_iter()
+            .filter_map(|(index, oid)| stash_list_entry(&repo, index, oid))
+            .collect(),
+    ))
 }
 
 fn coalesce_exact_renames(values: &mut Vec<Value>) {
