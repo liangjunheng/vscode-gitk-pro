@@ -2,7 +2,7 @@
   "name": "fastergit",
   "displayName": "FasterGit",
   "description": "Git history graph, multi-file diffs, branch and stash management, multi-repository commits, and merge conflict resolution for VS Code, backed by a built-in libgit2 module.",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "publisher": "liangjunheng",
   "license": "MIT",
   "engines": {
