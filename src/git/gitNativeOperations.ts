@@ -176,6 +176,59 @@ export const commit = (rootUri: vscode.Uri, message: string, amend = false): Pro
 export const createTag = (rootUri: vscode.Uri, name: string, revision: string, message: string): Promise<string> =>
     invokeNativeGit<string>('createTag', { rootPath: rootUri.fsPath, name, revision, message });
 
+export interface GitRemote {
+    readonly name: string;
+    readonly fetchUrl: string;
+    readonly pushUrl: string;
+}
+
+function validateRemoteName(name: string): string {
+    const value = name.trim();
+    if (!value || value.startsWith('-') || /\s/.test(value)) {
+        throw new Error('remote 名称不能为空、不能以 - 开头或包含空白字符');
+    }
+    return value;
+}
+
+function validateRemoteUrl(url: string): string {
+    const value = url.trim();
+    if (!value) { throw new Error('remote URL 不能为空'); }
+    return value;
+}
+
+export async function listRemotes(rootUri: vscode.Uri): Promise<GitRemote[]> {
+    const output = await runGitCli(rootUri, ['remote', '-v']);
+    const remotes = new Map<string, { fetchUrl: string; pushUrl: string }>();
+    for (const line of output.split(/\r?\n/)) {
+        const match = line.match(/^(\S+)\s+(.+)\s+\((fetch|push)\)$/);
+        if (!match) { continue; }
+        const [, name, url, direction] = match;
+        const current = remotes.get(name) ?? { fetchUrl: '', pushUrl: '' };
+        current[direction === 'fetch' ? 'fetchUrl' : 'pushUrl'] = url;
+        remotes.set(name, current);
+    }
+    return [...remotes.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([name, urls]) => ({ name, fetchUrl: urls.fetchUrl || urls.pushUrl, pushUrl: urls.pushUrl || urls.fetchUrl }));
+}
+
+export const addRemote = (rootUri: vscode.Uri, name: string, url: string): Promise<void> =>
+    runGitCli(rootUri, ['remote', 'add', validateRemoteName(name), validateRemoteUrl(url)]).then(() => undefined);
+export const removeRemote = (rootUri: vscode.Uri, name: string): Promise<void> =>
+    runGitCli(rootUri, ['remote', 'remove', validateRemoteName(name)]).then(() => undefined);
+
+export async function setRemoteAsUpstream(rootUri: vscode.Uri, remoteName: string): Promise<void> {
+    const remote = validateRemoteName(remoteName);
+    const branch = (await runGitCli(rootUri, ['branch', '--show-current'])).trim();
+    if (!branch) { throw new Error('当前处于游离 HEAD，无法设置 upstream'); }
+    try {
+        await runGitCli(rootUri, ['branch', '--set-upstream-to=' + remote + '/' + branch, branch]);
+    } catch {
+        // 没有对应的远程跟踪分支时，按 Source Control 的发布分支语义创建并绑定它。
+        await runGitCli(rootUri, ['push', '--set-upstream', remote, branch]);
+    }
+}
+
 export interface RemoteTagRef {
     readonly remote: string;
     readonly name: string;

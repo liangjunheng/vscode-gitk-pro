@@ -9,7 +9,7 @@ import { FILE_CONTEXT_MENU_STYLES } from './fileContextMenu';
 export const CHANGED_FILES_SUB_PANEL_STYLES = `
   ${FILE_CONTEXT_MENU_STYLES}
   #filesSection { position: relative; width: 100%; height: 100%; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: color-mix(in srgb, var(--vscode-editor-background) 50%, #000); }
-  #filesRefreshProgress { position: absolute; top: 0px; left: 0; right: 0; height: 1px; z-index: 3; overflow: hidden; background: var(--vscode-panel-border); }
+  #filesRefreshProgress { position: absolute; top: 0; left: 0; right: 0; height: 1px; z-index: 3; overflow: hidden; background: var(--vscode-panel-border); }
   #filesRefreshProgress[hidden] { display: none; }
   #filesRefreshProgressFill { height: 100%; width: 30%; background: #007acc; }
   #filesRefreshProgress:not([hidden]) #filesRefreshProgressFill { animation: files-refresh-scroll 1s ease-in-out infinite alternate; }

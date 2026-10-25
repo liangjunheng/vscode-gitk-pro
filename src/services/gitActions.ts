@@ -221,7 +221,7 @@ export class GitActionRunner {
         }
     }
 
-    async syncRepository(action: 'fetch' | 'pull' | 'push', repositoryPath: string): Promise<void> {
+    async syncRepository(action: 'fetch' | 'pull' | 'push', repositoryPath: string, pullRemote?: string): Promise<void> {
         const rootUri = this.getRootUri(repositoryPath);
         if (!rootUri) { return; }
         if (this.syncInProgress) {
@@ -257,6 +257,7 @@ export class GitActionRunner {
                         action,
                         message => progress.report({ message }),
                         selectedPushTargets,
+                        pullRemote,
                     );
                     let submodulesUpdated = false;
                     if (action === 'pull' && result.submodulesNeedUpdate) {

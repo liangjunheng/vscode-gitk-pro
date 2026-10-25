@@ -1,36 +1,52 @@
 /**
- * 选择器栏子面板: 承载 webview 顶部仓库/分支下拉、搜索框与工具栏的样式、结构与交互脚本。
+ * 选择器栏子面板: 承载 webview 顶部仓库显示、分支下拉与工具栏的样式、结构与交互脚本。
  * 三段片段按原样迁移自 GitkViewProvider 的内联 webview; 脚本片段与宿主片段、
  * commitListSubPanel / changedFilesSubPanel 片段拼接在同一个 IIFE 内, 共享同一作用域。
  */
 
 /** 选择器栏子面板的样式片段。 */
 export const SELECTOR_BAR_SUB_PANEL_STYLES = `
-  /* 仓库/分支选择器是提交区域的第一行，统一使用提交区域底色。 */
+  /* 仓库选择器是提交区域的第一行，统一使用提交区域底色。 */
   #commitSelectors { display: flex; flex-direction: column; flex: 0 0 auto; position: sticky; top: 0; left: 0; z-index: 4; min-width: 0; background: var(--commit-title-background); }
   .selector-row { display: flex; align-items: center; gap: 2px; min-width: 0; padding: 3px 10px; background: var(--commit-title-background); }
-  #commitSyncActions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; margin-left: auto; padding-left: 6px; }
+  #commitSyncActions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; margin-left: auto; padding-left: 8px; }
   #commitSyncActions .toolbar-icon { flex: 0 0 24px; }
-  #commitSelectors #stashListToggle { margin-left: 0; }
   #commitSelectors { border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); }
   #commitSelectors button { border: none; cursor: pointer; border-radius: 2px; }
   .selector { display: flex; align-items: center; gap: 4px; min-width: 0; }
   .selector-group { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0; }
   #branchSelector { flex: 0 1 auto; min-width: 0; }
-  .repo-group { flex: 0 1 auto; min-width: 0; }
-  /* @ 与两侧控件各留 6px（行间距 2px + 4px 外边距）。 */
+  #commitSearchRow #branchSelector { flex: 0 1 auto; }
+  /* 双向绑定标记与仓库选择器之间保留清晰的分隔。 */
   .selector-separator { flex: 0 0 auto; margin: 0 4px; color: var(--vscode-foreground); font-size: 11px; font-weight: 700; }
-  /* Commit 面板入口位于变更列表标题栏的显示方式之前；无未提交仓库时隐藏。 */
+  .repo-group { flex: 0 1 auto; min-width: 0; }
+  /* Commit 面板入口保留在变更列表标题栏；刷新与显示方式已移动到 VS Code 的 FasterGit 标题栏。 */
   /* 徽标尺寸: 高 18、圆角 10、图标 11, 字号 11px, 左右内边距 4px。 */
   .dropdown { position: relative; flex: 0 1 auto; min-width: 0; }
   #branchDropdown { width: 20ch; --branch-menu-font-family: var(--vscode-font-family, sans-serif); --branch-menu-font-size: var(--vscode-font-size, 13px); --branch-menu-line-height: normal; }
-  #repositoryDisplay { display: flex; align-items: center; gap: 0; flex: 0 1 20ch; min-width: 0; height: 26px; color: var(--vscode-dropdown-foreground, var(--vscode-foreground)); font: inherit; cursor: default; }
+  #repositorySelector { position: relative; display: flex; flex: 0 1 20ch; min-width: 0; }
+  #commitSelectors #repositoryDisplay { display: flex; align-items: center; gap: 0; flex: 1 1 auto; min-width: 0; height: 26px; padding: 0 7px; color: var(--vscode-dropdown-foreground, var(--vscode-foreground)); background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent); border: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent); border-radius: 4px; font: inherit; text-align: left; cursor: pointer; }
+  #commitSelectors #repositoryDisplay:disabled { cursor: default; opacity: .6; }
+  #commitSelectors #repositorySelector.open #repositoryDisplay, #commitSelectors #repositoryDisplay:hover:not(:disabled) { background: var(--vscode-toolbar-hoverBackground); border-color: var(--vscode-focusBorder); }
+  #commitSelectors #repositoryDisplay:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  #repositoryDisplay .repository-selector-chevron { display: inline-flex; flex: 0 0 auto; margin-left: auto; color: var(--vscode-descriptionForeground); }
+  #repositoryDisplay .repository-selector-chevron svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  #repositorySelectorMenu { position: absolute; top: calc(100% + 3px); left: 50%; transform: translateX(-50%); z-index: 20; display: flex; flex-direction: column; width: max-content; min-width: 100%; max-width: min(360px, calc(100vw - 20px)); max-height: min(420px, calc(100vh - 20px)); overflow-y: auto; padding: 4px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: var(--vscode-menu-background, var(--vscode-editorWidget-background)); border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border)); border-radius: 5px; box-shadow: 0 2px 4px rgba(0, 0, 0, .24), 0 8px 18px rgba(0, 0, 0, .36); }
+  #repositorySelectorMenu[hidden] { display: none; }
+  .repository-selector-option { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 6px 7px; color: inherit; background: transparent; border: 0; border-radius: 3px; font: inherit; text-align: left; cursor: pointer; }
+  .repository-selector-option:hover, .repository-selector-option[aria-selected="true"] { background: var(--vscode-list-hoverBackground); }
+  .repository-selector-option:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  .repository-selector-option .repository-icon { flex: 0 0 16px; }
+  .repository-selector-option-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .repository-selector-option-ancestry { flex: 1 1 auto; min-width: 0; overflow: hidden; color: var(--vscode-descriptionForeground); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+  .repository-selector-option-check { flex: 0 0 auto; color: var(--vscode-testing-iconPassed, var(--vscode-charts-green)); }
   #repositoryDisplay .dropdown-label { gap: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #repositoryDisplay .repository-icon { margin-right: 0; }
-  /* Stash 列表开关: 选中时给出与悬停一致的浅底, 未选中时只显示图标。 */
-  /* 位于 @仓库名 这一行的最右侧; margin-left:auto 把它推到行尾, 仓库名过长时由 #repositoryDisplay 先收缩。 */
-  #stashListToggle { flex: 0 0 auto; margin-left: auto; width: 22px; height: 22px; border-radius: 3px; }
+  /* Stash 列表开关: 保持扁平图标按钮风格, 仅在悬停时显示工具栏底色。 */
+  /* Stash 开关在提交搜索行中紧跟分支选择器。 */
+  #stashListToggle { flex: 0 0 auto; margin-left: auto; width: 22px; height: 22px; border: 0; border-radius: 3px; background: transparent; color: var(--vscode-icon-foreground); }
   #stashListToggle[aria-pressed="true"] { background: var(--vscode-toolbar-activeBackground, var(--vscode-toolbar-hoverBackground)); color: var(--vscode-foreground); }
+  #commitSearchRow #stashListToggle { margin-left: 0; }
   #stashListToggle:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .dropdown-current { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 26px; padding: 0 7px; color: var(--vscode-dropdown-foreground, var(--vscode-foreground)); background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent); border: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent); border-radius: 4px; box-shadow: none; font: inherit; text-align: left; cursor: pointer; }
   .dropdown-current:has(.dropdown-spinner) { gap: 2px; }
@@ -56,6 +72,8 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   .dropdown-chevron svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
   .dropdown.open .dropdown-chevron { transform: rotate(180deg); }
   .dropdown-menu { position: absolute; top: calc(100% + 3px); left: 0; z-index: 20; display: none; flex-direction: column; width: max-content; min-width: 100%; max-width: calc(100vw - 20px); padding: 0; box-sizing: border-box; overflow: hidden; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: var(--vscode-menu-background, var(--vscode-editorWidget-background)); border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border)); border-radius: 5px; box-shadow: 0 2px 4px rgba(0, 0, 0, .24), 0 8px 18px rgba(0, 0, 0, .36); }
+  #branchDropdown .dropdown-menu { left: auto; right: 0; }
+  #branchDropdown .dropdown-menu { width: fit-content; }
   .dropdown.open .dropdown-menu { display: flex; }
   .dropdown-filter { width: calc(100% - 10px); height: 25px; flex: 0 0 auto; margin: 5px 5px 4px; padding: 0 6px; box-sizing: border-box; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); border-radius: 3px; font: inherit; }
   .dropdown-filter:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
@@ -95,18 +113,27 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   .dropdown-empty { padding: 8px 7px; color: var(--vscode-descriptionForeground); }
 `;
 
-/** 选择器栏子面板的结构片段。 */
-export const SELECTOR_BAR_SUB_PANEL_MARKUP = `
-  <div id="commitSelectors">
-    <div class="selector-row">
+/** Commit 列表搜索行中的分支选择器结构片段。 */
+export const BRANCH_SELECTOR_MARKUP = `
       <div class="selector-group" id="branchSelector"><div class="dropdown" id="branchDropdown">
         <button class="dropdown-current" type="button" title="切换分支" aria-expanded="false" disabled><span class="dropdown-label"><span class="dropdown-spinner" hidden aria-hidden="true"></span>加载分支...</span><span class="dropdown-chevron" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></span></button>
         <div class="dropdown-menu" role="menu"><input class="dropdown-filter" type="text" placeholder="筛选分支" aria-label="筛选分支"><div class="branch-options-viewport overlay-scroll-viewport"><div class="dropdown-options" id="branchOptions"></div><div class="overlay-scroll-track vertical" id="branchOptionsScrollbar" role="scrollbar" aria-label="滚动分支列表" aria-controls="branchOptions" aria-orientation="vertical" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" tabindex="0" hidden><div class="overlay-scroll-thumb"></div></div></div><div class="dropdown-actions"><button type="button" class="toggle-all" aria-pressed="false"><input type="checkbox" tabindex="-1" aria-hidden="true"><span>全选</span></button><div class="dropdown-actions-right"><button type="button" class="confirm-selection">确定</button><button type="button" class="cancel-selection">取消</button></div></div></div>
       </div></div>
-      <span class="selector-separator" aria-hidden="true">@</span>
-      <div id="repositoryDisplay" title="未选择仓库"><span class="dropdown-label">未选择仓库</span></div>
+`;
+
+/** Commit 搜索行中的 Stash 显示开关结构片段。 */
+export const STASH_LIST_TOGGLE_MARKUP = `<button type="button" class="toolbar-icon" id="stashListToggle" aria-pressed="true" title="在commit列表中显示stash提交（当前状态： 开）" aria-label="在commit列表中显示stash提交（当前状态： 开）"><span class="codicon codicon-inbox" aria-hidden="true"></span></button>`;
+/** 选择器栏子面板的结构片段。 */
+export const SELECTOR_BAR_SUB_PANEL_MARKUP = `
+  <div id="commitSelectors">
+    <div class="selector-row">
+      <!-- remote-selector -->
+      <span class="selector-separator codicon codicon-arrow-both" aria-label="双向绑定" title="双向绑定"></span>
+      <div id="repositorySelector">
+        <button id="repositoryDisplay" type="button" title="未选择仓库" aria-expanded="false" disabled><span class="dropdown-label">未选择仓库</span><span class="repository-selector-chevron" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg></span></button>
+        <div id="repositorySelectorMenu" role="listbox" aria-label="选择仓库" hidden></div>
+      </div>
       <div id="commitSyncActions"><button class="toolbar-icon" id="fetchBtn" title="Fetch" aria-label="Fetch"><span class="codicon codicon-repo-fetch" aria-hidden="true"></span></button><button class="toolbar-icon" id="pullBtn" title="Pull" aria-label="Pull"><span class="codicon codicon-repo-pull" aria-hidden="true"></span></button><button class="toolbar-icon" id="pushBtn" title="Push" aria-label="Push"><span class="codicon codicon-repo-push" aria-hidden="true"></span></button></div>
-      <button type="button" class="toolbar-icon" id="stashListToggle" aria-pressed="true" title="在commit列表中显示stash提交（当前状态： 开）" aria-label="在commit列表中显示stash提交（当前状态： 开）"><span class="codicon codicon-inbox" aria-hidden="true"></span></button>
     </div>
   </div>
 `;
@@ -120,6 +147,8 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
   let stagedCount = 0;
   let changesCount = 0;
   let selectedRepositoryPaths = [];
+  let totalRepositories = [];
+  let selectedRepositoryPath = '';
   let hasBranchStateSnapshot = false;
   function updateDropdownLoading(dropdown, loading, ariaLabel) {
     const progress = dropdown.options.querySelector('.dropdown-progress');
@@ -252,9 +281,11 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
     document.body.appendChild(actionProbe);
     const actionWidth = actionProbe.getBoundingClientRect().width;
     actionProbe.remove();
-    const triggerWidth = dropdown.current.getBoundingClientRect().width;
+     const triggerWidth = dropdown.current.getBoundingClientRect().width;
+    const filterWidth = dropdown.filter.getBoundingClientRect().width + 10;
     const viewportLimit = Math.max(triggerWidth, document.documentElement.clientWidth - 20);
-    dropdown.menu.style.width = Math.min(viewportLimit, Math.max(triggerWidth, optionWidth, actionWidth)) + 'px';
+    const contentWidth = Math.max(triggerWidth, optionWidth, actionWidth, filterWidth);
+    dropdown.menu.style.width = Math.min(viewportLimit, Math.ceil(contentWidth)) + 'px';
   }
 
   function updateOpenDropdownHeights() {
@@ -278,6 +309,39 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
   }
 
   const repositoryDisplay = document.getElementById('repositoryDisplay');
+  const repositorySelector = document.getElementById('repositorySelector');
+  const repositorySelectorMenu = document.getElementById('repositorySelectorMenu');
+  function closeRepositorySelector() {
+    repositorySelector.classList.remove('open');
+    repositorySelectorMenu.hidden = true;
+    repositoryDisplay.setAttribute('aria-expanded', 'false');
+  }
+  repositoryDisplay.addEventListener('click', function() {
+    if (repositoryDisplay.disabled) return;
+    closeDropdowns();
+    const opening = repositorySelectorMenu.hidden;
+    if (opening) renderRepositoryOptions();
+    repositorySelector.classList.toggle('open', opening);
+    repositorySelectorMenu.hidden = !opening;
+    repositoryDisplay.setAttribute('aria-expanded', String(opening));
+  });
+  repositorySelectorMenu.addEventListener('click', function(event) {
+    const option = event.target.closest('.repository-selector-option');
+    if (!option) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const path = option.dataset.repositoryPath || '';
+    if (!path) return;
+    selectedRepositoryPath = path;
+    const repository = totalRepositories.find(function(candidate) { return candidate.path === path; });
+    if (repository) updateSelectedRepoDisplay(repository);
+    renderRepositoryOptions();
+    closeRepositorySelector();
+    vscode.postMessage({ type: 'repositoryChangesAction', action: 'focus', repositoryPath: path });
+  });
+  document.addEventListener('click', function(event) {
+    if (!event.target.closest('#repositorySelector')) closeRepositorySelector();
+  });
   const branchDropdown = createDropdown('branchDropdown', function() {});
   const branchOptionsViewport = document.querySelector('#branchDropdown .branch-options-viewport');
   const branchOptionsScrollbar = document.getElementById('branchOptionsScrollbar');
@@ -325,11 +389,32 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
     const parentClass = hasSubmodules ? ' has-submodules' : '';
     return '<span class="repository-icon codicon codicon-' + icon + parentClass + '" aria-hidden="true"></span>';
   }
+  function repositoryAncestryLabel(ancestry) {
+    const labels = (ancestry || []).map(function(ancestor) { return ancestor && ancestor.label; }).filter(Boolean);
+    if (labels.length <= 2) return labels.join('/');
+    return labels[0] + '/.../' + labels[labels.length - 1];
+  }
+  function renderRepositoryOptions() {
+    repositoryDisplay.disabled = totalRepositories.length === 0;
+    repositorySelectorMenu.innerHTML = totalRepositories.map(function(repository) {
+      const selected = repository.path === selectedRepositoryPath;
+      const ancestry = repositoryAncestryLabel(repository.ancestry);
+      return '<button type="button" class="repository-selector-option" role="option" aria-selected="' + String(selected)
+        + '" data-repository-path="' + escapeAttr(repository.path) + '">' + repositoryIcon(repository.hasSubmodules, repository.isSubmodule)
+        + '<span class="repository-selector-option-label">' + escapeHtml(repository.label) + '</span>'
+        + (ancestry ? '<span class="repository-selector-option-ancestry">' + escapeHtml(ancestry) + '</span>' : '')
+        + (selected ? '<span class="repository-selector-option-check" aria-hidden="true">✓</span>' : '')
+        + '</button>';
+    }).join('');
+    if (totalRepositories.length === 0) closeRepositorySelector();
+  }
   function branchIcon(kind) {
     const icon = kind === 'current' ? 'target' : kind === 'remote' ? 'cloud' : 'git-branch';
     return '<span class="branch-icon codicon codicon-' + icon + '" aria-hidden="true"></span>';
   }
   function updateSelectedRepoDisplay(repository) {
+    selectedRepositoryPath = repository && repository.path ? repository.path : '';
+    repositoryDisplay.dataset.repositoryPath = selectedRepositoryPath;
     const loading = repositoryDisplay.dataset.loading === 'true';
     repositoryDisplay.querySelector('.dropdown-label').innerHTML = (repository
       ? repositoryIcon(repository.hasSubmodules, repository.isSubmodule) + '<span class="dropdown-value">' + escapeHtml(repository.label) + '</span>'
@@ -457,6 +542,8 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
 
   function updateTotalRepositoryList(repositories, nextSelectedRepositoryPaths) {
     selectedRepositoryPaths = nextSelectedRepositoryPaths;
+    totalRepositories = Array.isArray(repositories) ? repositories.slice() : [];
+    renderRepositoryOptions();
   }
 
   function updateTotalBranchesList(nextBranches) {

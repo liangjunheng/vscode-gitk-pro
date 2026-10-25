@@ -57,6 +57,7 @@ async function main() {
     repositories[0].aheadCount = 4;
     repositories[0].behindCount = 0;
     await publish();
+    await page.evaluate(repositories => window.dispatchEvent(new MessageEvent('message', { data: { type: 'totalRepoListChanged', repositories: repositories.map(repository => ({ path: repository.repositoryPath, label: repository.repositoryLabel, ancestry: repository.repositoryAncestry || [], hasSubmodules: repository.hasSubmodules, isSubmodule: repository.isSubmodule })) , selectedRepositoryPaths: [repositories[0].repositoryPath] } })), repositories);
     await assertCount(page.locator('.repo-changes'), 6);
     assert.equal(await page.locator('.repo-changes').nth(1).locator('.repo-changes-ancestry').textContent(), 'inkengine', 'direct child shows its parent repository');
     assert.equal(await page.locator('.repo-changes').nth(2).locator('.repo-changes-ancestry').textContent(), 'inkengine/.../ink-algorithm-parent', 'nested child compresses the recursive parent path');
@@ -109,10 +110,16 @@ async function main() {
       const graph = document.getElementById('graph').getBoundingClientRect();
       const selectors = document.getElementById('commitSelectors').getBoundingClientRect();
       const search = document.getElementById('commitSearchRow').getBoundingClientRect();
-      return { graphTop: graph.top, selectorTop: selectors.top, selectorBottom: selectors.bottom, searchTop: search.top };
+      const searchBox = document.getElementById('searchBox').getBoundingClientRect();
+      const branch = document.getElementById('branchSelector').getBoundingClientRect();
+      const searchInput = document.getElementById('searchInput').getBoundingClientRect();
+      return { graphTop: graph.top, selectorTop: selectors.top, selectorBottom: selectors.bottom, searchTop: search.top, searchBoxRight: searchBox.right, branchLeft: branch.left, branchCenter: branch.top + branch.height / 2, searchCenter: search.top + search.height / 2, branchHeight: branch.height, searchInputHeight: searchInput.height };
     });
+    assert.ok(Math.abs(selectorPosition.branchHeight - selectorPosition.searchInputHeight) < 1, 'search input height matches the branch selector button');
     assert.ok(Math.abs(selectorPosition.selectorTop - selectorPosition.graphTop) < 1, 'repository selector starts the commit area without a title row');
-    assert.ok(Math.abs(selectorPosition.searchTop - selectorPosition.selectorBottom) < 1, 'selector sits directly above commit search');
+    assert.ok(Math.abs(selectorPosition.searchTop - selectorPosition.selectorBottom) < 1, 'commit search sits directly below the repository selector');
+    assert.ok(Math.abs(selectorPosition.branchCenter - selectorPosition.searchCenter) < 1, 'branch selector aligns with the commit search row');
+    assert.ok(selectorPosition.branchLeft >= selectorPosition.searchBoxRight - 1, 'branch selector sits to the right of commit search');
     const iconTextGaps = await page.locator('.repo-changes').first().evaluate(card => {
       const repoIcon = card.querySelector('.repo-changes-icon .codicon').getBoundingClientRect();
       const repoLabel = card.querySelector('.repo-changes-label').getBoundingClientRect();
@@ -294,11 +301,14 @@ async function main() {
       window.dispatchEvent(new MessageEvent('message', { data: { type: 'selectedRepoDisplayChanged', repository: { path: repository.repositoryPath, label: repository.repositoryLabel, hasSubmodules: true, isSubmodule: false } } }));
     }, repositories[0]);
     await assertCount(page.locator('#repositoryDropdown'), 0);
-    await assertCount(page.locator('#repositoryDisplay button, #repositoryDisplay input, #repositoryDisplay .dropdown-menu'), 0);
+    await assertCount(page.locator('#repositorySelectorMenu'), 1);
     const beforeDisplayClick = await page.evaluate(() => window.messages.length);
     await page.locator('#repositoryDisplay').click();
-    assert.equal(await page.evaluate(() => window.messages.length), beforeDisplayClick, 'history repository name is display-only');
-    assert.match(await page.locator('#repositoryDisplay').textContent(), /inkengine/);
+    assert.equal(await page.locator('#repositorySelectorMenu').isVisible(), true, 'repository name opens the repository selector');
+    assert.ok(await page.locator('.repository-selector-option').count() >= repositories.length, 'repository selector lists repository cards');
+    assert.equal(await page.evaluate(() => window.messages.length), beforeDisplayClick, 'opening the repository selector does not select a repository yet');
+    await page.locator('.repository-selector-option').first().click();
+    assert.deepEqual(await lastMessage(page), { type: 'repositoryChangesAction', action: 'focus', repositoryPath: repositories[0].repositoryPath }, 'selecting a repository focuses its card');
     const selectorTypography = await page.evaluate(() => {
       const branch = getComputedStyle(document.querySelector('#branchDropdown .dropdown-value'));
       const repository = getComputedStyle(document.querySelector('#repositoryDisplay .dropdown-value'));
@@ -317,14 +327,8 @@ async function main() {
       return label.left - icon.right;
     });
     assert.equal(repositoryLabelGap, 0, 'repository icon touches its name in the selector');
-    const selectorGaps = await page.evaluate(() => {
-      const branch = document.getElementById('branchSelector').getBoundingClientRect();
-      const separator = document.querySelector('.selector-separator').getBoundingClientRect();
-      const repository = document.getElementById('repositoryDisplay').getBoundingClientRect();
-      return { left: separator.left - branch.right, right: repository.left - separator.right };
-    });
-    assert.equal(selectorGaps.left, 6, '@ keeps the same gap after the branch selector');
-    assert.equal(selectorGaps.right, 6, '@ keeps the same gap before the repository name');
+    const repositorySelectorGap = await page.evaluate(() => { const separator = document.querySelector('.selector-separator').getBoundingClientRect(); const repository = document.getElementById('repositoryDisplay').getBoundingClientRect(); return repository.left - separator.right; });
+    assert.equal(repositorySelectorGap, 6, 'bidirectional marker keeps the repository name aligned');
     await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'repoLoadingChanged', loading: true } })));
     assert.equal(await page.locator('#repositoryDisplay .dropdown-spinner').isVisible(), true);
     await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'repoLoadingChanged', loading: false } })));
@@ -658,7 +662,10 @@ async function verifyBranchDropdown(page, state, publish) {
     return {
       menuTop: menu.top,
       buttonBottom: button.bottom,
-      menuZIndex: getComputedStyle(document.getElementById('commitSelectors')).zIndex,
+      menuLeft: menu.left,
+      menuRight: menu.right,
+      buttonRight: button.right,
+      menuZIndex: getComputedStyle(document.querySelector('#branchDropdown .dropdown-menu')).zIndex,
       searchZIndex: getComputedStyle(document.getElementById('commitSearchRow')).zIndex,
       card: { fontFamily: card.fontFamily, fontSize: card.fontSize, fontStyle: card.fontStyle, fontWeight: card.fontWeight, lineHeight: card.lineHeight },
       filter: styles('#branchDropdown .dropdown-filter'),
@@ -708,6 +715,8 @@ async function verifyBranchDropdown(page, state, publish) {
     };
   });
   assert.equal(branchMenuLayout.menuTop, branchMenuLayout.buttonBottom + 3, 'branch menu stays directly below its selector button');
+  assert.ok(Math.abs(branchMenuLayout.menuRight - branchMenuLayout.buttonRight) < 1, 'branch menu right edge aligns with its selector button');
+  assert.ok(branchMenuLayout.menuLeft >= 0 && branchMenuLayout.menuRight <= branchMenuLayout.viewportWidth + 1, 'branch menu stays within the viewport');
   assert.ok(Number(branchMenuLayout.menuZIndex) > Number(branchMenuLayout.searchZIndex), 'branch menu stacks above the commit search row');
   [branchMenuLayout.filter, branchMenuLayout.options, branchMenuLayout.actions, branchMenuLayout.groups].flat().forEach(style => {
     assert.deepEqual(style, branchMenuLayout.card, 'branch menu text matches the repository card title typography');

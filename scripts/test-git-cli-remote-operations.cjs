@@ -64,6 +64,13 @@ async function main() {
             throw new Error(`Remote operations must not reach libgit2: ${operation}`);
         });
         const rootUri = { fsPath: local };
+        assert.deepEqual((await operations.listRemotes(rootUri)).map(remote => remote.name), ['origin']);
+        await operations.setRemoteAsUpstream(rootUri, 'origin');
+        assert.equal(git(local, 'rev-parse', '--symbolic-full-name', '@{upstream}'), 'refs/remotes/origin/main');
+        await operations.addRemote(rootUri, 'backup', origin);
+        assert.deepEqual((await operations.listRemotes(rootUri)).map(remote => remote.name), ['backup', 'origin']);
+        await operations.removeRemote(rootUri, 'backup');
+        assert.deepEqual((await operations.listRemotes(rootUri)).map(remote => remote.name), ['origin']);
 
         const fetch = operations.fetchRemotes(rootUri, 'origin');
         const overlappingFetch = operations.fetchRemotes(rootUri, 'origin');

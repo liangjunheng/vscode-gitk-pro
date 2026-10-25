@@ -18,7 +18,7 @@ export const COMMIT_LIST_SUB_PANEL_STYLES = `
   /* 搜索/计数/刷新都是提交列表的能力, 随面板一起放在列头之上并吸顶。 */
   .count { opacity: 0.7; font-size: calc(var(--vscode-font-size, 13px) - 1px); white-space: nowrap; }
   #searchBox { display: flex; align-items: center; position: relative; }
-  #searchInput { width: 100px; padding: 3px 22px 3px 24px; font-family: inherit; font-size: inherit; border: 1px solid var(--vscode-input-border, transparent); background: var(--vscode-input-background, #1e1e1e); color: var(--vscode-input-foreground, inherit); border-radius: 4px; transition: border-color 0.15s, box-shadow 0.15s; }
+  #searchInput { width: 100px; height: 26px; box-sizing: border-box; padding: 3px 22px 3px 24px; font-family: inherit; font-size: inherit; border: 1px solid var(--vscode-input-border, transparent); background: var(--vscode-input-background, #1e1e1e); color: var(--vscode-input-foreground, inherit); border-radius: 4px; transition: border-color 0.15s, box-shadow 0.15s; }
   #searchInput:focus { outline: none; border-color: var(--vscode-focusBorder, #007acc); box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007acc); }
   #searchInput::placeholder { color: var(--vscode-inputPlaceholderForeground, #888); }
   #searchIcon { position: absolute; left: 6px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; opacity: 0.5; pointer-events: none; color: var(--vscode-input-foreground, inherit); }
@@ -172,7 +172,7 @@ export const COMMIT_LIST_SUB_PANEL_MARKUP = `
     <div id="commitGraphViewport" class="overlay-scroll-viewport">
     <div id="graph">
       <!-- commit-selectors -->
-      <div id="commitSearchRow"><div class="selector" id="searchBox"><svg id="searchIcon" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 .96-.96l3.04 3.03-1.06 1.06-2.94-3.13z"/></svg><input type="text" id="searchInput" placeholder="搜索提交..." title="输入关键词搜索, 支持作者/邮箱/消息/Hash/日期, 多个关键词用空格隔开, 回车开始搜索"><button id="searchClear" title="清除搜索">&times;</button></div><span class="count" id="countLabel"></span><div id="commitProgress" hidden><div id="commitProgressFill"></div></div></div>
+      <div id="commitSearchRow"><div class="selector" id="searchBox"><svg id="searchIcon" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zm-.82 4.74a6 6 0 1 1 .96-.96l3.04 3.03-1.06 1.06-2.94-3.13z"/></svg><input type="text" id="searchInput" placeholder="搜索提交..." title="输入关键词搜索, 支持作者/邮箱/消息/Hash/日期, 多个关键词用空格隔开, 回车开始搜索"><button id="searchClear" title="清除搜索">&times;</button></div><!-- branch-selector --><!-- stash-toggle --><span class="count" id="countLabel"></span><div id="commitProgress" hidden><div id="commitProgressFill"></div></div></div>
       <div id="cloudCommitBars"></div>
       <div id="loading">
         <div id="loadingText">加载中...</div>

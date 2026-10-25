@@ -484,6 +484,7 @@ export async function runGitSync(
     action: 'fetch' | 'pull' | 'push',
     onProgress?: (message: string) => void,
     pushTargets?: readonly PushTargetOption[],
+    pullRemote?: string,
 ): Promise<GitSyncResult> {
     if (action === 'fetch') {
         const repositories = await collectSubmoduleRepositories([{ rootPath: rootUri.fsPath }]);
@@ -517,7 +518,7 @@ export async function runGitSync(
         const beforeHead = await getCurrentGitHeadHash(rootUri);
         const before = await readRemoteBranchHashes(rootUri);
         onProgress?.('正在通过 Git 拉取远程代码...');
-        await pullNative(rootUri);
+        await pullNative(rootUri, pullRemote);
         const afterHead = await getCurrentGitHeadHash(rootUri);
         const changes = describeRemoteBranchChanges(before, await readRemoteBranchHashes(rootUri));
         const headChanged = Boolean(beforeHead && afterHead && beforeHead !== afterHead);

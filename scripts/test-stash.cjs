@@ -62,7 +62,7 @@ async function main() {
     await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'selectedRepoDisplayChanged', repository: { path: 'file:///stash/a', label: 'repo-a' } } })));
     await publish();
 
-    // 1) 开关: 在 @仓库名 这一行的最右侧, 默认选中, 使用 inbox 图标
+    // 1) 开关: 位于提交搜索行中的分支选择器右侧, 默认选中, 使用 inbox 图标
     const toggle = page.locator('#stashListToggle');
     assert.equal(await toggle.count(), 1);
     assert.equal(await toggle.getAttribute('aria-pressed'), 'true', 'selected by default');
@@ -94,13 +94,15 @@ async function main() {
     assert.equal(await toggle.getAttribute('aria-pressed'), 'true', 'host state keeps the toggle on');
     assert.equal(await page.locator('#commitVirtualRows .commit-row.stash').count(), 1, 'the stash row appears once the host publishes it');
     const geometry = await page.evaluate(() => {
-      const row = document.querySelector('.selector-row').getBoundingClientRect();
+      const row = document.getElementById('commitSearchRow').getBoundingClientRect();
+      const branch = document.getElementById('branchSelector').getBoundingClientRect();
       const btn = document.getElementById('stashListToggle').getBoundingClientRect();
-      const repo = document.getElementById('repositoryDisplay').getBoundingClientRect();
-      return { rowRight: row.right, btnRight: btn.right, btnLeft: btn.left, repoRight: repo.right, rowPaddingRight: parseFloat(getComputedStyle(document.querySelector('.selector-row')).paddingRight) };
+      return { rowRight: row.right, rowPaddingRight: parseFloat(getComputedStyle(document.getElementById('commitSearchRow')).paddingRight), branchRight: branch.right, btnLeft: btn.left, btnRight: btn.right, branchCenter: branch.top + branch.height / 2, btnCenter: btn.top + btn.height / 2 };
     });
-    assert.ok(Math.abs(geometry.rowRight - geometry.rowPaddingRight - geometry.btnRight) < 1.5, 'the toggle sits at the far right of the repository row: ' + JSON.stringify(geometry));
-    assert.ok(geometry.btnLeft >= geometry.repoRight - 0.5, 'and does not overlap the repository name: ' + JSON.stringify(geometry));
+    assert.equal(await page.locator('.selector-row #stashListToggle').count(), 0, 'the toggle leaves the repository row');
+    assert.ok(Math.abs(geometry.btnLeft - geometry.branchRight - 8) < 1.5, 'the toggle sits 8px to the right of the branch selector: ' + JSON.stringify(geometry));
+    assert.ok(Math.abs(geometry.branchCenter - geometry.btnCenter) < 1, 'the toggle aligns with the branch selector: ' + JSON.stringify(geometry));
+    assert.ok(geometry.btnRight <= geometry.rowRight - geometry.rowPaddingRight + 0.5, 'the toggle stays within the search row: ' + JSON.stringify(geometry));
 
     // 2) stash 行穿插在提交之间: c3, stash, c2, c1; 没有独立的 stash 分组容器和标题
     assert.equal(await page.locator('#commitStashRows').count(), 0, 'no separate stash container any more');
@@ -447,7 +449,7 @@ async function main() {
     }
 
     assert.deepEqual(errors, [], 'no page errors: ' + errors.join('; '));
-    console.log('Stash UI passed: toggle at the far right of the repository row (on by default, hides stash rows when cleared), stash rows interleaved with a hollow side-branch diamond and a solid real-commit trunk, no separate group, a stash-only context menu (apply / pop / drop), hidden-count hint.');
+    console.log('Stash UI passed: toggle at the right of the branch selector in the commit search row (on by default, hides stash rows when cleared), stash rows interleaved with a hollow side-branch diamond and a solid real-commit trunk, no separate group, a stash-only context menu (apply / pop / drop), hidden-count hint.');
   } finally { await browser.close(); }
 }
 

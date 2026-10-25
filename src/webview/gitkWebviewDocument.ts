@@ -1,6 +1,7 @@
 import { CHANGED_FILES_SUB_PANEL_MARKUP, CHANGED_FILES_SUB_PANEL_SCRIPT, CHANGED_FILES_SUB_PANEL_STYLES } from './changedFilesSubPanel';
 import { COMMIT_LIST_SUB_PANEL_MARKUP, COMMIT_LIST_SUB_PANEL_SCRIPT, COMMIT_LIST_SUB_PANEL_STYLES } from './commitListSubPanel';
-import { SELECTOR_BAR_SUB_PANEL_MARKUP, SELECTOR_BAR_SUB_PANEL_SCRIPT, SELECTOR_BAR_SUB_PANEL_STYLES } from './selectorBarSubPanel';
+import { REMOTE_SELECTOR_MARKUP, REMOTE_SELECTOR_SUB_PANEL_SCRIPT, REMOTE_SELECTOR_SUB_PANEL_STYLES } from './remoteSelectorSubPanel';
+import { BRANCH_SELECTOR_MARKUP, SELECTOR_BAR_SUB_PANEL_MARKUP, SELECTOR_BAR_SUB_PANEL_SCRIPT, SELECTOR_BAR_SUB_PANEL_STYLES, STASH_LIST_TOGGLE_MARKUP } from './selectorBarSubPanel';
 import { REPOSITORY_CHANGES_SCRIPT, REPOSITORY_CHANGES_STYLES } from './repositoryChangesSubPanel';
 import { OVERLAY_SCROLLBAR_SCRIPT, OVERLAY_SCROLLBAR_STYLES } from './overlayScrollbar';
 import { FILE_CONTEXT_MENU_SCRIPT } from './fileContextMenu';
@@ -45,6 +46,7 @@ export function renderGitkWebviewHtml(
   .toolbar-icon.refresh-unchanged { animation: refresh-unchanged 550ms ease-out; }
   @keyframes refresh-unchanged { 0%, 100% { color: var(--vscode-icon-foreground); } 45% { color: var(--vscode-descriptionForeground); } }
 ${SELECTOR_BAR_SUB_PANEL_STYLES}
+${REMOTE_SELECTOR_SUB_PANEL_STYLES}
 ${CHANGED_FILES_SUB_PANEL_STYLES}
 ${COMMIT_LIST_SUB_PANEL_STYLES}
 ${REPOSITORY_CHANGES_STYLES}
@@ -56,7 +58,7 @@ ${OVERLAY_SCROLLBAR_STYLES}
 ${CHANGED_FILES_SUB_PANEL_MARKUP}
     <div id="panelResizeHandle" role="separator" aria-label="调整变更文件列表与提交图高度" aria-orientation="horizontal"></div>
     <div id="commitSection">
-${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR_SUB_PANEL_MARKUP)}
+${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR_SUB_PANEL_MARKUP).replace('<!-- remote-selector -->', REMOTE_SELECTOR_MARKUP).replace('<!-- branch-selector -->', BRANCH_SELECTOR_MARKUP).replace('<!-- stash-toggle -->', STASH_LIST_TOGGLE_MARKUP)}
     </div>
   </main>
 <script id="gitk-seti-icon-definitions" type="application/json">${setiIconDefinitionsJson}</script>
@@ -262,6 +264,7 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR
   vscode.postMessage({ type: 'webviewReady' });
 
 ${SELECTOR_BAR_SUB_PANEL_SCRIPT}
+${REMOTE_SELECTOR_SUB_PANEL_SCRIPT}
 ${OVERLAY_SCROLLBAR_SCRIPT}
 ${COMMIT_LIST_SUB_PANEL_SCRIPT}
 ${FILE_CONTEXT_MENU_SCRIPT}
