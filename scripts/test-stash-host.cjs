@@ -255,7 +255,7 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   reset(); runSection = 'staged'; setSnapshot([file('a.txt')], []);
   await run();
   assert.equal(dialogs.length, 0);
-  assert.deepEqual(stashCalls, [[repoA.path, 'staged', undefined, false, false]]);
+  assert.deepEqual(stashCalls, [[repoA.path, 'staged', ['a.txt'], false, false]]);
 
   // 5b-file) 单文件 stash 只把按钮所在路径传给原生后端，不受多选集影响。
   reset(); runSection = 'unstaged'; setSnapshot([file('a.txt')], [file('b.txt'), file('c.txt')]);
@@ -279,7 +279,7 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   reset(); runSection = 'staged'; setSnapshot([file('a.txt')], [file('b.txt')]);
   await run();
   assert.equal(dialogs.length, 0);
-  assert.deepEqual(stashCalls, [[repoA.path, 'staged', undefined, false, false]]);
+  assert.deepEqual(stashCalls, [[repoA.path, 'staged', ['a.txt'], false, false]]);
 
   // 5d) Unstaged 与 staged 同文件时，弹窗完整列出多个文件；确认后只把内容合入 unstaged 快照，不改变 Staged 分组。
   reset(); runSection = 'unstaged';
@@ -307,12 +307,11 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   dialogChoice = '取消';
   await run();
   assert.deepEqual(stashCalls, []);
-
   // Staged 分组仍由 staged-only 原生实现处理，不弹交叉分组确认。
   reset(); runSection = 'staged'; setSnapshot([file('c.txt'), file('a.txt')], [file('c.txt'), file('b.txt')]);
   await run();
   assert.equal(dialogs.length, 0);
-  assert.deepEqual(stashCalls, [[repoA.path, 'staged', undefined, false, false]]);
+  assert.deepEqual(stashCalls, [[repoA.path, 'staged', ['c.txt', 'a.txt'], false, false]]);
 
   // 5h) 冲突 -> 拒绝并提示
   runSection = 'unstaged';
@@ -550,5 +549,5 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   await oldLoad;
   assert.deepEqual(loaderPublications, [[older.hash]], 'a removed/re-added repository rejects the previous load');
 
-  console.log('Stash host passed: selection fallback, stateUpdate groups (toggle/search/multi-repo), stash file reader, unstaged-only path routing with multi-file overlap confirmation and staged-only routing, conflict/empty guards, gitlink notice, error surfacing, queue routing, apply / pop / drop routing, confirmation, selection hand-off.');
+  console.log('Stash host passed: selection fallback, stateUpdate groups (toggle/search/multi-repo), stash file reader, unstaged-only path routing with multi-file overlap confirmation and staged-only exact-path routing, conflict/empty guards, gitlink notice, error surfacing, queue routing, apply / pop / drop routing, confirmation, selection hand-off.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

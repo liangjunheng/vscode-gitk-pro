@@ -299,7 +299,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         action: 'stage' | 'unstage' | 'discard' | 'stash' | 'stashApply' | 'stashRestore' | 'stashPop';
         /** 仅 stash: 要创建的 stash 范围。 */
         stashScope?: StashScope;
-        /** 仅 stash: 原生后端精确保存的路径；unstaged 分组也始终传递。 */
+        /** 仅 stash: 原生后端精确保存的路径；Staged/Unstaged 分组都始终传递。 */
         stashPaths?: readonly string[];
         /** 仅 unstaged stash: 用户已确认把同文件的 staged 内容合入 unstaged 快照；原 index 保持不变。 */
         stashMergeStagedIntoUnstaged?: boolean;
@@ -3833,7 +3833,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.workingTreeActionQueue.push({
             action: 'stash',
             stashScope: section,
-            stashPaths: section === 'unstaged' || requestedPaths ? [...paths] : undefined,
+            stashPaths: [...paths],
             stashMergeStagedIntoUnstaged: mergeStagedIntoUnstaged,
             stashAllUnstagedPaths: allUnstagedPaths,
             section,

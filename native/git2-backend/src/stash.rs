@@ -124,7 +124,7 @@ fn is_gitlink(index: &git2::Index, head_tree: &git2::Tree<'_>, path: &str) -> bo
             .is_ok_and(|entry| entry.filemode_raw() as u32 == GITLINK_MODE)
 }
 
-fn collect_changes(repo: &Repository, include_unstaged: bool) -> NativeResult<Changes> {
+fn collect_staged_changes(repo: &Repository) -> NativeResult<Changes> {
     let head_tree = repo
         .head()
         .map_err(|_| NO_COMMIT.to_owned())?
@@ -152,34 +152,53 @@ fn collect_changes(repo: &Repository, include_unstaged: bool) -> NativeResult<Ch
             changes.staged.push(path);
         }
     }
-
-    if include_unstaged {
-        let mut options = StatusOptions::new();
-        options
-            .include_untracked(true)
-            .recurse_untracked_dirs(true)
-            .include_ignored(false)
-            .exclude_submodules(false);
-        let statuses = repo
-            .statuses(Some(&mut options))
-            .map_err(format_git_error)?;
-        let mut unstaged = BTreeSet::new();
-        for entry in statuses.iter() {
-            if is_worktree_change(entry.status()) {
-                unstaged.insert(normalize(&String::from_utf8_lossy(entry.path_bytes())));
-            }
-        }
-        for path in unstaged {
-            if is_gitlink(&index, &head_tree, &path) {
-                changes.unstaged_gitlinks.push(path);
-            } else {
-                changes.unstaged.push(path);
-            }
-        }
-    }
     Ok(changes)
 }
 
+fn collect_unstaged_changes(
+    repo: &Repository,
+    changes: &mut Changes,
+    paths: Option<&BTreeSet<String>>,
+) -> NativeResult<()> {
+    if paths.is_some_and(BTreeSet::is_empty) {
+        return Ok(());
+    }
+    let head_tree = repo
+        .head()
+        .map_err(|_| NO_COMMIT.to_owned())?
+        .peel_to_tree()
+        .map_err(format_git_error)?;
+    let index = repo.index().map_err(format_git_error)?;
+    let mut options = StatusOptions::new();
+    options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(false)
+        .exclude_submodules(false);
+    if let Some(paths) = paths {
+        options.disable_pathspec_match(true);
+        for path in paths {
+            options.pathspec(path);
+        }
+    }
+    let statuses = repo
+        .statuses(Some(&mut options))
+        .map_err(format_git_error)?;
+    let mut unstaged = BTreeSet::new();
+    for entry in statuses.iter() {
+        if is_worktree_change(entry.status()) {
+            unstaged.insert(normalize(&String::from_utf8_lossy(entry.path_bytes())));
+        }
+    }
+    for path in unstaged {
+        if is_gitlink(&index, &head_tree, &path) {
+            changes.unstaged_gitlinks.push(path);
+        } else {
+            changes.unstaged.push(path);
+        }
+    }
+    Ok(())
+}
 fn related_staged_paths(
     repo: &Repository,
     selected: &BTreeSet<String>,
@@ -653,21 +672,43 @@ pub fn create(payload: &Value) -> NativeResult<Value> {
     if all_unstaged_paths && (scope != Scope::Unstaged || paths.is_none()) {
         return Err("allUnstagedPaths 只允许与 unstaged 精确路径一起使用".to_owned());
     }
-    let scoped_unstaged_paths = scope == Scope::Unstaged && paths.is_some();
-    let mut all_changes = collect_changes(&repo, !scoped_unstaged_paths)?;
-    if scoped_unstaged_paths {
-        let selected = paths.as_ref().expect("validated scoped unstaged paths");
-        let index = repo.index().map_err(format_git_error)?;
-        let head_tree = repo
-            .head()
-            .map_err(|_| NO_COMMIT.to_owned())?
-            .peel_to_tree()
-            .map_err(format_git_error)?;
-        for path in selected {
-            if is_gitlink(&index, &head_tree, path) {
-                all_changes.unstaged_gitlinks.push(path.clone());
+    let mut all_changes = collect_staged_changes(&repo)?;
+    match scope {
+        Scope::Unstaged => {
+            if let Some(selected) = &paths {
+                let index = repo.index().map_err(format_git_error)?;
+                let head_tree = repo
+                    .head()
+                    .map_err(|_| NO_COMMIT.to_owned())?
+                    .peel_to_tree()
+                    .map_err(format_git_error)?;
+                for path in selected {
+                    if is_gitlink(&index, &head_tree, path) {
+                        all_changes.unstaged_gitlinks.push(path.clone());
+                    } else {
+                        all_changes.unstaged.push(path.clone());
+                    }
+                }
             } else {
-                all_changes.unstaged.push(path.clone());
+                collect_unstaged_changes(&repo, &mut all_changes, None)?;
+            }
+        }
+        Scope::Staged => {
+            let mut staged_paths = all_changes
+                .staged
+                .iter()
+                .chain(all_changes.staged_gitlinks.iter())
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            if let Some(selected) = &paths {
+                staged_paths.retain(|path| selected.contains(path));
+            }
+            if staged_paths.is_empty() {
+                // Preserve the existing "only unstaged changes" error when
+                // there is no staged path to stash.
+                collect_unstaged_changes(&repo, &mut all_changes, None)?;
+            } else {
+                collect_unstaged_changes(&repo, &mut all_changes, Some(&staged_paths))?;
             }
         }
     }
