@@ -106,12 +106,12 @@ async function main() {
     assert.equal(cardTransition.bodyPaddingTop, '6px', 'repository body sits closer to the softened header transition');
     assert.equal(cardTransition.marginBottom, '12px', 'repository cards use 50 percent more vertical spacing');
     const selectorPosition = await page.evaluate(() => {
-      const header = document.getElementById('commitHeader').getBoundingClientRect();
+      const graph = document.getElementById('graph').getBoundingClientRect();
       const selectors = document.getElementById('commitSelectors').getBoundingClientRect();
       const search = document.getElementById('commitSearchRow').getBoundingClientRect();
-      return { headerBottom: header.bottom, selectorTop: selectors.top, selectorBottom: selectors.bottom, searchTop: search.top };
+      return { graphTop: graph.top, selectorTop: selectors.top, selectorBottom: selectors.bottom, searchTop: search.top };
     });
-    assert.ok(Math.abs(selectorPosition.selectorTop - selectorPosition.headerBottom) < 1, 'branch and repository selector follows the commit header');
+    assert.ok(Math.abs(selectorPosition.selectorTop - selectorPosition.graphTop) < 1, 'repository selector starts the commit area without a title row');
     assert.ok(Math.abs(selectorPosition.searchTop - selectorPosition.selectorBottom) < 1, 'selector sits directly above commit search');
     const iconTextGaps = await page.locator('.repo-changes').first().evaluate(card => {
       const repoIcon = card.querySelector('.repo-changes-icon .codicon').getBoundingClientRect();
@@ -126,6 +126,7 @@ async function main() {
     await assertCount(page.locator('#filesRefreshBtn'), 0);
     await assertCount(page.locator('#filesModeBtn'), 0);
     assert.equal(await page.locator('#filesHeader').count(), 0, 'changed-files title row is removed');
+    assert.equal(await page.locator('#commitHeader').count(), 0, 'commit-list title row is removed');
     assert.equal(await page.locator('#filesRefreshProgress').isVisible(), false);
     state.refreshProgress = { completed: 1, total: 4 }; await publish();
     assert.equal(await page.locator('#filesRefreshProgress').isVisible(), true);
@@ -506,9 +507,9 @@ async function main() {
     assert.equal(await commitMenu.isVisible(), true, 'commit row opens its context menu');
     assert.equal(await page.locator('#commitList .commit-row').first().evaluate(row => row.classList.contains('context-target')), true, 'commit context menu uses temporary highlighting');
     assert.deepEqual(await commitMenu.locator('button').first().evaluate(button => [getComputedStyle(button).fontFamily, getComputedStyle(button).fontSize, getComputedStyle(button).fontWeight]), ['"Segoe UI"', '13px', '400']);
-    const suppressed = await page.locator('#commitHeader').evaluate(node => !node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
-    assert.equal(suppressed, true, 'commit header suppresses the default context menu');
-    assert.equal(await commitMenu.isVisible(), false, 'right-clicking the header closes the commit menu');
+    const suppressed = await page.locator('#commitSearchRow').evaluate(node => !node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
+    assert.equal(suppressed, true, 'commit search row suppresses the default context menu');
+    assert.equal(await commitMenu.isVisible(), false, 'right-clicking the search row closes the commit menu');
     assert.equal(await page.locator('#commitList .commit-row').first().evaluate(row => row.classList.contains('context-target')), false, 'closing the commit menu restores the real commit selection');
     // Navigation to a folded child must expand/select/focus it, without feeding a selection loop back.
     const childCard = page.locator('.repo-changes').nth(1);

@@ -74,7 +74,7 @@ async function main() {
     await rows.first().evaluate(node => node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
     assert.equal(await editMenu.isVisible(), false);
     assert.equal(await commitMenu.isVisible(), true);
-    for (const target of [rows.nth(2), rows.nth(3), page.locator('#commitHeader'), page.locator('#commitList')]) {
+    for (const target of [rows.nth(2), rows.nth(3), page.locator('#commitSearchRow'), page.locator('#commitList')]) {
       const suppressed = await target.evaluate(node => !node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
       assert.equal(suppressed, true);
       assert.equal(await commitMenu.isVisible(), false);

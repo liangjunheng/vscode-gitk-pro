@@ -6,9 +6,12 @@
 
 /** 选择器栏子面板的样式片段。 */
 export const SELECTOR_BAR_SUB_PANEL_STYLES = `
-  /* 仓库/分支选择器与提交列表标题合成一块, 合并为单行, 统一使用标题栏底色。 */
-  #commitSelectors { display: flex; flex-direction: column; flex: 0 0 auto; position: sticky; top: 30px; left: 0; z-index: 4; min-width: 0; background: var(--commit-title-background); }
+  /* 仓库/分支选择器是提交区域的第一行，统一使用提交区域底色。 */
+  #commitSelectors { display: flex; flex-direction: column; flex: 0 0 auto; position: sticky; top: 0; left: 0; z-index: 4; min-width: 0; background: var(--commit-title-background); }
   .selector-row { display: flex; align-items: center; gap: 2px; min-width: 0; padding: 3px 10px; background: var(--commit-title-background); }
+  #commitSyncActions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; margin-left: auto; padding-left: 6px; }
+  #commitSyncActions .toolbar-icon { flex: 0 0 24px; }
+  #commitSelectors #stashListToggle { margin-left: 0; }
   #commitSelectors { border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border)); }
   #commitSelectors button { border: none; cursor: pointer; border-radius: 2px; }
   .selector { display: flex; align-items: center; gap: 4px; min-width: 0; }
@@ -102,6 +105,7 @@ export const SELECTOR_BAR_SUB_PANEL_MARKUP = `
       </div></div>
       <span class="selector-separator" aria-hidden="true">@</span>
       <div id="repositoryDisplay" title="未选择仓库"><span class="dropdown-label">未选择仓库</span></div>
+      <div id="commitSyncActions"><button class="toolbar-icon" id="fetchBtn" title="Fetch" aria-label="Fetch"><span class="codicon codicon-repo-fetch" aria-hidden="true"></span></button><button class="toolbar-icon" id="pullBtn" title="Pull" aria-label="Pull"><span class="codicon codicon-repo-pull" aria-hidden="true"></span></button><button class="toolbar-icon" id="pushBtn" title="Push" aria-label="Push"><span class="codicon codicon-repo-push" aria-hidden="true"></span></button></div>
       <button type="button" class="toolbar-icon" id="stashListToggle" aria-pressed="true" title="在commit列表中显示stash提交（当前状态： 开）" aria-label="在commit列表中显示stash提交（当前状态： 开）"><span class="codicon codicon-inbox" aria-hidden="true"></span></button>
     </div>
   </div>
