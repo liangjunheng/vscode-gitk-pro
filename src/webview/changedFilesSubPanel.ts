@@ -18,13 +18,7 @@ export const CHANGED_FILES_SUB_PANEL_STYLES = `
   #filesTitle { display: flex; align-items: center; min-width: 0; gap: 6px; white-space: nowrap; }
   #filesCommitHash { color: var(--vscode-descriptionForeground); font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; font-weight: 400; }
   #filesActions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
-  #filesActions .action-group { display: flex; align-items: center; gap: 2px; }
   #filesHeader [hidden] { display: none !important; }
-  #filesHeader .toolbar-icon { width: 24px; height: 24px; border: 1px solid transparent; border-radius: 4px; transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease; }
-  #filesHeader .toolbar-icon:hover { background: var(--vscode-toolbar-hoverBackground); border-color: var(--vscode-toolbar-hoverOutline, transparent); }
-  #filesHeader .toolbar-icon:active { background: var(--vscode-toolbar-activeBackground, var(--vscode-toolbar-hoverBackground)); }
-  #filesHeader .toolbar-icon:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
-  #filesHeader .toolbar-icon svg { width: 16px; height: 16px; stroke-width: 1.5; }
   #commitContextMenu { position: fixed; z-index: 20; min-width: 180px; max-height: calc(100vh - 8px); overflow-y: auto; margin: 0; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border)); border-radius: 5px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 4px 14px rgba(0, 0, 0, .28); }
   #commitContextMenu:not(:popover-open) { display: none; }
   #commitContextMenu [hidden] { display: none; }
@@ -107,7 +101,7 @@ export const CHANGED_FILES_SUB_PANEL_STYLES = `
 /** 变更文件列表子面板的结构片段。 */
 export const CHANGED_FILES_SUB_PANEL_MARKUP = `
     <section id="filesSection">
-      <div id="filesHeader"><div id="filesTitle"><span>变更文件列表</span><span id="filesCommitHash"></span></div><div id="filesActions"><button class="uncommitted-repo-group" id="uncommittedRepoBadge" title="打开 Commit 面板" aria-label="打开存在未提交文件的仓库" hidden><span class="codicon codicon-source-control" aria-hidden="true"></span><span class="uncommitted-repo-count">0</span></button><button type="button" class="toolbar-icon" id="filesRefreshBtn" title="刷新工作区和提交列表" aria-label="刷新工作区和提交列表"><span class="codicon codicon-refresh" aria-hidden="true"></span></button><div class="action-group"><button class="toolbar-icon" id="filesModeBtn" title="显示方式（当前：树状）" aria-label="显示方式"><svg viewBox="0 0 16 16" aria-hidden="true"><path id="filesModeIcon" d="M2.5 3h5M5 3v4M5 7h5M7.5 7v4M7.5 11h6"/></svg></button></div></div></div>
+      <div id="filesHeader"><div id="filesTitle"><span>变更文件列表</span><span id="filesCommitHash"></span></div><div id="filesActions"><button class="uncommitted-repo-group" id="uncommittedRepoBadge" title="打开 Commit 面板" aria-label="打开存在未提交文件的仓库" hidden><span class="codicon codicon-source-control" aria-hidden="true"></span><span class="uncommitted-repo-count">0</span></button></div></div>
       <div id="filesRefreshProgress" role="progressbar" aria-label="刷新工作区和提交列表" hidden><div id="filesRefreshProgressFill"></div></div>
       <div id="repositoryChangesViewport" class="overlay-scroll-viewport"><div id="repositoryChangesList"></div><div id="repositoryChangesScrollbar" class="overlay-scroll-track vertical" role="scrollbar" aria-label="滚动变更仓库列表" aria-controls="repositoryChangesList" aria-orientation="vertical" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" tabindex="0" hidden><div class="overlay-scroll-thumb"></div></div></div>
       <div id="filesList"><div id="filesEmpty">选择一个提交以查看变更文件</div></div>
@@ -159,12 +153,6 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
   let workingTreeSelectionAnchor = '';
   // 与 commitListModelKey 同一思路: focus/blur 等无关 stateChanged 不应重新渲染文件列表, 否则正在被点击的 .file-item 会被拆掉重建, 导致首击无效。
   let filesModelKey = '';
-  document.getElementById('filesModeBtn').addEventListener('click', function() {
-    vscode.postMessage({ type: 'toggleFilesMode' });
-  });
-  document.getElementById('filesRefreshBtn').addEventListener('click', function() {
-    vscode.postMessage({ type: 'refresh' });
-  });
   document.getElementById('filesHeader').addEventListener('contextmenu', function(event) {
     event.preventDefault();
   });
@@ -578,15 +566,7 @@ export const CHANGED_FILES_SUB_PANEL_SCRIPT = `
   document.getElementById('filesList').addEventListener('scroll', scheduleChangedVirtualLists, { passive: true });
   window.addEventListener('resize', scheduleChangedVirtualLists, { passive: true });
 
-  function updateFilesModeButton() {
-    const modeButton = document.getElementById('filesModeBtn');
-    const modeIcon = document.getElementById('filesModeIcon');
-    const isTree = filesMode === 'tree';
-    modeIcon.setAttribute('d', isTree ? 'M2.5 3h5M5 3v4M5 7h5M7.5 7v4M7.5 11h6' : 'M3 4h10M3 8h10M3 12h10');
-    modeButton.title = '显示方式（当前：' + (isTree ? '树状' : '平铺') + '）';
-  }
   function renderFiles() {
-    updateFilesModeButton();
     if (changedFileContextTarget && (changedFileContextTarget.hash !== selectedCommitHash
       || changedFileContextTarget.repositoryPath !== selectedCommitRepositoryPath
       || !files.some(function(file) { return file.path === changedFileContextTarget.path; }))) closeChangedFileContextMenu();

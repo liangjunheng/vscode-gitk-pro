@@ -34,6 +34,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         })
     );
 
+    const changedFilesDisplayMode = (): 'tree' | 'flat' =>
+        vscode.workspace.getConfiguration('fastergit').get<'tree' | 'flat'>('changedFilesDisplayMode', 'flat');
+    const updateChangedFilesDisplayModeContext = (): Thenable<unknown> =>
+        vscode.commands.executeCommand('setContext', 'fastergit:changedFilesDisplayMode', changedFilesDisplayMode());
+    const setChangedFilesDisplayMode = (mode: 'tree' | 'flat'): Thenable<void> =>
+        vscode.workspace.getConfiguration('fastergit')
+            .update('changedFilesDisplayMode', mode, vscode.ConfigurationTarget.Global);
+    await updateChangedFilesDisplayModeContext();
+
     const multiDiffLayoutConfiguration = vscode.workspace.getConfiguration('fastergit');
     const initialRenderSideBySide = multiDiffLayoutConfiguration.get<boolean>('multiDiffRenderSideBySide', true);
     provider.setMultiDiffRenderSideBySide(initialRenderSideBySide);
@@ -43,12 +52,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             .update('multiDiffRenderSideBySide', renderSideBySide, vscode.ConfigurationTarget.Global);
     context.subscriptions.push(
         vscode.commands.registerCommand('fastergit.selectCommit', (hash: string) => provider.selectCommit(hash)),
+        vscode.commands.registerCommand('fastergit.refresh', () => provider.refreshCurrentView()),
+        vscode.commands.registerCommand('fastergit.changedFiles.useFlatView', () => setChangedFilesDisplayMode('flat')),
+        vscode.commands.registerCommand('fastergit.changedFiles.useTreeView', () => setChangedFilesDisplayMode('tree')),
         vscode.commands.registerCommand('fastergit.multiDiff.previousChange', () => provider.navigateMultiDiffChange(-1)),
         vscode.commands.registerCommand('fastergit.multiDiff.nextChange', () => provider.navigateMultiDiffChange(1)),
         vscode.commands.registerCommand('fastergit.multiDiff.search', () => provider.showMultiDiffSearch()),
         vscode.commands.registerCommand('fastergit.multiDiff.useInlineView', () => setMultiDiffRenderSideBySide(false)),
         vscode.commands.registerCommand('fastergit.multiDiff.useSideBySideView', () => setMultiDiffRenderSideBySide(true)),
         vscode.workspace.onDidChangeConfiguration(async event => {
+            if (event.affectsConfiguration('fastergit.changedFilesDisplayMode')) {
+                await updateChangedFilesDisplayModeContext();
+            }
             if (!event.affectsConfiguration('fastergit.multiDiffRenderSideBySide')) { return; }
             const renderSideBySide = vscode.workspace.getConfiguration('fastergit')
                 .get<boolean>('multiDiffRenderSideBySide', true);

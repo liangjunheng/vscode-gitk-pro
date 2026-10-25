@@ -1829,6 +1829,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         return generation === this.refreshGeneration;
     }
 
+    /** FasterGit 标题栏刷新入口：与原变更文件列表刷新按钮执行同一条本地刷新路径。 */
+    refreshCurrentView(): void {
+        void this.refreshCurrentViewData().catch(error => {
+            void vscode.window.showErrorMessage('刷新仓库数据失败：' + (error instanceof Error ? error.message : String(error)));
+        });
+    }
+
     // 仅仓库集合可能变化时才重新发现仓库与子模块。
     async refresh(reloadSelectors = true): Promise<void> {
         const generation = ++this.refreshGeneration;
@@ -2539,9 +2546,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.pushStateToWebview();
                 break;
             case 'refresh':
-                void this.refreshCurrentViewData().catch(error => {
-                    void vscode.window.showErrorMessage('刷新仓库数据失败：' + (error instanceof Error ? error.message : String(error)));
-                });
+                this.refreshCurrentView();
                 break;
             case 'selectRepositories': {
                 if (!Array.isArray(effect.paths)) {

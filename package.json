@@ -95,6 +95,24 @@
         "icon": "$(git-commit)"
       },
       {
+        "command": "fastergit.refresh",
+        "title": "刷新工作区和提交列表",
+        "category": "FasterGit",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "fastergit.changedFiles.useFlatView",
+        "title": "显示方式（当前：树状）",
+        "category": "FasterGit",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "fastergit.changedFiles.useTreeView",
+        "title": "显示方式（当前：平铺）",
+        "category": "FasterGit",
+        "icon": "$(list-flat)"
+      },
+      {
         "command": "fastergit.selectCommit",
         "title": "Select Commit",
         "category": "FasterGit",
@@ -177,7 +195,22 @@
         {
           "command": "fastergit.openCommitPanel",
           "when": "view == fastergit.panelView",
-          "group": "navigation"
+          "group": "navigation@1"
+        },
+        {
+          "command": "fastergit.refresh",
+          "when": "view == fastergit.panelView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "fastergit.changedFiles.useFlatView",
+          "when": "view == fastergit.panelView && fastergit:changedFilesDisplayMode == tree",
+          "group": "navigation@3"
+        },
+        {
+          "command": "fastergit.changedFiles.useTreeView",
+          "when": "view == fastergit.panelView && fastergit:changedFilesDisplayMode == flat",
+          "group": "navigation@3"
         }
       ],
       "editor/title": [
