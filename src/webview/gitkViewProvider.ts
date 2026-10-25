@@ -4111,6 +4111,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     this.workingTreeUiMutations.add(rootRepositoryPath);
                     this.deferredWorkingTreeChanges.delete(rootRepositoryPath);
                     let mutationEnded = false;
+                    let waitForMutationRefresh = true;
                     let projectedChanges: WorkingTreeChanges | undefined;
                     let verificationPaths: readonly string[] = [];
                     const endMutation = async (progress?: vscode.Progress<{ message?: string }>): Promise<void> => {
@@ -4252,9 +4253,17 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                                 if (!operation.stashHash) { throw new Error('缺少 stash 标识'); }
                                 const repositoryPath = operation.rootUri.toString();
                                 const target = this.stashesByRepository.get(repositoryPath)?.find(entry => entry.hash === operation.stashHash);
-                                const result = operation.action === 'stashPop'
-                                    ? await this.gitBackend.stashPop(operation.rootUri, operation.stashHash)
-                                    : await this.gitBackend.stashApply(operation.rootUri, operation.stashHash);
+                                let result;
+                                try {
+                                    result = operation.action === 'stashPop'
+                                        ? await this.gitBackend.stashPop(operation.rootUri, operation.stashHash)
+                                        : await this.gitBackend.stashApply(operation.rootUri, operation.stashHash);
+                                } catch (error) {
+                                    // The native operation has already returned its refusal. Release the UI
+                                    // transaction immediately and reconcile the affected paths in background.
+                                    waitForMutationRefresh = false;
+                                    throw error;
+                                }
                                 if (result.conflicts) {
                                     void vscode.window.showWarningMessage(
                                         '应用 Stash 后存在冲突，冲突文件已留在工作区。'
@@ -4285,6 +4294,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                                     branch,
                                     isRootRepository ? operation.paths : [],
                                     !isRootRepository,
+                                    waitForMutationRefresh,
                                 );
                             }));
                         }

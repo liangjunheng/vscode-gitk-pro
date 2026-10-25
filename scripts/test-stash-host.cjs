@@ -81,6 +81,7 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   let snapshot = { staged: [], changes: [] };
   let cachedSnapshot;
   const completedMutations = [];
+  const endedMutations = [];
   let selectedPaths = [repoA.path];
   Object.defineProperties(provider, {
     repositories: { value: [repoA, repoB] },
@@ -129,7 +130,8 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
     uncommittedFilesWatcher: {
       listCurrentHeadBranches: () => [heads[repoA.path], heads[repoB.path]],
       getUncommittedFilesByHeadBranch: async () => snapshot,
-      beginWorkingTreeMutation() {}, endWorkingTreeMutation: async () => {},
+      beginWorkingTreeMutation() {},
+      endWorkingTreeMutation: async (_branch, paths, fullRefresh, waitForRefresh) => { endedMutations.push({ paths: [...paths], fullRefresh, waitForRefresh }); },
       completeWorkingTreeMutation: async (_branch, changes, affectedPaths, verificationPaths) => {
         completedMutations.push({ changes, affectedPaths: [...affectedPaths], verificationPaths: [...verificationPaths] });
         cachedSnapshot = changes;
@@ -385,7 +387,7 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
 
   // ---- 7) 右键菜单动作: apply / pop 走工作区队列, drop 确认后直接执行; stash 用 hash 定位
   provider.processWorkingTreeActionQueue = GitkViewProvider.prototype.processWorkingTreeActionQueue;
-  const resetOps = () => { opCalls.length = 0; dialogs.length = 0; warnings.length = 0; controllerCalls.length = 0; selected.length = 0; provider.workingTreeActionQueue.length = 0; backendOpImpl = async (operation, hash) => ({ stash: hash, conflicts: false, dropped: operation === 'pop' }); dialogChoice = undefined; };
+  const resetOps = () => { opCalls.length = 0; dialogs.length = 0; warnings.length = 0; controllerCalls.length = 0; selected.length = 0; endedMutations.length = 0; provider.workingTreeActionQueue.length = 0; backendOpImpl = async (operation, hash) => ({ stash: hash, conflicts: false, dropped: operation === 'pop' }); dialogChoice = undefined; };
   const newest = stashEntry(stashHash, 0, 'WIP on main: newest');
   const older = stashEntry('2'.repeat(40), 1, 'On main: older');
   const setStashList = list => { provider.stashesByRepository.set(repoA.path, list); };
@@ -483,6 +485,7 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   backendOpImpl = async () => { throw new Error('index is not clean'); };
   await queue('stashApply');
   assert.ok(warnings.some(w => /ERROR Git 操作失败: index is not clean/.test(w)), 'refusals surface: ' + JSON.stringify(warnings));
+  assert.equal(endedMutations.at(-1)?.waitForRefresh, false, 'apply refusal releases the UI before the background path refresh finishes');
 
   // 7e) drop: 先确认; 取消不动; 确认后按 hash 删除并重读; 选中项离开
   resetOps(); setStashList([newest, older]); dialogChoice = undefined; reloaded = [];

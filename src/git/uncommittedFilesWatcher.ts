@@ -168,6 +168,7 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         branch: GitBranchOption,
         paths: readonly string[],
         fullRefresh = false,
+        waitForRefresh = true,
     ): Promise<void> {
         const slot = this.slots.get(branch.repoOption.path);
         if (!slot || slot.branch?.hash !== branch.hash) {
@@ -182,7 +183,8 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
         const pendingPaths = slot.pendingPaths ?? new Set<string>();
         paths.forEach(filePath => pendingPaths.add(filePath));
         slot.pendingPaths = pendingPaths;
-        await this.requestRefresh(branch.repoOption.path);
+        const refresh = this.requestRefresh(branch.repoOption.path);
+        if (waitForRefresh) { await refresh; }
     }
 
 

@@ -142,6 +142,22 @@ async function main() {
     snapshots.set(roots[0], changes());
     await watcher.endWorkingTreeMutation(branches[0], ['a', 'b', 'c', 'd', 'e']);
     assert.equal(view.badge.value, 1, 'discard transaction completion updates the badge');
+    let releaseBackground;
+    heldRead = new Promise(resolve => { releaseBackground = resolve; });
+    snapshots.set(roots[0], changes([], ['background']));
+    watcher.beginWorkingTreeMutation(branches[0]);
+    let backgroundEndResolved = false;
+    await watcher.endWorkingTreeMutation(branches[0], ['background'], false, false)
+      .then(() => { backgroundEndResolved = true; });
+    assert.equal(backgroundEndResolved, true, 'non-blocking mutation completion does not await the status read');
+    assert.equal(view.badge.value, 1, 'the previous badge stays visible until the background refresh publishes');
+    releaseBackground();
+    await settle();
+    assert.equal(view.badge.value, 2, 'the background path refresh eventually publishes its snapshot');
+    watcher.beginWorkingTreeMutation(branches[0]);
+    snapshots.set(roots[0], changes());
+    await watcher.endWorkingTreeMutation(branches[0], ['background']);
+    assert.equal(view.badge.value, 1, 'a later synchronous mutation still waits for its refresh');
     snapshots.set(roots[1], changes());
     emitFile(1, 'remove', 'a');
     await settle();

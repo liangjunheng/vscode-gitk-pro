@@ -703,9 +703,13 @@ pub fn create(payload: &Value) -> NativeResult<Value> {
             if let Some(selected) = &paths {
                 staged_paths.retain(|path| selected.contains(path));
             }
-            if staged_paths.is_empty() {
-                // Preserve the existing "only unstaged changes" error when
-                // there is no staged path to stash.
+            let has_regular_staged = staged_paths
+                .iter()
+                .any(|path| all_changes.staged.contains(path));
+            if staged_paths.is_empty() || !has_regular_staged {
+                // Preserve the existing "only unstaged changes" error and Git's
+                // Gitlink-only staged behavior, which depends on whether any
+                // tracked unstaged change exists elsewhere in the worktree.
                 collect_unstaged_changes(&repo, &mut all_changes, None)?;
             } else {
                 collect_unstaged_changes(&repo, &mut all_changes, Some(&staged_paths))?;
