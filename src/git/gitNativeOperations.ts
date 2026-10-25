@@ -196,12 +196,64 @@ function validateRemoteUrl(url: string): string {
     return value;
 }
 
-export async function listConfiguredBranchRemotes(rootUri: vscode.Uri): Promise<string[]> {
+export type FasterGitRemoteOperation = 'fetch' | 'pull' | 'push';
+
+export async function readFasterGitRemoteOperations(
+    rootUri: vscode.Uri,
+    remotes: readonly string[],
+): Promise<Map<string, Map<FasterGitRemoteOperation, boolean>>> {
+    const operations = new Map<string, Map<FasterGitRemoteOperation, boolean>>();
+    if (remotes.length === 0) { return operations; }
+    let output = '';
     try {
-        const output = await runGitCli(rootUri, ['config', '--get-regexp', '^branch\\..+\\.remote$']);
-        return [...new Set(output.split(/\r?\n/)
-            .map(line => line.trim().split(/\s+/).at(-1) ?? '')
-            .filter(Boolean))];
+        output = await runGitCli(rootUri, ['config', '--local', '--get-regexp', '^fastergit\\.remote\\..+\\.(fetch|pull|push)$']);
+    } catch {
+        return operations;
+    }
+    const remoteByLowerName = new Map(remotes.map(name => [name.toLowerCase(), name]));
+    for (const line of output.split(/\r?\n/)) {
+        const separator = line.search(/\s/);
+        if (separator < 0) { continue; }
+        const key = line.slice(0, separator);
+        const value = line.slice(separator).trim().toLowerCase();
+        const enabled = ['true', 'yes', 'on', '1'].includes(value)
+            ? true
+            : ['false', 'no', 'off', '0'].includes(value) ? false : undefined;
+        if (enabled === undefined) { continue; }
+        const match = key.match(/^fastergit\.remote\.(.+)\.(fetch|pull|push)$/i);
+        if (!match) { continue; }
+        const remote = remoteByLowerName.get(match[1].toLowerCase());
+        if (!remote) { continue; }
+        const configured = operations.get(remote) ?? new Map<FasterGitRemoteOperation, boolean>();
+        configured.set(match[2].toLowerCase() as FasterGitRemoteOperation, enabled);
+        operations.set(remote, configured);
+    }
+    return operations;
+}
+
+export async function setFasterGitRemoteOperation(
+    rootUri: vscode.Uri,
+    remoteName: string,
+    operation: FasterGitRemoteOperation,
+    enabled: boolean,
+): Promise<void> {
+    const remote = validateRemoteName(remoteName);
+    const key = `fastergit.remote.${remote}.${operation}`;
+    await runGitCli(rootUri, ['config', '--local', key, enabled ? 'true' : 'false']);
+}
+
+export async function clearFasterGitRemoteOperations(rootUri: vscode.Uri, remoteName: string): Promise<void> {
+    const remote = validateRemoteName(remoteName);
+    await Promise.all((['fetch', 'pull', 'push'] as const).map(operation =>
+        runGitCli(rootUri, ['config', '--local', '--unset-all', `fastergit.remote.${remote}.${operation}`]).catch(() => undefined)));
+}
+
+export async function listRemoteBranchesContaining(rootUri: vscode.Uri): Promise<string[]> {
+    try {
+        const output = await runGitCli(rootUri, ['for-each-ref', '--contains=HEAD', '--format=%(refname:short)', 'refs/remotes']);
+        return output.split(/\r?\n/)
+            .map(value => value.trim())
+            .filter(value => Boolean(value) && !value.endsWith('/HEAD'));
     } catch {
         return [];
     }
@@ -227,18 +279,6 @@ export const addRemote = (rootUri: vscode.Uri, name: string, url: string): Promi
     runGitCli(rootUri, ['remote', 'add', validateRemoteName(name), validateRemoteUrl(url)]).then(() => undefined);
 export const removeRemote = (rootUri: vscode.Uri, name: string): Promise<void> =>
     runGitCli(rootUri, ['remote', 'remove', validateRemoteName(name)]).then(() => undefined);
-
-export async function setRemoteAsUpstream(rootUri: vscode.Uri, remoteName: string): Promise<void> {
-    const remote = validateRemoteName(remoteName);
-    const branch = (await runGitCli(rootUri, ['branch', '--show-current'])).trim();
-    if (!branch) { throw new Error('当前处于游离 HEAD，无法设置 upstream'); }
-    try {
-        await runGitCli(rootUri, ['branch', '--set-upstream-to=' + remote + '/' + branch, branch]);
-    } catch {
-        // 没有对应的远程跟踪分支时，按 Source Control 的发布分支语义创建并绑定它。
-        await runGitCli(rootUri, ['push', '--set-upstream', remote, branch]);
-    }
-}
 
 export interface RemoteTagRef {
     readonly remote: string;

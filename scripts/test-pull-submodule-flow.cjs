@@ -43,8 +43,8 @@ async function testFetchesRootAndSubmodulesInParallel() {
         vscode: { Uri: { file: fsPath => ({ fsPath, toString: () => fsPath }) } },
         './nativeGitBinding': { invokeNativeGit },
         './gitNativeOperations': {
-            fetchRemotes: async rootUri => {
-                fetchStarts.push(rootUri.fsPath);
+            fetchRemotes: async (rootUri, remote) => {
+                fetchStarts.push([rootUri.fsPath, remote]);
                 await new Promise(resolve => fetchResolvers.push(resolve));
             },
             pull: async () => {},
@@ -53,10 +53,14 @@ async function testFetchesRootAndSubmodulesInParallel() {
         },
     });
     const rootUri = { fsPath: rootPath, toString: () => rootPath };
-    const pending = provider.runGitSync(rootUri, 'fetch', message => progress.push(message));
+    const pending = provider.runGitSync(rootUri, 'fetch', message => progress.push(message), undefined, { fetch: ['origin'], pull: ['origin'], push: ['origin'] });
     await new Promise(resolve => setImmediate(resolve));
-    nodeAssert.deepEqual(fetchStarts, [rootPath, childPath, siblingPath, nestedPath],
-        'root and every initialized nested submodule start fetching before any fetch completes');
+    nodeAssert.deepEqual(fetchStarts, [
+        [rootPath, 'origin'],
+        [childPath, undefined],
+        [siblingPath, undefined],
+        [nestedPath, undefined],
+    ], 'the selected repository fetches the Remote selector value while discovered submodules keep their own remote scope');
     nodeAssert.equal(fetchResolvers.length, 4, 'all repository fetches are in flight together');
     fetchResolvers.splice(0).forEach(resolve => resolve());
     const result = await pending;
@@ -68,6 +72,7 @@ async function testFetchesRootAndSubmodulesInParallel() {
 async function testPullChecksStaleSubmodulesWithoutHeadChange() {
     const progress = [];
     const updateCalls = [];
+    const pullRemotes = [];
     const head = 'a'.repeat(40);
     const invokeNativeGit = async operation => {
         if (operation === 'head') return { hash: head };
@@ -84,13 +89,14 @@ async function testPullChecksStaleSubmodulesWithoutHeadChange() {
         './nativeGitBinding': { invokeNativeGit },
         './gitNativeOperations': {
             fetchRemotes: async () => {},
-            pull: async () => {},
+            pull: async (_rootUri, remote) => { pullRemotes.push(remote); },
             push: async () => ({}),
             updateSubmodules: async (_rootUri, paths) => updateCalls.push([...paths]),
         },
     });
     const rootUri = { fsPath: '/fixture', toString: () => '/fixture' };
-    const result = await provider.runGitSync(rootUri, 'pull', message => progress.push(message));
+    const result = await provider.runGitSync(rootUri, 'pull', message => progress.push(message), undefined, { fetch: ['upstream'], pull: ['upstream', 'backup'], push: ['upstream'] });
+    nodeAssert.deepEqual(pullRemotes, ['upstream', 'backup'], 'pull runs every remote checked in the Remote selector');
     nodeAssert.equal(result.headChanged, false);
     nodeAssert.equal(result.submodulesNeedUpdate, true, 'a no-op pull still checks submodule state');
     nodeAssert.deepEqual(result.submodulePaths, ['modules/stale', 'modules/missing']);
@@ -161,7 +167,7 @@ async function testPullChecksNestedUninitializedSubmodulesWithoutHeadChange() {
         },
     });
     const rootUri = { fsPath: rootPath, toString: () => rootPath };
-    const pending = provider.runGitSync(rootUri, 'pull', message => progress.push(message));
+    const pending = provider.runGitSync(rootUri, 'pull', message => progress.push(message), undefined, { fetch: ['origin'], pull: ['origin'], push: ['origin'] });
     await new Promise(resolve => setImmediate(resolve));
     nodeAssert.deepEqual([...nestedScanStarts].sort(), [nestedLeftPath, nestedRightPath].sort(),
         'sibling repositories at the same recursive level are checked concurrently');
@@ -191,6 +197,7 @@ async function testPullPromptsBeforeUpdatingSubmodules() {
     let answer = '更新子模块';
     let events = [];
     const updateCalls = [];
+    const syncCalls = [];
     const result = {
         headChanged: false,
         submodulesNeedUpdate: true,
@@ -219,7 +226,7 @@ async function testPullPromptsBeforeUpdatingSubmodules() {
         vscode,
         '../git/gitLogProvider': {
             getPushBranches: async () => [],
-            runGitSync: async () => result,
+            runGitSync: async (...args) => { syncCalls.push(args); return result; },
             updateGitSubmodules: async (_rootUri, paths, onProgress) => {
                 updateCalls.push([...paths]);
                 for (const path of paths) onProgress(`正在更新子模块：${path}`);
@@ -242,7 +249,7 @@ async function testPullPromptsBeforeUpdatingSubmodules() {
         {},
     );
 
-    await runner.syncRepository('pull', '/fixture');
+    await runner.syncRepository('pull', '/fixture', { fetch: ['origin'], pull: ['origin'], push: ['origin'] });
     const prompt = events.find(event => event[0] === 'prompt');
     nodeAssert.ok(prompt, 'a no-op pull still prompts when submodules are stale');
     nodeAssert.ok(prompt[1].includes('2 个子模块版本不一致'));
@@ -256,11 +263,70 @@ async function testPullPromptsBeforeUpdatingSubmodules() {
 
     answer = '暂不更新';
     events = [];
-    await runner.syncRepository('pull', '/fixture');
+    await runner.syncRepository('pull', '/fixture', { fetch: ['origin'], pull: ['origin'], push: ['origin'] });
     nodeAssert.equal(updateCalls.length, 1, 'declining the prompt does not update submodules');
     nodeAssert.ok(events.some(event => event[0] === 'information'
         && event[1] === '拉取完成：当前分支已是最新（aaaaaaaa）；有 2 个子模块暂未更新。'));
     nodeAssert.equal(mutated.length, 2);
+    nodeAssert.deepEqual(syncCalls.map(call => call[4].pull), [['origin'], ['origin']], 'GitActionRunner forwards the Remote selector value to Pull');
+}
+
+async function testPushTargetsSelectedRemoteOnly() {
+    const selectedPlans = [];
+    const defaultSelections = [];
+    const confirmationCalls = [];
+    const syncCalls = [];
+    const plan = {
+        source: { branchName: 'main', hash: 'a'.repeat(40) },
+        targets: [
+            { remote: 'origin', branch: 'main', remoteName: 'origin/main', isUpstream: true, tipTimestamp: 2, unpushedCommitCount: 1 },
+            { remote: 'upstream', branch: 'develop', remoteName: 'upstream/develop', isUpstream: false, tipTimestamp: 1, unpushedCommitCount: 1 },
+        ],
+    };
+    const vscode = {
+        ProgressLocation: { Notification: 15 },
+        window: {
+            withProgress: async (_options, task) => task({ report() {} }),
+            showWarningMessage: async () => undefined,
+            showInformationMessage() {},
+            showErrorMessage(message) { throw new Error(message); },
+        },
+        env: { clipboard: { writeText: async () => {} } },
+    };
+    const actions = loadFresh('../out/services/gitActions', {
+        vscode,
+        '../git/gitLogProvider': {
+            defaultPushTargets: (candidate, remotes) => remotes.flatMap(remote => {
+                const targets = candidate.targets.filter(target => target.remote === remote);
+                const target = targets.find(value => value.isUpstream)
+                    ?? targets.find(value => value.branch === candidate.source.branchName)
+                    ?? targets[0];
+                return target ? [target] : [];
+            }),
+            getPushPlan: async () => plan,
+            runGitSync: async (...args) => { syncCalls.push(args); return { pushResults: [] }; },
+            updateGitSubmodules: async () => {},
+        },
+        '../git/gitNativeOperations': {
+            checkout: async () => {}, cherryPick: async () => {}, createBranch: async () => {}, createTag: async () => {},
+            merge: async () => {}, rebase: async () => {}, reset: async () => {}, revertCommit: async () => {},
+            stageAll: async () => {}, statusSummary: async () => ({ hasStagedChanges: false, hasUnstagedChanges: false }),
+        },
+        '../webview/gitCommitEditMsgEditor': { GitCommitEditMsgEditor: class {} },
+        './pushDialogs': {
+            pickPushTargets: async (candidate, defaults) => { selectedPlans.push(candidate); defaultSelections.push(defaults); return defaults; },
+            confirmPush: async (...args) => { confirmationCalls.push(args); return true; },
+            showPushResult: async () => {},
+        },
+    });
+    const runner = new actions.GitActionRunner(() => ({ fsPath: '/fixture' }), async () => {}, {});
+    await runner.syncRepository('push', '/fixture', { fetch: ['origin', 'upstream'], pull: ['origin', 'upstream'], push: ['origin', 'upstream'] });
+    nodeAssert.deepEqual(selectedPlans[0].targets.map(target => target.remoteName), ['origin/main', 'upstream/develop'], 'Push dialog includes the selected existing remote branches');
+    nodeAssert.deepEqual(defaultSelections[0].map(target => target.remoteName), ['origin/main', 'upstream/develop'], 'one existing target per checked remote is selected by default');
+    nodeAssert.equal(confirmationCalls[0][1], 'fixture', 'Push confirmation displays the repository name');
+    nodeAssert.deepEqual(confirmationCalls[0][2], ['origin', 'upstream'], 'Push confirmation displays the remotes checked for Push');
+    nodeAssert.deepEqual(syncCalls[0][4].push, ['origin', 'upstream'], 'Push execution receives every checked remote');
+    nodeAssert.deepEqual(syncCalls[0][3].map(target => target.remoteName), ['origin/main', 'upstream/develop']);
 }
 
 async function main() {
@@ -268,6 +334,7 @@ async function main() {
     await testPullChecksStaleSubmodulesWithoutHeadChange();
     await testPullChecksNestedUninitializedSubmodulesWithoutHeadChange();
     await testPullPromptsBeforeUpdatingSubmodules();
+    await testPushTargetsSelectedRemoteOnly();
     console.log('Fetch/Pull submodule flow: parallel fetch, recursive no-op check, confirmation, initialization, per-module progress, updated/skipped copy passed');
 }
 

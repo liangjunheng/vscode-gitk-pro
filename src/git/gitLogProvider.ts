@@ -286,6 +286,17 @@ export function defaultPushTarget(plan: PushPlan): PushTargetOption | undefined 
     return plan.targets.find(target => target.isUpstream) ?? plan.targets[0];
 }
 
+/** 每个勾选 remote 默认选中一个推送目标：upstream、同名分支、该 remote 的第一候选，依次回退。 */
+export function defaultPushTargets(plan: PushPlan, remotes: readonly string[]): PushTargetOption[] {
+    return [...new Set(remotes)].flatMap(remote => {
+        const candidates = plan.targets.filter(target => target.remote === remote);
+        const target = candidates.find(candidate => candidate.isUpstream)
+            ?? candidates.find(candidate => Boolean(plan.source.branchName) && candidate.branch === plan.source.branchName)
+            ?? candidates[0];
+        return target ? [target] : [];
+    });
+}
+
 /**
  * 每个远程分支的未推送提交总数。recentUnpushedCommits 受 limit 截断, 直接取其长度会把
  * 所有超过上限的分支显示成同一个数字, 因此这里按 <remote>..HEAD 单独统计真实数量。
@@ -484,7 +495,7 @@ export async function runGitSync(
     action: 'fetch' | 'pull' | 'push',
     onProgress?: (message: string) => void,
     pushTargets?: readonly PushTargetOption[],
-    pullRemote?: string,
+    selectedRemotes?: { fetch: readonly string[]; pull: readonly string[]; push: readonly string[] },
 ): Promise<GitSyncResult> {
     if (action === 'fetch') {
         const repositories = await collectSubmoduleRepositories([{ rootPath: rootUri.fsPath }]);
@@ -494,7 +505,14 @@ export async function runGitSync(
         const changeGroups = await Promise.all(repositories.map(async (repository, index) => {
             const repositoryUri = index === 0 ? rootUri : vscode.Uri.file(repository.rootPath);
             const before = await readRemoteBranchHashes(repositoryUri);
-            await fetchRemotes(repositoryUri);
+            // Remote 选择器只属于当前选中的根仓库；自动发现的子模块沿用各自的全部 remote 获取语义。
+            const fetchRemotesForRepository = index === 0 ? (selectedRemotes?.fetch ?? []) : [];
+            if (fetchRemotesForRepository.length === 0 && index === 0) { throw new Error('没有勾选 Fetch remote。'); }
+            if (fetchRemotesForRepository.length === 0) {
+                await fetchRemotes(repositoryUri);
+            } else {
+                await Promise.all(fetchRemotesForRepository.map(remote => fetchRemotes(repositoryUri, remote)));
+            }
             completed++;
             onProgress?.(`仓库获取完成（${completed}/${repositories.length}）：${repository.rootPath}`);
             const repositoryChanges = describeRemoteBranchChanges(
@@ -518,7 +536,9 @@ export async function runGitSync(
         const beforeHead = await getCurrentGitHeadHash(rootUri);
         const before = await readRemoteBranchHashes(rootUri);
         onProgress?.('正在通过 Git 拉取远程代码...');
-        await pullNative(rootUri, pullRemote);
+        const pullRemotes = selectedRemotes?.pull ?? [];
+        if (pullRemotes.length === 0) { throw new Error('没有勾选 Pull remote。'); }
+        for (const pullRemote of pullRemotes) { await pullNative(rootUri, pullRemote); }
         const afterHead = await getCurrentGitHeadHash(rootUri);
         const changes = describeRemoteBranchChanges(before, await readRemoteBranchHashes(rootUri));
         const headChanged = Boolean(beforeHead && afterHead && beforeHead !== afterHead);
@@ -553,10 +573,12 @@ export async function runGitSync(
     }
     onProgress?.('正在通过 Git 推送本地提交...');
     const plan = await getPushPlan(rootUri);
-    const fallbackTarget = plan ? defaultPushTarget(plan) : undefined;
+    const pushRemotes = new Set(selectedRemotes?.push ?? []);
+    const remotePlan = plan ? { ...plan, targets: plan.targets.filter(target => pushRemotes.has(target.remote)) } : plan;
+    const fallbackTargets = remotePlan ? defaultPushTargets(remotePlan, selectedRemotes?.push ?? []) : [];
     const targets = pushTargets && pushTargets.length > 0
-        ? pushTargets
-        : fallbackTarget ? [fallbackTarget] : [];
+        ? pushTargets.filter(target => pushRemotes.has(target.remote))
+        : fallbackTargets;
     if (targets.length === 0) { throw new Error('当前仓库没有可推送的远程分支。'); }
     const pushResults: NativePushResult[] = [];
     for (const target of targets) {

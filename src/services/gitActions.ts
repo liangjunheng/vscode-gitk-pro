@@ -1,5 +1,6 @@
+import * as path from 'path';
 import * as vscode from 'vscode';
-import { defaultPushTarget, getPushPlan, runGitSync, updateGitSubmodules, type PushTargetOption } from '../git/gitLogProvider';
+import { defaultPushTargets, getPushPlan, runGitSync, updateGitSubmodules, type PushTargetOption } from '../git/gitLogProvider';
 import { checkout, cherryPick, createBranch, createTag, deleteLocalTag, deleteRemoteTag, merge, pushTag as pushCommitTag, readCommitTagState, rebase, reset, revertCommit, stageAll, statusSummary, type CommitTagState, type NativePushResult, type RemoteTagRef } from '../git/gitNativeOperations';
 import { GitCommitEditMsgEditor } from '../webview/gitCommitEditMsgEditor';
 import { confirmPush, pickPushTargets, showPushResult } from './pushDialogs';
@@ -221,7 +222,7 @@ export class GitActionRunner {
         }
     }
 
-    async syncRepository(action: 'fetch' | 'pull' | 'push', repositoryPath: string, pullRemote?: string): Promise<void> {
+    async syncRepository(action: 'fetch' | 'pull' | 'push', repositoryPath: string, selectedRemotes: { fetch: readonly string[]; pull: readonly string[]; push: readonly string[] }): Promise<void> {
         const rootUri = this.getRootUri(repositoryPath);
         if (!rootUri) { return; }
         if (this.syncInProgress) {
@@ -239,10 +240,24 @@ export class GitActionRunner {
                     void vscode.window.showWarningMessage('当前仓库没有可推送的远程分支。');
                     return;
                 }
-                const defaultTarget = defaultPushTarget(plan);
-                selectedPushTargets = await pickPushTargets(plan, defaultTarget ? [defaultTarget] : []);
+                const pushRemotes = new Set(selectedRemotes.push);
+                const remotePlan = {
+                    ...plan,
+                    targets: plan.targets.filter(target => pushRemotes.has(target.remote)),
+                };
+                if (remotePlan.targets.length === 0) {
+                    void vscode.window.showWarningMessage('勾选的 Push remote 没有可推送的远程分支。');
+                    return;
+                }
+                const defaultTargets = defaultPushTargets(remotePlan, selectedRemotes.push);
+                selectedPushTargets = await pickPushTargets(remotePlan, defaultTargets);
                 if (!selectedPushTargets || selectedPushTargets.length === 0) { return; }
-                const confirmed = await confirmPush(selectedPushTargets.map(target => ({ source: plan.source, target })));
+                const repositoryLabel = path.basename(rootUri.fsPath) || repositoryPath;
+                const confirmed = await confirmPush(
+                    selectedPushTargets.map(target => ({ source: plan.source, target })),
+                    repositoryLabel,
+                    selectedRemotes.push,
+                );
                 if (!confirmed) { return; }
             }
             await vscode.window.withProgress({
@@ -257,7 +272,7 @@ export class GitActionRunner {
                         action,
                         message => progress.report({ message }),
                         selectedPushTargets,
-                        pullRemote,
+                        selectedRemotes,
                     );
                     let submodulesUpdated = false;
                     if (action === 'pull' && result.submodulesNeedUpdate) {

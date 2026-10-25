@@ -119,13 +119,23 @@ function describePushConfirmationRow(row: PushConfirmRow): string {
     return `${prefix}${describeSourceLabel(row.source)} → ${row.target.remoteName}`;
 }
 
+function pushRemoteDetail(pushRemotes: readonly string[]): string {
+    const remotes = [...new Set(pushRemotes.filter(Boolean))];
+    return `推送到远程仓库：${remotes.length > 0 ? remotes.join('、') : '无'}`;
+}
+
 /** 原生模态弹窗逐行展示推送分支, 显式取消项同时承接 Esc 和关闭操作。 */
-export async function confirmPush(rows: readonly PushConfirmRow[]): Promise<boolean> {
+export async function confirmPush(
+    rows: readonly PushConfirmRow[],
+    repositoryLabel?: string,
+    pushRemotes: readonly string[] = [],
+): Promise<boolean> {
     const pushItem: vscode.MessageItem = { title: '推送' };
     const cancelItem: vscode.MessageItem = { title: '取消', isCloseAffordance: true };
+    const repositoryDetail = repositoryLabel ? `仓库名：${repositoryLabel}\n` : '';
     const choice = await vscode.window.showInformationMessage(
         '确认推送',
-        { modal: true, detail: `需要推送的分支：\n${rows.map(describePushConfirmationRow).join('\n')}` },
+        { modal: true, detail: `${repositoryDetail}${pushRemoteDetail(pushRemotes)}\n\n需要推送的分支：\n${rows.map(describePushConfirmationRow).join('\n')}` },
         pushItem,
         cancelItem,
     );
@@ -143,16 +153,17 @@ export async function confirmSync(
     rows: readonly PushConfirmRow[],
     pullFrom: readonly string[],
     repositoryLabel?: string,
+    pushRemotes: readonly string[] = [],
 ): Promise<SyncChoice | undefined> {
     const syncItem: vscode.MessageItem = { title: '同步' };
     const pushOnlyItem: vscode.MessageItem = { title: '仅推送' };
     const cancelItem: vscode.MessageItem = { title: '取消', isCloseAffordance: true };
-    const repositoryDetail = repositoryLabel ? `仓库名：${repositoryLabel}\n\n` : '';
+    const repositoryDetail = repositoryLabel ? `仓库名：${repositoryLabel}\n` : '';
     const choice = await vscode.window.showInformationMessage(
         '确认同步',
         {
             modal: true,
-            detail: `${repositoryDetail}先拉取：\n${pullFrom.length > 0 ? pullFrom.join('\n') : '无可拉取的远程分支，将直接推送'}\n\n需要推送的分支：\n${rows.map(describePushConfirmationRow).join('\n')}\n\n同步按钮：先拉取，再推送。`,
+            detail: `${repositoryDetail}${pushRemoteDetail(pushRemotes)}\n\n先拉取：\n${pullFrom.length > 0 ? pullFrom.join('\n') : '无可拉取的远程分支，将直接推送'}\n\n需要推送的分支：\n${rows.map(describePushConfirmationRow).join('\n')}\n\n同步按钮：先拉取，再推送。`,
         },
         syncItem,
         pushOnlyItem,

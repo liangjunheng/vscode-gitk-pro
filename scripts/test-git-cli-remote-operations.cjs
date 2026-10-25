@@ -65,10 +65,19 @@ async function main() {
         });
         const rootUri = { fsPath: local };
         assert.deepEqual((await operations.listRemotes(rootUri)).map(remote => remote.name), ['origin']);
-        await operations.setRemoteAsUpstream(rootUri, 'origin');
-        assert.equal(git(local, 'rev-parse', '--symbolic-full-name', '@{upstream}'), 'refs/remotes/origin/main');
         await operations.addRemote(rootUri, 'backup', origin);
         assert.deepEqual((await operations.listRemotes(rootUri)).map(remote => remote.name), ['backup', 'origin']);
+        await operations.setFasterGitRemoteOperation(rootUri, 'backup', 'fetch', true);
+        await operations.setFasterGitRemoteOperation(rootUri, 'backup', 'pull', true);
+        let configuredOperations = await operations.readFasterGitRemoteOperations(rootUri, ['origin', 'backup']);
+        assert.deepEqual([...configuredOperations.get('backup').entries()].sort(), [['fetch', true], ['pull', true]], 'repository-local config restores checked remote operations');
+        assert.equal(git(local, 'config', '--local', '--get', 'fastergit.remote.backup.fetch'), 'true');
+        await operations.setFasterGitRemoteOperation(rootUri, 'backup', 'pull', false);
+        configuredOperations = await operations.readFasterGitRemoteOperations(rootUri, ['origin', 'backup']);
+        assert.deepEqual([...configuredOperations.get('backup').entries()].sort(), [['fetch', true], ['pull', false]], 'unchecking persists false for the operation');
+        assert.equal(git(local, 'config', '--local', '--get', 'fastergit.remote.backup.pull'), 'false');
+        await operations.clearFasterGitRemoteOperations(rootUri, 'backup');
+        assert.equal((await operations.readFasterGitRemoteOperations(rootUri, ['origin', 'backup'])).has('backup'), false, 'remote deletion cleanup removes FasterGit operation config');
         await operations.removeRemote(rootUri, 'backup');
         assert.deepEqual((await operations.listRemotes(rootUri)).map(remote => remote.name), ['origin']);
 

@@ -1589,8 +1589,8 @@ async function verifyProvider() {
       if (name === '../services/pushDialogs') return {
         ...load.call(this, name, ...args),
         pickPushTargets: async (_plan, defaultTargets) => { pushTargetDefaults = defaultTargets; return selectedPushTargetsResult; },
-        confirmPush: async rows => { confirmRows = rows; confirmOptions = undefined; return true; },
-        confirmSync: async (rows, pullFrom, repositoryLabel) => { confirmRows = rows; confirmOptions = { pullFrom, repositoryLabel }; return syncChoice; },
+        confirmPush: async (rows, repositoryLabel, pushRemotes) => { confirmRows = rows; confirmOptions = { repositoryLabel, pushRemotes }; return true; },
+        confirmSync: async (rows, pullFrom, repositoryLabel, pushRemotes) => { confirmRows = rows; confirmOptions = { pullFrom, repositoryLabel, pushRemotes }; return syncChoice; },
         showPushResult: async (title, detail) => { pushResultNotices.push([title, detail]); },
       };
       if (name === '../git/gitNativeOperations') return {
@@ -1644,32 +1644,32 @@ async function verifyProvider() {
   assert.equal(await confirmPush([
     { source: pushDialogPlan.source, target: pushDialogPlan.targets[0] },
     { source: pushDialogPlan.source, target: pushDialogPlan.targets[1], repositoryLabel: 'child' },
-  ]), true);
+  ], 'inkengine', ['origin', 'upstream']), true);
   const confirmation = confirmationDialogs.at(-1);
   assert.equal(confirmation.message, '确认推送');
   assert.deepEqual(confirmation.items, [{ title: '推送' }, { title: '取消', isCloseAffordance: true }], 'exactly two plain-text actions, with cancel handling dialog close');
   assert.deepEqual(confirmation.options, {
     modal: true,
-    detail: '需要推送的分支：\nink_dev → origin/ink_master\nchild：ink_dev → upstream/develop',
+    detail: '仓库名：inkengine\n推送到远程仓库：origin、upstream\n\n需要推送的分支：\nink_dev → origin/ink_master\nchild：ink_dev → upstream/develop',
   }, 'modal detail lists each branch on its own line');
   // 同步确认: 顶部显示仓库名，并始终提供同步/仅推送/取消。
   const syncRow = { source: pushDialogPlan.source, target: pushDialogPlan.targets[0] };
   confirmationChoice = '同步';
-  assert.equal(await confirmSync([syncRow], ['origin/ink_master', 'child：upstream/develop'], 'inkengine'), 'sync');
+  assert.equal(await confirmSync([syncRow], ['origin/ink_master', 'child：upstream/develop'], 'inkengine', ['origin', 'upstream']), 'sync');
   const syncConfirmation = confirmationDialogs.at(-1);
   assert.equal(syncConfirmation.message, '确认同步');
   assert.deepEqual(syncConfirmation.items, [{ title: '同步' }, { title: '仅推送' }, { title: '取消', isCloseAffordance: true }], 'sync confirmation always exposes sync, push-only, and cancel actions');
-  assert.equal(syncConfirmation.options.detail, '仓库名：inkengine\n\n先拉取：\norigin/ink_master\nchild：upstream/develop\n\n需要推送的分支：\nink_dev → origin/ink_master\n\n同步按钮：先拉取，再推送。', 'the sync explanation appears immediately above the modal actions');
+  assert.equal(syncConfirmation.options.detail, '仓库名：inkengine\n推送到远程仓库：origin、upstream\n\n先拉取：\norigin/ink_master\nchild：upstream/develop\n\n需要推送的分支：\nink_dev → origin/ink_master\n\n同步按钮：先拉取，再推送。', 'the sync dialog lists Push remotes below the repository');
   confirmationChoice = '仅推送';
-  assert.equal(await confirmSync([syncRow], [], 'inkengine'), 'push');
+  assert.equal(await confirmSync([syncRow], [], 'inkengine', ['origin']), 'push');
   const noPullConfirmation = confirmationDialogs.at(-1);
   assert.equal(noPullConfirmation.message, '确认同步');
   assert.deepEqual(noPullConfirmation.items, [{ title: '同步' }, { title: '仅推送' }, { title: '取消', isCloseAffordance: true }], 'without a pull target the dialog keeps all sync actions');
-  assert.equal(noPullConfirmation.options.detail, '仓库名：inkengine\n\n先拉取：\n无可拉取的远程分支，将直接推送\n\n需要推送的分支：\nink_dev → origin/ink_master\n\n同步按钮：先拉取，再推送。', 'the sync explanation remains above the actions when there is no pull target');
+  assert.equal(noPullConfirmation.options.detail, '仓库名：inkengine\n推送到远程仓库：origin\n\n先拉取：\n无可拉取的远程分支，将直接推送\n\n需要推送的分支：\nink_dev → origin/ink_master\n\n同步按钮：先拉取，再推送。', 'the Push remote remains visible when there is no pull target');
   confirmationChoice = '取消';
-  assert.equal(await confirmSync([syncRow], [], 'inkengine'), undefined, 'cancel returns no choice');
+  assert.equal(await confirmSync([syncRow], [], 'inkengine', ['origin']), undefined, 'cancel returns no choice');
   confirmationChoice = undefined;
-  assert.equal(await confirmSync([syncRow], [], 'inkengine'), undefined, 'closing the dialog returns no choice');
+  assert.equal(await confirmSync([syncRow], [], 'inkengine', ['origin']), undefined, 'closing the dialog returns no choice');
   confirmationChoice = '取消';
   assert.equal(await confirmPush([{ source: pushDialogPlan.source, target: pushDialogPlan.targets[0] }]), false);
   confirmationChoice = undefined;
@@ -2030,7 +2030,7 @@ async function verifyProvider() {
   await provider.runCommitPanelPush([childPath], true, false);
   // 确认行用的是 HEAD 现场读到的分支名与 hash, 而不是目标里的任何字段。
   assert.deepEqual(confirmRows.map(row => [row.source.branchName, row.source.hash, row.target.remoteName]), [['main', 'a'.repeat(40), 'origin/main']]);
-  assert.deepEqual(confirmOptions, { pullFrom: ['origin/main'], repositoryLabel: 'child' }, 'sync confirmation lists the repository and upstream it pulls before pushing');
+  assert.deepEqual(confirmOptions, { pullFrom: ['origin/main'], repositoryLabel: 'child', pushRemotes: ['origin'] }, 'sync confirmation lists the repository, Push remotes, and upstream it pulls before pushing');
   assert.equal(checkouts.length, checkoutCountBeforePush, 'sync does not switch branches');
   assert.deepEqual(pulls, [[childPath, 'origin', 'main', undefined, { autostash: true }]], 'sync pulls the bound upstream once, with autostash so a dirty worktree cannot block it');
   assert.deepEqual(pushes.at(-1), [childPath, 'origin', 'main', 'main', 'a'.repeat(40)], 'sync sends the current HEAD to the selected remote branch, carrying branch name and hash in separate fields');
@@ -2041,7 +2041,7 @@ async function verifyProvider() {
   resetSyncState();
   await provider.runCommitPanelPush([childPath], false, false);
   assert.deepEqual(pulls, [], 'plain push never pulls');
-  assert.equal(confirmOptions, undefined, 'plain push keeps the two-button confirmation');
+  assert.deepEqual(confirmOptions, { repositoryLabel: 'child', pushRemotes: ['origin'] }, 'plain push confirmation lists the repository and checked Push remotes');
   assert.deepEqual(syncHeadRefreshes, [], 'a plain push failure does not reread an unpulled repository');
   assert.deepEqual(pushResultNotices.at(-1), ['Git Push 失败', 'stop after push']);
   // 同时勾选多个远程分支: 只拉取一次 upstream, 然后把拉取后的 HEAD 推送到每个勾选的分支。
@@ -2065,13 +2065,13 @@ async function verifyProvider() {
   selectedPushTargetsResult = [pushTargetFixture[0]];
   await provider.runCommitPanelPush([childPath], true, false);
   assert.deepEqual(pulls, [], 'unticking the upstream leaves nothing to pull from');
-  assert.deepEqual(confirmOptions, { pullFrom: [], repositoryLabel: 'child' });
+  assert.deepEqual(confirmOptions, { pullFrom: [], repositoryLabel: 'child', pushRemotes: ['fork'] });
   assert.equal(pushResultNotices.at(-1)[0], 'Git Sync 已完成');
   // 选择"仅推送": 不拉取, 对所有勾选分支推送当前 HEAD, 结果按普通推送表述且不重读未拉取的仓库。
   resetSyncState(); syncChoice = 'push';
   selectedPushTargetsResult = [pushTargetFixture[0], pushTargetFixture[1]];
   await provider.runCommitPanelPush([childPath], true, false);
-  assert.deepEqual(confirmOptions, { pullFrom: ['origin/main'], repositoryLabel: 'child' }, 'the dialog lists the repository name and what sync would have pulled');
+  assert.deepEqual(confirmOptions, { pullFrom: ['origin/main'], repositoryLabel: 'child', pushRemotes: ['fork', 'origin'] }, 'the dialog lists the repository name, Push remotes, and what sync would have pulled');
   assert.deepEqual(pulls, [], 'push-only never pulls');
   assert.deepEqual(pushes.map(entry => entry.slice(1)), [['fork', 'main', 'main', 'a'.repeat(40)], ['origin', 'main', 'main', 'a'.repeat(40)]], 'push-only sends the unpulled HEAD to every ticked branch');
   assert.equal(pushResultNotices.at(-1)[0], 'Git Push 已完成');

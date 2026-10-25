@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { type AppState, type ChangeSetMode, type ChangedFile, GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
 import { defaultPushTarget, getCloudCommits, getCommitFiles, getStashes, getStashFiles, type StashEntry, getCurrentGitBranch, getCurrentGitHeadHash, getGitAheadBehind, getGitAheadCount, getGitBranches, getGitlinkPathsInCommit, getPushPlan, type PushSourceBranch, type PushTargetOption, readCurrentCommitMessage } from '../git/gitLogProvider';
-import { addRemote, checkoutBranch, checkoutRemoteBranch, commitDetails, configGet, fetchRemotes, hasConflicts, indexGitlink, listConfiguredBranchRemotes, listRemotes, pull, push, rangeCommits, removeRemote, setRemoteAsUpstream, resolveRevision, restoreAll, restoreSubmodule, trackedPaths, type GitRemote, type NativeCommitDetails, type NativePushResult } from '../git/gitNativeOperations';
+import { addRemote, checkoutBranch, checkoutRemoteBranch, clearFasterGitRemoteOperations, commitDetails, configGet, fetchRemotes, hasConflicts, indexGitlink, listRemoteBranchesContaining, listRemotes, pull, push, rangeCommits, readFasterGitRemoteOperations, removeRemote, resolveRevision, restoreAll, restoreSubmodule, setFasterGitRemoteOperation, trackedPaths, type FasterGitRemoteOperation, type GitRemote, type NativeCommitDetails, type NativePushResult } from '../git/gitNativeOperations';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { FILE_CONTEXT_MENU_ACTIONS } from './fileContextMenu';
 import { readMergeOperation, runMergeOperation, type MergeOperation } from '../git/mergeOperation';
@@ -29,6 +29,10 @@ import { store, type StoreEffect } from '../state/store';
 import { resolveWorkingTreeSelection } from './workingTreeSelection';
 
 type SetiIconDefinitions = Record<string, readonly [string, string]>;
+
+type RemoteOperation = 'fetch' | 'pull' | 'push';
+type RemoteOperationSnapshot = { fetch: readonly string[]; pull: readonly string[]; push: readonly string[] };
+type RemoteStateSnapshot = { readonly remotes: readonly GitRemote[]; readonly upstreamRemote: string; readonly operations: RemoteOperationSnapshot };
 
 type BranchTip = Readonly<{
     timestamp: number;
@@ -284,9 +288,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private totalRepoListSnapshot: readonly GitRepositoryOption[] = [];
     private totalBranchesListSnapshot: readonly GitBranchOption[] = [];
     private selectedRepoDisplaySnapshot?: { label: string; path: string; hasSubmodules: boolean; isSubmodule: boolean };
-    private readonly selectedRemoteByRepository = new Map<string, string>();
-    /** 每个仓库的 remote/upstream 内存快照；切换仓库先回放，再后台刷新 Git 配置。 */
-    private readonly remoteStateByRepository = new Map<string, { remotes: readonly GitRemote[]; upstreamRemote: string }>();
+    /** 每个仓库的 remote/upstream/操作快照；切换仓库先回放，再后台刷新 Git 配置。 */
+    private readonly remoteStateByRepository = new Map<string, RemoteStateSnapshot>();
+    /** 丢弃并发 remote/config 读取的过期结果，避免旧快照覆盖刚勾选的状态。 */
+    private readonly remotePublishRevisionByRepository = new Map<string, number>();
     private selectedBranchDisplaySnapshot: { label: string; title: string; names: string[]; kind?: GitBranchOption['kind'] } = {
         label: '未选择分支',
         title: '未选择分支',
@@ -625,8 +630,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         for (const [repositoryPath, target] of Object.entries(this.context.workspaceState.get<Record<string, StoredPushTarget>>('lastPushedTargets', {}))) {
             this.lastPushedTargetByRepository.set(repositoryPath, target);
         }
-        // 清理上一版持久化的 remote 选择记录；remote 选择只保留当前会话内存缓存。
-        void this.context.workspaceState.update('selectedRemotes', undefined);
         // 订阅顺序是有意设计：仓库显示必须先于分支/提交刷新，避免下游监听器的同步前置逻辑阻塞 UI 更新。
         this.selectedRepoSubscription = this.repoController.onSelectedRepoListChanged(selected => this.onSelectedRepoListChanged(selected));
         this.reposLoadingSubscription = this.repoController.onReposLoadingChanged(loading => {
@@ -738,7 +741,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 for (const cached of [...this.remoteStateByRepository.keys()]) {
                     if (!known.has(cached)) { this.remoteStateByRepository.delete(cached); }
                 }
+                for (const cached of [...this.remotePublishRevisionByRepository.keys()]) {
+                    if (!known.has(cached)) { this.remotePublishRevisionByRepository.delete(cached); }
+                }
                 this.totalRepoListSnapshot = [...repositories];
+                // 仓库发现后后台预热每个仓库的 remote/upstream；之后首次切换也能直接回放缓存。
+                for (const repository of repositories) {
+                    if (!this.remoteStateByRepository.has(repository.path)) { void this.publishRemoteList(repository.path); }
+                }
                 this.onDidChangeRepositoryStateEmitter.fire();
                 this.view?.webview.postMessage({
                     type: 'totalRepoListChanged',
@@ -1277,6 +1287,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.view?.webview.postMessage({
             type: 'selectedRepoDisplayChanged',
             repository: this.selectedRepoDisplaySnapshot,
+            remoteState: repository ? this.remoteStateByRepository.get(repository.path) : undefined,
         });
         // 选择事件产生后立即同步完整状态，不能等待提交或分支事件。
         this.pushStateToWebview();
@@ -1304,6 +1315,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.view?.webview.postMessage({
             type: 'selectedRepoDisplayChanged',
             repository: next,
+            remoteState: repository ? this.remoteStateByRepository.get(repository.path) : undefined,
         });
     }
 
@@ -1958,74 +1970,86 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     private async currentUpstreamRemote(repositoryPath: string, remotes: readonly GitRemote[]): Promise<string> {
-        // 远程选择器初始化可能早于分支控制器快照；直接读取 Git 的 branch.<name>.remote，
-        // 避免依赖控制器的异步时序导致已有 upstream 被误报为空。
         const rootUri = vscode.Uri.parse(repositoryPath);
         try {
             const branch = await getCurrentGitBranch(rootUri);
             if (branch) {
                 const configured = (await configGet(rootUri, `branch.${branch}.remote`, '')).trim();
-                if (configured && remotes.some(remote => remote.name === configured)) { return configured; }
+                return configured && remotes.some(remote => remote.name === configured) ? configured : '';
             }
-            // 子模块通常处于 gitlink 指向的 detached HEAD，没有当前分支 upstream；
-            // 优先复用子仓库已有 branch remote 配置，再回退 origin/第一个 remote。
-            const configuredBranchRemotes = await listConfiguredBranchRemotes(rootUri);
-            return configuredBranchRemotes.find(name => remotes.some(remote => remote.name === name))
-                ?? remotes.find(remote => remote.name === 'origin')?.name
-                ?? remotes[0]?.name
-                ?? '';
+            const containingRemoteBranches = await listRemoteBranchesContaining(rootUri);
+            const containingRemoteName = containingRemoteBranches
+                .map(branch => branch.split('/')[0])
+                .find(name => remotes.some(remote => remote.name === name));
+            if (containingRemoteName) { return containingRemoteName; }
+            const headHash = await getCurrentGitHeadHash(rootUri);
+            if (headHash) {
+                const branches = await getGitBranches(rootUri);
+                const remoteBranch = branches.find(candidate => candidate.kind === 'remote' && candidate.hash === headHash);
+                const remoteName = remoteBranch?.label.split('/')[0];
+                if (remoteName && remotes.some(remote => remote.name === remoteName)) { return remoteName; }
+            }
+            return '';
         } catch {
-            return remotes.find(remote => remote.name === 'origin')?.name
-                ?? remotes[0]?.name
-                ?? '';
+            return '';
         }
     }
 
-    private defaultRemoteName(repositoryPath: string, remotes: readonly GitRemote[]): string {
-        const selected = this.selectedRemoteByRepository.get(repositoryPath);
-        if (selected && remotes.some(remote => remote.name === selected)) { return selected; }
-        if (selected) { this.selectedRemoteByRepository.delete(repositoryPath); }
-        return '';
+    private remoteOperationSnapshot(
+        remotes: readonly GitRemote[],
+        upstreamRemote: string,
+        configured: ReadonlyMap<string, ReadonlyMap<FasterGitRemoteOperation, boolean>>,
+    ): RemoteOperationSnapshot {
+        const names = (operation: FasterGitRemoteOperation): string[] => remotes
+            .filter(remote => {
+                const configuredValue = configured.get(remote.name)?.get(operation);
+                return remote.name === upstreamRemote ? configuredValue !== false : configuredValue === true;
+            })
+            .map(remote => remote.name);
+        return { fetch: names('fetch'), pull: names('pull'), push: names('push') };
+    }
+
+    private invalidateRemotePublish(repositoryPath: string): number {
+        const revision = (this.remotePublishRevisionByRepository.get(repositoryPath) ?? 0) + 1;
+        this.remotePublishRevisionByRepository.set(repositoryPath, revision);
+        return revision;
     }
 
     private async publishRemoteList(repositoryPath: string | undefined, upstreamRemoteOverride?: string): Promise<void> {
         if (!repositoryPath || !this.repositories.some(repository => repository.path === repositoryPath)) {
-            this.view?.webview.postMessage({ type: 'remoteListChanged', repositoryPath: '', remotes: [], selectedRemote: '' });
+            this.view?.webview.postMessage({ type: 'remoteListChanged', repositoryPath: '', remotes: [] });
             return;
         }
+        const revision = this.invalidateRemotePublish(repositoryPath);
         const cached = this.remoteStateByRepository.get(repositoryPath);
         if (cached) {
-            // 先回放当前仓库的 upstream 缓存，切换仓库时不等待 Git CLI。
-            this.view?.webview.postMessage({
-                type: 'remoteListChanged',
-                repositoryPath,
-                remotes: cached.remotes,
-                selectedRemote: this.defaultRemoteName(repositoryPath, cached.remotes),
-                upstreamRemote: cached.upstreamRemote,
-            });
+            this.view?.webview.postMessage({ type: 'remoteListChanged', repositoryPath, remotes: cached.remotes, upstreamRemote: cached.upstreamRemote, operations: cached.operations });
         }
         try {
-            const remotes = await listRemotes(vscode.Uri.parse(repositoryPath));
-            const selectedRemote = this.defaultRemoteName(repositoryPath, remotes);
-            const upstreamRemote = upstreamRemoteOverride ?? await this.currentUpstreamRemote(repositoryPath, remotes);
-            this.remoteStateByRepository.set(repositoryPath, { remotes: [...remotes], upstreamRemote });
-            this.view?.webview.postMessage({
-                type: 'remoteListChanged',
-                repositoryPath,
-                remotes,
-                selectedRemote,
-                upstreamRemote,
-            });
+            const rootUri = vscode.Uri.parse(repositoryPath);
+            const remotes = await listRemotes(rootUri);
+            const [upstreamRemote, configured] = await Promise.all([
+                upstreamRemoteOverride !== undefined
+                    ? Promise.resolve(upstreamRemoteOverride)
+                    : this.currentUpstreamRemote(repositoryPath, remotes),
+                readFasterGitRemoteOperations(rootUri, remotes.map(remote => remote.name)),
+            ]);
+            const orderedRemotes = [...remotes].sort((left, right) =>
+                Number(right.name === upstreamRemote) - Number(left.name === upstreamRemote)
+                || left.name.localeCompare(right.name));
+            const operations = this.remoteOperationSnapshot(orderedRemotes, upstreamRemote, configured);
+            if (this.remotePublishRevisionByRepository.get(repositoryPath) !== revision) { return; }
+            const snapshot: RemoteStateSnapshot = { remotes: orderedRemotes, upstreamRemote, operations };
+            this.remoteStateByRepository.set(repositoryPath, snapshot);
+            this.view?.webview.postMessage({ type: 'remoteListChanged', repositoryPath, remotes: orderedRemotes, upstreamRemote, operations });
         } catch (error) {
-            this.view?.webview.postMessage({
-                type: 'remoteListChanged',
-                repositoryPath,
-                remotes: cached?.remotes ?? [],
-                selectedRemote: cached ? this.defaultRemoteName(repositoryPath, cached.remotes) : '',
-                upstreamRemote: cached?.upstreamRemote ?? '',
-                error: error instanceof Error ? error.message : String(error),
-            });
+            if (this.remotePublishRevisionByRepository.get(repositoryPath) !== revision) { return; }
+            this.view?.webview.postMessage({ type: 'remoteListChanged', repositoryPath, remotes: cached?.remotes ?? [], upstreamRemote: cached?.upstreamRemote ?? '', operations: cached?.operations, error: error instanceof Error ? error.message : String(error) });
         }
+    }
+
+    private operationRemotes(repositoryPath: string): RemoteOperationSnapshot {
+        return this.remoteStateByRepository?.get(repositoryPath)?.operations ?? { fetch: [], pull: [], push: [] };
     }
 
     private async addRemoteForSelectedRepository(): Promise<void> {
@@ -2053,11 +2077,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (remoteUrl === undefined) { return; }
         try {
             await addRemote(vscode.Uri.parse(repositoryPath), remoteName, remoteUrl);
-            await setRemoteAsUpstream(vscode.Uri.parse(repositoryPath), remoteName.trim());
-            this.selectedRemoteByRepository.set(repositoryPath, remoteName.trim());
-            this.selectedRepoTotalBranchWatcher.refreshSelectedRepositories();
-            await this.publishRemoteList(repositoryPath, remoteName.trim());
-            void vscode.window.showInformationMessage(`已添加并选中 remote「${remoteName.trim()}」，可点击 Pull 拉取代码。`);
+            this.remoteStateByRepository.delete(repositoryPath);
+            await this.publishRemoteList(repositoryPath);
+            void vscode.window.showInformationMessage(`已添加 remote「${remoteName.trim()}」。`);
         } catch (error) {
             void vscode.window.showErrorMessage(`${repository?.label ?? '仓库'} 添加 remote 失败：${error instanceof Error ? error.message : String(error)}`);
         }
@@ -2073,40 +2095,47 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         );
         if (choice !== '删除') { return; }
         try {
-            await removeRemote(vscode.Uri.parse(repositoryPath), name);
-            if (this.selectedRemoteByRepository.get(repositoryPath) === name) {
-                this.selectedRemoteByRepository.delete(repositoryPath);
-            }
+            const rootUri = vscode.Uri.parse(repositoryPath);
+            await clearFasterGitRemoteOperations(rootUri, name);
+            await removeRemote(rootUri, name);
+            this.remoteStateByRepository.delete(repositoryPath);
             await this.publishRemoteList(repositoryPath);
         } catch (error) {
             void vscode.window.showErrorMessage(`删除 remote「${name}」失败：${error instanceof Error ? error.message : String(error)}`);
         }
     }
 
-    private async selectRemoteForSelectedRepository(name: string): Promise<void> {
+    private async setRemoteOperationForSelectedRepository(operation: RemoteOperation, name: string, enabled: boolean): Promise<void> {
         const repositoryPath = this.selectedRepositoryPath;
         if (!repositoryPath || !name) { return; }
+        const rootUri = vscode.Uri.parse(repositoryPath);
+        this.invalidateRemotePublish(repositoryPath);
         try {
-            const remotes = await listRemotes(vscode.Uri.parse(repositoryPath));
+            const remotes = await listRemotes(rootUri);
             if (!remotes.some(remote => remote.name === name)) { return; }
-            await setRemoteAsUpstream(vscode.Uri.parse(repositoryPath), name);
-            this.selectedRemoteByRepository.set(repositoryPath, name);
-            this.selectedRepoTotalBranchWatcher.refreshSelectedRepositories();
-            await this.publishRemoteList(repositoryPath, name);
+            const upstreamRemote = await this.currentUpstreamRemote(repositoryPath, remotes);
+            await setFasterGitRemoteOperation(rootUri, name, operation, enabled);
+            this.remoteStateByRepository.delete(repositoryPath);
+            await this.publishRemoteList(repositoryPath, upstreamRemote);
         } catch (error) {
-            void vscode.window.showErrorMessage(`选择 remote「${name}」失败：${error instanceof Error ? error.message : String(error)}`);
+            const message = error instanceof Error ? error.message : String(error);
+            this.view?.webview.postMessage({ type: 'remoteOperationFailed', repositoryPath, operation, name, error: message });
+            void vscode.window.showErrorMessage(`更新 remote「${name}」的 ${operation} 配置失败：${message}`);
+            await this.publishRemoteList(repositoryPath);
         }
     }
 
-    private handleRemoteMessage(message: { type: string; name?: unknown }): void {
+    private handleRemoteMessage(message: { type: string; name?: unknown; operation?: unknown; enabled?: unknown }): void {
         if (message.type === 'requestRemoteList') {
             void this.publishRemoteList(this.selectedRepositoryPath);
         } else if (message.type === 'addRemote') {
             void this.addRemoteForSelectedRepository();
         } else if (message.type === 'deleteRemote' && typeof message.name === 'string') {
             void this.deleteRemoteForSelectedRepository(message.name);
-        } else if (message.type === 'selectRemote' && typeof message.name === 'string') {
-            void this.selectRemoteForSelectedRepository(message.name);
+        } else if (message.type === 'setRemoteOperation'
+            && (message.operation === 'fetch' || message.operation === 'pull' || message.operation === 'push')
+            && typeof message.name === 'string' && typeof message.enabled === 'boolean') {
+            void this.setRemoteOperationForSelectedRepository(message.operation, message.name, message.enabled);
         }
     }
 
@@ -2133,12 +2162,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             });
             return;
         }
-        const remoteMessage = message as { type?: unknown; name?: unknown };
+        const remoteMessage = message as { type?: unknown; name?: unknown; operation?: unknown; enabled?: unknown };
         if (remoteMessage.type === 'requestRemoteList'
             || remoteMessage.type === 'addRemote'
             || remoteMessage.type === 'deleteRemote'
-            || remoteMessage.type === 'selectRemote') {
-            this.handleRemoteMessage({ type: String(remoteMessage.type), name: remoteMessage.name });
+            || remoteMessage.type === 'setRemoteOperation') {
+            this.handleRemoteMessage({ type: String(remoteMessage.type), name: remoteMessage.name, operation: remoteMessage.operation, enabled: remoteMessage.enabled });
             return;
         }
         const input = message as GitkIntent;
@@ -2709,6 +2738,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 this.view?.webview.postMessage({
                     type: 'selectedRepoDisplayChanged',
                     repository: this.selectedRepoDisplaySnapshot,
+                    remoteState: this.selectedRepositoryPath
+                        ? this.remoteStateByRepository.get(this.selectedRepositoryPath)
+                        : undefined,
                 });
                 this.view?.webview.postMessage({
                     type: 'selectedBranchDisplayChanged',
@@ -2751,7 +2783,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             case 'gitSync': {
                 const repositoryPath = this.selectedRepositoryPath;
                 if (repositoryPath && (effect.action === 'fetch' || effect.action === 'pull' || effect.action === 'push')) {
-                    void this.gitActions.syncRepository(effect.action, repositoryPath, effect.action === 'pull' ? this.selectedRemoteByRepository.get(repositoryPath) : undefined);
+                    const remotes = this.operationRemotes(repositoryPath);
+                    const selected = remotes[effect.action];
+                    if (!selected || selected.length === 0) {
+                        void vscode.window.showWarningMessage(`请先在 Remote 选择器中勾选 ${effect.action} 使用的远程仓库。`);
+                        break;
+                    }
+                    void this.gitActions.syncRepository(effect.action, repositoryPath, remotes);
                 }
                 break;
             }
@@ -3444,18 +3482,23 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 target,
                 repositoryLabel: repositoryLabelOf(repositoryPath),
             })));
+        const repositoryLabel = this.repositories.find(repository => repository.path === rootRepositoryPath)?.label
+            ?? path.basename(rootUri.fsPath);
+        const configuredPushRemotes = this.operationRemotes(rootRepositoryPath).push;
+        const displayedPushRemotes = configuredPushRemotes.length > 0
+            ? configuredPushRemotes
+            : [...new Set(confirmRows.map(row => row.target.remote))];
         let syncing = false;
         if (pullBeforePush) {
             const choice = await confirmSync(confirmRows, [...pullTargetByRepository].map(([repositoryPath, target]) => {
                 const label = repositoryLabelOf(repositoryPath);
                 return `${label ? `${label}：` : ''}${target.remoteName}`;
-            }), this.repositories.find(repository => repository.path === rootRepositoryPath)?.label
-                ?? path.basename(rootUri.fsPath));
+            }), repositoryLabel, displayedPushRemotes);
             if (!choice) { return; }
             syncing = choice === 'sync';
             // 仅推送: 跳过拉取, 后面的进度、结果与重读都按普通推送执行。
             if (!syncing) { pullTargetByRepository.clear(); }
-        } else if (!await confirmPush(confirmRows)) {
+        } else if (!await confirmPush(confirmRows, repositoryLabel, displayedPushRemotes)) {
             return;
         }
         const operationName = syncing ? 'Git Sync' : 'Git Push';
