@@ -23,7 +23,7 @@ use git2::{
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{CStr, CString, c_char, c_void};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const GITLINK_MODE: u32 = 0o160000;
 const NO_COMMIT: &str = "仓库还没有任何提交，无法 stash";
@@ -245,113 +245,6 @@ fn remove_worktree_path(root: &Path, relative: &str) -> NativeResult<()> {
     } else {
         std::fs::remove_file(&full)
             .map_err(|error| format!("删除 {} 失败: {error}", full.display()))?;
-    }
-    Ok(())
-}
-
-fn backup_worktree_files(
-    root: &Path,
-    relative: &Path,
-    backups: &mut Vec<(PathBuf, Vec<u8>)>,
-) -> NativeResult<()> {
-    let full = root.join(relative);
-    let metadata = match std::fs::symlink_metadata(&full) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(format!("读取 {} 失败: {error}", full.display())),
-    };
-    if metadata.is_dir() {
-        for entry in std::fs::read_dir(&full)
-            .map_err(|error| format!("读取 {} 失败: {error}", full.display()))?
-        {
-            let entry = entry.map_err(|error| format!("读取 {} 失败: {error}", full.display()))?;
-            let child = relative.join(entry.file_name());
-            backup_worktree_files(root, &child, backups)?;
-        }
-    } else {
-        let contents = std::fs::read(&full)
-            .map_err(|error| format!("读取 {} 失败: {error}", full.display()))?;
-        backups.push((full, contents));
-    }
-    Ok(())
-}
-
-struct UnstagedIsolation {
-    paths: Vec<String>,
-    backups: Vec<(PathBuf, Vec<u8>)>,
-}
-
-fn isolate_unselected_unstaged(
-    repo: &Repository,
-    all_paths: &[String],
-    selected_paths: &BTreeSet<String>,
-) -> NativeResult<Option<UnstagedIsolation>> {
-    let paths = all_paths
-        .iter()
-        .filter(|path| !selected_paths.contains(*path))
-        .cloned()
-        .collect::<Vec<_>>();
-    if paths.is_empty() {
-        return Ok(None);
-    }
-    let root = repository_root(repo)?;
-    let mut backups = Vec::new();
-    for path in &paths {
-        backup_worktree_files(&root, Path::new(path), &mut backups)?;
-    }
-
-    let index = repo.index().map_err(format_git_error)?;
-    let head_tree = repo
-        .head()
-        .map_err(|_| NO_COMMIT.to_owned())?
-        .peel_to_tree()
-        .map_err(format_git_error)?;
-    let tracked = paths
-        .iter()
-        .filter(|path| {
-            index.get_path(Path::new(path), 0).is_some()
-                || head_tree.get_path(Path::new(path)).is_ok()
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let untracked = paths
-        .iter()
-        .filter(|path| !tracked.contains(path))
-        .cloned()
-        .collect::<Vec<_>>();
-    let result = (|| {
-        restore_worktree_paths(repo, &tracked, false, false)?;
-        for path in &untracked {
-            remove_worktree_path(&root, path)?;
-        }
-        Ok::<(), String>(())
-    })();
-    if let Err(error) = result {
-        let _ = restore_unstaged_isolation(
-            &root,
-            &UnstagedIsolation {
-                paths: paths.clone(),
-                backups,
-            },
-        );
-        return Err(error);
-    }
-    Ok(Some(UnstagedIsolation { paths, backups }))
-}
-
-fn restore_unstaged_isolation(root: &Path, isolation: &UnstagedIsolation) -> NativeResult<()> {
-    let mut paths = isolation.paths.clone();
-    paths.sort_by_key(|path| std::cmp::Reverse(path.len()));
-    for path in &paths {
-        remove_worktree_path(root, path)?;
-    }
-    for (path, contents) in &isolation.backups {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("创建 {} 失败: {error}", parent.display()))?;
-        }
-        std::fs::write(path, contents)
-            .map_err(|error| format!("还原 {} 失败: {error}", path.display()))?;
     }
     Ok(())
 }
@@ -760,9 +653,10 @@ pub fn create(payload: &Value) -> NativeResult<Value> {
     if all_unstaged_paths && (scope != Scope::Unstaged || paths.is_none()) {
         return Err("allUnstagedPaths 只允许与 unstaged 精确路径一起使用".to_owned());
     }
-    let mut all_changes = collect_changes(&repo, !all_unstaged_paths)?;
-    if all_unstaged_paths {
-        let selected = paths.as_ref().expect("validated allUnstagedPaths");
+    let scoped_unstaged_paths = scope == Scope::Unstaged && paths.is_some();
+    let mut all_changes = collect_changes(&repo, !scoped_unstaged_paths)?;
+    if scoped_unstaged_paths {
+        let selected = paths.as_ref().expect("validated scoped unstaged paths");
         let index = repo.index().map_err(format_git_error)?;
         let head_tree = repo
             .head()
@@ -883,16 +777,6 @@ pub fn create(payload: &Value) -> NativeResult<Value> {
     } else {
         Vec::new()
     };
-    let isolation = if scope == Scope::Unstaged {
-        Some(isolate_unselected_unstaged(
-            &repo,
-            &all_changes.unstaged,
-            &selected_unstaged,
-        )?)
-        .flatten()
-    } else {
-        None
-    };
     let default_paths = match scope {
         Scope::Staged => regular_files.clone(),
         Scope::Unstaged => regular_files
@@ -947,9 +831,6 @@ pub fn create(payload: &Value) -> NativeResult<Value> {
         match clean_worktree_for_stash(&repo, &external_paths) {
             Ok(backups) => backups,
             Err(error) => {
-                if let Some(isolation) = &isolation {
-                    let _ = restore_unstaged_isolation(&repository_root(&repo)?, isolation);
-                }
                 return Err(error);
             }
         }
@@ -999,21 +880,12 @@ pub fn create(payload: &Value) -> NativeResult<Value> {
         Ok(oid) => oid,
         Err(error) => {
             restore_worktree_backups(backups)?;
-            if let Some(isolation) = &isolation {
-                restore_unstaged_isolation(&repository_root(&repo)?, isolation)?;
-            }
             return Err(error);
         }
     };
     if let Err(error) = smudge_worktree_paths(&repo, &external_paths) {
         restore_worktree_backups(backups)?;
-        if let Some(isolation) = &isolation {
-            restore_unstaged_isolation(&repository_root(&repo)?, isolation)?;
-        }
         return Err(error);
-    }
-    if let Some(isolation) = &isolation {
-        restore_unstaged_isolation(&repository_root(&repo)?, isolation)?;
     }
     Ok(json!({
         "stash": oid.to_string(),

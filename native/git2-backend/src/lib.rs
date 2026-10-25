@@ -19,15 +19,69 @@ use napi::{
 };
 use napi_derive::napi;
 use once_cell::sync::Lazy;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::{Condvar, Mutex, RwLock};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-static REPOSITORY_LOCKS: Lazy<Mutex<HashMap<String, Arc<RwLock<()>>>>> =
+#[derive(Default)]
+struct MutationState {
+    generation: u64,
+    pending: usize,
+}
+
+#[derive(Default)]
+struct RepositoryState {
+    lock: RwLock<()>,
+    mutation: Mutex<MutationState>,
+    mutation_finished: Condvar,
+}
+
+impl RepositoryState {
+    fn stable_generation(&self) -> u64 {
+        let mut mutation = self.mutation.lock();
+        while mutation.pending > 0 {
+            self.mutation_finished.wait(&mut mutation);
+        }
+        mutation.generation
+    }
+
+    fn is_generation_current(&self, generation: u64) -> bool {
+        let mutation = self.mutation.lock();
+        mutation.pending == 0 && mutation.generation == generation
+    }
+}
+
+struct MutationIntent {
+    state: Arc<RepositoryState>,
+}
+
+impl MutationIntent {
+    fn new(state: Arc<RepositoryState>) -> Self {
+        {
+            let mut mutation = state.mutation.lock();
+            mutation.pending += 1;
+            mutation.generation = mutation.generation.wrapping_add(1);
+        }
+        Self { state }
+    }
+}
+
+impl Drop for MutationIntent {
+    fn drop(&mut self) {
+        let mut mutation = self.state.mutation.lock();
+        mutation.generation = mutation.generation.wrapping_add(1);
+        mutation.pending -= 1;
+        if mutation.pending == 0 {
+            self.state.mutation_finished.notify_all();
+        }
+    }
+}
+
+static REPOSITORY_STATES: Lazy<Mutex<HashMap<String, Arc<RepositoryState>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-fn repository_lock(payload: &Value) -> Option<Arc<RwLock<()>>> {
+fn repository_state(payload: &Value) -> Option<Arc<RepositoryState>> {
     let path = payload
         .get("rootPath")
         .or_else(|| payload.get("path"))
@@ -36,10 +90,10 @@ fn repository_lock(payload: &Value) -> Option<Arc<RwLock<()>>> {
     #[cfg(windows)]
     let normalized = normalized.to_lowercase();
     Some(
-        REPOSITORY_LOCKS
+        REPOSITORY_STATES
             .lock()
             .entry(normalized)
-            .or_insert_with(|| Arc::new(RwLock::new(())))
+            .or_insert_with(|| Arc::new(RepositoryState::default()))
             .clone(),
     )
 }
@@ -135,22 +189,55 @@ fn dispatch_operation(operation: &str, payload: &Value) -> std::result::Result<V
     }
 }
 
-fn execute_operation(operation: &str, payload_text: &str) -> Result<String> {
-    let payload: Value = serde_json::from_str(payload_text)
-        .map_err(|error| Error::from_reason(format!("参数 JSON 无效: {error}")))?;
-    let result = if let Some(lock) = repository_lock(&payload) {
+fn is_optimistic_snapshot(operation: &str) -> bool {
+    matches!(operation, "status" | "hasChanges")
+}
+
+fn optimistic_snapshot<T, E>(
+    state: &RepositoryState,
+    mut read: impl FnMut() -> std::result::Result<T, E>,
+) -> std::result::Result<T, E> {
+    loop {
+        let generation = state.stable_generation();
+        let result = read();
+        if state.is_generation_current(generation) {
+            return result;
+        }
+    }
+}
+
+fn execute_parsed_operation(
+    operation: &str,
+    payload: &Value,
+    state: Option<Arc<RepositoryState>>,
+    mutation_announced: bool,
+) -> Result<String> {
+    let result = if let Some(state) = state {
         if is_mutating_operation(operation) {
-            let _guard = lock.write();
-            dispatch_operation(operation, &payload)
+            let _intent = (!mutation_announced).then(|| MutationIntent::new(state.clone()));
+            let _guard = state.lock.write();
+            dispatch_operation(operation, payload)
+        } else if is_optimistic_snapshot(operation) {
+            // Status can be expensive on large worktrees. Do not make a user
+            // mutation wait for an already-running snapshot: if a mutation
+            // overlaps the read, discard that snapshot and retry afterwards.
+            optimistic_snapshot(&state, || dispatch_operation(operation, payload))
         } else {
-            let _guard = lock.read();
-            dispatch_operation(operation, &payload)
+            let _guard = state.lock.read();
+            dispatch_operation(operation, payload)
         }
     } else {
-        dispatch_operation(operation, &payload)
+        dispatch_operation(operation, payload)
     }
     .map_err(Error::from_reason)?;
     serde_json::to_string(&result).map_err(|error| Error::from_reason(error.to_string()))
+}
+
+fn execute_operation(operation: &str, payload_text: &str) -> Result<String> {
+    let payload: Value = serde_json::from_str(payload_text)
+        .map_err(|error| Error::from_reason(format!("参数 JSON 无效: {error}")))?;
+    let state = repository_state(&payload);
+    execute_parsed_operation(operation, &payload, state, false)
 }
 
 pub struct InvokeTask {
@@ -183,9 +270,16 @@ pub async fn invoke_mutation(operation: String, payload: String) -> Result<Strin
             "invokeMutation 只允许修改操作: {operation}"
         )));
     }
-    spawn_blocking(move || execute_operation(&operation, &payload))
-        .await
-        .map_err(|error| Error::from_reason(format!("Native Git 修改线程异常: {error}")))?
+    let payload: Value = serde_json::from_str(&payload)
+        .map_err(|error| Error::from_reason(format!("参数 JSON 无效: {error}")))?;
+    let state = repository_state(&payload);
+    let intent = state.clone().map(MutationIntent::new);
+    spawn_blocking(move || {
+        let _intent = intent;
+        execute_parsed_operation(&operation, &payload, state, true)
+    })
+    .await
+    .map_err(|error| Error::from_reason(format!("Native Git 修改线程异常: {error}")))?
 }
 
 #[napi]
