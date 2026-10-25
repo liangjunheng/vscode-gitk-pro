@@ -137,12 +137,6 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR
       cloudGroupsState = state.cloudGroups || [];
       updateStashToggle(state.showStashes !== false, Number(state.hiddenStashCount) || 0);
       uncommittedEnabled = workingTreeRows.some(function(row) { return row.enabled; });
-      var uncommittedRepositoryCount = Number(state.uncommittedRepositoryCount) || 0;
-      var uncommittedRepoBadge = document.getElementById('uncommittedRepoBadge');
-      // 按钮内还有图标与文案, 只能改计数节点; 对按钮整体赋值 textContent 会抹掉子节点。
-      uncommittedRepoBadge.querySelector('.uncommitted-repo-count').textContent = String(uncommittedRepositoryCount);
-      uncommittedRepoBadge.hidden = uncommittedRepositoryCount <= 0;
-      uncommittedRepoBadge.title = '打开 Commit 面板（' + uncommittedRepositoryCount + ' 个仓库有未提交文件）';
       stagedCount = Number(state.stagedCount) || 0;
       changesCount = Number(state.changesCount) || 0;
       repositoryChanges = state.repositoryChanges || [];
@@ -205,7 +199,6 @@ ${COMMIT_LIST_SUB_PANEL_MARKUP.replace('<!-- commit-selectors -->', SELECTOR_BAR
       if (!shouldRenderCommitList) updateCloudRows(false);
       applySelectedCommit();
       updateCountLabel();
-      updateFilesCommitHash();
       var nextFilesModelKey = JSON.stringify([
         files.map(function(file) {
           return [file.diffKey || file.path, file.status, file.isUntracked, file.isConflict,

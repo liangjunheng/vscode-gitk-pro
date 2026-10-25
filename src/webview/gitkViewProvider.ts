@@ -544,7 +544,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 showStashes: this.showStashes,
                 hiddenStashCount,
                 workingTreeRows,
-                uncommittedRepositoryCount: this.countUncommittedRepositories(s.commitRepositories),
                 repositoryCardDisplayLocks: this.repositoryCardDisplayLocks ? [...this.repositoryCardDisplayLocks] : [],
                 repositoryChanges: this.repositories.map(repository => {
                     const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()

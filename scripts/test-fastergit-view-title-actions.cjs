@@ -144,7 +144,7 @@ async function verifyWebview() {
     await page.setContent(renderGitkWebviewHtml('codicon.css', 'seti.woff', {}));
     assert.equal(await page.locator('#filesRefreshBtn').count(), 0);
     assert.equal(await page.locator('#filesModeBtn').count(), 0);
-    assert.deepEqual(await page.locator('#filesActions button').evaluateAll(buttons => buttons.map(button => button.id)), ['uncommittedRepoBadge']);
+    assert.equal(await page.locator('#filesHeader').count(), 0, 'changed-files title row is removed');
 
     const repositoryPath = 'file:///view-title-fixture';
     const state = {

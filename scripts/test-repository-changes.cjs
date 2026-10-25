@@ -125,7 +125,7 @@ async function main() {
     await assertCount(page.locator('#refreshBtn'), 0);
     await assertCount(page.locator('#filesRefreshBtn'), 0);
     await assertCount(page.locator('#filesModeBtn'), 0);
-    assert.deepEqual(await page.locator('#filesActions button').evaluateAll(buttons => buttons.map(button => button.id)), ['uncommittedRepoBadge'], 'refresh and display mode live in the FasterGit title bar');
+    assert.equal(await page.locator('#filesHeader').count(), 0, 'changed-files title row is removed');
     assert.equal(await page.locator('#filesRefreshProgress').isVisible(), false);
     state.refreshProgress = { completed: 1, total: 4 }; await publish();
     assert.equal(await page.locator('#filesRefreshProgress').isVisible(), true);
@@ -427,8 +427,6 @@ async function main() {
     assert.equal(await input.evaluate(node => node.selectionStart === 0 && node.selectionEnd === node.value.length), true, 'message context menu selects all text');
     await mainCard.locator('.repo-changes-body').click({ button: 'right', position: { x: 2, y: 2 } });
     assert.equal(await groupMenu.isVisible(), false, 'other repository-card areas show no menu');
-    const filesHeaderMenuSuppressed = await page.locator('#filesHeader').evaluate(node => !node.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
-    assert.equal(filesHeaderMenuSuppressed, true, 'changed-files header suppresses the default context menu');
     const otherCard = page.locator('.repo-changes').nth(3);
     if (!(await otherCard.locator('.repo-changes-body').isVisible())) await otherCard.locator('.repo-changes-label').click();
     await otherCard.locator('.repo-file').click();

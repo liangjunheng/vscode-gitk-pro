@@ -19,10 +19,6 @@ export const SELECTOR_BAR_SUB_PANEL_STYLES = `
   .selector-separator { flex: 0 0 auto; margin: 0 4px; color: var(--vscode-foreground); font-size: 11px; font-weight: 700; }
   /* Commit 面板入口位于变更列表标题栏的显示方式之前；无未提交仓库时隐藏。 */
   /* 徽标尺寸: 高 18、圆角 10、图标 11, 字号 11px, 左右内边距 4px。 */
-  #filesActions .uncommitted-repo-group { display: flex; align-items: center; align-self: center; gap: 3.75px; flex: 0 0 auto; height: 18px; margin-left: 0; padding: 0 4px; border: 1px solid var(--vscode-button-border, transparent); border-radius: 10px; background: var(--vscode-button-background, #007acc); color: var(--vscode-button-foreground, #fff); font: inherit; font-size: 11px; font-weight: 600; line-height: 1; cursor: pointer; white-space: nowrap; }
-  #filesActions .uncommitted-repo-group:hover { background: var(--vscode-button-hoverBackground, #0062a3); }
-  #filesActions .uncommitted-repo-group:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
-  .uncommitted-repo-group .codicon { display: flex; align-items: center; font-size: 11px; line-height: 1; }
   .dropdown { position: relative; flex: 0 1 auto; min-width: 0; }
   #branchDropdown { width: 20ch; --branch-menu-font-family: var(--vscode-font-family, sans-serif); --branch-menu-font-size: var(--vscode-font-size, 13px); --branch-menu-line-height: normal; }
   #repositoryDisplay { display: flex; align-items: center; gap: 0; flex: 0 1 20ch; min-width: 0; height: 26px; color: var(--vscode-dropdown-foreground, var(--vscode-foreground)); font: inherit; cursor: default; }
@@ -153,9 +149,6 @@ export const SELECTOR_BAR_SUB_PANEL_SCRIPT = `
   function updateBranchLoading(loading) {
     updateDropdownLoading(branchDropdown, loading, '正在加载分支');
   }
-  document.getElementById('uncommittedRepoBadge').addEventListener('click', function() {
-    vscode.postMessage({ type: 'openCommitPanel' });
-  });
   function createDropdown(id, onSelect) {
     const root = document.getElementById(id);
     const current = root.querySelector('.dropdown-current');
