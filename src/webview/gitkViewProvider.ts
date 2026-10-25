@@ -285,6 +285,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private totalBranchesListSnapshot: readonly GitBranchOption[] = [];
     private selectedRepoDisplaySnapshot?: { label: string; path: string; hasSubmodules: boolean; isSubmodule: boolean };
     private readonly selectedRemoteByRepository = new Map<string, string>();
+    /** 每个仓库的 remote/upstream 内存快照；切换仓库先回放，再后台刷新 Git 配置。 */
+    private readonly remoteStateByRepository = new Map<string, { remotes: readonly GitRemote[]; upstreamRemote: string }>();
     private selectedBranchDisplaySnapshot: { label: string; title: string; names: string[]; kind?: GitBranchOption['kind'] } = {
         label: '未选择分支',
         title: '未选择分支',
@@ -732,6 +734,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                         this.stashLoadsInFlight?.delete(cached);
                         this.commitController.forgetStashes(cached);
                     }
+                }
+                for (const cached of [...this.remoteStateByRepository.keys()]) {
+                    if (!known.has(cached)) { this.remoteStateByRepository.delete(cached); }
                 }
                 this.totalRepoListSnapshot = [...repositories];
                 this.onDidChangeRepositoryStateEmitter.fire();
@@ -1988,10 +1993,22 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.view?.webview.postMessage({ type: 'remoteListChanged', repositoryPath: '', remotes: [], selectedRemote: '' });
             return;
         }
+        const cached = this.remoteStateByRepository.get(repositoryPath);
+        if (cached) {
+            // 先回放当前仓库的 upstream 缓存，切换仓库时不等待 Git CLI。
+            this.view?.webview.postMessage({
+                type: 'remoteListChanged',
+                repositoryPath,
+                remotes: cached.remotes,
+                selectedRemote: this.defaultRemoteName(repositoryPath, cached.remotes),
+                upstreamRemote: cached.upstreamRemote,
+            });
+        }
         try {
             const remotes = await listRemotes(vscode.Uri.parse(repositoryPath));
             const selectedRemote = this.defaultRemoteName(repositoryPath, remotes);
             const upstreamRemote = upstreamRemoteOverride ?? await this.currentUpstreamRemote(repositoryPath, remotes);
+            this.remoteStateByRepository.set(repositoryPath, { remotes: [...remotes], upstreamRemote });
             this.view?.webview.postMessage({
                 type: 'remoteListChanged',
                 repositoryPath,
@@ -2003,8 +2020,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.view?.webview.postMessage({
                 type: 'remoteListChanged',
                 repositoryPath,
-                remotes: [],
-                selectedRemote: '',
+                remotes: cached?.remotes ?? [],
+                selectedRemote: cached ? this.defaultRemoteName(repositoryPath, cached.remotes) : '',
+                upstreamRemote: cached?.upstreamRemote ?? '',
                 error: error instanceof Error ? error.message : String(error),
             });
         }
