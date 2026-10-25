@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { type AppState, type ChangeSetMode, type ChangedFile, GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
 import { defaultPushTarget, getCloudCommits, getCommitFiles, getStashes, getStashFiles, type StashEntry, getCurrentGitBranch, getCurrentGitHeadHash, getGitAheadBehind, getGitAheadCount, getGitBranches, getGitlinkPathsInCommit, getPushPlan, type PushSourceBranch, type PushTargetOption, readCurrentCommitMessage } from '../git/gitLogProvider';
-import { addRemote, checkoutBranch, checkoutRemoteBranch, commitDetails, configGet, fetchRemotes, hasConflicts, indexGitlink, listRemotes, pull, push, rangeCommits, removeRemote, setRemoteAsUpstream, resolveRevision, restoreAll, restoreSubmodule, trackedPaths, type GitRemote, type NativeCommitDetails, type NativePushResult } from '../git/gitNativeOperations';
+import { addRemote, checkoutBranch, checkoutRemoteBranch, commitDetails, configGet, fetchRemotes, hasConflicts, indexGitlink, listConfiguredBranchRemotes, listRemotes, pull, push, rangeCommits, removeRemote, setRemoteAsUpstream, resolveRevision, restoreAll, restoreSubmodule, trackedPaths, type GitRemote, type NativeCommitDetails, type NativePushResult } from '../git/gitNativeOperations';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { FILE_CONTEXT_MENU_ACTIONS } from './fileContextMenu';
 import { readMergeOperation, runMergeOperation, type MergeOperation } from '../git/mergeOperation';
@@ -1952,16 +1952,27 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         this.remoteFetchRefresh = task;
     }
 
-    private async currentUpstreamRemote(repositoryPath: string): Promise<string> {
+    private async currentUpstreamRemote(repositoryPath: string, remotes: readonly GitRemote[]): Promise<string> {
         // 远程选择器初始化可能早于分支控制器快照；直接读取 Git 的 branch.<name>.remote，
         // 避免依赖控制器的异步时序导致已有 upstream 被误报为空。
         const rootUri = vscode.Uri.parse(repositoryPath);
         try {
             const branch = await getCurrentGitBranch(rootUri);
-            if (!branch) { return ''; }
-            return (await configGet(rootUri, `branch.${branch}.remote`, '')).trim();
+            if (branch) {
+                const configured = (await configGet(rootUri, `branch.${branch}.remote`, '')).trim();
+                if (configured && remotes.some(remote => remote.name === configured)) { return configured; }
+            }
+            // 子模块通常处于 gitlink 指向的 detached HEAD，没有当前分支 upstream；
+            // 优先复用子仓库已有 branch remote 配置，再回退 origin/第一个 remote。
+            const configuredBranchRemotes = await listConfiguredBranchRemotes(rootUri);
+            return configuredBranchRemotes.find(name => remotes.some(remote => remote.name === name))
+                ?? remotes.find(remote => remote.name === 'origin')?.name
+                ?? remotes[0]?.name
+                ?? '';
         } catch {
-            return '';
+            return remotes.find(remote => remote.name === 'origin')?.name
+                ?? remotes[0]?.name
+                ?? '';
         }
     }
 
@@ -1980,7 +1991,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         try {
             const remotes = await listRemotes(vscode.Uri.parse(repositoryPath));
             const selectedRemote = this.defaultRemoteName(repositoryPath, remotes);
-            const upstreamRemote = upstreamRemoteOverride ?? await this.currentUpstreamRemote(repositoryPath);
+            const upstreamRemote = upstreamRemoteOverride ?? await this.currentUpstreamRemote(repositoryPath, remotes);
             this.view?.webview.postMessage({
                 type: 'remoteListChanged',
                 repositoryPath,

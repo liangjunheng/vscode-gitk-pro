@@ -196,6 +196,17 @@ function validateRemoteUrl(url: string): string {
     return value;
 }
 
+export async function listConfiguredBranchRemotes(rootUri: vscode.Uri): Promise<string[]> {
+    try {
+        const output = await runGitCli(rootUri, ['config', '--get-regexp', '^branch\\..+\\.remote$']);
+        return [...new Set(output.split(/\r?\n/)
+            .map(line => line.trim().split(/\s+/).at(-1) ?? '')
+            .filter(Boolean))];
+    } catch {
+        return [];
+    }
+}
+
 export async function listRemotes(rootUri: vscode.Uri): Promise<GitRemote[]> {
     const output = await runGitCli(rootUri, ['remote', '-v']);
     const remotes = new Map<string, { fetchUrl: string; pushUrl: string }>();
