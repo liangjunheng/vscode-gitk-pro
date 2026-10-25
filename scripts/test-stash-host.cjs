@@ -144,7 +144,11 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   });
   const setSnapshot = (staged, changes) => {
     snapshot = { staged, changes };
-    store.setState({ stagedFiles: staged, unstagedFiles: changes });
+    store.setState({
+      stagedFiles: staged,
+      unstagedFiles: changes,
+      commitRepositories: [{ repositoryPath: repoA.path, staged, unstaged: changes }],
+    });
   };
 
   // ---- 1) 选中解析
@@ -284,6 +288,8 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   // 5d) Unstaged 与 staged 同文件时，弹窗完整列出多个文件；确认后只把内容合入 unstaged 快照，不改变 Staged 分组。
   reset(); runSection = 'unstaged';
   setSnapshot([file('c.txt'), file('a.txt'), file('d.txt')], [file('c.txt'), file('b.txt'), file('d.txt')]);
+  // 当前选中虚拟行投影可以滞后；弹窗必须以 Repository Changes 正在显示的发布快照为准。
+  store.setState({ stagedFiles: [], unstagedFiles: snapshot.changes });
   dialogChoice = '合并修改并贮藏';
   await run();
   assert.equal(dialogs.length, 1);

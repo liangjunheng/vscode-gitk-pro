@@ -3766,12 +3766,20 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const rootUri = this.getRepoRootUri(repositoryPath);
         if (!rootUri) { return; }
         const read = async (): Promise<{ staged: string[]; unstaged: string[]; hasConflict: boolean } | undefined> => {
-            const useStore = repositoryPath === this.commitController.uncommittedRepositoryPath;
+            const state = store.getState();
+            // Repository Changes renders commitRepositories. Use that exact published snapshot
+            // for overlap detection so the action cannot disagree with the two visible groups.
+            const published = state.commitRepositories
+                .find(candidate => candidate.repositoryPath === repositoryPath);
             const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
                 .find(candidate => candidate.repoOption.path === repositoryPath);
-            const changes = useStore
-                ? { staged: store.getState().stagedFiles, changes: store.getState().unstagedFiles }
-                : branch ? await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(branch).catch(() => undefined) : undefined;
+            const changes = published
+                ? { staged: published.staged, changes: published.unstaged }
+                : branch
+                    ? await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(branch).catch(() => undefined)
+                    : repositoryPath === this.commitController.uncommittedRepositoryPath
+                        ? { staged: state.stagedFiles, changes: state.unstagedFiles }
+                        : undefined;
             if (!changes) { return undefined; }
             const staged = changes.staged.filter(file => !file.isConflict).map(file => file.path);
             const unstaged = changes.changes.filter(file => !file.isConflict).map(file => file.path);
