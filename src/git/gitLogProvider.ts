@@ -200,6 +200,8 @@ export interface PushTargetOption {
     readonly tipTimestamp: number;
     /** 当前 HEAD 相对该远程分支的未推送提交总数。 */
     readonly unpushedCommitCount: number;
+    /** 仅存在于本次推送计划、确认推送后才会创建的远程分支。 */
+    readonly isNewBranch?: boolean;
 }
 
 /** 一次 Push 的完整计划: 一个源, 多个候选远程分支。 */

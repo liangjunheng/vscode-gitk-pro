@@ -1498,6 +1498,7 @@ async function verifyProvider() {
   const branchReads = [], commitDetailReads = [], checkouts = [], pulls = [], pushes = [], headRefreshes = [], remoteCheckouts = [];
   const remoteFetchStarts = [], remoteFetchResolvers = [];
   let pickedIndex = 2, options, branchItems, pushTargetDefaults, pushQuickPick, selectedPushTargetsResult, confirmRows, confirmOptions;
+  const pushQuickPicks = [];
   let pulledHeadHash = 'a'.repeat(40), conflictAfterPull = false, pushFails = true, pullFails = false;
   const pushResultNotices = [];
   const terminals = [], informationMessages = [], errorMessages = [], confirmationDialogs = [], clipboardWrites = [], executedCommands = [], openedDocuments = [], shownDocuments = [], readObjectsRequests = [], openedChanges = [];
@@ -1562,12 +1563,17 @@ async function verifyProvider() {
       withProgress: async (_options, task) => task({ report() {} }),
       createQuickPick: () => {
         const quickPick = {
-          items: [], selectedItems: [], activeItems: [], buttons: [],
+          items: [], selectedItems: [], activeItems: [], buttons: [], value: '', showCount: 0,
           onDidAccept(listener) { this.accept = listener; return { dispose() {} }; },
-          onDidTriggerButton() { return { dispose() {} }; },
-          onDidHide() { return { dispose() {} }; },
-          show() {}, hide() {}, dispose() {},
+          onDidChangeSelection(listener) { this.changeSelection = listener; return { dispose() {} }; },
+          onDidChangeValue(listener) { this.changeValue = listener; return { dispose() {} }; },
+          onDidTriggerButton(listener) { this.triggerButton = listener; return { dispose() {} }; },
+          onDidHide(listener) { this.hideListener = listener; return { dispose() {} }; },
+          show() { this.visible = true; this.showCount++; },
+          hide() { this.visible = false; this.hideListener?.(); },
+          dispose() { this.disposed = true; },
         };
+        pushQuickPicks.push(quickPick);
         pushQuickPick = quickPick;
         return quickPick;
       },
@@ -1627,18 +1633,59 @@ async function verifyProvider() {
     ({ pickPushTargets, confirmPush, confirmSync, describePushRow, showPushResult } = require('../out/services/pushDialogs'));
     ({ store } = require('../out/state/store'));
   } finally { Module._load = load; }
-  // 目标选择弹窗: 标题显示本地分支名, detail 只显示未推送提交数。
-  void pickPushTargets(pushDialogPlan, [pushDialogPlan.targets[0]]);
-  assert.equal(pushQuickPick.title, 'ink_dev 要推送的远程分支', 'the dialog title shows the repository card branch name, not a hash');
-  assert.deepEqual(pushQuickPick.items.map(item => item.label), ['$(cloud) origin/ink_master', '$(cloud) upstream/develop'], 'bound upstream stays first even when another remote has a newer tip');
-  assert.deepEqual(pushQuickPick.items.map(item => item.description), [undefined, undefined], 'unpush counts are no longer rendered as descriptions');
-  assert.deepEqual(pushQuickPick.items.map(item => item.detail), ['未推送提交：0', '未推送提交：1'], 'target detail contains only the unpushed count');
-  assert.deepEqual(pushQuickPick.selectedItems.map(item => item.target.remoteName), ['origin/ink_master']);
-  void pickPushTargets(pushDialogPlan, [pushDialogPlan.targets[1]]);
-  assert.deepEqual(pushQuickPick.items.map(item => item.label), ['$(cloud) origin/ink_master', '$(cloud) upstream/develop'], 'a cached default target is checked but never reordered above the bound upstream');
-  assert.deepEqual(pushQuickPick.selectedItems.map(item => item.target.remoteName), ['upstream/develop']);
+  // 目标选择弹窗: 标题显示本地分支名, detail 只显示未推送提交数，并提供唯一的新建入口。
+  const pushSelectionPromise = pickPushTargets(pushDialogPlan);
+  const targetPicker = pushQuickPick;
+  assert.equal(targetPicker.title, 'ink_dev 要推送的远程分支', 'the dialog title shows the repository card branch name, not a hash');
+  assert.deepEqual(targetPicker.items.map(item => item.label), ['$(add) 新增远程分支…', '$(cloud) origin/ink_master', '$(cloud) upstream/develop'], 'one create action precedes the existing branches without expanding one row per remote');
+  assert.deepEqual(targetPicker.items.slice(1).map(item => item.detail), ['未推送提交：0', '未推送提交：1'], 'existing target detail contains only the unpushed count');
+  assert.deepEqual(targetPicker.selectedItems, [], 'the Push branch picker starts without selecting the current upstream');
+  // 点击新增入口后，在同一个新建 QuickPick 中输入分支名并选择 remote。
+  const createAction = targetPicker.items[0];
+  targetPicker.selectedItems = [createAction];
+  targetPicker.changeSelection(targetPicker.selectedItems);
+  await new Promise(resolve => setImmediate(resolve));
+  const createPicker = pushQuickPicks.at(-1);
+  assert.notEqual(createPicker, targetPicker);
+  assert.equal(createPicker.title, '新增远程分支');
+  assert.equal(createPicker.placeholder, '输入新分支名，并勾选目标 remote');
+  assert.deepEqual(createPicker.items.map(item => item.label), ['$(remote) origin', '$(remote) upstream']);
+  const originRemote = createPicker.items[0];
+  createPicker.selectedItems = [originRemote];
+  createPicker.changeSelection(createPicker.selectedItems);
+  createPicker.value = 'feature/new-ui';
+  createPicker.changeValue(createPicker.value);
+  assert.deepEqual(createPicker.selectedItems.map(item => item.remote), ['origin'], 'typing the branch name preserves the selected remote');
+  assert.equal(createPicker.items[0].detail, '将新建 origin/feature/new-ui');
+  createPicker.accept();
+  await new Promise(resolve => setImmediate(resolve));
+  const pendingTargetItem = targetPicker.items.find(item => item.target?.remoteName === 'origin/feature/new-ui');
+  assert.ok(pendingTargetItem, 'completed creation returns to the target picker with the pending branch');
+  assert.deepEqual(targetPicker.items.map(item => item.label), [
+    '$(add) 新增远程分支…',
+    '$(git-branch-create) origin/feature/new-ui',
+    '$(cloud) origin/ink_master',
+    '$(cloud) upstream/develop',
+  ], 'a newly entered remote branch is placed before every existing push target');
+  assert.equal(pendingTargetItem.description, '即将新建远程分支');
+  assert.deepEqual(targetPicker.selectedItems.map(item => item.target?.remoteName), ['origin/feature/new-ui'], 'the pending branch is selected automatically');
+  // 再次进入后取消，应返回并保留之前的待新建目标。
+  targetPicker.selectedItems = [pendingTargetItem, targetPicker.items[0]];
+  targetPicker.changeSelection(targetPicker.selectedItems);
+  await new Promise(resolve => setImmediate(resolve));
+  const cancelledCreatePicker = pushQuickPicks.at(-1);
+  cancelledCreatePicker.hide();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(targetPicker.showCount, 3, 'completion and cancellation both return to the original target picker');
+  assert.deepEqual(targetPicker.selectedItems.map(item => item.target?.remoteName), ['origin/feature/new-ui']);
+  targetPicker.accept();
+  const pickedPushTargets = await pushSelectionPromise;
+  assert.deepEqual(pickedPushTargets, [{
+    remote: 'origin', branch: 'feature/new-ui', remoteName: 'origin/feature/new-ui',
+    isUpstream: false, tipTimestamp: 0, unpushedCommitCount: 0, isNewBranch: true,
+  }]);
   // detached HEAD 没有分支名: 标题与行文本退回短 hash, 且明确标注游离状态。
-  void pickPushTargets(detachedPlan, []);
+  void pickPushTargets(detachedPlan);
   assert.equal(pushQuickPick.title, '游离 HEAD dddddddd 要推送的远程分支');
   // 原生确认弹窗: 只有推送和取消, 分支列表在模态正文中逐行显示。
   assert.equal(await confirmPush([
@@ -1652,6 +1699,8 @@ async function verifyProvider() {
     modal: true,
     detail: '仓库名：inkengine\n推送到远程仓库：origin、upstream\n\n需要推送的分支：\nink_dev → origin/ink_master\nchild：ink_dev → upstream/develop',
   }, 'modal detail lists each branch on its own line');
+  assert.equal(await confirmPush([{ source: pushDialogPlan.source, target: pickedPushTargets[0] }], 'inkengine', ['origin']), true);
+  assert.match(confirmationDialogs.at(-1).options.detail, /origin\/feature\/new-ui（即将新建远程分支）/, 'confirmation marks a pending remote branch before push');
   // 同步确认: 顶部显示仓库名，并始终提供同步/仅推送/取消。
   const syncRow = { source: pushDialogPlan.source, target: pushDialogPlan.targets[0] };
   confirmationChoice = '同步';
@@ -2013,9 +2062,9 @@ async function verifyProvider() {
   provider.pushTargetByRepository.set(repositories[1].path, pushTargetFixture[0]);
   provider.lastPushedTargetByRepository.set(repositories[1].path, pushTargetFixture[0]);
   await provider.runCommitPanelPush([repositories[1].path], true, false);
-  assert.equal(pushTargetDefaults[0].remoteName, 'origin/main', 'sync defaults to the current branch configured upstream, not cached or first remote');
+  assert.equal(pushTargetDefaults, undefined, 'sync does not preselect the current upstream branch');
   await provider.runCommitPanelPush([repositories[1].path], false, false);
-  assert.equal(pushTargetDefaults[0].remoteName, 'fork/main', 'plain push keeps the cached target');
+  assert.equal(pushTargetDefaults, undefined, 'plain push does not preselect the cached remote branch');
   const checkoutCountBeforePush = checkouts.length;
   const syncHeadRefreshes = [], syncHistoryRefreshes = [];
   provider.context = { workspaceState: { update: async () => {} } };
@@ -2044,6 +2093,17 @@ async function verifyProvider() {
   assert.deepEqual(confirmOptions, { repositoryLabel: 'child', pushRemotes: ['origin'] }, 'plain push confirmation lists the repository and checked Push remotes');
   assert.deepEqual(syncHeadRefreshes, [], 'a plain push failure does not reread an unpulled repository');
   assert.deepEqual(pushResultNotices.at(-1), ['Git Push 失败', 'stop after push']);
+  // 待新建目标复用普通 HEAD:<remoteBranch> 推送路径，不在选择阶段提前创建远程分支。
+  resetSyncState(); pushFails = false;
+  const pendingRemoteTarget = {
+    remote: 'origin', branch: 'feature/new-ui', remoteName: 'origin/feature/new-ui',
+    isUpstream: false, tipTimestamp: 0, unpushedCommitCount: 0, isNewBranch: true,
+  };
+  selectedPushTargetsResult = [pendingRemoteTarget];
+  await provider.runCommitPanelPush([childPath], false, false);
+  assert.deepEqual(confirmRows.map(row => [row.target.remoteName, row.target.isNewBranch]), [['origin/feature/new-ui', true]]);
+  assert.deepEqual(pushes, [[childPath, 'origin', 'feature/new-ui', 'main', 'a'.repeat(40)]], 'confirming a pending target creates it through the existing push refspec path');
+  assert.equal(pushResultNotices.at(-1)[0], 'Git Push 已完成');
   // 同时勾选多个远程分支: 只拉取一次 upstream, 然后把拉取后的 HEAD 推送到每个勾选的分支。
   resetSyncState(); pushFails = false; pulledHeadHash = syncHeadAfter;
   selectedPushTargetsResult = [pushTargetFixture[0], pushTargetFixture[1]];
@@ -2102,7 +2162,7 @@ async function verifyProvider() {
   provider.uncommittedFilesWatcher.refreshHeadBranch = async value => syncSteps.push(['head', value]);
   provider.uncommittedFilesWatcher.refreshUncommittedFilesByHeadBranch = async branch => syncSteps.push(['status', branch.repoOption.path]);
   await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', action: 'syncRefresh', repositoryPath: repositories[1].path });
-  assert.deepEqual(syncSteps, [['sync', [repositories[1].path], true, false, true]], 'card sync uses the current branch configured upstream and no longer runs the manual workspace/history refresh');
+  assert.deepEqual(syncSteps, [['sync', [repositories[1].path], true, false]], 'card sync opens the Push branch picker without preselecting the current upstream');
   await verifyFocusedRefresh(GitkViewProvider, repositories);
   assert.deepEqual(remoteFetchStarts, [], 'manual refresh stays local and never starts a remote fetch');
   await verifyVisibilityFetch(GitkViewProvider, store, repositories, remoteFetchStarts, remoteFetchResolvers);

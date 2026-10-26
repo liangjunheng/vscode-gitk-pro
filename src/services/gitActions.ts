@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { defaultPushTargets, getPushPlan, runGitSync, updateGitSubmodules, type PushTargetOption } from '../git/gitLogProvider';
+import { getPushPlan, runGitSync, updateGitSubmodules, type PushTargetOption } from '../git/gitLogProvider';
 import { checkout, cherryPick, createBranch, createTag, deleteLocalTag, deleteRemoteTag, merge, pushTag as pushCommitTag, readCommitTagState, rebase, reset, revertCommit, stageAll, statusSummary, type CommitTagState, type NativePushResult, type RemoteTagRef } from '../git/gitNativeOperations';
 import { GitCommitEditMsgEditor } from '../webview/gitCommitEditMsgEditor';
 import { confirmPush, pickPushTargets, showPushResult } from './pushDialogs';
@@ -249,8 +249,7 @@ export class GitActionRunner {
                     void vscode.window.showWarningMessage('勾选的 Push remote 没有可推送的远程分支。');
                     return;
                 }
-                const defaultTargets = defaultPushTargets(remotePlan, selectedRemotes.push);
-                selectedPushTargets = await pickPushTargets(remotePlan, defaultTargets);
+                selectedPushTargets = await pickPushTargets(remotePlan);
                 if (!selectedPushTargets || selectedPushTargets.length === 0) { return; }
                 const repositoryLabel = path.basename(rootUri.fsPath) || repositoryPath;
                 const confirmed = await confirmPush(

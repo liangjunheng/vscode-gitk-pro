@@ -2351,7 +2351,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 .find(candidate => candidate.repoOption.path === input.repositoryPath);
             if (!branch) { return; }
             if (input.action === 'syncRefresh') {
-                await this.runCommitPanelPush([input.repositoryPath], true, false, true);
+                await this.runCommitPanelPush([input.repositoryPath], true, false);
                 return;
             }
             if (input.action === 'stash') {
@@ -3466,7 +3466,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         repositoryPaths: readonly string[],
         pullBeforePush: boolean,
         focusCommitPanel = true,
-        preferCurrentUpstream = false,
     ): Promise<void> {
         const rootRepositoryPath = repositoryPaths.at(-1);
         if (!rootRepositoryPath) { return; }
@@ -3477,14 +3476,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             void vscode.window.showInformationMessage('当前仓库没有可推送的远程分支。');
             return;
         }
-        const upstreamTarget = defaultPushTarget(rootPlan);
-        // 卡片同步与 pull-before-push 始终回到当前分支绑定的 upstream; 普通 Push 沿用上次目标。
-        const cachedTarget = this.lastPushedTargetByRepository.get(rootRepositoryPath)
-            ?? this.pushTargetByRepository.get(rootRepositoryPath);
-        const defaultTarget = preferCurrentUpstream || pullBeforePush
-            ? upstreamTarget
-            : cachedTarget ?? upstreamTarget;
-        const selectedTargets = await pickPushTargets(rootPlan, defaultTarget ? [defaultTarget] : []);
+        const selectedTargets = await pickPushTargets(rootPlan);
         if (!selectedTargets || selectedTargets.length === 0) { return; }
         this.pushTargetByRepository.set(rootRepositoryPath, selectedTargets.at(-1) ?? selectedTargets[0]);
         if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }

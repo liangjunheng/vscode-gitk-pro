@@ -273,7 +273,7 @@ async function testPullPromptsBeforeUpdatingSubmodules() {
 
 async function testPushTargetsSelectedRemoteOnly() {
     const selectedPlans = [];
-    const defaultSelections = [];
+    const pickerArgumentCounts = [];
     const confirmationCalls = [];
     const syncCalls = [];
     const plan = {
@@ -296,13 +296,6 @@ async function testPushTargetsSelectedRemoteOnly() {
     const actions = loadFresh('../out/services/gitActions', {
         vscode,
         '../git/gitLogProvider': {
-            defaultPushTargets: (candidate, remotes) => remotes.flatMap(remote => {
-                const targets = candidate.targets.filter(target => target.remote === remote);
-                const target = targets.find(value => value.isUpstream)
-                    ?? targets.find(value => value.branch === candidate.source.branchName)
-                    ?? targets[0];
-                return target ? [target] : [];
-            }),
             getPushPlan: async () => plan,
             runGitSync: async (...args) => { syncCalls.push(args); return { pushResults: [] }; },
             updateGitSubmodules: async () => {},
@@ -314,7 +307,7 @@ async function testPushTargetsSelectedRemoteOnly() {
         },
         '../webview/gitCommitEditMsgEditor': { GitCommitEditMsgEditor: class {} },
         './pushDialogs': {
-            pickPushTargets: async (candidate, defaults) => { selectedPlans.push(candidate); defaultSelections.push(defaults); return defaults; },
+            pickPushTargets: async (...args) => { selectedPlans.push(args[0]); pickerArgumentCounts.push(args.length); return plan.targets; },
             confirmPush: async (...args) => { confirmationCalls.push(args); return true; },
             showPushResult: async () => {},
         },
@@ -322,7 +315,7 @@ async function testPushTargetsSelectedRemoteOnly() {
     const runner = new actions.GitActionRunner(() => ({ fsPath: '/fixture' }), async () => {}, {});
     await runner.syncRepository('push', '/fixture', { fetch: ['origin', 'upstream'], pull: ['origin', 'upstream'], push: ['origin', 'upstream'] });
     nodeAssert.deepEqual(selectedPlans[0].targets.map(target => target.remoteName), ['origin/main', 'upstream/develop'], 'Push dialog includes the selected existing remote branches');
-    nodeAssert.deepEqual(defaultSelections[0].map(target => target.remoteName), ['origin/main', 'upstream/develop'], 'one existing target per checked remote is selected by default');
+    nodeAssert.equal(pickerArgumentCounts[0], 1, 'Push opens the branch picker without a default-selected current remote branch');
     nodeAssert.equal(confirmationCalls[0][1], 'fixture', 'Push confirmation displays the repository name');
     nodeAssert.deepEqual(confirmationCalls[0][2], ['origin', 'upstream'], 'Push confirmation displays the remotes checked for Push');
     nodeAssert.deepEqual(syncCalls[0][4].push, ['origin', 'upstream'], 'Push execution receives every checked remote');

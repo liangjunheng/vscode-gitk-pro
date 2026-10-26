@@ -1,7 +1,13 @@
 import * as vscode from 'vscode';
 import type { PushPlan, PushSourceBranch, PushTargetOption } from '../git/gitLogProvider';
 
-type PushTargetQuickPickItem = vscode.QuickPickItem & { readonly target: PushTargetOption };
+type PushTargetQuickPickItem = vscode.QuickPickItem & {
+    readonly itemType: 'target';
+    readonly target: PushTargetOption;
+};
+type CreatePushTargetQuickPickItem = vscode.QuickPickItem & { readonly itemType: 'create' };
+type PushTargetPickerItem = PushTargetQuickPickItem | CreatePushTargetQuickPickItem;
+type PushRemoteQuickPickItem = vscode.QuickPickItem & { readonly remote: string };
 
 /** 远程分支身份只由 remote + branch 决定; 两次读取得到的对象引用不同, 不能用引用比较。 */
 function targetKey(target: PushTargetOption): string {
@@ -24,35 +30,74 @@ function describeSourceLabel(source: PushSourceBranch): string {
     return source.branchName ?? `游离 HEAD ${shortHash(source.hash)}`;
 }
 
-function buildTargetItems(plan: PushPlan): PushTargetQuickPickItem[] {
-    return plan.targets.map(target => ({
-        label: `$(cloud) ${target.remoteName}`,
-        detail: `未推送提交：${target.unpushedCommitCount}`,
-        target,
-    }));
+function buildTargetItems(targets: readonly PushTargetOption[]): PushTargetQuickPickItem[] {
+    return targets.map(target => target.isNewBranch
+        ? {
+            label: `$(git-branch-create) ${target.remoteName}`,
+            description: '即将新建远程分支',
+            detail: '确认推送后创建',
+            itemType: 'target' as const,
+            target,
+        }
+        : {
+            label: `$(cloud) ${target.remoteName}`,
+            detail: `未推送提交：${target.unpushedCommitCount}`,
+            itemType: 'target' as const,
+            target,
+        });
 }
 
-/**
- * 多选 Push 目标。列表顺序由 getPushPlan 决定(绑定 upstream 优先, 其余按远程 tip 时间倒序),
- * 默认目标只影响勾选, 不参与排序; 标题栏显示仓库卡片上的本地分支名。
- */
-export function pickPushTargets(
+function validateNewRemoteBranchName(value: string): string | undefined {
+    const branch = value.trim();
+    if (!branch) { return '请输入新分支名'; }
+    const forbidden = new Set([' ', '~', '^', ':', '?', '*', '[', '\\']);
+    const hasForbiddenCharacter = [...branch].some(character => {
+        const code = character.charCodeAt(0);
+        return code < 32 || code === 127 || forbidden.has(character);
+    });
+    const components = branch.split('/');
+    if (branch === '@'
+        || branch === 'HEAD'
+        || branch.startsWith('-')
+        || branch.endsWith('.')
+        || branch.includes('..')
+        || branch.includes('@{')
+        || hasForbiddenCharacter
+        || components.some(component => !component || component.startsWith('.') || component.endsWith('.lock'))) {
+        return '分支名不符合 Git ref 命名规则';
+    }
+    return undefined;
+}
+
+/** 在一个原生 QuickPick 中输入新分支名并选择一个或多个 remote。 */
+function pickNewPushTargets(
     plan: PushPlan,
-    defaultTargets: readonly PushTargetOption[],
+    pendingTargets: readonly PushTargetOption[],
 ): Promise<PushTargetOption[] | undefined> {
-    const quickPick = vscode.window.createQuickPick<PushTargetQuickPickItem>();
-    const items = buildTargetItems(plan);
-    const defaultKeys = new Set(defaultTargets.map(targetKey));
-    quickPick.title = `${describeSourceLabel(plan.source)} 要推送的远程分支`;
-    quickPick.placeholder = '勾选后按 Enter 提交，按 Esc 取消';
+    const remotes = [...new Set(plan.targets.map(target => target.remote).filter(Boolean))];
+    const quickPick = vscode.window.createQuickPick<PushRemoteQuickPickItem>();
+    let selectedRemotes = new Set<string>();
+    let updatingItems = false;
+    quickPick.title = '新增远程分支';
+    quickPick.placeholder = '输入新分支名，并勾选目标 remote';
     quickPick.canSelectMany = true;
     quickPick.keepScrollPosition = true;
-    quickPick.buttons = [{
-        iconPath: new vscode.ThemeIcon('close'),
-        tooltip: '关闭',
-    }];
-    quickPick.items = items;
-    quickPick.selectedItems = items.filter(item => defaultKeys.has(targetKey(item.target)));
+    quickPick.buttons = [{ iconPath: new vscode.ThemeIcon('close'), tooltip: '取消并返回' }];
+
+    const renderItems = () => {
+        const branch = quickPick.value.trim();
+        const items: PushRemoteQuickPickItem[] = remotes.map(remote => ({
+            label: `$(remote) ${remote}`,
+            detail: branch ? `将新建 ${remote}/${branch}` : '勾选要创建新分支的 remote',
+            alwaysShow: true,
+            remote,
+        }));
+        updatingItems = true;
+        quickPick.items = items;
+        quickPick.selectedItems = items.filter(item => selectedRemotes.has(item.remote));
+        updatingItems = false;
+    };
+    renderItems();
 
     return new Promise(resolve => {
         let settled = false;
@@ -63,9 +108,124 @@ export function pickPushTargets(
             quickPick.dispose();
             resolve(value);
         };
-        quickPick.onDidAccept(() => finish(quickPick.selectedItems.map(item => item.target)));
+        quickPick.onDidChangeSelection(items => {
+            if (!updatingItems) { selectedRemotes = new Set(items.map(item => item.remote)); }
+        });
+        quickPick.onDidChangeValue(() => {
+            quickPick.title = '新建远程分支';
+            renderItems();
+        });
+        quickPick.onDidAccept(() => {
+            const branch = quickPick.value.trim();
+            const validationError = validateNewRemoteBranchName(branch);
+            if (validationError) {
+                quickPick.title = `新增远程分支 — ${validationError}`;
+                return;
+            }
+            if (selectedRemotes.size === 0) {
+                quickPick.title = '新增远程分支 — 请至少勾选一个 remote';
+                return;
+            }
+            const allTargets = [...plan.targets, ...pendingTargets];
+            const duplicateRemotes = [...selectedRemotes].filter(remote =>
+                allTargets.some(target => target.remote === remote && target.branch === branch));
+            if (duplicateRemotes.length > 0) {
+                quickPick.title = `新增远程分支 — ${duplicateRemotes.join('、')} 已存在同名分支`;
+                return;
+            }
+            finish([...selectedRemotes].map(remote => ({
+                remote,
+                branch,
+                remoteName: `${remote}/${branch}`,
+                isUpstream: false,
+                tipTimestamp: 0,
+                unpushedCommitCount: 0,
+                isNewBranch: true,
+            })));
+        });
         quickPick.onDidTriggerButton(() => finish(undefined));
         quickPick.onDidHide(() => finish(undefined));
+        quickPick.show();
+    });
+}
+
+/**
+ * 多选 Push 目标。已有目标保持 getPushPlan 的排序；新建入口固定为第一项。
+ * 打开时不预选任何远程分支；完成或取消新建流程后返回并恢复已有选择。
+ */
+export function pickPushTargets(plan: PushPlan): Promise<PushTargetOption[] | undefined> {
+    const quickPick = vscode.window.createQuickPick<PushTargetPickerItem>();
+    const pendingTargets = new Map<string, PushTargetOption>();
+    const selectedTargetKeys = new Set<string>();
+    const createItem: CreatePushTargetQuickPickItem = {
+        label: '$(add) 新增远程分支…',
+        detail: '输入新分支名并选择目标 remote',
+        alwaysShow: true,
+        itemType: 'create',
+    };
+    let switchingToCreate = false;
+    let updatingSelection = false;
+
+    quickPick.title = `${describeSourceLabel(plan.source)} 要推送的远程分支`;
+    quickPick.placeholder = '勾选后按 Enter 提交，按 Esc 取消';
+    quickPick.canSelectMany = true;
+    quickPick.keepScrollPosition = true;
+    quickPick.buttons = [{ iconPath: new vscode.ThemeIcon('close'), tooltip: '关闭' }];
+
+    const renderItems = () => {
+        const targetItems = buildTargetItems([...pendingTargets.values(), ...plan.targets]);
+        updatingSelection = true;
+        quickPick.items = [createItem, ...targetItems];
+        quickPick.selectedItems = targetItems.filter(item => selectedTargetKeys.has(targetKey(item.target)));
+        updatingSelection = false;
+    };
+    renderItems();
+
+    return new Promise(resolve => {
+        let settled = false;
+        const finish = (value: PushTargetOption[] | undefined) => {
+            if (settled) { return; }
+            settled = true;
+            quickPick.hide();
+            quickPick.dispose();
+            resolve(value);
+        };
+        const openCreatePicker = async () => {
+            if (switchingToCreate) { return; }
+            switchingToCreate = true;
+            quickPick.hide();
+            const createdTargets = await pickNewPushTargets(plan, [...pendingTargets.values()]);
+            for (const target of createdTargets ?? []) {
+                pendingTargets.set(targetKey(target), target);
+                selectedTargetKeys.add(targetKey(target));
+            }
+            if (createdTargets && createdTargets.length > 0) { quickPick.value = ''; }
+            renderItems();
+            switchingToCreate = false;
+            quickPick.show();
+        };
+        quickPick.onDidChangeSelection(items => {
+            if (updatingSelection) { return; }
+            selectedTargetKeys.clear();
+            for (const item of items) {
+                if (item.itemType === 'target') { selectedTargetKeys.add(targetKey(item.target)); }
+            }
+            if (items.some(item => item.itemType === 'create')) {
+                updatingSelection = true;
+                quickPick.selectedItems = items.filter((item): item is PushTargetQuickPickItem => item.itemType === 'target');
+                updatingSelection = false;
+                void openCreatePicker();
+            }
+        });
+        quickPick.onDidAccept(() => finish(
+            quickPick.selectedItems
+                .filter((item): item is PushTargetQuickPickItem => item.itemType === 'target')
+                .map(item => item.target),
+        ));
+        quickPick.onDidTriggerButton(() => finish(undefined));
+        quickPick.onDidHide(() => {
+            if (!switchingToCreate) { finish(undefined); }
+        });
         quickPick.show();
     });
 }
@@ -76,7 +236,7 @@ export function pickPushTarget(
     defaultTarget?: PushTargetOption,
 ): Promise<PushTargetOption | undefined> {
     const quickPick = vscode.window.createQuickPick<PushTargetQuickPickItem>();
-    const items = buildTargetItems(plan);
+    const items = buildTargetItems(plan.targets);
     quickPick.items = items;
     quickPick.title = `${describeSourceLabel(plan.source)} 要推送的远程分支`;
     quickPick.placeholder = '选择要推送的远程分支';
@@ -116,7 +276,7 @@ export function describePushRow(row: PushConfirmRow): string {
 /** 确认弹窗里的推送目标, 不展示提交 hash。 */
 function describePushConfirmationRow(row: PushConfirmRow): string {
     const prefix = row.repositoryLabel ? `${row.repositoryLabel}：` : '';
-    return `${prefix}${describeSourceLabel(row.source)} → ${row.target.remoteName}`;
+    return `${prefix}${describeSourceLabel(row.source)} → ${row.target.remoteName}${row.target.isNewBranch ? '（即将新建远程分支）' : ''}`;
 }
 
 function pushRemoteDetail(pushRemotes: readonly string[]): string {
