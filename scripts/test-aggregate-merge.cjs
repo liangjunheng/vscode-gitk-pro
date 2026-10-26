@@ -50,7 +50,7 @@ async function main(){
   const firstPlan=createMergePlan(firstBase,firstCurrent,firstIncoming),firstExpected=firstPrefix+'theirs\nours\n'+firstSuffix;
   await publish({type:'mergeLoaded',key:'conflict:one.ts',identity,sessionId:1,snapshot:{type:'snapshot',path:'one.ts',base:firstBase,current:firstCurrent,incoming:firstIncoming,currentLabel:'Current',incomingLabel:'Stashed Changes',plan:firstPlan,automaticPlan:firstPlan}});
   const secondBase=Array.from({length:80},(_,i)=>'line '+(i+1)+'\n').join('');
-  const secondCurrent=secondBase.replace('line 10\n','current 10\n').replace('line 60\n','current 60\n');
+  const secondCurrent=secondBase.replace('line 10\n','current 10a\ncurrent 10b\n').replace('line 60\n','current 60\n');
   const secondIncoming=secondBase.replace('line 10\n','incoming 10\n').replace('line 60\n','incoming 60\n');
   const secondPlan=createMergePlan(secondBase,secondCurrent,secondIncoming);
   await publish({type:'mergeLoaded',key:'conflict:two.ts',identity,sessionId:2,snapshot:{type:'snapshot',path:'two.ts',base:secondBase,current:secondCurrent,incoming:secondIncoming,plan:secondPlan,automaticPlan:secondPlan}});
@@ -125,6 +125,12 @@ async function main(){
   assert.equal((conflictFrame.shadow.match(/inset/g)||[]).length,3,'one shared frame supplies the action row top, left and right edges');
   assert.equal(await first.locator('.merge-pane-incoming .merge-conflict-top').first().evaluate(edge=>getComputedStyle(edge).boxShadow),'none','there is no yellow divider between conflict actions and changed code');
   assert.ok(await first.locator('.merge-pane-incoming .merge-conflict-frame').count()>0,'the changed lines continue the same outer conflict frame below the actions');
+  const alignedRows=await second.evaluate(root=>{const incoming=[...root.querySelectorAll('.merge-pane-incoming .merge-input-zone')].map(node=>node.getBoundingClientRect().top),current=[...root.querySelectorAll('.merge-pane-current .merge-input-zone')].map(node=>node.getBoundingClientRect().top);return {incoming,current}});
+  assert.equal(alignedRows.incoming.length,2);assert.equal(alignedRows.current.length,2);
+  assert.ok(alignedRows.incoming.every((top,index)=>Math.abs(top-alignedRows.current[index])<1),'Current and Incoming conflict action rows share visual anchors: '+JSON.stringify(alignedRows));
+  const trailingAlignment=await second.evaluate(root=>({incoming:[...root.querySelectorAll('.merge-pane-incoming .merge-conflict-trailing-spacer')].map(node=>node.getBoundingClientRect().height),current:[...root.querySelectorAll('.merge-pane-current .merge-conflict-trailing-spacer')].map(node=>node.getBoundingClientRect().height)}));
+  assert.ok(trailingAlignment.incoming.some(height=>height>0),'the shorter Incoming conflict receives vertical padding: '+JSON.stringify(trailingAlignment));
+  assert.equal(trailingAlignment.current.length,0,'the longer Current conflict does not receive trailing padding');
   const secondHeader=page.locator('.diff').nth(1),secondPrevious=secondHeader.getByRole('button',{name:'Previous Conflict'}),secondNext=secondHeader.getByRole('button',{name:'Next Conflict'});
   assert.equal(await secondPrevious.isDisabled(),true);assert.equal(await secondNext.isDisabled(),false);
   const secondConflictLine=secondPlan.conflicts[1].currentLine;
