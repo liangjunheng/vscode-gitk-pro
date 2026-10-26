@@ -259,12 +259,13 @@ fn remove_worktree_path(root: &Path, relative: &str) -> NativeResult<()> {
         Err(error) => return Err(format!("读取 {} 失败: {error}", full.display())),
     };
     if metadata.is_dir() {
-        std::fs::remove_dir_all(&full)
-            .map_err(|error| format!("删除 {} 失败: {error}", full.display()))?;
-    } else {
-        std::fs::remove_file(&full)
-            .map_err(|error| format!("删除 {} 失败: {error}", full.display()))?;
+        return Err(format!(
+            "拒绝删除目录 {}：Stash 文件路径已被本地目录占用",
+            full.display()
+        ));
     }
+    std::fs::remove_file(&full)
+        .map_err(|error| format!("删除 {} 失败: {error}", full.display()))?;
     Ok(())
 }
 
@@ -1604,6 +1605,20 @@ mod tests {
         assert_eq!(values.len(), 1);
         assert_eq!(values[0]["status"], "R");
         assert_eq!(values[0]["oldPath"], "a");
+    }
+
+    #[test]
+    fn remove_worktree_path_never_recursively_deletes_a_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let occupied = directory.path().join("tracked-file");
+        std::fs::create_dir(&occupied).unwrap();
+        let nested = occupied.join("untracked.txt");
+        std::fs::write(&nested, "preserve\n").unwrap();
+
+        let error = remove_worktree_path(directory.path(), "tracked-file").unwrap_err();
+
+        assert!(error.contains("拒绝删除目录"));
+        assert_eq!(std::fs::read_to_string(nested).unwrap(), "preserve\n");
     }
 
     #[test]

@@ -51,6 +51,9 @@ async function main() {
         } })), { repositoryPath, conflict, staged, unstaged });
         assert.deepEqual(await page.locator('.repo-group').evaluateAll(groups => groups.map(group => group.dataset.section)), ['conflict', 'unstaged', 'staged']);
         assert.deepEqual(await page.locator('.repo-group-toggle > span:nth-child(2)').allTextContents(), ['Merge Changes', 'Unstaged Changes', 'Staged Changes']);
+        assert.equal(await page.locator('[data-repo-action="continue"],[data-repo-action="abort"]').count(), 2, 'Merge Changes always keeps both operation controls visible');
+        assert.equal(await page.locator('[data-repo-action="continue"]').getAttribute('title'), '未找到可继续的冲突操作记录');
+        assert.equal(await page.locator('[data-repo-action="abort"]').getAttribute('title'), '中止当前冲突操作');
         await page.locator('.repo-changes-label').click();
         assert.equal(await page.locator('.repo-group[data-section="unstaged"]').isVisible(), true, 'the card is expanded so the badges have real geometry');
         const badgeGaps = await page.locator('.repo-group').evaluateAll(groups => Object.fromEntries(groups.map(group => {
@@ -80,16 +83,41 @@ async function main() {
         assert.equal(unstagedIconColumns.row.discard, unstagedIconColumns.header.discard, 'the row discard icon is under the header discard icon: ' + JSON.stringify(unstagedIconColumns));
         assert.equal(unstagedIconColumns.row.stage, unstagedIconColumns.header.stage, 'the row stage icon is under the header stage icon: ' + JSON.stringify(unstagedIconColumns));
         assert.equal(stagedIconColumns.row.unstage, stagedIconColumns.header.unstage, 'the staged row unstage icon is under the header unstage icon: ' + JSON.stringify(stagedIconColumns));
-        await page.evaluate(repositoryPath => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state: {
-            repositoryChanges: [{ repositoryPath, repositoryLabel: 'fixture', isMainRepository: true, headLabel: 'main',
-                staged: [{ path: 'resolved.cpp', status: 'M' }], unstaged: [], mergeOperation: 'stash-pop' }],
+        const publishRepositoryChanges = changes => page.evaluate(({ repositoryPath, changes }) => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state: {
+            repositoryChanges: [{ repositoryPath, repositoryLabel: 'fixture', isMainRepository: true, headLabel: 'main', ...changes }],
             commits: [], branches: [], selectedBranches: [], selectedRepositoryPaths: [], workingTreeRows: [], files: [],
             selectedCommit: { hash: 'uncommitted', repositoryPath }, filesLoading: false, filesMode: 'flat', commitLoading: false
-        } } })), repositoryPath);
-        assert.equal(await page.locator('.repo-group[data-section="conflict"]').isVisible(), true);
-        await page.locator('[data-repo-action="continue"]').click();
+        } } })), { repositoryPath, changes });
+        await publishRepositoryChanges({ staged: [conflict, staged], unstaged: [conflict, unstaged], mergeOperation: 'stash-pop' });
+        const repositoryContinue = page.locator('[data-repo-action="continue"]');
+        const repositoryAbort = page.locator('[data-repo-action="abort"]');
+        assert.equal(await repositoryContinue.isDisabled(), false, 'an unresolved Continue remains clickable so Host can explain the refusal');
+        assert.equal(await repositoryContinue.getAttribute('title'), '请先解决并暂存所有冲突');
+        assert.equal(await repositoryContinue.evaluate(node => node.classList.contains('merge-action-blocked')), true);
+        assert.equal(await repositoryContinue.evaluate(node => getComputedStyle(node).cursor), 'pointer', 'blocked Continue never shows the prohibited cursor');
+        assert.equal(await repositoryAbort.evaluate(node => getComputedStyle(node).cursor), 'pointer', 'Abort keeps the normal pointer cursor');
+        await repositoryContinue.click();
         assert.deepEqual(await page.evaluate(() => window.messages.at(-1)), { type: 'repositoryChangesAction', repositoryPath, action: 'continue' });
-        await page.locator('[data-repo-action="abort"]').click();
+        await repositoryAbort.click();
+        assert.deepEqual(await page.evaluate(() => window.messages.at(-1)), { type: 'repositoryChangesAction', repositoryPath, action: 'abort' });
+        await publishRepositoryChanges({ staged: [conflict], unstaged: [conflict], mergeOperation: 'stash-pop', mergeOperationBusy: true });
+        assert.equal(await repositoryContinue.isDisabled(), true, 'busy operations are truly disabled');
+        assert.equal(await repositoryAbort.isDisabled(), true, 'Abort is also disabled while the operation is busy');
+        await publishRepositoryChanges({ staged: [{ path: 'resolved.cpp', status: 'M' }], unstaged: [], mergeOperation: 'stash-pop' });
+        assert.equal(await page.locator('.repo-group[data-section="conflict"]').isVisible(), true, 'operation controls remain after the last conflict is staged');
+        assert.equal(await repositoryContinue.isDisabled(), false);
+        assert.equal(await repositoryContinue.getAttribute('title'), '继续当前合并操作');
+        await repositoryContinue.click();
+        assert.deepEqual(await page.evaluate(() => window.messages.at(-1)), { type: 'repositoryChangesAction', repositoryPath, action: 'continue' });
+        await publishRepositoryChanges({ staged: [conflict], unstaged: [conflict] });
+        assert.equal(await page.locator('[data-repo-action="continue"],[data-repo-action="abort"]').count(), 2, 'operation controls stay visible when durable operation state is absent');
+        assert.equal(await repositoryContinue.isDisabled(), false);
+        assert.equal(await repositoryAbort.isDisabled(), false);
+        assert.equal(await repositoryContinue.evaluate(node => node.classList.contains('merge-action-blocked')), true);
+        assert.equal(await repositoryAbort.evaluate(node => node.classList.contains('merge-action-blocked')), false, 'Abort stays visually active because Host can recover an exact orphaned Stash');
+        await repositoryContinue.click();
+        assert.deepEqual(await page.evaluate(() => window.messages.at(-1)), { type: 'repositoryChangesAction', repositoryPath, action: 'continue' });
+        await repositoryAbort.click();
         assert.deepEqual(await page.evaluate(() => window.messages.at(-1)), { type: 'repositoryChangesAction', repositoryPath, action: 'abort' });
         assert.deepEqual(errors, []);
         console.log('Change section order: Commit Panel and repository cards use Merge / Unstaged / Staged; Stash Pop and merge actions remain scoped');

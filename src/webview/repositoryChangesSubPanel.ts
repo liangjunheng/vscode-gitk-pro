@@ -63,7 +63,9 @@ export const REPOSITORY_CHANGES_STYLES = `
   .repo-commit-menu button { display: block; width: 100%; padding: 5px 9px; text-align: left; font: inherit; border: 0; background: transparent; color: inherit; cursor: pointer; white-space: nowrap; }
   .repo-commit-menu button:hover { background: var(--vscode-list-hoverBackground); }
   .repo-group-header .toolbar-icon { display: inline-grid; place-items: center; flex: 0 0 22px; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--vscode-icon-foreground); cursor: pointer; }
-  .repo-group-header .toolbar-icon:hover, .repo-file-row .toolbar-icon:hover { background: var(--vscode-toolbar-hoverBackground); }
+  .repo-group-header .toolbar-icon:hover:not(:disabled), .repo-file-row .toolbar-icon:hover { background: var(--vscode-toolbar-hoverBackground); }
+  .repo-group-header .toolbar-icon:disabled { opacity: .32; cursor: default !important; }
+  .repo-group-header .toolbar-icon.merge-action-blocked { opacity: .52; cursor: pointer !important; }
   .repo-group-header .toolbar-icon:focus-visible, .repo-file-row .toolbar-icon:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .repo-group + .repo-group { margin-top: 7px; }
   .repo-group-header { display: flex; height: 28px; align-items: center; gap: 4px; min-width: 0; color: var(--vscode-descriptionForeground); }
@@ -511,10 +513,15 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       toggle.appendChild(badge); header.append(toggle);
       if (section.key === 'conflict') {
         const actions = document.createElement('span'); actions.style.cssText = 'display:flex;margin-left:auto;gap:2px';
-        const proceed = repoChangesIcon('continue', 'check', '继续当前合并操作');
-        const abort = repoChangesIcon('abort', 'close', '中止当前合并操作');
-        proceed.disabled = !repository.mergeOperation || section.files.length > 0 || repository.mergeOperationBusy;
-        abort.disabled = !repository.mergeOperation || repository.mergeOperationBusy;
+        const hasMergeOperation = Boolean(repository.mergeOperation);
+        const hasUnresolvedConflicts = section.files.length > 0;
+        const proceedTitle = !hasMergeOperation ? '未找到可继续的冲突操作记录'
+          : hasUnresolvedConflicts ? '请先解决并暂存所有冲突' : '继续当前合并操作';
+        const proceed = repoChangesIcon('continue', 'check', proceedTitle);
+        const abort = repoChangesIcon('abort', 'close', '中止当前冲突操作');
+        proceed.disabled = Boolean(repository.mergeOperationBusy);
+        proceed.classList.toggle('merge-action-blocked', (hasUnresolvedConflicts || !hasMergeOperation) && !repository.mergeOperationBusy);
+        abort.disabled = Boolean(repository.mergeOperationBusy);
         actions.append(proceed, abort); header.append(actions);
       }
       if (stashSnapshot && section.key === 'commit') header.appendChild(repoChangesIcon('restoreStash', 'discard', '还原全部贮藏变更'));

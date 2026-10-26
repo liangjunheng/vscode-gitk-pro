@@ -295,7 +295,7 @@
     "build": "npm run compile",
     "test:native": "node scripts/native-cargo.cjs test",
     "test:binding": "node scripts/test-native-binding.cjs",
-    "test:stash": "node scripts/test-libgit2-stash-patch.cjs && node scripts/test-stash-parity.cjs && node scripts/test-stash-host.cjs",
+    "test:stash": "node scripts/test-libgit2-stash-patch.cjs && node scripts/test-stash-parity.cjs && node scripts/test-stash-host.cjs && node scripts/test-merge-operation.cjs && node scripts/test-merge-operation-progress.cjs && node scripts/test-merge-operation-faults.cjs",
     "test:stash:perf": "node scripts/benchmark-stash.cjs",
     "test:git-cli-remote": "node scripts/test-git-cli-remote-operations.cjs",
     "test:system-proxy": "node scripts/test-system-proxy.cjs",

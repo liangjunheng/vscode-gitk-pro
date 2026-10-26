@@ -18,7 +18,7 @@ const stashHash = '1'.repeat(40);
 const stashEntry = (hash, index, message) => ({ hash, shortHash: hash.slice(0, 8), parents: ['a'.repeat(40), 'b'.repeat(40)], message, rawMessage: message, body: '', author: 'me', authorDateLabel: 'today', stashIndex: index, stashRef: 'stash@{' + index + '}' });
 
 let stashReadResult = () => [];
-const stashCalls = [], fileReads = [], commitFileReads = [], warnings = [], dialogs = [], controllerCalls = [], stashOperationWrites = [];
+const stashCalls = [], fileReads = [], commitFileReads = [], warnings = [], dialogs = [], controllerCalls = [], stashOperationWrites = [], stashOperationClears = [], stashCheckpointPaths = [];
 const configurationValues = new Map([['showStashes', false]]);
 const configurationWrites = [];
 let dialogChoice, pendingOperation;
@@ -64,8 +64,17 @@ try {
       readMergeOperation: async () => pendingOperation,
       runMergeOperation: async () => {},
       describeMergeOperation: operation => operation,
-      writeStashOperation: async (root, action, stash, head, paths) => {
-        stashOperationWrites.push([root.toString(), action, stash, head, [...new Set(paths)].sort()]);
+      clearStashOperation: async root => { stashOperationClears.push(root.toString()); },
+      beginStashOperation: async (root, action, stash, head, paths, checkpointPaths) => {
+        stashOperationWrites.push([root.toString(), action, stash, head, [...new Set(paths)].sort(), 'applying']);
+        stashCheckpointPaths.push([...new Set(checkpointPaths)].sort());
+        return { operationId: '11111111-1111-4111-8111-111111111111', action, stash, head };
+      },
+      markStashOperationConflicted: async (root, handle, paths) => {
+        stashOperationWrites.push([root.toString(), handle.action, handle.stash, handle.head, [...new Set(paths)].sort(), 'conflicted']);
+      },
+      writeStashOperation: async (root, action, stash, head, paths, phase = 'conflicted') => {
+        stashOperationWrites.push([root.toString(), action, stash, head, [...new Set(paths)].sort(), phase]);
       },
     };
     if (name === '../git/gitNativeOperations') return {
@@ -122,9 +131,9 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
           Boolean(mergeStagedIntoUnstaged), Boolean(allUnstagedPaths)]);
         return backendStashImpl(root, scope, paths, mergeStagedIntoUnstaged, allUnstagedPaths);
       },
-      stashApply: async (root, hash) => { opCalls.push(['apply', root.toString(), hash]); return backendOpImpl('apply', hash); },
+      stashApply: async (root, hash) => { assert.equal(provider.mergeOperationBusy.has(root.toString()), true); opCalls.push(['apply', root.toString(), hash]); return backendOpImpl('apply', hash); },
       stashRestorePaths: async (root, hash, paths) => { opCalls.push(['restore', root.toString(), hash, [...paths]]); },
-      stashPop: async (root, hash) => { opCalls.push(['pop', root.toString(), hash]); return backendOpImpl('pop', hash); },
+      stashPop: async (root, hash) => { assert.equal(provider.mergeOperationBusy.has(root.toString()), true); opCalls.push(['pop', root.toString(), hash]); return backendOpImpl('pop', hash); },
       stashDrop: async (root, hash) => { opCalls.push(['drop', root.toString(), hash]); return backendOpImpl('drop', hash); },
       getWorkingTreeStatus: async () => snapshot,
       stage: async () => {},
@@ -145,7 +154,10 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
       listCurrentHeadBranches: () => [heads[repoA.path], heads[repoB.path]],
       getUncommittedFilesByHeadBranch: async () => snapshot,
       beginWorkingTreeMutation() {},
-      endWorkingTreeMutation: async (_branch, paths, fullRefresh, waitForRefresh) => { endedMutations.push({ paths: [...paths], fullRefresh, waitForRefresh }); },
+      endWorkingTreeMutation: async (_branch, paths, fullRefresh, waitForRefresh) => {
+        if (opCalls.at(-1)?.[0] === 'apply' || opCalls.at(-1)?.[0] === 'pop') assert.equal(provider.mergeOperationBusy.has(repoA.path), true);
+        endedMutations.push({ paths: [...paths], fullRefresh, waitForRefresh });
+      },
       completeWorkingTreeMutation: async (_branch, changes, affectedPaths, verificationPaths) => {
         completedMutations.push({ changes, affectedPaths: [...affectedPaths], verificationPaths: [...verificationPaths] });
         cachedSnapshot = changes;
@@ -401,7 +413,7 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
 
   // ---- 7) 右键菜单动作: apply / pop 走工作区队列, drop 确认后直接执行; stash 用 hash 定位
   provider.processWorkingTreeActionQueue = GitkViewProvider.prototype.processWorkingTreeActionQueue;
-  const resetOps = () => { opCalls.length = 0; dialogs.length = 0; warnings.length = 0; controllerCalls.length = 0; selected.length = 0; endedMutations.length = 0; stashOperationWrites.length = 0; provider.mergeOperations.clear(); provider.workingTreeActionQueue.length = 0; backendOpImpl = async (operation, hash) => ({ stash: hash, conflicts: false, dropped: operation === 'pop' }); dialogChoice = undefined; pendingOperation = undefined; };
+  const resetOps = () => { opCalls.length = 0; dialogs.length = 0; warnings.length = 0; controllerCalls.length = 0; selected.length = 0; endedMutations.length = 0; stashOperationWrites.length = 0; stashOperationClears.length = 0; stashCheckpointPaths.length = 0; provider.mergeOperations.clear(); provider.mergeOperationBusy.clear(); provider.workingTreeActionQueue.length = 0; backendOpImpl = async (operation, hash) => ({ stash: hash, conflicts: false, dropped: operation === 'pop' }); snapshot = { staged: [], changes: [] }; dialogChoice = undefined; pendingOperation = undefined; };
   const newest = stashEntry(stashHash, 0, 'WIP on main: newest');
   const older = stashEntry('2'.repeat(40), 1, 'On main: older');
   const setStashList = list => { provider.stashesByRepository.set(repoA.path, list); };
@@ -477,8 +489,18 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   resetOps(); setStashList([newest, older]); reloaded = [];
   await queue('stashApply');
   assert.deepEqual(opCalls, [['apply', repoA.path, stashHash]]);
+  assert.deepEqual(stashOperationWrites, [[repoA.path, 'stash-apply', stashHash, heads[repoA.path].hash, ['new-name.txt', 'old-name.txt', 'stashed.txt'], 'applying']], 'Apply records recovery state before native execution');
+  assert.deepEqual(stashOperationClears, [repoA.path], 'a clean Apply clears its recovery state');
+  assert.deepEqual(stashCheckpointPaths, [['new-name.txt', 'old-name.txt', 'stashed.txt']], 'the checkpoint covers every Stash path');
   assert.deepEqual(reloaded, [[repoA.path, true]], 'the stash list is re-read after apply');
   assert.deepEqual(selected, [], 'apply keeps the entry, so the selection stays');
+  assert.equal(provider.mergeOperationBusy.has(repoA.path), false, 'Apply unlocks merge controls after completion');
+
+  resetOps(); setStashList([newest, older]);
+  setSnapshot([], [file('unrelated-local.txt')]);
+  await queue('stashApply');
+  assert.deepEqual(opCalls, [['apply', repoA.path, stashHash]], 'non-overlapping local changes do not block Apply');
+  assert.deepEqual(stashCheckpointPaths, [['new-name.txt', 'old-name.txt', 'stashed.txt', 'unrelated-local.txt']], 'the checkpoint also captures unrelated dirty paths that could enter a moved-base conflict');
 
   resetOps(); setStashList([newest, older]);
   store.setState({ currentHash: stashHash, currentRepositoryPath: repoA.path });
@@ -486,6 +508,8 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   provider.commitController.findCommit = (hash) => hash === baseCommit.hash ? baseCommit : undefined;
   await queue('stashPop');
   assert.deepEqual(opCalls, [['pop', repoA.path, stashHash]]);
+  assert.deepEqual(stashOperationWrites, [[repoA.path, 'stash-pop', stashHash, heads[repoA.path].hash, ['new-name.txt', 'old-name.txt', 'stashed.txt'], 'applying']], 'Pop records recovery state before native execution');
+  assert.deepEqual(stashOperationClears, [repoA.path], 'a clean Pop clears its recovery state');
   assert.deepEqual(selected, [baseCommit], 'popping the selected stash moves the selection to its base commit');
 
   resetOps(); setStashList([newest, older]);
@@ -494,18 +518,65 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   assert.deepEqual(selected, [], 'popping a stash that is not selected leaves the selection alone');
 
   resetOps(); setStashList([newest, older]);
-  backendOpImpl = async (operation, hash) => ({ stash: hash, conflicts: true, dropped: false });
-  setSnapshot([file('conflict.txt', { isConflict: true })], [file('conflict.txt', { isConflict: true })]);
+  backendOpImpl = async (operation, hash) => {
+    setSnapshot([file('conflict.txt', { isConflict: true })], [file('conflict.txt', { isConflict: true })]);
+    return { stash: hash, conflicts: true, dropped: false };
+  };
   store.setState({ currentHash: stashHash, currentRepositoryPath: repoA.path });
   await queue('stashPop');
   assert.ok(warnings.some(w => /存在冲突.*点击 √.*点击 ×/.test(w)), 'a conflicting pop explains the finish and abort actions: ' + JSON.stringify(warnings));
-  assert.deepEqual(stashOperationWrites, [[repoA.path, 'stash-pop', stashHash, heads[repoA.path].hash, ['conflict.txt', 'new-name.txt', 'old-name.txt', 'stashed.txt']]], 'a conflicting pop persists its exact operation and rollback paths');
+  assert.deepEqual(stashOperationWrites, [[repoA.path, 'stash-pop', stashHash, heads[repoA.path].hash, ['new-name.txt', 'old-name.txt', 'stashed.txt'], 'applying'], [repoA.path, 'stash-pop', stashHash, heads[repoA.path].hash, ['conflict.txt', 'new-name.txt', 'old-name.txt', 'stashed.txt'], 'conflicted']], 'a conflicting pop records intent first, then persists exact rollback paths');
   assert.equal(provider.mergeOperations.get(repoA.path), 'stash-pop');
+  assert.deepEqual(stashOperationClears, [], 'a conflict keeps its recovery state');
   assert.deepEqual(selected, [], 'the entry is kept until the persisted Pop is completed');
 
   resetOps(); setStashList([newest, older]);
-  backendOpImpl = async () => { throw new Error('index is not clean'); };
+  backendOpImpl = async () => {
+    setSnapshot([file('conflict.txt', { isConflict: true })], [file('conflict.txt', { isConflict: true })]);
+    throw new Error('native conflict');
+  };
   await queue('stashApply');
+  assert.deepEqual(stashOperationWrites, [[repoA.path, 'stash-apply', stashHash, heads[repoA.path].hash, ['new-name.txt', 'old-name.txt', 'stashed.txt'], 'applying']], 'a thrown error never upgrades itself to a confirmed conflict');
+  assert.deepEqual(stashOperationClears, [], 'an uncertain thrown conflict keeps the non-actionable applying record');
+  assert.equal(provider.mergeOperations.has(repoA.path), false, 'uncertain conflicts are not exposed as continuable operations');
+  assert.ok(warnings.some(w => /异常退出后留下了冲突.*执行结果尚未确认/.test(w)), 'the uncertain state is explained');
+  assert.ok(warnings.some(w => /ERROR Git 操作失败: native conflict/.test(w)), 'the native error is still surfaced');
+
+  resetOps(); setStashList([newest, older]);
+  setSnapshot([file('existing.txt', { isConflict: true })], [file('existing.txt', { isConflict: true })]);
+  await queue('stashApply');
+  assert.deepEqual(opCalls, [], 'pre-existing conflicts stop before native Apply');
+  assert.deepEqual(stashOperationWrites, [], 'pre-existing conflicts never create an applying marker');
+  assert.ok(warnings.some(w => /存在未解决的冲突，不能应用 Stash/.test(w)));
+
+  resetOps(); setStashList([newest, older]);
+  setSnapshot([], [file('stashed.txt')]);
+  await queue('stashApply');
+  assert.deepEqual(opCalls, [], 'overlapping local modifications stop before native Apply');
+  assert.deepEqual(stashOperationWrites, [], 'overlap refusal never creates an applying marker');
+  assert.ok(warnings.some(w => /Stash 路径已有本地修改.*stashed.txt/.test(w)));
+
+  resetOps(); setStashList([newest, older]);
+  setSnapshot([], [file('stashed.txt/nested-local.txt')]);
+  await queue('stashApply');
+  assert.deepEqual(opCalls, [], 'a nested local path overlapping a Stash file stops before native Apply');
+  assert.deepEqual(stashOperationWrites, [], 'path-prefix overlap never creates an applying marker');
+  assert.ok(warnings.some(w => /Stash 路径已有本地修改.*nested-local.txt/.test(w)));
+
+  if (process.platform === 'win32') {
+    resetOps(); setStashList([newest, older]);
+    setSnapshot([], [file('STASHED.TXT')]);
+    await queue('stashApply');
+    assert.deepEqual(opCalls, [], 'Windows path overlap is case-insensitive');
+    assert.deepEqual(stashOperationWrites, []);
+  }
+
+  resetOps(); setStashList([newest, older]);
+  backendOpImpl = async () => { throw new Error('index is not clean'); };
+  setSnapshot([], []);
+  await queue('stashApply');
+  assert.deepEqual(stashOperationWrites, [[repoA.path, 'stash-apply', stashHash, heads[repoA.path].hash, ['new-name.txt', 'old-name.txt', 'stashed.txt'], 'applying']], 'a refusal still has a pre-operation recovery record');
+  assert.deepEqual(stashOperationClears, [repoA.path], 'a refusal without conflicts clears the recovery record');
   assert.ok(warnings.some(w => /ERROR Git 操作失败: index is not clean/.test(w)), 'refusals surface: ' + JSON.stringify(warnings));
   assert.equal(endedMutations.at(-1)?.waitForRefresh, false, 'apply refusal releases the UI before the background path refresh finishes');
 

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { CommitFile, WorkingTreeChanges, type FileStatus } from '../types';
 import type { GitBackend, StashApplyResult, StashResult, StashScope } from './gitBackend';
 import { invokeNativeGit, invokeNativeGitMutation } from './nativeGitBinding';
+import { toStashOperationError } from './stashOperationError';
 
 interface NativeCommitFile {
     path: string;
@@ -110,7 +111,11 @@ export class LibGit2Backend implements GitBackend {
     }
 
     async stashApply(rootUri: vscode.Uri, stash: string): Promise<StashApplyResult> {
-        return invokeNativeGitMutation<StashApplyResult>('stashApply', { rootPath: rootUri.fsPath, stash });
+        try {
+            return await invokeNativeGitMutation<StashApplyResult>('stashApply', { rootPath: rootUri.fsPath, stash });
+        } catch (error) {
+            throw toStashOperationError(error);
+        }
     }
 
     async stashRestorePaths(rootUri: vscode.Uri, stash: string, paths: readonly string[]): Promise<void> {
@@ -119,7 +124,11 @@ export class LibGit2Backend implements GitBackend {
     }
 
     async stashPop(rootUri: vscode.Uri, stash: string): Promise<StashApplyResult> {
-        return invokeNativeGitMutation<StashApplyResult>('stashPop', { rootPath: rootUri.fsPath, stash });
+        try {
+            return await invokeNativeGitMutation<StashApplyResult>('stashPop', { rootPath: rootUri.fsPath, stash });
+        } catch (error) {
+            throw toStashOperationError(error);
+        }
     }
 
     async stashDrop(rootUri: vscode.Uri, stash: string): Promise<void> {
