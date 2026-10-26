@@ -145,9 +145,10 @@ interface CommitAuthorDetails {
     date: string;
 }
 
-async function getCommitAuthorDetails(rootUri: vscode.Uri, hashes: readonly string[]): Promise<Map<string, CommitAuthorDetails>> {
+async function getCommitAuthorDetails(rootUri: vscode.Uri, hashes: readonly string[], priority = false): Promise<Map<string, CommitAuthorDetails>> {
     if (hashes.length === 0) { return new Map(); }
-    const commits = await invokeNativeGit<Array<{ hash: string; author: string; authorEmail: string; authorDate: string }>>('commitDetails', {
+    const invoke = priority ? invokeNativeGitPriorityRead : invokeNativeGit;
+    const commits = await invoke<Array<{ hash: string; author: string; authorEmail: string; authorDate: string }>>('commitDetails', {
         rootPath: rootUri.fsPath,
         hashes,
     });
@@ -158,9 +159,10 @@ async function getCommitAuthorDetails(rootUri: vscode.Uri, hashes: readonly stri
     }]));
 }
 
-async function readBranchRefsFromCli(rootUri: vscode.Uri, signal?: AbortSignal): Promise<{ currentBranch?: string; detachedHead?: string; local: GitRefRecord[]; remote: GitRefRecord[] }> {
+async function readBranchRefsFromCli(rootUri: vscode.Uri, signal?: AbortSignal, priority = false): Promise<{ currentBranch?: string; detachedHead?: string; local: GitRefRecord[]; remote: GitRefRecord[] }> {
     throwIfAborted(signal);
-    const result = await invokeNativeGit<{ currentBranch?: string; detachedHead?: string; local: GitRefRecord[]; remote: GitRefRecord[] }>('branches', {
+    const invoke = priority ? invokeNativeGitPriorityRead : invokeNativeGit;
+    const result = await invoke<{ currentBranch?: string; detachedHead?: string; local: GitRefRecord[]; remote: GitRefRecord[] }>('branches', {
         rootPath: rootUri.fsPath,
     });
     throwIfAborted(signal);
@@ -340,14 +342,14 @@ async function readRemoteTipTimestamps(rootUri: vscode.Uri): Promise<Map<string,
     return new Map(remote.map(ref => [ref.label, secondsByHash.get(ref.hash) ?? 0]));
 }
 
-export async function getGitBranches(rootUri: vscode.Uri, signal?: AbortSignal): Promise<GitBranchOption[]> {
+async function readGitBranches(rootUri: vscode.Uri, signal: AbortSignal | undefined, priority: boolean): Promise<GitBranchOption[]> {
     throwIfAborted(signal);
     try {
-        const { currentBranch, detachedHead, local, remote } = await readBranchRefsFromCli(rootUri, signal);
+        const { currentBranch, detachedHead, local, remote } = await readBranchRefsFromCli(rootUri, signal, priority);
         const branchRefs = [...local, ...remote];
         // A single detail lookup covers every local/remote ref tip. Sorting remains usable
         // when the optional enrichment fails, with branch names as its stable fallback.
-        const tipTimestamps = await getCommitAuthorDetails(rootUri, [...new Set(branchRefs.map(ref => ref.hash))])
+        const tipTimestamps = await getCommitAuthorDetails(rootUri, [...new Set(branchRefs.map(ref => ref.hash))], priority)
             .then(details => new Map([...details].map(([hash, detail]) => {
                 const parsed = Date.parse(detail.date);
                 return [hash, Number.isNaN(parsed) ? 0 : Math.floor(parsed / 1000)] as const;
@@ -379,6 +381,14 @@ export async function getGitBranches(rootUri: vscode.Uri, signal?: AbortSignal):
     }
 }
 
+export function getGitBranches(rootUri: vscode.Uri, signal?: AbortSignal): Promise<GitBranchOption[]> {
+    return readGitBranches(rootUri, signal, false);
+}
+
+export function getGitBranchesPriority(rootUri: vscode.Uri, signal?: AbortSignal): Promise<GitBranchOption[]> {
+    return readGitBranches(rootUri, signal, true);
+}
+
 export async function getCurrentGitBranch(rootUri: vscode.Uri, signal?: AbortSignal): Promise<string | undefined> {
     throwIfAborted(signal);
     try {
@@ -391,16 +401,25 @@ export async function getCurrentGitBranch(rootUri: vscode.Uri, signal?: AbortSig
     }
 }
 
-export async function getCurrentGitHeadHash(rootUri: vscode.Uri, signal?: AbortSignal): Promise<string | undefined> {
+async function readCurrentGitHeadHash(rootUri: vscode.Uri, signal: AbortSignal | undefined, priority: boolean): Promise<string | undefined> {
     throwIfAborted(signal);
     try {
-        const head = await invokeNativeGit<{ hash?: string } | null>('head', { rootPath: rootUri.fsPath });
+        const invoke = priority ? invokeNativeGitPriorityRead : invokeNativeGit;
+        const head = await invoke<{ hash?: string } | null>('head', { rootPath: rootUri.fsPath });
         throwIfAborted(signal);
         return head?.hash;
     } catch (error) {
         if (error instanceof Error && error.name === 'AbortError') { throw error; }
         return undefined;
     }
+}
+
+export function getCurrentGitHeadHash(rootUri: vscode.Uri, signal?: AbortSignal): Promise<string | undefined> {
+    return readCurrentGitHeadHash(rootUri, signal, false);
+}
+
+export function getCurrentGitHeadHashPriority(rootUri: vscode.Uri, signal?: AbortSignal): Promise<string | undefined> {
+    return readCurrentGitHeadHash(rootUri, signal, true);
 }
 
 export interface GitSyncResult {
@@ -714,9 +733,10 @@ export async function getStashes(rootUri: vscode.Uri): Promise<StashEntry[]> {
     }
 }
 
-async function readCommitsFromNative(rootUri: vscode.Uri, limit: number, refs: readonly string[], skip: number, signal?: AbortSignal): Promise<CommitMetadata[]> {
+async function readCommitsFromNative(rootUri: vscode.Uri, limit: number, refs: readonly string[], skip: number, signal?: AbortSignal, priority = false): Promise<CommitMetadata[]> {
     throwIfAborted(signal);
-    const commits = await invokeNativeGit<NativeCommitMetadata[]>('commits', {
+    const invoke = priority ? invokeNativeGitPriorityRead : invokeNativeGit;
+    const commits = await invoke<NativeCommitMetadata[]>('commits', {
         rootPath: rootUri.fsPath,
         refs,
         limit,
@@ -732,6 +752,10 @@ export async function getGitCommits(rootUri: vscode.Uri, limit: number = 500, re
     const commits = await readCommitsFromNative(rootUri, limit, refs, skip, signal);
     onProgress?.(1, 1);
     return commits;
+}
+
+export function getGitCommitsPriority(rootUri: vscode.Uri, limit: number, refs: readonly string[], skip: number, signal?: AbortSignal): Promise<CommitMetadata[]> {
+    return readCommitsFromNative(rootUri, limit, refs, skip, signal, true);
 }
 
 // 搜索提交: 全量获取后在 TS 端过滤, 任意关键词命中任意字段即返回

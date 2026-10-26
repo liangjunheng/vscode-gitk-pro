@@ -23,6 +23,8 @@ const logs = {
   getGitCommits: async (_uri, _limit, _refs, skip) => (skip === 0 ? linear.map(c => ({ ...c, parents: [...c.parents] })) : []),
   searchCommits: async () => linear.slice(0, 1).map(c => ({ ...c })),
 };
+logs.getCurrentGitHeadHashPriority = (...args) => logs.getCurrentGitHeadHash(...args);
+logs.getGitCommitsPriority = (uri, limit, refs, skip, signal) => logs.getGitCommits(uri, limit, refs, skip, undefined, signal);
 const load = Module._load;
 let GitCommitController;
 try {

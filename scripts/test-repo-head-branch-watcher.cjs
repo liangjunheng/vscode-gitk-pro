@@ -14,6 +14,7 @@ class EventEmitter {
 
 const uri = fsPath => ({ fsPath, toString: () => fsPath });
 const fileWatchers = [];
+const priorityOperations = [];
 const vscode = {
     EventEmitter,
     Uri: { parse: uri, file: uri },
@@ -58,7 +59,8 @@ try {
             }) };
         }
         if (request === './nativeGitBinding') {
-            return { invokeNativeGit: async (operation, payload) => {
+            return { invokeNativeGitPriorityRead: async (operation, payload) => {
+                priorityOperations.push(operation);
                 if (operation === 'discover') return { gitDir: path.join(payload.path, '.git') };
                 if (operation === 'head') return { branch: 'refs/heads/main', hash: 'head-1' };
                 throw new Error(`Unexpected native operation: ${operation}`);
@@ -94,6 +96,8 @@ async function main() {
     const subscription = watcher.onEachRepoRemoteRefsChanged(event => notifications.push(event));
     try {
         const remoteWatcher = await waitForWatcher();
+        assert.ok(priorityOperations.includes('discover'));
+        assert.ok(priorityOperations.includes('head'));
         remoteWatcher.create.fire();
         remoteWatcher.change.fire();
         remoteWatcher.remove.fire();

@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { GitBranchOption, type GitRepositoryOption } from '../types';
 import { buildDetachedHeadBranch } from './gitLogProvider';
 import { GitRepoController } from './gitRepoController';
-import { invokeNativeGit } from './nativeGitBinding';
+import { invokeNativeGitPriorityRead } from './nativeGitBinding';
 
 
 type RepoHeadBranchChangedEvent = {
@@ -158,7 +158,7 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
     private async createHeadWatcher(key: string, repository: GitRepositoryOption): Promise<vscode.Disposable | undefined> {
         try {
             const rootUri = vscode.Uri.parse(repository.path);
-            const { gitDir } = await invokeNativeGit<{ gitDir: string }>('discover', { path: rootUri.fsPath });
+            const { gitDir } = await invokeNativeGitPriorityRead<{ gitDir: string }>('discover', { path: rootUri.fsPath });
             if (!gitDir || this.repositories.get(key)?.path !== repository.path) { return undefined; }
             // HEAD 只存符号引用(ref: refs/heads/x), commit/amend/merge/rebase/reset 都不改写它,
             // 只改写目标 ref 与 logs/HEAD; 只听 HEAD 就永远收不到这些移动的 HEAD 值变化信号。
@@ -257,7 +257,7 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
 
     private async readHeadBranch(repository: GitRepositoryOption): Promise<GitBranchOption | undefined> {
         const rootUri = vscode.Uri.parse(repository.path);
-        const head = await invokeNativeGit<{ branch?: string; hash?: string } | null>('head', {
+        const head = await invokeNativeGitPriorityRead<{ branch?: string; hash?: string } | null>('head', {
             rootPath: rootUri.fsPath,
         }).catch(() => undefined);
         const branchName = head?.branch;

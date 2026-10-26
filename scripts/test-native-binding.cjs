@@ -30,6 +30,12 @@ const invokePriorityRead = async (operation, payload = {}) => invokeNativeGitPri
     assert.equal((await invoke('status')).staged[0].path, 'example.gkt');
     const hash = await invoke('commit', { message: 'subject\n\nbody', amend: false });
     assert.equal(hash, git('rev-parse', 'HEAD'));
+    assert.deepEqual(await invokePriorityRead('head'), await invoke('head'));
+    assert.deepEqual(await invokePriorityRead('branches'), await invoke('branches'));
+    assert.deepEqual(await invokePriorityRead('commits', { refs: [hash], limit: 50, skip: 0 }),
+      await invoke('commits', { refs: [hash], limit: 50, skip: 0 }));
+    assert.deepEqual(await invokePriorityRead('commitDetails', { hashes: [hash] }),
+      await invoke('commitDetails', { hashes: [hash] }));
     assert.equal((await invoke('commitDetails', { hashes: [hash] }))[0].message, 'subject\n\nbody');
     assert.deepEqual(await invoke('status'), { staged: [], changes: [] });
     git('commit', '--allow-empty', '-m', 'current stage');

@@ -13,7 +13,7 @@ const heads = new Map(repos.map((repository, index) => [repository.path, String(
 const counts = new Map();
 let running = 0, maximum = 0, gateResolve;
 let gate = new Promise(resolve => { gateResolve = resolve; });
-let fail = false, searches = 0;
+let fail = false, searches = 0, priorityHeads = 0, priorityPages = 0;
 const logs = {
   getCurrentGitHeadHash: async uri => heads.get(uri.toString()),
   getGitCommits: async (uri, limit, refs, skip, _progress, signal) => {
@@ -29,6 +29,8 @@ const logs = {
   },
   searchCommits: async () => { searches++; return []; },
 };
+logs.getCurrentGitHeadHashPriority = async uri => { priorityHeads++; return heads.get(uri.toString()); };
+logs.getGitCommitsPriority = async (uri, limit, refs, skip, signal) => { priorityPages++; return logs.getGitCommits(uri, limit, refs, skip, undefined, signal); };
 const load = Module._load;
 let GitCommitController;
 try {
@@ -40,7 +42,7 @@ try {
   ({ GitCommitController } = require('../out/git/gitCommitController'));
 } finally { Module._load = load; }
 
-const branches = () => repos.map(repoOption => ({ repoOption, name: 'HEAD', kind: 'current', hash: heads.get(repoOption.path) }));
+const branches = () => repos.slice(0, -1).map(repoOption => ({ repoOption, name: 'HEAD', kind: 'current', hash: heads.get(repoOption.path) }));
 const controller = new GitCommitController({
   totalRepoList: repos, ontotalRepoListChanged: repoEvents.event, onSelectedRepoListChanged: selectedEvents.event,
 }, {
@@ -67,6 +69,8 @@ async function main() {
   const shared = controller.readFirstCommitPage(repos[0], heads.get(repos[0].path));
   gateResolve(); await settle(); await shared;
   assert.equal(counts.size, 9, 'all repositories get a first batch by default');
+  assert.ok(priorityHeads > 0, 'background HEAD fallback uses the priority native queue');
+  assert.ok(priorityPages > 0, 'background first pages use the priority native queue');
   assert.equal(maximum, repos.length);
   assert.equal(published, 0, 'background reads must not publish another repository into selected history');
   const first = await controller.readFirstCommitPage(repos[0], heads.get(repos[0].path));

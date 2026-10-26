@@ -36,6 +36,8 @@ const logs = {
   },
   searchCommits: async () => [],
 };
+logs.getCurrentGitHeadHashPriority = (...args) => logs.getCurrentGitHeadHash(...args);
+logs.getGitCommitsPriority = (uri, limit, refs, skip, signal) => logs.getGitCommits(uri, limit, refs, skip, undefined, signal);
 // getGitCommits 在发起那一刻读取 gate; 上面 await 前的 gate 引用即为本次读取的闸门。
 
 const load = Module._load;

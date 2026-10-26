@@ -17,7 +17,8 @@ import { UncommittedFilesWatcher } from './uncommittedFilesWatcher';
 import {
     getCommitFiles,
     getGitCommits,
-    getCurrentGitHeadHash,
+    getGitCommitsPriority,
+    getCurrentGitHeadHashPriority,
     searchCommits,
 } from './gitLogProvider';
 
@@ -179,7 +180,7 @@ export class GitCommitController implements vscode.Disposable {
                 try {
                     const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
                         .find(candidate => candidate.repoOption.path === repository.path);
-                    const headHash = branch?.hash ?? await getCurrentGitHeadHash(vscode.Uri.parse(repository.path), signal);
+                    const headHash = branch?.hash ?? await getCurrentGitHeadHashPriority(vscode.Uri.parse(repository.path), signal);
                     if (headHash && !signal.aborted && this.firstPageRepositoryPaths.has(repository.path)) {
                         await this.readFirstCommitPage(repository, headHash);
                     }
@@ -195,8 +196,8 @@ export class GitCommitController implements vscode.Disposable {
         if (!entry || entry.headHash !== headHash) {
             entry = {
                 headHash,
-                commits: getGitCommits(vscode.Uri.parse(repository.path), COMMIT_PAGE_SIZE,
-                    [headHash], 0, undefined, this.firstPageAbortController.signal),
+                commits: getGitCommitsPriority(vscode.Uri.parse(repository.path), COMMIT_PAGE_SIZE,
+                    [headHash], 0, this.firstPageAbortController.signal),
             };
             this.firstCommitPages.set(repository.path, entry);
         }
