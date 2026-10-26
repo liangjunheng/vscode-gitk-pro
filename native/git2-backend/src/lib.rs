@@ -136,6 +136,8 @@ fn dispatch_operation(operation: &str, payload: &Value) -> std::result::Result<V
         "discover" => repository::discover(payload),
         "configGet" => repository::config_get(payload),
         "remoteState" => repository::remote_state(payload),
+        "submoduleTopology" => repository::submodule_topology(payload),
+        "remoteBranchesContainingHead" => repository::remote_branches_containing_head(payload),
         "submodules" => repository::submodules(payload),
         "readObjects" => objects::read_objects(payload),
         "readMergeConflict" => conflicts::read(payload),

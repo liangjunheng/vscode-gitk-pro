@@ -82,6 +82,8 @@ const invokePriorityRead = async (operation, payload = {}) => invokeNativeGitPri
     assert.equal(remoteState.remotes[0].fetchUrl, 'https://example.com/origin.git');
     assert.equal(remoteState.remotes[0].pushUrl, 'https://example.com/origin.git');
     assert.equal(remoteState.operations.origin.fetch, true);
+    assert.deepEqual(await invokePriorityRead('remoteBranchesContainingHead'), []);
+    assert.deepEqual(await invokePriorityRead('submoduleTopology'), []);
     assert.deepEqual(await invokePriorityRead('stashList'), []);
     const discovered = await invoke('discover', { path: root });
     assert.ok(discovered.gitDir && discovered.workdir);

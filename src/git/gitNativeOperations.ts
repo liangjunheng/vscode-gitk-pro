@@ -1,7 +1,7 @@
 import { execFile } from 'child_process';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { invokeNativeGit } from './nativeGitBinding';
+import { invokeNativeGit, invokeNativeGitPriorityRead } from './nativeGitBinding';
 
 interface SystemProxy {
     readonly http?: string;
@@ -271,12 +271,18 @@ export async function clearFasterGitRemoteOperations(rootUri: vscode.Uri, remote
 
 export async function listRemoteBranchesContaining(rootUri: vscode.Uri): Promise<string[]> {
     try {
-        const output = await runGitCli(rootUri, ['for-each-ref', '--contains=HEAD', '--format=%(refname:short)', 'refs/remotes']);
-        return output.split(/\r?\n/)
-            .map(value => value.trim())
-            .filter(value => Boolean(value) && !value.endsWith('/HEAD'));
+        return await invokeNativeGitPriorityRead<string[]>('remoteBranchesContainingHead', { rootPath: rootUri.fsPath });
     } catch {
-        return [];
+        // A stale native module may not expose the operation. Keep the previous
+        // exact Git result instead of silently changing upstream selection.
+        try {
+            const output = await runGitCli(rootUri, ['for-each-ref', '--contains=HEAD', '--format=%(refname:short)', 'refs/remotes']);
+            return output.split(/\r?\n/)
+                .map(value => value.trim())
+                .filter(value => Boolean(value) && !value.endsWith('/HEAD'));
+        } catch {
+            return [];
+        }
     }
 }
 

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { promises as fs } from 'fs';
 import { GitRepositoryOption } from '../types';
-import { invokeNativeGit } from './nativeGitBinding';
+import { invokeNativeGitPriorityRead } from './nativeGitBinding';
 
 
 function repoKey(filePath: string): string {
@@ -281,7 +281,7 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
 
     private async resolveRepositoryRoot(directory: string): Promise<string | undefined> {
         try {
-            const { workdir: rootPath } = await invokeNativeGit<{ workdir: string }>('discover', { path: directory });
+            const { workdir: rootPath } = await invokeNativeGitPriorityRead<{ workdir: string }>('discover', { path: directory });
             return rootPath ? path.normalize(rootPath) : undefined;
         } catch {
             return undefined;
@@ -293,12 +293,40 @@ export class RepoSubmoduleWatcher implements vscode.Disposable {
         option: GitRepositoryOption;
         parentKey: string;
     }>> {
+        try {
+            const entries = await invokeNativeGitPriorityRead<Array<{ path: string; parentPath: string }>>(
+                'submoduleTopology',
+                { rootPath: parentPath },
+            );
+            const repositories = await Promise.all(entries.map(async entry => ({
+                path: entry.path,
+                option: await this.createRepositoryOption(entry.path, 'subrepo'),
+                parentKey: repoKey(entry.parentPath),
+            })));
+            return repositories.filter((entry): entry is {
+                path: string;
+                option: GitRepositoryOption;
+                parentKey: string;
+            } => Boolean(entry.option));
+        } catch {
+            // Older installed native modules do not expose the topology operation.
+            // Keep the old scanner as a compatibility fallback; it remains the
+            // source of truth for the same initialized-HEAD semantics.
+            return this.scanSubmodulesFallback(parentPath);
+        }
+    }
+
+    private async scanSubmodulesFallback(parentPath: string): Promise<Array<{
+        path: string;
+        option: GitRepositoryOption;
+        parentKey: string;
+    }>> {
         const declaredPaths = await this.readDeclaredSubmodulePaths(parentPath);
         const initializedPaths = await this.filterInitializedSubmodules(declaredPaths);
         const children = (await Promise.all(initializedPaths.map(async modulePath => {
             const option = await this.createRepositoryOption(modulePath, 'subrepo');
             if (!option) { return undefined; }
-            const descendants = await this.scanSubmodules(modulePath);
+            const descendants = await this.scanSubmodulesFallback(modulePath);
             return {
                 entry: { path: modulePath, option, parentKey: repoKey(parentPath) },
                 descendants,

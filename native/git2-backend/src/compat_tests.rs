@@ -839,3 +839,91 @@ fn multi_file_restore_ignores_unrelated_windows_long_paths() {
     );
     assert!(long_path.exists());
 }
+
+#[test]
+fn remote_branches_containing_head_match_cli_short_names() {
+    let f = Fixture::new();
+    let first = f.seed();
+    f.write("a.gkt", "second revision\n");
+    f.git(&["add", "a.gkt"]);
+    f.git(&["commit", "-m", "second"]);
+    let second = f.git(&["rev-parse", "HEAD"]).trim().to_owned();
+    f.write("a.gkt", "third revision with a distinct size\n");
+    f.git(&["add", "a.gkt"]);
+    f.git(&["commit", "-m", "third"]);
+    let third = f.git(&["rev-parse", "HEAD"]).trim().to_owned();
+    f.git(&["update-ref", "refs/remotes/origin/main", &third]);
+    f.git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/main",
+    ]);
+    f.git(&["update-ref", "refs/remotes/origin/feature", &second]);
+    f.git(&["update-ref", "refs/remotes/up/x", &third]);
+    f.git(&["update-ref", "refs/remotes/origin/old", &first]);
+    f.git(&["checkout", "--detach", &second]);
+    let expected = || -> Vec<String> {
+        f.git(&[
+            "for-each-ref",
+            "--contains=HEAD",
+            "--format=%(refname:short)",
+            "refs/remotes",
+        ])
+        .lines()
+        .map(str::to_owned)
+        .collect()
+    };
+    let actual = || -> Vec<String> {
+        repository::remote_branches_containing_head(&f.payload())
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(actual(), expected());
+    f.git(&["branch", "origin/feature", &second]);
+    assert_eq!(actual(), expected());
+    f.git(&["tag", "up/x", &third]);
+    assert_eq!(actual(), expected());
+    f.git(&["config", "core.warnAmbiguousRefs", "false"]);
+    assert_eq!(actual(), expected());
+    f.git(&["config", "core.warnAmbiguousRefs", "true"]);
+    f.git(&["pack-refs", "--all"]);
+    assert_eq!(actual(), expected());
+    f.git(&["replace", &third, &second]);
+    assert!(repository::remote_branches_containing_head(&f.payload()).is_err());
+}
+
+#[test]
+fn submodule_topology_preserves_declared_depth_first_order() {
+    let root = tempfile::tempdir().unwrap();
+    let root_path = root.path();
+    let write = |relative: &str, contents: &str| {
+        let path = root_path.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
+    };
+    write(
+        ".gitmodules",
+        "[submodule \"b\"]\n path = b\n[submodule \"missing\"]\n path = missing\n[submodule \"a\"]\n path = a\n",
+    );
+    write("a/.git/HEAD", "ref: refs/heads/main\n");
+    write("b/.git", "gitdir: ../.git/modules/b\n");
+    write(".git/modules/b/HEAD", "ref: refs/heads/main\n");
+    write("b/.gitmodules", "[submodule \"nested\"]\n path = nested\n");
+    write("b/nested/.git/HEAD", "ref: refs/heads/main\n");
+    let actual = repository::submodule_topology(&json!({"rootPath": root_path})).unwrap();
+    let root_text = root_path.to_string_lossy().replace('\\', "/");
+    assert_eq!(
+        actual,
+        json!([
+            {"path": format!("{root_text}/b"), "parentPath": root_text},
+            {"path": format!("{root_text}/b/nested"), "parentPath": format!("{root_text}/b")},
+            {"path": format!("{root_text}/a"), "parentPath": root_text},
+        ])
+    );
+    fs::write(root_path.join(".gitmodules"), [0xff, b'\n']).unwrap();
+    assert!(repository::submodule_topology(&json!({"rootPath": root_path})).is_err());
+}
