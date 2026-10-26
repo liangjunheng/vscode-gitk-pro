@@ -18,10 +18,10 @@ const stashHash = '1'.repeat(40);
 const stashEntry = (hash, index, message) => ({ hash, shortHash: hash.slice(0, 8), parents: ['a'.repeat(40), 'b'.repeat(40)], message, rawMessage: message, body: '', author: 'me', authorDateLabel: 'today', stashIndex: index, stashRef: 'stash@{' + index + '}' });
 
 let stashReadResult = () => [];
-const stashCalls = [], fileReads = [], commitFileReads = [], warnings = [], dialogs = [], controllerCalls = [];
+const stashCalls = [], fileReads = [], commitFileReads = [], warnings = [], dialogs = [], controllerCalls = [], stashOperationWrites = [];
 const configurationValues = new Map([['showStashes', false]]);
 const configurationWrites = [];
-let dialogChoice;
+let dialogChoice, pendingOperation;
 let stashFilesResult = [{ path: 'stashed.txt', status: 'M', diffKey: 'stashed.txt' }];
 let backendStashImpl = async () => ({ stash: 'x', skippedGitlinks: [] });
 const opCalls = [];
@@ -60,6 +60,18 @@ let GitkViewProvider, store;
 try {
   Module._load = function(name, ...args) {
     if (name === 'vscode') return vscode;
+    if (name === '../git/mergeOperation') return {
+      readMergeOperation: async () => pendingOperation,
+      runMergeOperation: async () => {},
+      describeMergeOperation: operation => operation,
+      writeStashOperation: async (root, action, stash, head, paths) => {
+        stashOperationWrites.push([root.toString(), action, stash, head, [...new Set(paths)].sort()]);
+      },
+    };
+    if (name === '../git/gitNativeOperations') return {
+      ...load.call(this, name, ...args),
+      resolveRevision: async () => heads[repoA.path].hash,
+    };
     if (name === '../git/gitLogProvider') return {
       ...load.call(this, name, ...args),
       getStashFiles: async (_uri, hash) => { fileReads.push(hash); return stashFilesResult.map(file => ({ ...file })); },
@@ -97,6 +109,7 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
     pushTargetByRepository: new Map(), lastPushedTargetByRepository: new Map(), commitAmendByRepo: new Map(),
     repositorySyncKeyByRepository: new Map(), repositorySyncStateLoadingByHead: new Set(), repositorySyncRevisionByRepository: new Map(),
     selectedBranchesMap: new Map(),
+    mergeOperations: new Map(), mergeOperationBusy: new Set(), mergeOperationReads: new Map(),
     loadRepositorySyncState: async () => {}, loadRepositoryStashes: async () => {},
     schedulePushState: () => {}, commitPanel: { isVisible: () => false, update() {} },
     repoSubmoduleWatcher: { findSubmoduleRepository: () => undefined, getRepositoryAncestry: () => [] },
@@ -113,6 +126,7 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
       stashRestorePaths: async (root, hash, paths) => { opCalls.push(['restore', root.toString(), hash, [...paths]]); },
       stashPop: async (root, hash) => { opCalls.push(['pop', root.toString(), hash]); return backendOpImpl('pop', hash); },
       stashDrop: async (root, hash) => { opCalls.push(['drop', root.toString(), hash]); return backendOpImpl('drop', hash); },
+      getWorkingTreeStatus: async () => snapshot,
       stage: async () => {},
       unstage: async (root, paths) => { opCalls.push(['unstage', root.toString(), [...paths]]); },
     },
@@ -387,7 +401,7 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
 
   // ---- 7) 右键菜单动作: apply / pop 走工作区队列, drop 确认后直接执行; stash 用 hash 定位
   provider.processWorkingTreeActionQueue = GitkViewProvider.prototype.processWorkingTreeActionQueue;
-  const resetOps = () => { opCalls.length = 0; dialogs.length = 0; warnings.length = 0; controllerCalls.length = 0; selected.length = 0; endedMutations.length = 0; provider.workingTreeActionQueue.length = 0; backendOpImpl = async (operation, hash) => ({ stash: hash, conflicts: false, dropped: operation === 'pop' }); dialogChoice = undefined; };
+  const resetOps = () => { opCalls.length = 0; dialogs.length = 0; warnings.length = 0; controllerCalls.length = 0; selected.length = 0; endedMutations.length = 0; stashOperationWrites.length = 0; provider.mergeOperations.clear(); provider.workingTreeActionQueue.length = 0; backendOpImpl = async (operation, hash) => ({ stash: hash, conflicts: false, dropped: operation === 'pop' }); dialogChoice = undefined; pendingOperation = undefined; };
   const newest = stashEntry(stashHash, 0, 'WIP on main: newest');
   const older = stashEntry('2'.repeat(40), 1, 'On main: older');
   const setStashList = list => { provider.stashesByRepository.set(repoA.path, list); };
@@ -437,6 +451,11 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
     assert.equal(queued.stashHash, stashHash, 'targets the stash by hash');
     assert.deepEqual([...queued.paths].sort(), ['new-name.txt', 'old-name.txt', 'stashed.txt'], 'a rename refreshes both the old and the new path');
   }
+  resetOps(); setStashList([newest, older]); pendingOperation = 'stash-pop';
+  await provider.runStashCommitAction('stashApply', stashHash, repoA.path);
+  assert.equal(provider.workingTreeActionQueue.length, 0, 'a persisted conflict operation blocks another Apply/Pop');
+  assert.ok(warnings.some(w => /完成或中止.*stash-pop/.test(w)));
+
   // 7c) 条目已不存在: 提示并重读, 不入队
   resetOps(); setStashList([older]); reloaded = [];
   await provider.runStashCommitAction('stashApply', stashHash, repoA.path);
@@ -476,10 +495,13 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
 
   resetOps(); setStashList([newest, older]);
   backendOpImpl = async (operation, hash) => ({ stash: hash, conflicts: true, dropped: false });
+  setSnapshot([file('conflict.txt', { isConflict: true })], [file('conflict.txt', { isConflict: true })]);
   store.setState({ currentHash: stashHash, currentRepositoryPath: repoA.path });
   await queue('stashPop');
-  assert.ok(warnings.some(w => /存在冲突.*Stash 条目已保留/.test(w)), 'a conflicting pop explains that the entry is kept: ' + JSON.stringify(warnings));
-  assert.deepEqual(selected, [], 'the entry is kept, so the selection stays');
+  assert.ok(warnings.some(w => /存在冲突.*点击 √.*点击 ×/.test(w)), 'a conflicting pop explains the finish and abort actions: ' + JSON.stringify(warnings));
+  assert.deepEqual(stashOperationWrites, [[repoA.path, 'stash-pop', stashHash, heads[repoA.path].hash, ['conflict.txt', 'new-name.txt', 'old-name.txt', 'stashed.txt']]], 'a conflicting pop persists its exact operation and rollback paths');
+  assert.equal(provider.mergeOperations.get(repoA.path), 'stash-pop');
+  assert.deepEqual(selected, [], 'the entry is kept until the persisted Pop is completed');
 
   resetOps(); setStashList([newest, older]);
   backendOpImpl = async () => { throw new Error('index is not clean'); };

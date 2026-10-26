@@ -29,11 +29,11 @@ async function main() {
         await page.locator('.staged-all').click();
         assert.deepEqual(await page.evaluate(() => window.messages.at(-1).paths), ['staged.cpp']);
         assert.equal(await page.locator('.merge-continue').isDisabled(), true);
-        await page.evaluate(card => window.dispatchEvent(new MessageEvent('message', { data: { type: 'snapshot', cards: [{ ...card, mergeOperation: 'merge' }], displayMode: 'flat' } })), card);
+        await page.evaluate(card => window.dispatchEvent(new MessageEvent('message', { data: { type: 'snapshot', cards: [{ ...card, mergeOperation: 'stash-pop' }], displayMode: 'flat' } })), card);
         assert.equal(await page.locator('.merge-abort').isDisabled(), false);
         await page.locator('.merge-abort').click();
         assert.deepEqual(await page.evaluate(() => window.messages.at(-1)), { type: 'mergeOperation', repositoryPath, action: 'abort' });
-        await page.evaluate(card => window.dispatchEvent(new MessageEvent('message', { data: { type: 'snapshot', cards: [{ ...card, conflictFiles: [], mergeOperation: 'merge' }], displayMode: 'flat' } })), card);
+        await page.evaluate(card => window.dispatchEvent(new MessageEvent('message', { data: { type: 'snapshot', cards: [{ ...card, conflictFiles: [], mergeOperation: 'stash-pop' }], displayMode: 'flat' } })), card);
         assert.equal(await page.locator('.section.conflict').isVisible(), true, 'keep operation controls after last conflict is staged');
         await page.locator('.merge-continue').click();
         assert.deepEqual(await page.evaluate(() => window.messages.at(-1)), { type: 'mergeOperation', repositoryPath, action: 'continue' });
@@ -62,17 +62,23 @@ async function main() {
         await verifyCountBadgeCentering(browser, repositoryPath);
         assert.equal(await page.locator('.repo-group[data-section="unstaged"] .repo-group-toggle .repo-count').textContent(), '1');
         // A file row's action icons must sit under the matching icons of the group header, otherwise the two columns look shifted and click the opposite action.
-        const iconColumns = await page.locator('.repo-group[data-section="unstaged"], .repo-group[data-section="staged"]').evaluateAll(groups => Object.fromEntries(groups.map(group => {
-            const columns = scope => Object.fromEntries([...scope.querySelectorAll(':scope > .toolbar-icon, :scope > .repo-file-actions > .toolbar-icon')].map(button => [button.dataset.repoAction, Math.round(button.getBoundingClientRect().left)]));
-            return [group.dataset.section, { header: columns(group.querySelector('.repo-group-header')), row: columns(group.querySelector('.repo-file-row')) }];
-        })));
-        assert.ok(iconColumns.unstaged.header.discard < iconColumns.unstaged.header.stage, 'the header lists discard before stage');
-        assert.equal(iconColumns.unstaged.row.discard, iconColumns.unstaged.header.discard, 'the row discard icon is under the header discard icon: ' + JSON.stringify(iconColumns.unstaged));
-        assert.equal(iconColumns.unstaged.row.stage, iconColumns.unstaged.header.stage, 'the row stage icon is under the header stage icon: ' + JSON.stringify(iconColumns.unstaged));
-        assert.equal(iconColumns.staged.row.unstage, iconColumns.staged.header.unstage, 'the staged row unstage icon is under the header unstage icon: ' + JSON.stringify(iconColumns.staged));
+        const measureIconColumns = async section => {
+            const group = page.locator('.repo-group[data-section="' + section + '"]');
+            await group.locator('.repo-file-row').hover();
+            return group.evaluate(node => {
+                const columns = scope => Object.fromEntries([...scope.querySelectorAll(':scope > .toolbar-icon, :scope > .repo-file-actions > .toolbar-icon')].map(button => [button.dataset.repoAction, Math.round(button.getBoundingClientRect().left)]));
+                return { header: columns(node.querySelector('.repo-group-header')), row: columns(node.querySelector('.repo-file-row')) };
+            });
+        };
+        const unstagedIconColumns = await measureIconColumns('unstaged');
+        const stagedIconColumns = await measureIconColumns('staged');
+        assert.ok(unstagedIconColumns.header.discard < unstagedIconColumns.header.stage, 'the header lists discard before stage');
+        assert.equal(unstagedIconColumns.row.discard, unstagedIconColumns.header.discard, 'the row discard icon is under the header discard icon: ' + JSON.stringify(unstagedIconColumns));
+        assert.equal(unstagedIconColumns.row.stage, unstagedIconColumns.header.stage, 'the row stage icon is under the header stage icon: ' + JSON.stringify(unstagedIconColumns));
+        assert.equal(stagedIconColumns.row.unstage, stagedIconColumns.header.unstage, 'the staged row unstage icon is under the header unstage icon: ' + JSON.stringify(stagedIconColumns));
         await page.evaluate(repositoryPath => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state: {
             repositoryChanges: [{ repositoryPath, repositoryLabel: 'fixture', isMainRepository: true, headLabel: 'main',
-                staged: [{ path: 'resolved.cpp', status: 'M' }], unstaged: [], mergeOperation: 'merge' }],
+                staged: [{ path: 'resolved.cpp', status: 'M' }], unstaged: [], mergeOperation: 'stash-pop' }],
             commits: [], branches: [], selectedBranches: [], selectedRepositoryPaths: [], workingTreeRows: [], files: [],
             selectedCommit: { hash: 'uncommitted', repositoryPath }, filesLoading: false, filesMode: 'flat', commitLoading: false
         } } })), repositoryPath);
@@ -82,7 +88,7 @@ async function main() {
         await page.locator('[data-repo-action="abort"]').click();
         assert.deepEqual(await page.evaluate(() => window.messages.at(-1)), { type: 'repositoryChangesAction', repositoryPath, action: 'abort' });
         assert.deepEqual(errors, []);
-        console.log('Change section order: Commit Panel and repository cards use Merge / Unstaged / Staged; actions remain scoped');
+        console.log('Change section order: Commit Panel and repository cards use Merge / Unstaged / Staged; Stash Pop and merge actions remain scoped');
     } finally { await browser.close(); }
 }
 // Measures the rendered pixels, not the box: the digits must sit in the middle of the pill for 1, 2 and 3 digits, at a fractional zoom too.

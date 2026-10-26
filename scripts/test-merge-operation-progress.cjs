@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const Module = require('node:module');
 const original = Module._load;
-let events = [], answer = '中止操作', failure;
+let events = [], answer = '中止操作', failure, operation = 'merge';
 const vscode = {
     ProgressLocation: { Notification: 15 },
     Uri: { parse: value => ({ fsPath: value }) },
@@ -21,7 +21,8 @@ try {
     Module._load = function(name, ...args) {
         if (name === 'vscode') return vscode;
         if (name === '../git/mergeOperation') return {
-            readMergeOperation: async () => 'merge',
+            readMergeOperation: async () => operation,
+            describeMergeOperation: value => value === 'stash-pop' ? 'Stash Pop' : value,
             runMergeOperation: async () => { events.push('git'); if (failure) throw new Error(failure); },
         };
         return original.call(this, name, ...args);
@@ -54,12 +55,17 @@ async function main() {
         const start = result.find(item => Array.isArray(item) && item[0] === 'start');
         assert.equal(start[1].location, vscode.ProgressLocation.Notification);
         assert.equal(start[1].cancellable, false);
-        assert.ok(start[1].title.includes(action));
+        assert.ok(start[1].title.includes(action === 'continue' ? '继续 merge' : '中止 merge'));
         assert.ok(result.indexOf('git') < result.indexOf('head'));
         assert.ok(result.indexOf('panel') < result.indexOf('end'), 'notification spans repository refresh');
         assert.ok(result.some(item => item[0] === 'success'));
         if (action === 'abort') assert.ok(result.indexOf('confirm') < result.indexOf(start));
     }
+    operation = 'stash-pop';
+    const stashComplete = await run('continue');
+    const stashStart = stashComplete.find(item => Array.isArray(item) && item[0] === 'start');
+    assert.ok(stashStart[1].title.includes('完成 Stash Pop'));
+    operation = 'merge';
     failure = 'unresolved conflicts';
     const failed = await run('continue');
     assert.ok(failed.includes('files'), 'failure still refreshes repository inside progress');

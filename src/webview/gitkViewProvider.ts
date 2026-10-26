@@ -6,7 +6,7 @@ import { defaultPushTarget, getCloudCommits, getCommitFiles, getStashes, getStas
 import { addRemote, checkoutBranch, checkoutRemoteBranch, clearFasterGitRemoteOperations, commitDetails, configGet, fetchRemotes, hasConflicts, indexGitlink, listRemoteBranchesContaining, listRemotes, pull, push, rangeCommits, readFasterGitRemoteOperations, readNativeRemoteState, removeRemote, resolveRevision, restoreAll, restoreSubmodule, setFasterGitRemoteOperation, trackedPaths, type FasterGitRemoteOperation, type GitRemote, type NativeCommitDetails, type NativePushResult } from '../git/gitNativeOperations';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { FILE_CONTEXT_MENU_ACTIONS } from './fileContextMenu';
-import { readMergeOperation, runMergeOperation, type MergeOperation } from '../git/mergeOperation';
+import { describeMergeOperation, readMergeOperation, runMergeOperation, writeStashOperation, type MergeOperation } from '../git/mergeOperation';
 import { MergeEditorSessions } from './mergeEditorSessions';
 import { CommitPanel, type CommitPanelSnapshot, type CommitCard, type CommitCardStatePatch } from './commitPanel';
 import { CommitPanelViewTitleController } from './commitPanelViewTitleController';
@@ -1443,8 +1443,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const root = vscode.Uri.parse(repositoryPath);
             const operation = await readMergeOperation(root);
             if (!operation) { throw new Error('此仓库没有可继续或中止的合并操作。'); }
+            const operationLabel = describeMergeOperation(operation);
+            const stashOperation = operation === 'stash-apply' || operation === 'stash-pop';
+            const actionLabel = action === 'continue' ? (stashOperation ? '完成' : '继续') : '中止';
             if (action === 'abort') {
-                const answer = await vscode.window.showWarningMessage(`中止 ${operation}？本次冲突解决结果将被丢弃，Git 将尝试恢复操作前状态。`, { modal: true }, '中止操作');
+                const detail = operation === 'stash-apply' || operation === 'stash-pop'
+                    ? '本次 Stash 写入相关路径的修改将被丢弃；其他路径保持不变，Stash 条目会保留。'
+                    : '本次冲突解决结果将被丢弃，Git 将尝试恢复操作前状态。';
+                const answer = await vscode.window.showWarningMessage(`中止 ${operationLabel}？`, { modal: true, detail }, '中止操作');
                 if (answer !== '中止操作') { return; }
             }
             this.schedulePushState();
@@ -1453,10 +1459,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const label = repository?.label || path.basename(root.fsPath);
             await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
-                title: `FasterGit: ${operation} ${action} (${label})`,
+                title: `FasterGit: ${actionLabel} ${operationLabel} (${label})`,
                 cancellable: false,
             }, async progress => {
-                progress.report({ message: action === 'continue' ? '正在继续 Git 操作…' : '正在中止 Git 操作…' });
+                progress.report({ message: action === 'continue' ? `正在完成 ${operationLabel}…` : `正在中止 ${operationLabel}…` });
                 try {
                     await runMergeOperation(root, operation, action);
                 } finally {
@@ -1469,7 +1475,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     await this.refreshCommitPanel();
                 }
             });
-            void vscode.window.showInformationMessage(`FasterGit: ${operation} ${action} 完成 (${label})`);
+            void vscode.window.showInformationMessage(`FasterGit: ${operationLabel} ${action === 'continue' ? '已完成' : '已中止'} (${label})`);
         } catch (error) {
             void vscode.window.showErrorMessage(`FasterGit ${action} 失败：${error instanceof Error ? error.message : String(error)}`);
         } finally {
@@ -3939,6 +3945,16 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             if (!this.isStashHash(hash, repositoryPath)) { this.leaveRemovedStash(repositoryPath, stash); }
             return;
         }
+        try {
+            const pendingOperation = await readMergeOperation(rootUri);
+            if (pendingOperation) {
+                void vscode.window.showWarningMessage(`请先完成或中止当前 ${describeMergeOperation(pendingOperation)} 操作。`);
+                return;
+            }
+        } catch (error) {
+            void vscode.window.showErrorMessage(`读取 Git 操作状态失败: ${error instanceof Error ? error.message : String(error)}`);
+            return;
+        }
         let paths: string[];
         try {
             const files = await getStashFiles(rootUri, hash);
@@ -4354,6 +4370,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                                 if (!operation.stashHash) { throw new Error('缺少 stash 标识'); }
                                 const repositoryPath = operation.rootUri.toString();
                                 const target = this.stashesByRepository.get(repositoryPath)?.find(entry => entry.hash === operation.stashHash);
+                                const headBeforeApply = await resolveRevision(operation.rootUri, 'HEAD^{commit}');
+                                if (!headBeforeApply) { throw new Error('无法确定应用 Stash 前的 HEAD'); }
                                 let result;
                                 try {
                                     result = operation.action === 'stashPop'
@@ -4366,9 +4384,24 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                                     throw error;
                                 }
                                 if (result.conflicts) {
+                                    const changes = await this.gitBackend.getWorkingTreeStatus(operation.rootUri);
+                                    const conflictPaths = [...changes.staged, ...changes.changes]
+                                        .filter(file => file.isConflict)
+                                        .map(file => file.path);
+                                    const stashOperation = operation.action === 'stashPop' ? 'stash-pop' : 'stash-apply';
+                                    await writeStashOperation(
+                                        operation.rootUri,
+                                        stashOperation,
+                                        operation.stashHash,
+                                        headBeforeApply,
+                                        [...operation.paths, ...conflictPaths],
+                                    );
+                                    this.mergeOperations.set(repositoryPath, stashOperation);
+                                    this.schedulePushState();
+                                    if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
                                     void vscode.window.showWarningMessage(
-                                        '应用 Stash 后存在冲突，冲突文件已留在工作区。'
-                                        + (operation.action === 'stashPop' ? 'Stash 条目已保留，解决冲突后可手动删除。' : ''));
+                                        '应用 Stash 后存在冲突。解决并暂存全部冲突后点击 √ 完成操作，或点击 × 恢复本次 Stash 涉及的路径。'
+                                        + (operation.action === 'stashPop' ? 'Stash 条目会保留到点击 √ 完成 Pop。' : ''));
                                 }
                                 await this.loadRepositoryStashes(repositoryPath, true);
                                 if (result.dropped && target) { this.leaveRemovedStash(repositoryPath, target); }
