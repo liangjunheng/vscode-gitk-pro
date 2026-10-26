@@ -22,6 +22,8 @@ const invokePriorityRead = async (operation, payload = {}) => invokeNativeGitPri
     git('config', 'user.name', 'Gitk Test');
     git('config', 'user.email', 'gitk@example.com');
     git('config', 'core.autocrlf', 'false');
+    git('remote', 'add', 'origin', 'https://example.com/origin.git');
+    git('config', '--local', 'fastergit.remote.origin.fetch', 'true');
     fs.writeFileSync(path.join(root, 'example.gkt'), 'one\n');
     assert.equal((await invoke('status')).changes[0].path, 'example.gkt');
     await invoke('stage', { paths: ['example.gkt'] });
@@ -69,6 +71,11 @@ const invokePriorityRead = async (operation, payload = {}) => invokeNativeGitPri
       assert.equal(current.changes.some(file => file.path === 'example.gkt'), round % 2 !== 0);
     }
 
+    const remoteState = await invoke('remoteState');
+    assert.equal(remoteState.remotes[0].name, 'origin');
+    assert.equal(remoteState.remotes[0].fetchUrl, 'https://example.com/origin.git');
+    assert.equal(remoteState.remotes[0].pushUrl, 'https://example.com/origin.git');
+    assert.equal(remoteState.operations.origin.fetch, true);
     assert.deepEqual(await invokePriorityRead('stashList'), []);
     const discovered = await invoke('discover', { path: root });
     assert.ok(discovered.gitDir && discovered.workdir);

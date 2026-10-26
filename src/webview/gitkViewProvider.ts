@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { type AppState, type ChangeSetMode, type ChangedFile, GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
 import { defaultPushTarget, getCloudCommits, getCommitFiles, getStashes, getStashFiles, type StashEntry, getCurrentGitBranch, getCurrentGitHeadHash, getGitAheadBehind, getGitAheadCount, getGitBranches, getGitlinkPathsInCommit, getPushPlan, type PushSourceBranch, type PushTargetOption, readCurrentCommitMessage } from '../git/gitLogProvider';
-import { addRemote, checkoutBranch, checkoutRemoteBranch, clearFasterGitRemoteOperations, commitDetails, configGet, fetchRemotes, hasConflicts, indexGitlink, listRemoteBranchesContaining, listRemotes, pull, push, rangeCommits, readFasterGitRemoteOperations, removeRemote, resolveRevision, restoreAll, restoreSubmodule, setFasterGitRemoteOperation, trackedPaths, type FasterGitRemoteOperation, type GitRemote, type NativeCommitDetails, type NativePushResult } from '../git/gitNativeOperations';
+import { addRemote, checkoutBranch, checkoutRemoteBranch, clearFasterGitRemoteOperations, commitDetails, configGet, fetchRemotes, hasConflicts, indexGitlink, listRemoteBranchesContaining, listRemotes, pull, push, rangeCommits, readFasterGitRemoteOperations, readNativeRemoteState, removeRemote, resolveRevision, restoreAll, restoreSubmodule, setFasterGitRemoteOperation, trackedPaths, type FasterGitRemoteOperation, type GitRemote, type NativeCommitDetails, type NativePushResult } from '../git/gitNativeOperations';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { FILE_CONTEXT_MENU_ACTIONS } from './fileContextMenu';
 import { readMergeOperation, runMergeOperation, type MergeOperation } from '../git/mergeOperation';
@@ -33,6 +33,7 @@ type SetiIconDefinitions = Record<string, readonly [string, string]>;
 type RemoteOperation = 'fetch' | 'pull' | 'push';
 type RemoteOperationSnapshot = { fetch: readonly string[]; pull: readonly string[]; push: readonly string[] };
 type RemoteStateSnapshot = { readonly remotes: readonly GitRemote[]; readonly upstreamRemote: string; readonly operations: RemoteOperationSnapshot };
+type RemotePublishRequest = { promise: Promise<void>; refreshAfter: boolean; upstreamRemoteOverride?: string };
 
 type BranchTip = Readonly<{
     timestamp: number;
@@ -292,6 +293,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private readonly remoteStateByRepository = new Map<string, RemoteStateSnapshot>();
     /** 丢弃并发 remote/config 读取的过期结果，避免旧快照覆盖刚勾选的状态。 */
     private readonly remotePublishRevisionByRepository = new Map<string, number>();
+    /** 同一仓库的普通 remote 刷新只允许一个在途请求；真正的配置变更会排队一次追加刷新。 */
+    private readonly remotePublishInFlight = new Map<string, RemotePublishRequest>();
     private selectedBranchDisplaySnapshot: { label: string; title: string; names: string[]; kind?: GitBranchOption['kind'] } = {
         label: '未选择分支',
         title: '未选择分支',
@@ -1291,8 +1294,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         });
         // 选择事件产生后立即同步完整状态，不能等待提交或分支事件。
         this.pushStateToWebview();
-        // remote 不依赖用户打开弹窗才初始化；切换仓库后立即发布一次，避免按钮停留在"未选择远程仓库"。
-        if (repository) { void this.publishRemoteList(repository.path); }
     }
 
     /** 父仓库和子仓库图标都依赖仓库拓扑；子模块扫描完成后须重新发布已选项。 */
@@ -2015,11 +2016,42 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         return revision;
     }
 
-    private async publishRemoteList(repositoryPath: string | undefined, upstreamRemoteOverride?: string): Promise<void> {
+    private async publishRemoteList(repositoryPath: string | undefined, upstreamRemoteOverride?: string, forceRefresh = false): Promise<void> {
         if (!repositoryPath || !this.repositories.some(repository => repository.path === repositoryPath)) {
             this.view?.webview.postMessage({ type: 'remoteListChanged', repositoryPath: '', remotes: [] });
             return;
         }
+        const pending = this.remotePublishInFlight.get(repositoryPath);
+        if (pending) {
+            if (forceRefresh) {
+                this.invalidateRemotePublish(repositoryPath);
+                pending.refreshAfter = true;
+                if (upstreamRemoteOverride !== undefined) { pending.upstreamRemoteOverride = upstreamRemoteOverride; }
+            }
+            return pending.promise;
+        }
+        const request: RemotePublishRequest = {
+            promise: Promise.resolve(),
+            refreshAfter: false,
+            upstreamRemoteOverride,
+        };
+        this.remotePublishInFlight.set(repositoryPath, request);
+        request.promise = (async () => {
+            do {
+                request.refreshAfter = false;
+                const override = request.upstreamRemoteOverride;
+                request.upstreamRemoteOverride = undefined;
+                await this.refreshRemoteList(repositoryPath, override);
+            } while (request.refreshAfter);
+        })().finally(() => {
+            if (this.remotePublishInFlight.get(repositoryPath) === request) {
+                this.remotePublishInFlight.delete(repositoryPath);
+            }
+        });
+        return request.promise;
+    }
+
+    private async refreshRemoteList(repositoryPath: string, upstreamRemoteOverride?: string): Promise<void> {
         const revision = this.invalidateRemotePublish(repositoryPath);
         const cached = this.remoteStateByRepository.get(repositoryPath);
         if (cached) {
@@ -2027,13 +2059,21 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
         try {
             const rootUri = vscode.Uri.parse(repositoryPath);
-            const remotes = await listRemotes(rootUri);
-            const [upstreamRemote, configured] = await Promise.all([
-                upstreamRemoteOverride !== undefined
-                    ? Promise.resolve(upstreamRemoteOverride)
-                    : this.currentUpstreamRemote(repositoryPath, remotes),
-                readFasterGitRemoteOperations(rootUri, remotes.map(remote => remote.name)),
-            ]);
+            let remotes: GitRemote[];
+            let configured: ReadonlyMap<string, ReadonlyMap<FasterGitRemoteOperation, boolean>>;
+            let nativeUpstreamRemote = '';
+            try {
+                const nativeState = await readNativeRemoteState(rootUri);
+                remotes = nativeState.remotes;
+                configured = nativeState.operations;
+                nativeUpstreamRemote = nativeState.upstreamRemote;
+            } catch {
+                // Keep compatibility with an older installed native binary until it is rebuilt.
+                remotes = await listRemotes(rootUri);
+                configured = await readFasterGitRemoteOperations(rootUri, remotes.map(remote => remote.name));
+            }
+            const upstreamRemote = upstreamRemoteOverride
+                ?? (nativeUpstreamRemote || await this.currentUpstreamRemote(repositoryPath, remotes));
             const orderedRemotes = [...remotes].sort((left, right) =>
                 Number(right.name === upstreamRemote) - Number(left.name === upstreamRemote)
                 || left.name.localeCompare(right.name));
@@ -2078,7 +2118,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         try {
             await addRemote(vscode.Uri.parse(repositoryPath), remoteName, remoteUrl);
             this.remoteStateByRepository.delete(repositoryPath);
-            await this.publishRemoteList(repositoryPath);
+            await this.publishRemoteList(repositoryPath, undefined, true);
             void vscode.window.showInformationMessage(`已添加 remote「${remoteName.trim()}」。`);
         } catch (error) {
             void vscode.window.showErrorMessage(`${repository?.label ?? '仓库'} 添加 remote 失败：${error instanceof Error ? error.message : String(error)}`);
@@ -2099,7 +2139,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             await clearFasterGitRemoteOperations(rootUri, name);
             await removeRemote(rootUri, name);
             this.remoteStateByRepository.delete(repositoryPath);
-            await this.publishRemoteList(repositoryPath);
+            await this.publishRemoteList(repositoryPath, undefined, true);
         } catch (error) {
             void vscode.window.showErrorMessage(`删除 remote「${name}」失败：${error instanceof Error ? error.message : String(error)}`);
         }
@@ -2116,12 +2156,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const upstreamRemote = await this.currentUpstreamRemote(repositoryPath, remotes);
             await setFasterGitRemoteOperation(rootUri, name, operation, enabled);
             this.remoteStateByRepository.delete(repositoryPath);
-            await this.publishRemoteList(repositoryPath, upstreamRemote);
+            await this.publishRemoteList(repositoryPath, upstreamRemote, true);
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             this.view?.webview.postMessage({ type: 'remoteOperationFailed', repositoryPath, operation, name, error: message });
             void vscode.window.showErrorMessage(`更新 remote「${name}」的 ${operation} 配置失败：${message}`);
-            await this.publishRemoteList(repositoryPath);
+            await this.publishRemoteList(repositoryPath, undefined, true);
         }
     }
 

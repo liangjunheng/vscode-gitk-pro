@@ -182,6 +182,27 @@ export interface GitRemote {
     readonly pushUrl: string;
 }
 
+interface NativeRemoteState {
+    remotes: GitRemote[];
+    operations: Record<string, Partial<Record<FasterGitRemoteOperation, boolean>>>;
+    upstreamRemote: string;
+}
+
+
+/** Read remote metadata and local FasterGit operation settings through libgit2. */
+export async function readNativeRemoteState(rootUri: vscode.Uri): Promise<{
+    remotes: GitRemote[];
+    operations: Map<string, Map<FasterGitRemoteOperation, boolean>>;
+    upstreamRemote: string;
+}> {
+    const state = await invokeNativeGit<NativeRemoteState>('remoteState', { rootPath: rootUri.fsPath });
+    const operations = new Map<string, Map<FasterGitRemoteOperation, boolean>>();
+    for (const [name, values] of Object.entries(state.operations ?? {})) {
+        operations.set(name, new Map(Object.entries(values) as Array<[FasterGitRemoteOperation, boolean]>));
+    }
+    return { remotes: state.remotes, operations, upstreamRemote: state.upstreamRemote ?? '' };
+}
+
 function validateRemoteName(name: string): string {
     const value = name.trim();
     if (!value || value.startsWith('-') || /\s/.test(value)) {

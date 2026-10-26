@@ -135,6 +135,7 @@ fn dispatch_operation(operation: &str, payload: &Value) -> std::result::Result<V
     match operation {
         "discover" => repository::discover(payload),
         "configGet" => repository::config_get(payload),
+        "remoteState" => repository::remote_state(payload),
         "submodules" => repository::submodules(payload),
         "readObjects" => objects::read_objects(payload),
         "readMergeConflict" => conflicts::read(payload),
