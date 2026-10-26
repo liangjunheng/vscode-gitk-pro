@@ -4,6 +4,7 @@ import { CommitFile, GitBranchOption, WorkingTreeChanges } from '../types';
 import type { GitBackend } from './gitBackend';
 import { RepoHeadBranchWatcher } from './eachRepoHeadBranchWatcher';
 import { invokeNativeGit } from './nativeGitBinding';
+import { statusReadLimiter } from './statusConcurrency';
 
 
 type HeadBranchUncommittedFilesChangedEvent = {
@@ -483,12 +484,14 @@ export class UncommittedFilesWatcher implements vscode.Disposable {
             }
             let changes: WorkingTreeChanges;
             if (!previous || fullRefresh) {
-                changes = await this.gitBackend.getWorkingTreeStatusWithoutSubmoduleWorktrees(rootUri, signal);
+                changes = await statusReadLimiter.run(() =>
+                    this.gitBackend.getWorkingTreeStatusWithoutSubmoduleWorktrees(rootUri, signal));
             } else if (paths.size > 0) {
                 changes = this.mergePathChanges(
                     repositoryPath,
                     branch.hash,
-                    await this.gitBackend.getWorkingTreeStatusForPaths(rootUri, [...paths], signal),
+                    await statusReadLimiter.run(() =>
+                        this.gitBackend.getWorkingTreeStatusForPaths(rootUri, [...paths], signal)),
                     paths,
                 );
             } else {
