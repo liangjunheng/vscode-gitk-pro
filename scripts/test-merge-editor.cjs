@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { execFileSync } = require('node:child_process');
-const { createMergePlan, MergeEditor } = require('../out/webview/mergeEditor');
+const { createMergePlan, mergeInputLabels, MergeEditor } = require('../out/webview/mergeEditor');
 const { renderMergeEditorHtml } = require('../out/webview/mergeEditorDocument');
 const { loadNativeGitBinding } = require('../out/git/nativeGitBinding');
 
@@ -11,6 +11,8 @@ async function main() {
     assert.equal(createMergePlan('one\ntwo\nthree\n', 'ONE\ntwo\nthree\n', 'one\ntwo\nTHREE\n').result, 'ONE\ntwo\nTHREE\n');
     assert.equal(createMergePlan('base', 'same', 'same').conflicts.length, 0);
     assert.equal(createMergePlan('x\n', '', 'x\n').result, '');
+    assert.deepEqual(mergeInputLabels('<<<<<<< Updated upstream\nours\n=======\ntheirs\n>>>>>>> Stashed changes\n'), { currentLabel: 'Current', incomingLabel: 'Stashed Changes' });
+    assert.deepEqual(mergeInputLabels('<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> topic\n'), { currentLabel: 'Current', incomingLabel: 'Incoming' });
     const markers = 'prefix edited\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> other\nsuffix\n';
     const plan = createMergePlan('prefix\nbase\nsuffix\n', 'prefix\nours\nsuffix\n', 'prefix\ntheirs\nsuffix\n', markers);
     assert.equal(plan.manualOnly, false); assert.ok(plan.result.startsWith('prefix edited\n'));
@@ -21,6 +23,9 @@ async function main() {
     assert.equal(editor.remaining, 0);
     editor.choose(0, 'incomingFirst');
     assert.equal(editor.result, 'manual\nprefix edited\ntheirs\nours\nsuffix\n');
+    editor.ignore(0, 'incoming'); assert.equal(editor.result, 'manual\nprefix edited\nours\nsuffix\n');
+    editor.ignore(0, 'current'); assert.equal(editor.result, 'manual\nprefix edited\nbase\nsuffix\n'); assert.equal(editor.remaining, 1);
+    editor.choose(0, 'both');
     editor.edit(editor.conflicts[0].start, 1, 'T'); assert.equal(editor.remaining, 1);
     editor.choose(0, 'manual'); assert.equal(editor.remaining, 0);
     const preserved = createMergePlan('a\n', 'b\n', 'c\n', 'custom result\n');

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { invokeNativeGit } from '../git/nativeGitBinding';
-import { createMergePlan, type MergePlan } from './mergeEditor';
+import { createMergePlan, mergeInputLabels, type MergePlan } from './mergeEditor';
 
 interface MergeData {
     stages: Array<{ oid: string; mode: number; content: string } | null>;
@@ -8,6 +8,7 @@ interface MergeData {
 }
 export interface MergeSnapshot {
     type: 'snapshot'; path: string; base: string; current: string; incoming: string; plan: MergePlan;
+    currentLabel?: string; incomingLabel?: string;
     /** Pure diff3 output, independent of pre-existing working-tree conflict markers. */
     automaticPlan: MergePlan;
 }
@@ -27,7 +28,8 @@ export class MergeEditorSessions implements vscode.Disposable {
         const data = await invokeNativeGit<MergeData>('readMergeConflict', { rootPath: root.fsPath, path: filePath });
         const [base, current, incoming] = data.stages.map(stage => stage?.content ?? '');
         const automaticPlan = createMergePlan(base, current, incoming);
-        const snapshot: MergeSnapshot = { type: 'snapshot', path: filePath, base, current, incoming,
+        const labels = mergeInputLabels(data.worktree);
+        const snapshot: MergeSnapshot = { type: 'snapshot', path: filePath, base, current, incoming, ...labels,
             plan: createMergePlan(base, current, incoming, data.worktree ?? undefined), automaticPlan };
         const session: Session = { id: ++this.nextId, repositoryPath, path: filePath, data, snapshot, busy: false };
         this.sessions.set(session.id, session);

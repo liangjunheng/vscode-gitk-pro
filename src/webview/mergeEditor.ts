@@ -9,9 +9,24 @@ export interface MergeConflict {
     choice?: MergeChoice;
 }
 export interface MergePlan { result: string; conflicts: MergeConflict[]; manualOnly: boolean; }
+export interface MergeInputLabels { currentLabel: string; incomingLabel: string; }
 
 function lines(text: string): string[] {
     return text.replace(/\r\n/g, '\n').match(/[^\n]*\n|[^\n]+$/g) ?? [];
+}
+
+/** Conflict-marker labels are used only for presentation; stage 2/3 remain the source of truth. */
+export function mergeInputLabels(worktree?: string | null): MergeInputLabels {
+    const labels: MergeInputLabels = { currentLabel: 'Current', incomingLabel: 'Incoming' };
+    if (!worktree) { return labels; }
+    const current = worktree.match(/^<{7,}\s*([^\r\n]*)/m)?.[1]?.trim() ?? '';
+    const incoming = worktree.match(/^>{7,}\s*([^\r\n]*)/m)?.[1]?.trim() ?? '';
+    // libgit2's stash apply uses "Updated upstream" / "Stashed changes".
+    // Keep the stage-2 side named Current, matching VS Code's conflict terminology.
+    if (/^stashed changes$/i.test(incoming)) { labels.incomingLabel = 'Stashed Changes'; }
+    else if (/^incoming$/i.test(incoming)) { labels.incomingLabel = 'Incoming'; }
+    if (/^current$/i.test(current)) { labels.currentLabel = 'Current'; }
+    return labels;
 }
 
 /** Diff3 handles automatic and identical changes before exposing conflicts. */
@@ -62,12 +77,24 @@ export class MergeEditor {
         const c = this.conflicts.find(item => item.id === id);
         if (!c || (this.manualOnly && choice !== 'manual')) { return; }
         if (choice === 'manual') { c.choice = choice; return; }
-        const text = choice === 'both' ? c.current + c.incoming
-            : choice === 'incomingFirst' ? c.incoming + c.current : c[choice];
-        const edit = { start: c.start, end: c.end, text };
-        this.edit(edit.start, edit.end - edit.start, text, id);
-        c.start = edit.start; c.end = edit.start + text.length; c.choice = choice;
-        return edit;
+        const text = this.choiceText(c, choice);
+        return this.replaceConflict(c, choice, text);
+    }
+    /** VS Code-style Ignore removes only that input; ignoring both restores the unresolved base. */
+    ignore(id: number, side: 'current' | 'incoming'): { start: number; end: number; text: string } | undefined {
+        const c = this.conflicts.find(item => item.id === id);
+        if (!c || this.manualOnly) { return; }
+        let choice: Exclude<MergeChoice, 'manual'> | undefined;
+        if (side === 'current') {
+            if (c.choice === 'current') { choice = undefined; }
+            else if (c.choice === 'both' || c.choice === 'incomingFirst') { choice = 'incoming'; }
+            else { return; }
+        } else {
+            if (c.choice === 'incoming') { choice = undefined; }
+            else if (c.choice === 'both' || c.choice === 'incomingFirst') { choice = 'current'; }
+            else { return; }
+        }
+        return this.replaceConflict(c, choice, choice ? this.choiceText(c, choice) : c.base);
     }
     edit(offset: number, length: number, text: string, selectedId?: number): void {
         const end = offset + length, delta = text.length - length;
@@ -84,6 +111,17 @@ export class MergeEditor {
         }
     }
     markAllHandled(): void { this.conflicts.forEach(c => { c.choice = 'manual'; }); }
+
+    private choiceText(c: MergeConflict, choice: Exclude<MergeChoice, 'manual'>): string {
+        return choice === 'both' ? c.current + c.incoming
+            : choice === 'incomingFirst' ? c.incoming + c.current : c[choice];
+    }
+    private replaceConflict(c: MergeConflict, choice: MergeChoice | undefined, text: string): { start: number; end: number; text: string } {
+        const edit = { start: c.start, end: c.end, text };
+        this.edit(edit.start, edit.end - edit.start, text, c.id);
+        c.start = edit.start; c.end = edit.start + text.length; c.choice = choice;
+        return edit;
+    }
 }
 
 export function mergeEditorBrowserSource(): string { return `const MergeEditor = ${MergeEditor.toString()};`; }
