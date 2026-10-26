@@ -21,7 +21,13 @@ try {
   const common = prepareLibgit2Patch(manifest);
   const firstHashes = stashPatchFiles.map(file => hash(path.join(common, file)));
   const stamp = JSON.parse(fs.readFileSync(path.join(common, '.vscode-gitk-libgit2-patch.json'), 'utf8'));
+  const fsPathHeader = fs.readFileSync(path.join(common, 'libgit2/src/util/fs_path.h'), 'utf8');
+  const fsPathSource = fs.readFileSync(path.join(common, 'libgit2/src/util/fs_path.c'), 'utf8');
   assert.equal(stamp.stashPatchDataSha256, hash(path.join(root, 'scripts', 'libgit2-stash-performance.patch')));
+  assert.ok(fsPathHeader.includes('#if defined(GIT_WIN32)\n\nstruct git_fs_path_diriter'));
+  assert.ok(fsPathSource.includes('#if defined(GIT_WIN32)\n\n/* Using _FIND_FIRST_EX_LARGE_FETCH'));
+  assert.ok(!fsPathHeader.includes('defined(GIT_WIN32) && !defined(__MINGW32__)'));
+  assert.ok(!fsPathSource.includes('defined(GIT_WIN32) && !defined(__MINGW32__)'));
   assert.notDeepEqual(firstHashes, upstreamHashes);
   assert.equal(prepareLibgit2Patch(manifest), common, 'successful preparation is reusable');
   const stash = path.join(common, stashPatchFiles[0]);

@@ -1,8 +1,119 @@
-use crate::filters::worktree_matches_index;
+use crate::filters::{worktree_data_matches_index, worktree_data_uses_external_filter};
 use crate::support::{NativeResult, format_git_error, open_repository, string_arg, string_array};
 use git2::{Delta, DiffDelta, FileMode, IndexEntry, Oid, Repository, Status, StatusOptions};
+use once_cell::sync::Lazy;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    mpsc::{self, Sender},
+};
+
+type WorktreeReadJob = Box<dyn FnOnce() + Send + 'static>;
+
+const MAX_PARALLEL_READ_BYTES: u64 = 64 * 1024 * 1024;
+const STATUS_READ_WORKER_STACK_BYTES: usize = 512 * 1024;
+
+struct WorktreeReadPool {
+    senders: Vec<Sender<WorktreeReadJob>>,
+    next: AtomicUsize,
+}
+
+impl WorktreeReadPool {
+    fn new() -> Self {
+        let worker_count = std::thread::available_parallelism()
+            .map(|value| value.get())
+            .unwrap_or(1);
+        let mut senders = Vec::with_capacity(worker_count);
+        for worker in 0..worker_count {
+            let (sender, receiver) = mpsc::channel::<WorktreeReadJob>();
+            let spawned = std::thread::Builder::new()
+                .name(format!("fastergit-status-read-{worker}"))
+                .stack_size(STATUS_READ_WORKER_STACK_BYTES)
+                .spawn(move || {
+                    while let Ok(job) = receiver.recv() {
+                        job();
+                    }
+                });
+            if spawned.is_err() {
+                break;
+            }
+            senders.push(sender);
+        }
+        Self {
+            senders,
+            next: AtomicUsize::new(0),
+        }
+    }
+
+    fn width(&self) -> usize {
+        self.senders.len().max(1)
+    }
+
+    fn execute(&self, job: WorktreeReadJob) {
+        if self.senders.is_empty() {
+            job();
+            return;
+        }
+        let index = self.next.fetch_add(1, Ordering::Relaxed) % self.senders.len();
+        if let Err(error) = self.senders[index].send(job) {
+            (error.0)();
+        }
+    }
+}
+
+static WORKTREE_READ_POOL: Lazy<WorktreeReadPool> = Lazy::new(WorktreeReadPool::new);
+
+fn read_worktree_batch(root: Option<&Path>, paths: &[PathBuf]) -> Vec<Option<Vec<u8>>> {
+    let Some(root) = root else {
+        return std::iter::repeat_with(|| None).take(paths.len()).collect();
+    };
+    let (sender, receiver) = mpsc::channel();
+    for (index, path) in paths.iter().enumerate() {
+        let sender = sender.clone();
+        let absolute = root.join(path);
+        WORKTREE_READ_POOL.execute(Box::new(move || {
+            let _ = sender.send((index, std::fs::read(absolute).ok()));
+        }));
+    }
+    drop(sender);
+    let mut output = std::iter::repeat_with(|| None)
+        .take(paths.len())
+        .collect::<Vec<_>>();
+    for (index, contents) in receiver {
+        output[index] = contents;
+    }
+    output
+}
+
+struct PendingWorktreeChange {
+    path: PathBuf,
+    size: u64,
+    value: Option<Value>,
+}
+
+fn pending_batch_end(
+    candidates: &[PendingWorktreeChange],
+    start: usize,
+    max_files: usize,
+    max_bytes: u64,
+) -> usize {
+    let mut end = start;
+    let mut bytes = 0u64;
+    while end < candidates.len() && end - start < max_files.max(1) {
+        let size = candidates[end].size.max(1);
+        if end > start && bytes.saturating_add(size) > max_bytes.max(1) {
+            break;
+        }
+        bytes = bytes.saturating_add(size);
+        end += 1;
+        if bytes >= max_bytes.max(1) {
+            break;
+        }
+    }
+    end
+}
 
 fn mode_text(mode: FileMode) -> String {
     format!("{:06o}", u32::from(mode))
@@ -172,6 +283,7 @@ pub fn status(payload: &Value) -> NativeResult<Value> {
     let index = repo.index().map_err(format_git_error)?;
     let mut staged = Vec::new();
     let mut changes = Vec::new();
+    let mut pending_worktree_changes = Vec::new();
     for entry in statuses.iter() {
         let flags = entry.status();
         if flags.contains(Status::CONFLICTED) {
@@ -194,8 +306,9 @@ pub fn status(payload: &Value) -> NativeResult<Value> {
                 | Status::WT_RENAMED
                 | Status::WT_TYPECHANGE,
         ) {
-            // Staged + a stale index stat can also report WT_MODIFIED; compare
-            // content regardless of the accompanying INDEX_* flags.
+            // Staged + a stale index stat can also report WT_MODIFIED. Read
+            // those candidates through one global CPU-sized pool, then retain
+            // the exact existing filter/blob check on this same index snapshot.
             if flags.contains(Status::WT_MODIFIED)
                 && !flags.intersects(
                     Status::WT_NEW
@@ -203,10 +316,20 @@ pub fn status(payload: &Value) -> NativeResult<Value> {
                         | Status::WT_RENAMED
                         | Status::WT_TYPECHANGE,
                 )
-                && entry.path().ok().is_some_and(|path| {
-                    worktree_matches_index(&repo, &index, std::path::Path::new(path))
-                })
+                && let Ok(path) = entry.path()
             {
+                let (size, value) = entry
+                    .index_to_workdir()
+                    .map(|delta| {
+                        let size = delta.new_file().size();
+                        (size, Some(file_from_delta(delta, false, false)))
+                    })
+                    .unwrap_or((0, None));
+                pending_worktree_changes.push(PendingWorktreeChange {
+                    path: PathBuf::from(path),
+                    size,
+                    value,
+                });
                 continue;
             }
             if let Some(delta) = entry.index_to_workdir() {
@@ -217,6 +340,39 @@ pub fn status(payload: &Value) -> NativeResult<Value> {
                 ));
             }
         }
+    }
+    let workdir = repo.workdir();
+    let max_files = WORKTREE_READ_POOL.width();
+    let mut batch_start = 0;
+    while batch_start < pending_worktree_changes.len() {
+        let batch_end = pending_batch_end(
+            &pending_worktree_changes,
+            batch_start,
+            max_files,
+            MAX_PARALLEL_READ_BYTES,
+        );
+        let batch = &mut pending_worktree_changes[batch_start..batch_end];
+        let paths = batch
+            .iter()
+            .map(|candidate| candidate.path.clone())
+            .collect::<Vec<_>>();
+        let contents = read_worktree_batch(workdir, &paths);
+        for (candidate, contents) in batch.iter_mut().zip(contents) {
+            let matches = contents.as_deref().is_some_and(|input| {
+                if worktree_data_uses_external_filter(&repo, &candidate.path, input) {
+                    return workdir
+                        .and_then(|root| std::fs::read(root.join(&candidate.path)).ok())
+                        .is_some_and(|fresh| {
+                            worktree_data_matches_index(&repo, &index, &candidate.path, &fresh)
+                        });
+                }
+                worktree_data_matches_index(&repo, &index, &candidate.path, input)
+            });
+            if !matches && let Some(value) = candidate.value.take() {
+                changes.push(value);
+            }
+        }
+        batch_start = batch_end;
     }
     let mut conflicts = BTreeMap::new();
     if let Ok(iter) = index.conflicts() {
@@ -354,4 +510,26 @@ pub fn has_changes(payload: &Value) -> NativeResult<Value> {
         .and_then(Value::as_array)
         .is_some_and(|items| !items.is_empty());
     Ok(Value::Bool(staged || changes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn candidate(size: u64) -> PendingWorktreeChange {
+        PendingWorktreeChange {
+            path: PathBuf::new(),
+            size,
+            value: None,
+        }
+    }
+
+    #[test]
+    fn pending_batches_respect_file_and_byte_limits() {
+        let candidates = vec![candidate(10), candidate(20), candidate(40), candidate(100)];
+        assert_eq!(pending_batch_end(&candidates, 0, 2, 64), 2);
+        assert_eq!(pending_batch_end(&candidates, 2, 4, 64), 3);
+        assert_eq!(pending_batch_end(&candidates, 3, 4, 64), 4);
+        assert_eq!(pending_batch_end(&candidates, 0, 0, 0), 1);
+    }
 }

@@ -564,20 +564,26 @@ pub fn apply_smudge_all_filtered(repo: &Repository) -> NativeResult<()> {
     apply_smudge_filters(repo, &paths)
 }
 
-pub fn worktree_matches_index(repo: &Repository, index: &Index, path: &Path) -> bool {
-    let Some(root) = repo.workdir() else {
-        return false;
-    };
+pub fn worktree_data_uses_external_filter(repo: &Repository, path: &Path, input: &[u8]) -> bool {
+    !input.starts_with(b"%TSD-Header-###%")
+        && (filter_command(repo, path, "clean").is_some()
+            || filter_command(repo, path, "smudge").is_some()
+            || process_filter_command(repo, path).is_some())
+}
+
+pub fn worktree_data_matches_index(
+    repo: &Repository,
+    index: &Index,
+    path: &Path,
+    input: &[u8],
+) -> bool {
     let Some(entry) = index.get_path(path, 0) else {
-        return false;
-    };
-    let Ok(input) = std::fs::read(root.join(path)) else {
         return false;
     };
     if input.starts_with(b"%TSD-Header-###%") {
         return true;
     }
-    let Ok(clean) = clean_data(repo, path, &input) else {
+    let Ok(clean) = clean_data(repo, path, input) else {
         return false;
     };
     let Ok(blob) = repo.find_blob(entry.id) else {
@@ -589,10 +595,7 @@ pub fn worktree_matches_index(repo: &Repository, index: &Index, path: &Path) -> 
     // External filters are defined by arbitrary processes and are not safely
     // reversible during a status read. Preserve the established clean-match
     // behavior for them; built-in EOL rules can be checked in both directions.
-    if filter_command(repo, path, "clean").is_some()
-        || filter_command(repo, path, "smudge").is_some()
-        || process_filter_command(repo, path).is_some()
-    {
+    if worktree_data_uses_external_filter(repo, path, input) {
         return true;
     }
     smudge_data(repo, path, blob.content()).is_ok_and(|expected| expected == input)

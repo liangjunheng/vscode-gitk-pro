@@ -3,11 +3,12 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const STASH_PATCH_REVISION = 8;
+const STASH_PATCH_REVISION = 9;
 const stashPatchFiles = [
   'libgit2/src/libgit2/stash.c', 'libgit2/src/libgit2/blob.c', 'libgit2/src/libgit2/blob.h',
   'libgit2/src/libgit2/attr.c', 'libgit2/src/libgit2/attr_file.h',
   'libgit2/src/libgit2/checkout.c', 'libgit2/src/libgit2/filter.c', 'libgit2/src/libgit2/filter.h',
+  'libgit2/src/util/fs_path.c', 'libgit2/src/util/fs_path.h',
 ];
 function replaceOnce(contents, before, after, label) {
   if (!contents.includes(before) || contents.indexOf(before) !== contents.lastIndexOf(before)) {
@@ -79,6 +80,23 @@ function applyStashPatch(directory) {
     for (const [before, after, label] of replacements) text = replaceOnce(text, before, after, label);
     fs.writeFileSync(file, text);
   };
+  // The GNU Windows build otherwise falls back to the POSIX dirent path,
+  // which issues one lstat syscall per worktree entry. Reuse libgit2's
+  // existing Win32 iterator so FindFirstFile metadata supplies the same stat.
+  patch('libgit2/src/util/fs_path.h', [
+    [
+      '#if defined(GIT_WIN32) && !defined(__MINGW32__)\n\nstruct git_fs_path_diriter',
+      '#if defined(GIT_WIN32)\n\nstruct git_fs_path_diriter',
+      'MinGW Win32 directory iterator declaration',
+    ],
+  ]);
+  patch('libgit2/src/util/fs_path.c', [
+    [
+      '#if defined(GIT_WIN32) && !defined(__MINGW32__)\n\n/* Using _FIND_FIRST_EX_LARGE_FETCH',
+      '#if defined(GIT_WIN32)\n\n/* Using _FIND_FIRST_EX_LARGE_FETCH',
+      'MinGW Win32 directory iterator implementation',
+    ],
+  ]);
   patch('libgit2/src/libgit2/blob.h', [
     ['#include "common.h"', '#include "common.h"\n#include "filter.h"', 'blob filter session declaration'],
     ['\n#endif', `

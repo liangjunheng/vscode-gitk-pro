@@ -97,3 +97,48 @@ fn status_follows_checkout_eol_rules_without_hiding_noncanonical_files() {
     fs::write(directory.path().join("crlf.gkt"), crlf).unwrap();
     assert!(native_change_paths(directory.path()).is_empty());
 }
+
+#[test]
+fn parallel_status_validation_matches_git_for_many_eol_candidates() {
+    let directory = tempfile::tempdir().unwrap();
+    let repo = Repository::init(directory.path()).unwrap();
+    {
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "Gitk Test").unwrap();
+        config.set_str("user.email", "gitk@example.com").unwrap();
+        config.set_str("core.autocrlf", "true").unwrap();
+    }
+    fs::create_dir_all(directory.path().join("parallel")).unwrap();
+    fs::write(
+        directory.path().join(".gitattributes"),
+        "parallel/*.gkt text eol=crlf\n",
+    )
+    .unwrap();
+    let paths = (0..96)
+        .map(|index| format!("parallel/file-{index}.gkt"))
+        .collect::<Vec<_>>();
+    for (index, path) in paths.iter().enumerate() {
+        fs::write(directory.path().join(path), format!("line {index}\r\n")).unwrap();
+    }
+    git(directory.path(), &["add", "."]);
+    git(directory.path(), &["commit", "-m", "parallel eol base"]);
+    git(directory.path(), &["checkout-index", "-f", "-a"]);
+
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    for path in &paths {
+        let absolute = directory.path().join(path);
+        let contents = fs::read(&absolute).unwrap();
+        fs::write(absolute, contents).unwrap();
+    }
+    assert!(native_change_paths(directory.path()).is_empty());
+    assert!(git(directory.path(), &["status", "--porcelain=v1"]).is_empty());
+
+    fs::write(directory.path().join("parallel/file-42.gkt"), "changed\r\n").unwrap();
+    let native = native_change_paths(directory.path());
+    let cli = git(directory.path(), &["status", "--porcelain=v1"])
+        .lines()
+        .map(|line| line[3..].to_owned())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(native, BTreeSet::from(["parallel/file-42.gkt".to_owned()]));
+    assert_eq!(native, cli);
+}
