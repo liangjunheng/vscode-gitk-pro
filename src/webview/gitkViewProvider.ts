@@ -1443,7 +1443,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         try {
             const root = vscode.Uri.parse(repositoryPath);
             const operation = await readMergeOperation(root);
-            if (!operation) { throw new Error('此仓库没有可继续或中止的合并操作。'); }
+            if (!operation) {
+                this.mergeOperations.delete(repositoryPath);
+                this.schedulePushState();
+                if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
+                return;
+            }
             const operationLabel = describeMergeOperation(operation);
             const stashOperation = operation === 'stash-apply' || operation === 'stash-pop';
             const actionLabel = action === 'continue' ? (stashOperation ? '完成' : '继续') : '中止';

@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const Module = require('node:module');
 const original = Module._load;
-let events = [], answer = '中止操作', failure, operation = 'merge';
+let events = [], answer = '中止操作', failure, operation = 'merge', lastProvider;
 const vscode = {
     ProgressLocation: { Notification: 15 },
     Uri: { parse: value => ({ fsPath: value }) },
@@ -35,7 +35,7 @@ async function run(action) {
     const provider = Object.create(Provider.prototype);
     Object.defineProperty(provider, 'repositories', { value: [{ path: '/fixture', label: 'fixture' }] });
     Object.assign(provider, {
-        mergeOperationBusy: new Set(), schedulePushState() {},
+        mergeOperationBusy: new Set(), mergeOperations: new Map([['/fixture', 'merge']]), schedulePushState() {},
         commitPanel: { isVisible: () => false },
         refreshCommitPanel: async () => events.push('panel'),
         refreshMergeOperation: async () => events.push('operation-state'),
@@ -45,6 +45,7 @@ async function run(action) {
             refreshUncommittedFilesByHeadBranch: async () => events.push('files'),
         },
     });
+    lastProvider = provider;
     await provider.handleMergeOperation('/fixture', action);
     assert.equal(provider.mergeOperationBusy.size, 0);
     return events;
@@ -73,6 +74,9 @@ async function main() {
     assert.ok(!failed.some(item => item[0] === 'success'));
     failure = undefined; answer = undefined;
     assert.deepEqual(await run('abort'), ['confirm'], 'cancelled abort does not start Git or progress');
+    operation = undefined;
+    assert.deepEqual(await run('continue'), [], 'a stale operation button refreshes silently when Git has no operation');
+    assert.equal(lastProvider.mergeOperations.has('/fixture'), false);
     console.log('Merge notification progress: Continue, Abort, refresh lifetime, failure, cancellation passed');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

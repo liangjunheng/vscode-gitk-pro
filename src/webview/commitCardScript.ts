@@ -338,12 +338,21 @@ export const COMMIT_CARD_SCRIPT = `
     conflictCountBadge.hidden=card.conflictFiles.length===0;
     el.querySelector('.conflict-all').disabled=card.conflictFiles.length===0;
     const conflictActions=el.querySelector('.conflict-actions');
-    if(!conflictActions.querySelector('.merge-continue')){
-      conflictActions.insertAdjacentHTML('beforeend','<button class="icon-btn merge-continue" data-action="continue" title="继续当前合并操作" aria-label="继续当前合并操作"><span class="codicon codicon-check"></span></button><button class="icon-btn merge-abort" data-action="abort" title="中止当前合并操作" aria-label="中止当前合并操作"><span class="codicon codicon-close"></span></button>');
-      conflictActions.querySelectorAll('.merge-continue,.merge-abort').forEach(function(button){button.addEventListener('click',function(event){event.stopPropagation();vscode.postMessage({type:'mergeOperation',repositoryPath:el.dataset.repo,action:button.dataset.action})})});
+    if(card.mergeOperation){
+      if(!conflictActions.querySelector('.merge-continue')){
+        conflictActions.insertAdjacentHTML('beforeend','<button class="icon-btn merge-continue" data-action="continue"><span class="codicon codicon-check"></span></button><button class="icon-btn merge-abort" data-action="abort"><span class="codicon codicon-close"></span></button>');
+        conflictActions.querySelectorAll('.merge-continue,.merge-abort').forEach(function(button){button.addEventListener('click',function(event){event.stopPropagation();vscode.postMessage({type:'mergeOperation',repositoryPath:el.dataset.repo,action:button.dataset.action})})});
+      }
+      const mergeContinue=conflictActions.querySelector('.merge-continue'),mergeAbort=conflictActions.querySelector('.merge-abort');
+      const continueTitle=card.mergeOperationBusy?'正在处理当前操作':(card.conflictFiles.length>0?'请先解决并暂存所有冲突':'继续当前合并操作');
+      mergeContinue.title=continueTitle;mergeContinue.setAttribute('aria-label',continueTitle);
+      mergeAbort.title=card.mergeOperationBusy?'正在处理当前操作':'中止当前合并操作';mergeAbort.setAttribute('aria-label',mergeAbort.title);
+      mergeContinue.disabled=card.conflictFiles.length>0||card.mergeOperationBusy;
+      mergeAbort.disabled=card.mergeOperationBusy;
+    }else{
+      conflictActions.querySelector('.merge-continue')?.remove();
+      conflictActions.querySelector('.merge-abort')?.remove();
     }
-    el.querySelector('.merge-continue').disabled=!card.mergeOperation||card.conflictFiles.length>0||card.mergeOperationBusy;
-    el.querySelector('.merge-abort').disabled=!card.mergeOperation||card.mergeOperationBusy;
     renderFileList(conflictList,card.conflictFiles,'conflict',el.dataset.repo,el._state.selectedWorkingTreeFiles);
     conflictList.hidden=!el._state.conflictOpen;
     refs.conflictChevron.className='codicon codicon-chevron-'+(el._state.conflictOpen?'down':'right')+' conflict-chevron';

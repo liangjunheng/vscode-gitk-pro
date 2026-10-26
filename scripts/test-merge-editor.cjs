@@ -30,6 +30,16 @@ async function main() {
     editor.choose(0, 'manual'); assert.equal(editor.remaining, 0);
     const preserved = createMergePlan('a\n', 'b\n', 'c\n', 'custom result\n');
     assert.equal(preserved.result, 'custom result\n'); assert.equal(preserved.manualOnly, true);
+    const markerFreeInsertion = createMergePlan('head\nsuffix\n', 'head\nours\nsuffix\n', 'head\ntheirs\nsuffix\n', 'edited head\nsuffix\n');
+    assert.equal(markerFreeInsertion.manualOnly, false); assert.equal(markerFreeInsertion.conflicts[0].start, 'edited head\n'.length);
+    const markerFreeEditor = new MergeEditor(markerFreeInsertion); markerFreeEditor.choose(0, 'incoming');
+    assert.equal(markerFreeEditor.result, 'edited head\ntheirs\nsuffix\n');
+    const inferredInsertion = createMergePlan('head\nsuffix\n', 'head\nours\nsuffix\n', 'head\ntheirs\nsuffix\n', 'edited head\nours\nsuffix\n');
+    assert.equal(inferredInsertion.manualOnly, false); assert.equal(inferredInsertion.conflicts[0].choice, 'current');
+    const unanchoredInsertion = createMergePlan('head\nsuffix\n', 'head\nours\nsuffix\n', 'head\ntheirs\nsuffix\n', 'unanchored custom result\n');
+    assert.equal(unanchoredInsertion.manualOnly, true); const unanchoredEditor = new MergeEditor(unanchoredInsertion);
+    assert.ok(unanchoredEditor.choose(0, 'incoming')); assert.equal(unanchoredEditor.remaining, 0);
+    assert.equal(new MergeEditor(preserved).choose(0, 'incoming'), undefined, 'non-insertion manual results stay protected');
     const html = renderMergeEditorHtml('http://fixture', 'http://fixture/vs', 'icons', 'test').replace('<style>', '<style>:root{--vscode-editor-background:#1e1e1e;--vscode-foreground:#ccc;--vscode-editor-foreground:#ccc;--vscode-font-family:Arial;--vscode-editorWidget-background:#252526;--vscode-widget-border:#454545;--vscode-panel-border:#444;--vscode-descriptionForeground:#aaa;--vscode-button-background:#0078d4;--vscode-button-foreground:#fff;--vscode-focusBorder:#0078d4}');
     for (const match of html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)) new Function(match[1]);
     await verifyNative();

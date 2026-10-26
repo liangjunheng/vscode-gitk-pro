@@ -28,8 +28,10 @@ async function main() {
         assert.deepEqual(await page.evaluate(() => window.messages.at(-1).paths), ['unstaged.cpp']);
         await page.locator('.staged-all').click();
         assert.deepEqual(await page.evaluate(() => window.messages.at(-1).paths), ['staged.cpp']);
-        assert.equal(await page.locator('.merge-continue').isDisabled(), true);
+        assert.equal(await page.locator('.merge-continue,.merge-abort').count(), 0, 'operation controls are hidden when Git has no continuable operation');
         await page.evaluate(card => window.dispatchEvent(new MessageEvent('message', { data: { type: 'snapshot', cards: [{ ...card, mergeOperation: 'stash-pop' }], displayMode: 'flat' } })), card);
+        assert.equal(await page.locator('.merge-continue').isDisabled(), true);
+        assert.equal(await page.locator('.merge-continue').getAttribute('title'), '请先解决并暂存所有冲突');
         assert.equal(await page.locator('.merge-abort').isDisabled(), false);
         await page.locator('.merge-abort').click();
         assert.deepEqual(await page.evaluate(() => window.messages.at(-1)), { type: 'mergeOperation', repositoryPath, action: 'abort' });
@@ -37,6 +39,8 @@ async function main() {
         assert.equal(await page.locator('.section.conflict').isVisible(), true, 'keep operation controls after last conflict is staged');
         await page.locator('.merge-continue').click();
         assert.deepEqual(await page.evaluate(() => window.messages.at(-1)), { type: 'mergeOperation', repositoryPath, action: 'continue' });
+        await page.evaluate(card => window.dispatchEvent(new MessageEvent('message', { data: { type: 'snapshot', cards: [{ ...card, mergeOperation: undefined }], displayMode: 'flat' } })), card);
+        assert.equal(await page.locator('.merge-continue,.merge-abort').count(), 0, 'stale operation controls are removed when the operation ends');
         await page.setContent(renderGitkWebviewHtml('icons.css'));
         await page.evaluate(shim);
         await page.evaluate(({ repositoryPath, conflict, staged, unstaged }) => window.dispatchEvent(new MessageEvent('message', { data: {

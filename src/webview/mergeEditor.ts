@@ -15,6 +15,59 @@ function lines(text: string): string[] {
     return text.replace(/\r\n/g, '\n').match(/[^\n]*\n|[^\n]+$/g) ?? [];
 }
 
+function uniqueContextIndex(text: string, anchor: string, from: number): number | undefined {
+    const index = text.indexOf(anchor, from);
+    return index >= 0 && text.indexOf(anchor, index + 1) < 0 ? index : undefined;
+}
+
+function contextCandidates(text: string, offset: number, direction: 'before' | 'after'): string[] {
+    const parts = direction === 'before' ? lines(text.slice(0, offset)) : lines(text.slice(offset));
+    const candidates: string[] = [];
+    for (let count = Math.min(3, parts.length); count >= 1; count--) {
+        const candidate = direction === 'before' ? parts.slice(-count).join('') : parts.slice(0, count).join('');
+        if (candidate.trim() && !candidates.includes(candidate)) { candidates.push(candidate); }
+    }
+    return candidates;
+}
+
+/** Recover safe insertion-conflict anchors in a marker-free, manually edited Result. */
+function reconcileMarkerFreeInsertions(plan: MergePlan, text: string): boolean {
+    if (!plan.conflicts.length || plan.conflicts.some(conflict => conflict.base.length > 0)) { return false; }
+    let cursor = 0;
+    for (const conflict of plan.conflicts) {
+        const before = contextCandidates(plan.result, conflict.start, 'before');
+        const after = contextCandidates(plan.result, conflict.end, 'after');
+        let beforeEnd: number | undefined;
+        for (const anchor of before) {
+            const index = uniqueContextIndex(text, anchor, cursor);
+            if (index !== undefined) { beforeEnd = index + anchor.length; break; }
+        }
+        let afterStart: number | undefined;
+        for (const anchor of after) {
+            const index = uniqueContextIndex(text, anchor, beforeEnd ?? cursor);
+            if (index !== undefined) { afterStart = index; break; }
+        }
+        if (beforeEnd === undefined && afterStart === undefined) { return false; }
+        const boundary = afterStart ?? beforeEnd!;
+        const choices: Array<{ choice: MergeChoice; text: string }> = [
+            { choice: 'both', text: conflict.current + conflict.incoming },
+            { choice: 'incomingFirst', text: conflict.incoming + conflict.current },
+            { choice: 'current', text: conflict.current },
+            { choice: 'incoming', text: conflict.incoming },
+        ];
+        choices.sort((left, right) => right.text.length - left.text.length);
+        const accepted = choices.find(candidate => candidate.text.length > 0
+            && boundary >= candidate.text.length
+            && text.slice(boundary - candidate.text.length, boundary) === candidate.text);
+        conflict.start = accepted ? boundary - accepted.text.length : boundary;
+        conflict.end = boundary;
+        conflict.choice = accepted?.choice;
+        cursor = boundary;
+    }
+    plan.result = text;
+    return true;
+}
+
 /** Conflict-marker labels are used only for presentation; stage 2/3 remain the source of truth. */
 export function mergeInputLabels(worktree?: string | null): MergeInputLabels {
     const labels: MergeInputLabels = { currentLabel: 'Current', incomingLabel: 'Incoming' };
@@ -55,8 +108,8 @@ export function createMergePlan(base: string, current: string, incoming: string,
             cursor = m.index! + m[0].length;
         });
         plan.result = result + text.slice(cursor);
-    } else if (text !== plan.result) {
-        // Never silently regenerate an edited result or unrecognized markers.
+    } else if (text !== plan.result && !reconcileMarkerFreeInsertions(plan, text)) {
+        // Never silently regenerate an edited result that cannot be anchored safely.
         plan.result = text; plan.manualOnly = true;
     }
     return plan;
@@ -75,7 +128,7 @@ export class MergeEditor {
     get remaining(): number { return this.conflicts.filter(c => !c.choice).length; }
     choose(id: number, choice: MergeChoice): { start: number; end: number; text: string } | undefined {
         const c = this.conflicts.find(item => item.id === id);
-        if (!c || (this.manualOnly && choice !== 'manual')) { return; }
+        if (!c || (this.manualOnly && choice !== 'manual' && c.base.length > 0)) { return; }
         if (choice === 'manual') { c.choice = choice; return; }
         const text = this.choiceText(c, choice);
         return this.replaceConflict(c, choice, text);
@@ -83,7 +136,7 @@ export class MergeEditor {
     /** VS Code-style Ignore removes only that input; ignoring both restores the unresolved base. */
     ignore(id: number, side: 'current' | 'incoming'): { start: number; end: number; text: string } | undefined {
         const c = this.conflicts.find(item => item.id === id);
-        if (!c || this.manualOnly) { return; }
+        if (!c || (this.manualOnly && c.base.length > 0)) { return; }
         let choice: Exclude<MergeChoice, 'manual'> | undefined;
         if (side === 'current') {
             if (c.choice === 'current') { choice = undefined; }

@@ -109,9 +109,11 @@ async function main(){
   const automaticButton=first.locator('.merge-title-action.codicon-wand');assert.equal(await automaticButton.count(),1);assert.equal(await automaticButton.isDisabled(),true);assert.equal(await automaticButton.getAttribute('title'),'No non-conflicting changes to apply');
   assert.equal(await first.locator('.merge-title-action.codicon-discard').count(),1);
   assert.deepEqual(await first.locator('.merge-input-zone').evaluateAll(actions=>actions.map(action=>action.textContent.trim())),['Accept Stashed ChangesAccept Combination (Stashed Changes First)Ignore','Accept CurrentAccept Combination (Current First)Ignore']);
-  const ignoreUi=await first.locator('.merge-pane-incoming .merge-input-zone').evaluate(zone=>{const accept=zone.querySelector('button'),ignore=[...zone.querySelectorAll('button')].find(button=>button.textContent==='Ignore'),read=button=>{const style=getComputedStyle(button);return {color:style.color,background:style.backgroundColor,fontFamily:style.fontFamily,fontSize:style.fontSize,fontWeight:style.fontWeight,height:style.height}};return {accept:read(accept),ignore:read(ignore),ignoreActive:ignore.classList.contains('active')}});
+  const ignoreUi=await first.locator('.merge-pane-incoming .merge-input-zone').evaluate(zone=>{const accept=zone.querySelector('button'),ignore=[...zone.querySelectorAll('button')].find(button=>button.textContent==='Ignore'),read=button=>{const style=getComputedStyle(button);return {color:style.color,background:style.backgroundColor,fontFamily:style.fontFamily,fontSize:style.fontSize,fontWeight:style.fontWeight,height:style.height,borderRightWidth:style.borderRightWidth}};return {accept:read(accept),ignore:read(ignore),ignoreActive:ignore.classList.contains('active'),separatorWidths:[...zone.querySelectorAll('button')].map(button=>getComputedStyle(button).borderRightWidth)}});
   assert.deepEqual(ignoreUi.ignore,ignoreUi.accept,'Ignore uses the same typography, color, background and height as the other conflict actions');
   assert.equal(ignoreUi.ignoreActive,false,'Ignore is not highlighted merely because that side has not been accepted');
+  assert.ok(ignoreUi.separatorWidths.every(width=>width==='0px'),'conflict actions have no separator border gaps: '+JSON.stringify(ignoreUi.separatorWidths));
+  assert.ok(html.includes('.merge-result-zone button{margin-left:auto;border:0}'),'No Changes Accepted and Mark Handled have no separator border gap');
   assert.equal(await first.locator('.merge-result-zone').filter({hasText:'No Changes Accepted'}).count(),1);
   assert.equal(await first.locator('.merge-accept-all.codicon-check-all').count(),2);
   const titleActions=await first.locator('.merge-title-actions').evaluate(node=>[...node.children].map(child=>child.className));
@@ -122,7 +124,15 @@ async function main(){
   assert.equal(await first.locator('.merge-header-conflict-nav,.merge-conflict-nav').count(),0,'Result title no longer owns conflict navigation');
   const conflictFrame=await first.locator('.merge-pane-incoming .merge-input-zone').evaluate(zone=>{const style=getComputedStyle(zone);return {top:style.borderTopWidth,right:style.borderRightWidth,bottom:style.borderBottomWidth,left:style.borderLeftWidth,shadow:style.boxShadow}});
   assert.deepEqual({...conflictFrame,shadow:undefined},{top:'0px',right:'0px',bottom:'0px',left:'0px',shadow:undefined},'the action row has no independent CSS border');
-  assert.equal((conflictFrame.shadow.match(/inset/g)||[]).length,3,'one shared frame supplies the action row top, left and right edges');
+  assert.equal(conflictFrame.shadow,'none','the frame is not painted underneath hoverable button backgrounds');
+  const frameOverlay=await first.locator('.merge-pane-incoming .merge-input-zone').evaluate(zone=>{const style=getComputedStyle(zone,'::after');return {shadow:style.boxShadow,zIndex:style.zIndex,pointerEvents:style.pointerEvents}});
+  assert.equal((frameOverlay.shadow.match(/inset/g)||[]).length,3,'one top-layer overlay supplies the action row top, left and right edges');
+  assert.deepEqual({zIndex:frameOverlay.zIndex,pointerEvents:frameOverlay.pointerEvents},{zIndex:'3',pointerEvents:'none'});
+  const hoverZone=first.locator('.merge-pane-incoming .merge-input-zone'),hoverBox=await hoverZone.boundingBox();
+  const beforeHover=PNG.sync.read(await page.screenshot()),sampleX=Math.floor(hoverBox.x+20),sampleY=Math.floor(hoverBox.y+1),sampleOffset=(sampleY*beforeHover.width+sampleX)*4,borderBefore=[...beforeHover.data.subarray(sampleOffset,sampleOffset+3)];
+  await hoverZone.locator('button').first().hover();
+  const afterHover=PNG.sync.read(await page.screenshot()),borderAfter=[...afterHover.data.subarray(sampleOffset,sampleOffset+3)];
+  assert.deepEqual(borderAfter,borderBefore,'button hover does not cover the yellow conflict frame');
   assert.equal(await first.locator('.merge-pane-incoming .merge-conflict-top').first().evaluate(edge=>getComputedStyle(edge).boxShadow),'none','there is no yellow divider between conflict actions and changed code');
   assert.ok(await first.locator('.merge-pane-incoming .merge-conflict-frame').count()>0,'the changed lines continue the same outer conflict frame below the actions');
   const alignedRows=await second.evaluate(root=>{const incoming=[...root.querySelectorAll('.merge-pane-incoming .merge-input-zone')].map(node=>node.getBoundingClientRect().top),current=[...root.querySelectorAll('.merge-pane-current .merge-input-zone')].map(node=>node.getBoundingClientRect().top);return {incoming,current}});
@@ -347,6 +357,22 @@ async function main(){
    await page.mouse.wheel(0,delta);
    await page.waitForFunction(({before,delta})=>delta<0?window.scrollY<before:window.scrollY>before,{before,delta});
   }
+  assert.deepEqual(errors,[]);
+  // A marker-free manual Result with an empty-base insertion conflict still exposes conflict actions.
+  await page.goto('http://fixture/');
+  const manualIdentity='file:///manual-insertion\0uncommitted',manualDiff=conflict('manual.ts');
+  await publish({type:'snapshot',revision:1,identity:manualIdentity,loading:false,editable:true,diffs:[manualDiff],total:1,completed:1,selectionEpoch:1});
+  await page.waitForFunction(()=>window.messages.some(message=>message.type==='loadMerge'));
+  const manualBase='head\nsuffix\n',manualCurrent='head\nours\nsuffix\n',manualIncoming='head\ntheirs\nsuffix\n';
+  const manualPlan=createMergePlan(manualBase,manualCurrent,manualIncoming,'unanchored custom result\n');
+  assert.equal(manualPlan.manualOnly,true);assert.equal(manualPlan.conflicts[0].base,'');
+  await publish({type:'mergeLoaded',key:'conflict:manual.ts',identity:manualIdentity,sessionId:99,snapshot:{type:'snapshot',path:'manual.ts',base:manualBase,current:manualCurrent,incoming:manualIncoming,plan:manualPlan,automaticPlan:createMergePlan(manualBase,manualCurrent,manualIncoming)}});
+  const manualCard=page.locator('.diff[data-path="manual.ts"]');await manualCard.locator('.merge-card').waitFor();
+  assert.ok((await manualCard.locator('.merge-input-zone button').evaluateAll(buttons=>buttons.map(button=>button.disabled))).every(disabled=>disabled===false),'empty-base manual conflicts keep Accept/Combination/Ignore clickable');
+  assert.equal(await manualCard.locator('.merge-result-zone button').filter({hasText:'Mark Handled'}).evaluate(button=>getComputedStyle(button).borderLeftWidth),'0px');
+  await manualCard.locator('.merge-pane-incoming .merge-input-zone button').filter({hasText:'Accept Incoming'}).click();
+  assert.equal(await manualCard.locator('.merge-status').textContent(),'All Conflicts Resolved');
+  assert.equal(await manualCard.getByRole('button',{name:'Complete Merge'}).isDisabled(),false);
   assert.deepEqual(errors,[]);
   console.log('Aggregate Merge: multiple conflict cards, normal diff, isolated save, refresh/collapse persistence, completion removal passed');
  }finally{await browser.close()}
