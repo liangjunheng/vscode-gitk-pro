@@ -1733,6 +1733,56 @@ async function verifyProvider() {
   const repositories = ['parent', 'child', 'clean'].map((repositoryLabel, index) => ({ path: 'file:///fixture/' + repositoryLabel, label: repositoryLabel, hasSubmodules: index < 2, ancestry: index ? ['file:///fixture/parent'] : [] }));
   let published;
   let selectedPathsForTest = [repositories[0].path];
+  // Remote 单飞队列边界：普通重复读取复用在途任务；强制刷新只排队一次，并保留显式 upstream override。
+  const queuedRemoteRefreshes = [];
+  const queuedRemoteResolvers = [];
+  const queuedRemotePromises = [];
+  const queuedRemoteProvider = Object.create(GitkViewProvider.prototype);
+  Object.defineProperty(queuedRemoteProvider, 'repositories', { value: [repositories[0]] });
+  Object.assign(queuedRemoteProvider, {
+    view: { webview: { postMessage() {} } },
+    remotePublishInFlight: new Map(),
+    remotePublishRevisionByRepository: new Map(),
+    refreshRemoteList: (repositoryPath, upstreamRemoteOverride) => new Promise(resolve => {
+      queuedRemoteRefreshes.push({ repositoryPath, upstreamRemoteOverride });
+      queuedRemoteResolvers.push(resolve);
+    }),
+  });
+  queuedRemotePromises.push(queuedRemoteProvider.publishRemoteList(repositories[0].path));
+  queuedRemotePromises.push(queuedRemoteProvider.publishRemoteList(repositories[0].path));
+  assert.deepEqual(queuedRemoteRefreshes, [{ repositoryPath: repositories[0].path, upstreamRemoteOverride: undefined }], 'a normal duplicate reuses the in-flight Remote read');
+  queuedRemotePromises.push(queuedRemoteProvider.publishRemoteList(repositories[0].path, 'origin', true));
+  queuedRemotePromises.push(queuedRemoteProvider.publishRemoteList(repositories[0].path, undefined, true));
+  assert.equal(queuedRemoteProvider.remotePublishInFlight.get(repositories[0].path).upstreamRemoteOverride, 'origin', 'a branch-ready force refresh cannot erase an explicit upstream override');
+  queuedRemoteResolvers.shift()();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(queuedRemoteRefreshes, [
+    { repositoryPath: repositories[0].path, upstreamRemoteOverride: undefined },
+    { repositoryPath: repositories[0].path, upstreamRemoteOverride: 'origin' },
+  ], 'multiple force requests during the first read coalesce into one trailing Remote read');
+  queuedRemotePromises.push(queuedRemoteProvider.publishRemoteList(repositories[0].path, undefined, true));
+  queuedRemotePromises.push(queuedRemoteProvider.publishRemoteList(repositories[0].path, undefined, true));
+  queuedRemoteResolvers.shift()();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(queuedRemoteRefreshes.length, 3, 'force requests arriving during the trailing read coalesce into one further read without being lost');
+  queuedRemoteResolvers.shift()();
+  await Promise.all(queuedRemotePromises);
+  assert.equal(queuedRemoteProvider.remotePublishInFlight.size, 0, 'the Remote single-flight entry is released after the queued reads finish');
+
+  const branchReadyRemoteRefreshes = [];
+  const branchReadyProvider = Object.create(GitkViewProvider.prototype);
+  Object.defineProperty(branchReadyProvider, 'selectedRepositoryPaths', { value: [repositories[0].path] });
+  Object.assign(branchReadyProvider, {
+    selectedBranchesMap: new Map(),
+    schedulePushState() {},
+    publishRemoteList: (...args) => { branchReadyRemoteRefreshes.push(args); return Promise.resolve(); },
+  });
+  store.setState({ workingTreeRows: [] });
+  branchReadyProvider.onSelectedBranchesChanged(new Map([[repositories[0], [{
+    repoOption: repositories[0], name: 'refs/heads/main', label: 'main', kind: 'current', hash: 'a'.repeat(40),
+  }]]]));
+  assert.deepEqual(branchReadyRemoteRefreshes, [[repositories[0].path, undefined, true]], 'branch readiness queues a forced Remote refresh instead of losing it behind the initialization read');
+
   const provider = Object.create(GitkViewProvider.prototype);
   Object.defineProperties(provider, {
     repositories: { value: repositories }, selectedRepositoryPaths: { get: () => selectedPathsForTest },

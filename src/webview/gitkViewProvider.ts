@@ -1372,9 +1372,10 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         // Publish the trigger label together with selectedBranches in one state snapshot;
         // separate messages could otherwise arrive in opposite order and show mismatched UI.
         this.schedulePushState();
-        // 首次仓库消息可能早于分支控制器完成；分支快照就绪后再发布一次，确保 upstream remote 可用。
+        // 首次仓库消息可能早于分支控制器完成；分支快照就绪后必须排队再读一次。
+        // 若初始化 remote 读取仍在途，普通发布会直接复用旧 Promise，导致这次 upstream 修正被吞掉，直到用户打开 Remote 才恢复。
         const repositoryPath = this.selectedRepositoryPath;
-        if (repositoryPath) { void this.publishRemoteList(repositoryPath); }
+        if (repositoryPath) { void this.publishRemoteList(repositoryPath, undefined, true); }
     }
 
     /** 提交列表变化后的唯一下游入口：初始化卡片默认信息并推送提交列表状态。 */
