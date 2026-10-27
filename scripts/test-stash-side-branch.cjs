@@ -120,13 +120,13 @@ async function main() {
     if(process.env.GITK_TEST_NODE_SIZE_DIAGNOSTICS)console.log(JSON.stringify({scale,circleWidth,diamondWidth,diamondSize:10,stroke:1}));
     assert.ok(greyInk(root.join),'the first visible fork dash meets the real commit circle');
     assert.ok(greyInk(tip),'stem ink meets the hollow diamond lower tip');
-    // A stash above the latest commit has no pre-existing lane: resolve its colour from the real base.
+    // A stash above the latest commit has no pre-existing lane: resolve its colour from the real base and keep the prefix dashed.
     const top = stash('8', '3'); top.inputSwimlanes = []; top.outputSwimlanes = [];
     const top2 = { ...top, hash:h('7'), key:repo.path + ':' + h('7'), stashRef:'stash@{1}', stashIndex:1 };
     state.commits = [top, top2, ...real]; await publish();
     assert.deepEqual(await page.locator('.commit-row.stash .stash-main-lane').evaluateAll(lines => lines.map(line => line.getAttribute('stroke'))), [blue, blue]);
     const headUpper = await page.locator('.commit-row[data-hash="' + h('3') + '"] svg path').evaluateAll(paths => paths.map(p => ({ d: p.getAttribute('d'), stroke: p.getAttribute('stroke'), dash: p.getAttribute('stroke-dasharray') })));
-    assert.ok(headUpper.some(p => /^M 11 0 V 13$/.test(p.d) && !p.dash && p.stroke === blue), 'latest real commit receives the solid trunk too');
+    assert.ok(headUpper.some(p => /^M 11 0 V 13$/.test(p.d) && p.dash === '2 2' && p.stroke === blue), 'latest real commit receives the dashed stash-prefix connector');
     // Real side lanes pass through unchanged; the stash display lane stays outside all real lanes.
     const sideBase = commit('2', '1', { lane: 1, inputSwimlanes: [lane('a', orange), lane('2')], outputSwimlanes: [lane('a', orange), lane('1')] });
     const sideStash = stash('9'); sideStash.lane = 1; sideStash.inputSwimlanes = sideStash.outputSwimlanes = [lane('a', orange), lane('2')];

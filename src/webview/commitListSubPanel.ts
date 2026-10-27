@@ -1403,6 +1403,14 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
 
   // 固定节点坐标 + 自适应连线：无 viewBox 的 SVG 直接使用 CSS 像素；y2="100%" 始终是实际行底。
   // SVG 绝对定位，不向 Grid 贡献固有高度。标题换行、作者标签动画、面板缩放都无需重画。
+  function isLeadingStashPrefix(index, repositoryPath) {
+    for (let previous = 0; previous < index; previous++) {
+      const commit = commits[previous];
+      if (!commit.isStash || commit.gitBranchOption?.repoOption.path !== repositoryPath) return false;
+    }
+    return true;
+  }
+
   function stashRowSvg(c, graphW, index) {
     const laneX = function(column) { return (column + 1) * LANE_W; };
     const column = Math.max(0, Number(c.lane) || 0);
@@ -1413,6 +1421,8 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     const y = ROW_H / 2;
     const radius = STASH_NODE_R;
     const grey = 'var(--vscode-descriptionForeground, #999)';
+    const repositoryPath = c.gitBranchOption?.repoOption.path;
+    const leadingStashConnection = isLeadingStashPrefix(index, repositoryPath);
     // 同一基线的 stash 共用展示侧列，根部分叉在基线 commit 自己的圆点上绘制。
     // 百分比终点随实际行高延伸，不需要测量展开详情或重绘连接线。
     const previous = commits[index - 1];
@@ -1423,9 +1433,13 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
       + '" y2="100%" stroke="' + grey + '" ' + laneDashAttrs(startY - y - radius, LANE_STROKE_W) + '/>';
     const trunk = function(x, color) {
       const baseClass = x === trunkX ? ' stash-base-lane' : '';
-      return '<line class="stash-main-lane lane-straight' + baseClass + '" x1="' + x + '" y1="0" x2="' + x + '" y2="100%" stroke="' + color + '" stroke-width="' + LANE_STROKE_W + '" stroke-linecap="square"/>';
+      const dashedBaseLane = leadingStashConnection && x === trunkX;
+      const strokeAttrs = dashedBaseLane
+        ? laneDashAttrs(ROW_H * (index + 1), LANE_STROKE_W)
+        : 'stroke-width="' + LANE_STROKE_W + '" stroke-linecap="square"';
+      return '<line class="stash-main-lane lane-straight' + baseClass + (dashedBaseLane ? ' stash-prefix-lane' : '') + '" x1="' + x + '" y1="0" x2="' + x + '" y2="100%" stroke="' + color + '" ' + strokeAttrs + '/>';
     };
-    // 所有真实泳道原色实线穿过 stash 行；不把连接上下 commit 的线替换为虚线。
+    // stash 位于列表头部、最新提交之前时，基线泳道使用虚线；历史中间的 stash 仍保持实线。
     lanes.forEach(function(lane, laneIndex) { content += trunk(laneX(laneIndex), lane.color); });
     if (!lanes[column]) {
       // Stash 在分支头之上时，基线还没有输入泳道。连续 stash 后的第一条真实提交就是基线。
@@ -1470,12 +1484,16 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     const circleIndex = inputIndex >= 0 ? inputIndex : inputSwimlanes.length;
     const cx = (circleIndex + 1) * laneW;
     const commitColor = commitLaneColor(c);
+    const repositoryPath = c.gitBranchOption?.repoOption.path;
     const laneX = function(index) { return (index + 1) * laneW; };
-    // Stash 不改变真实泳道状态；分支头没有输入泳道时，也要用实线接住上方 stash 行的基线。
+    // Stash 不改变真实泳道状态；分支头没有输入泳道时，默认用虚线接住上方 stash 行的基线，
+    // 只有历史中间的 stash 才沿用真实提交之间的实线。
     const previousCommit = idx > 0 ? commits[idx - 1] : undefined;
     const connectedFromStash = Boolean(previousCommit?.isStash
       && previousCommit.parents && previousCommit.parents[0] === c.hash
-      && previousCommit.gitBranchOption?.repoOption.path === c.gitBranchOption?.repoOption.path);
+      && previousCommit.gitBranchOption?.repoOption.path === repositoryPath);
+    const leadingStashConnection = connectedFromStash && inputIndex < 0
+      && isLeadingStashPrefix(idx, repositoryPath);
     if (connectedFromStash) {
       const branchX = laneX(stashBranchColumn(previousCommit));
       // 从真实圆点出发，在上边界接住 stash 侧列；先画侧枝，再画原色主干和圆点。
@@ -1550,10 +1568,12 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
       content += curvedLane(d, outputSwimlanes[parentOutputIndex].color, parentX);
     }
 
-    // 真实提交之间保持原色实线，与 stash 展示侧枝互不影响。
+    // 真实提交之间保持原色实线；列表头部 stash 前缀到最新提交的连接继续使用虚线。
     if (inputIndex >= 0 || connectedFromStash) {
       const color = inputIndex >= 0 ? inputSwimlanes[inputIndex].color : commitColor;
-      content += '<path class="lane-straight" d="M ' + cx + ' 0 V ' + y + '" fill="none" stroke="' + color + '" stroke-width="' + LANE_STROKE_W + '"/>';
+      content += leadingStashConnection
+        ? '<path class="stash-prefix-lane" d="M ' + cx + ' 0 V ' + y + '" fill="none" stroke="' + color + '" ' + laneDashAttrs(ROW_H * (idx + 1), LANE_STROKE_W) + '/>'
+        : '<path class="lane-straight" d="M ' + cx + ' 0 V ' + y + '" fill="none" stroke="' + color + '" stroke-width="' + LANE_STROKE_W + '"/>';
     }
     if (c.parents.length > 0) {
       // 主干是一条完整直线，不在 26px 标题边界拆成两个相叠的描边。

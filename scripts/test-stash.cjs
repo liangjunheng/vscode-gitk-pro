@@ -62,6 +62,21 @@ async function main() {
     await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: { type: 'selectedRepoDisplayChanged', repository: { path: 'file:///stash/a', label: 'repo-a' } } })));
     await publish();
 
+    // 回归: stash 位于最新提交与 Uncommitted Changes 之间时，基线泳道仍应保持虚线。
+    {
+      const topStash = base(h('6'), h('3'), 'WIP on main: stash at HEAD', { isStash: true, stashRef: 'stash@{1}', stashIndex: 1, lane: 0,
+        inputSwimlanes: [], outputSwimlanes: [] });
+      state.commits = [topStash, ...commits];
+      await publish();
+      const stashLane = page.locator('#commitVirtualRows .commit-row.stash[data-hash="' + h('6') + '"] .stash-base-lane');
+      const commitLane = page.locator('#commitVirtualRows .commit-row[data-hash="' + h('3') + '"] .stash-prefix-lane');
+      assert.equal(await stashLane.getAttribute('stroke-dasharray'), '2 2', 'the stash base lane stays dashed below Uncommitted Changes');
+      assert.equal(await commitLane.count(), 1, 'the latest commit has a dedicated working-tree connector');
+      assert.equal(await commitLane.getAttribute('stroke-dasharray'), '2 2', 'the connector into the latest commit stays dashed');
+      state.commits = commits;
+      await publish();
+    }
+
     // 1) 开关: 位于提交搜索行中的分支选择器右侧, 默认选中, 使用 inbox 图标
     const toggle = page.locator('#stashListToggle');
     assert.equal(await toggle.count(), 1);
@@ -222,7 +237,7 @@ async function main() {
 
     // 3a) 折叠/展开时，贯穿 stash 的真实泳道必须连到下一行；侧枝不参与其他行的宽度。
     {
-      const assertBoundaryJoin = async (selector, label) => {
+      const assertBoundaryJoin = async (selector, label, expectedDash = null) => {
         const g = await page.locator(selector).evaluate(row => {
           const svg = row.querySelector('svg.graph-svg'), branch = svg.querySelector('.stash-branch');
           const trunk = svg.querySelector('.stash-base-lane');
@@ -231,7 +246,7 @@ async function main() {
             endY: end.y, nextTop: row.nextElementSibling.getBoundingClientRect().top, dash: trunk.getAttribute('stroke-dasharray'),
             branchX: branch.x1.baseVal.value, width: svg.getBoundingClientRect().width };
         });
-        assert.equal(g.dash, null, label + ': actual commit lane is solid');
+        assert.equal(g.dash, expectedDash, label + ': lane dash style');
         assert.ok(Math.abs(g.height - g.svgHeight) < .5, label + ': SVG fills actual row');
         assert.ok(Math.abs(g.endY - g.nextTop) < .5, label + ': trunk reaches next commit');
         return g;
@@ -256,7 +271,7 @@ async function main() {
       assert.ok(halves[1].some(p => p.d === 'M 11 0 V 13' && !p.dash && p.color === '#e06c75'), 'base commit keeps a solid upper half');
       state.selectedCommit = null; await publish();
 
-      // 最新提交没有输入泳道，也必须用其真实颜色接住 stash 展示行的实线。
+      // 最新提交没有输入泳道；有 Uncommitted Changes 时，基线连接保持虚线但仍使用真实颜色。
       const latestRows = [
         base(h('8'), h('3'), 'WIP on main: stash above latest', { isStash:true, stashRef:'stash@{0}', stashIndex:0, lane:0, inputSwimlanes:[], outputSwimlanes:[] }),
         ...commits.filter(c => !c.isStash),
@@ -264,10 +279,10 @@ async function main() {
       state.commits = latestRows; await publish();
       const latest = page.locator(selector);
       assert.equal(await latest.locator('.stash-main-lane').getAttribute('stroke'), '#e06c75');
-      await assertBoundaryJoin(selector, 'stash above latest');
+      await assertBoundaryJoin(selector, 'stash above latest', '2 2');
       state.selectedCommit = { key:repoA.path + ':' + h('8'), hash:h('8'), repositoryPath:repoA.path, kind:'commit', message:'WIP on main: stash above latest' };
       await publish(); await latest.locator('.stash-badge').click(); await page.waitForTimeout(150);
-      await assertBoundaryJoin(selector, 'expanded above latest');
+      await assertBoundaryJoin(selector, 'expanded above latest', '2 2');
       state.commits = commits; state.selectedCommit = null; await publish();
     }
 
