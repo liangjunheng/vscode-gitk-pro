@@ -1497,7 +1497,8 @@ async function verifyProvider() {
   const load = Module._load;
   const branchReads = [], commitDetailReads = [], checkouts = [], pulls = [], pushes = [], headRefreshes = [], remoteCheckouts = [];
   const remoteFetchStarts = [], remoteFetchResolvers = [];
-  let pickedIndex = 2, options, branchItems, pushTargetDefaults, pushQuickPick, selectedPushTargetsResult, confirmRows, confirmOptions;
+  let pickedIndex = 2, options, branchItems, pushTargetDefaults, pushQuickPick, selectedPushTargetsResult, selectedSinglePushTargetResult, confirmRows, confirmOptions;
+  const pushPickerPlans = [], singlePushPickerCalls = [];
   const pushQuickPicks = [];
   let pulledHeadHash = 'a'.repeat(40), conflictAfterPull = false, pushFails = true, pullFails = false;
   const pushResultNotices = [];
@@ -1596,7 +1597,8 @@ async function verifyProvider() {
       };
       if (name === '../services/pushDialogs') return {
         ...load.call(this, name, ...args),
-        pickPushTargets: async (_plan, defaultTargets) => { pushTargetDefaults = defaultTargets; return selectedPushTargetsResult; },
+        pickPushTargets: async (plan, defaultTargets) => { pushPickerPlans.push(plan); pushTargetDefaults = defaultTargets; return selectedPushTargetsResult; },
+        pickPushTarget: async (plan, defaultTarget) => { singlePushPickerCalls.push({ plan, defaultTarget }); return selectedSinglePushTargetResult; },
         confirmPush: async (rows, repositoryLabel, pushRemotes) => { confirmRows = rows; confirmOptions = { repositoryLabel, pushRemotes }; return true; },
         confirmSync: async (rows, pullFrom, repositoryLabel, pushRemotes) => { confirmRows = rows; confirmOptions = { pullFrom, repositoryLabel, pushRemotes }; return syncChoice; },
         showPushResult: async (title, detail) => { pushResultNotices.push([title, detail]); },
@@ -1958,6 +1960,8 @@ async function verifyProvider() {
     changedFileSummaryCache: new WeakMap(), selectedBranchesMap: new Map(),
     commitMessageByRepo: new Map([[repositories[1].path, 'child draft']]), commitCommittingByRepo: new Set(),
     repositoryCardDisplayLocks: new Set(),
+    remoteStateByRepository: new Map([[repositories[1].path, { remotes: [{ name: 'fork' }, { name: 'origin' }], upstreamRemote: 'origin', operations: { fetch: ['origin'], pull: ['origin'], push: ['fork', 'origin'] } }]]),
+    remotePublishInFlight: new Map(), remoteMutationsInFlight: new Map(), publishRemoteList: async () => {},
     pushTargetByRepository: new Map(), lastPushedTargetByRepository: new Map(),
     unpushedCommitCountByRepository: new Map([[repositories[1].path, 4]]),
     behindCommitCountByRepository: new Map([[repositories[1].path, 0]]), cloudCommitsByRepository: new Map(),
@@ -2272,6 +2276,26 @@ async function verifyProvider() {
   releaseWorktree({ staged: [], changes: [] });
   await pendingWorktree;
   assert.equal(selectedWorktrees.length, 1, 'a stale badge read cannot reselect a child after focus moves elsewhere');
+  provider.remoteStateByRepository.set(repositories[1].path, {
+    remotes: [{ name: 'fork' }, { name: 'origin' }],
+    upstreamRemote: 'origin',
+    operations: { fetch: ['origin'], pull: ['origin'], push: ['origin'] },
+  });
+  provider.pushTargetByRepository.delete(repositories[1].path);
+  await provider.loadDefaultPushTarget(repositories[1].path);
+  assert.equal(provider.pushTargetByRepository.get(repositories[1].path)?.remote, 'origin', 'the Commit panel default target comes only from checked Push remotes');
+  provider.pushTargetByRepository.set(repositories[1].path, pushTargetFixture[0]);
+  selectedSinglePushTargetResult = pushTargetFixture[1];
+  singlePushPickerCalls.length = 0;
+  await provider.pickCommitPanelPushTarget(repositories[1].path);
+  assert.deepEqual(singlePushPickerCalls.at(-1).plan.targets.map(target => target.remoteName), ['origin/main'], 'the single-target picker hides unchecked Push remotes');
+  assert.equal(singlePushPickerCalls.at(-1).defaultTarget.remote, 'origin', 'a remembered target on an unchecked remote is not reused as the picker default');
+  assert.equal(provider.pushTargetByRepository.get(repositories[1].path)?.remote, 'origin');
+  provider.remoteStateByRepository.set(repositories[1].path, {
+    remotes: [{ name: 'fork' }, { name: 'origin' }],
+    upstreamRemote: 'origin',
+    operations: { fetch: ['origin'], pull: ['origin'], push: ['fork', 'origin'] },
+  });
   provider.pushTargetByRepository.set(repositories[1].path, pushTargetFixture[0]);
   provider.lastPushedTargetByRepository.set(repositories[1].path, pushTargetFixture[0]);
   await provider.runCommitPanelPush([repositories[1].path], true, false);
@@ -2292,7 +2316,7 @@ async function verifyProvider() {
   await provider.runCommitPanelPush([childPath], true, false);
   // 确认行用的是 HEAD 现场读到的分支名与 hash, 而不是目标里的任何字段。
   assert.deepEqual(confirmRows.map(row => [row.source.branchName, row.source.hash, row.target.remoteName]), [['main', 'a'.repeat(40), 'origin/main']]);
-  assert.deepEqual(confirmOptions, { pullFrom: ['origin/main'], repositoryLabel: 'child', pushRemotes: ['origin'] }, 'sync confirmation lists the repository, Push remotes, and upstream it pulls before pushing');
+  assert.deepEqual(confirmOptions, { pullFrom: ['origin/main'], repositoryLabel: 'child', pushRemotes: ['fork', 'origin'] }, 'sync confirmation lists the repository, checked Push remotes, and upstream it pulls before pushing');
   assert.equal(checkouts.length, checkoutCountBeforePush, 'sync does not switch branches');
   assert.deepEqual(pulls, [[childPath, 'origin', 'main', undefined, { autostash: true }]], 'sync pulls the bound upstream once, with autostash so a dirty worktree cannot block it');
   assert.deepEqual(pushes.at(-1), [childPath, 'origin', 'main', 'main', 'a'.repeat(40)], 'sync sends the current HEAD to the selected remote branch, carrying branch name and hash in separate fields');
@@ -2303,9 +2327,26 @@ async function verifyProvider() {
   resetSyncState();
   await provider.runCommitPanelPush([childPath], false, false);
   assert.deepEqual(pulls, [], 'plain push never pulls');
-  assert.deepEqual(confirmOptions, { repositoryLabel: 'child', pushRemotes: ['origin'] }, 'plain push confirmation lists the repository and checked Push remotes');
+  assert.deepEqual(confirmOptions, { repositoryLabel: 'child', pushRemotes: ['fork', 'origin'] }, 'plain push confirmation lists the repository and checked Push remotes');
   assert.deepEqual(syncHeadRefreshes, [], 'a plain push failure does not reread an unpulled repository');
   assert.deepEqual(pushResultNotices.at(-1), ['Git Push 失败', 'stop after push']);
+  // Commit 面板的 Push 目标选择也必须先受 Remote 选择器的 Push 范围过滤。
+  resetSyncState(); pushFails = false;
+  provider.remoteStateByRepository.set(childPath, {
+    remotes: [{ name: 'fork' }, { name: 'origin' }],
+    upstreamRemote: 'origin',
+    operations: { fetch: ['origin'], pull: ['origin'], push: ['origin'] },
+  });
+  selectedPushTargetsResult = [pushTargetFixture[1]];
+  pushPickerPlans.length = 0;
+  await provider.runCommitPanelPush([childPath], false, false);
+  assert.deepEqual(pushPickerPlans.at(-1).targets.map(target => target.remoteName), ['origin/main'], 'unchecked Push remotes are removed from the Commit target picker');
+  assert.deepEqual(pushes.map(entry => entry.slice(1)), [['origin', 'main', 'main', 'a'.repeat(40)]], 'Commit Push executes only a target under a checked Push remote');
+  provider.remoteStateByRepository.set(childPath, {
+    remotes: [{ name: 'fork' }, { name: 'origin' }],
+    upstreamRemote: 'origin',
+    operations: { fetch: ['origin'], pull: ['origin'], push: ['fork', 'origin'] },
+  });
   // 待新建目标复用普通 HEAD:<remoteBranch> 推送路径，不在选择阶段提前创建远程分支。
   resetSyncState(); pushFails = false;
   const pendingRemoteTarget = {
@@ -2338,7 +2379,7 @@ async function verifyProvider() {
   selectedPushTargetsResult = [pushTargetFixture[0]];
   await provider.runCommitPanelPush([childPath], true, false);
   assert.deepEqual(pulls, [], 'unticking the upstream leaves nothing to pull from');
-  assert.deepEqual(confirmOptions, { pullFrom: [], repositoryLabel: 'child', pushRemotes: ['fork'] });
+  assert.deepEqual(confirmOptions, { pullFrom: [], repositoryLabel: 'child', pushRemotes: ['fork', 'origin'] });
   assert.equal(pushResultNotices.at(-1)[0], 'Git Sync 已完成');
   // 选择"仅推送": 不拉取, 对所有勾选分支推送当前 HEAD, 结果按普通推送表述且不重读未拉取的仓库。
   resetSyncState(); syncChoice = 'push';
