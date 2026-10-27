@@ -1639,6 +1639,7 @@ async function verifyProvider() {
   assert.equal(targetPicker.title, 'ink_dev 要推送的远程分支', 'the dialog title shows the repository card branch name, not a hash');
   assert.deepEqual(targetPicker.items.map(item => item.label), ['$(add) 新增远程分支…', '$(cloud) origin/ink_master', '$(cloud) upstream/develop'], 'one create action precedes the existing branches without expanding one row per remote');
   assert.deepEqual(targetPicker.items.slice(1).map(item => item.detail), ['未推送提交：0', '未推送提交：1'], 'existing target detail contains only the unpushed count');
+  assert.deepEqual(targetPicker.items.slice(1).map(item => item.description), ['[origin]', '[upstream]'], 'existing target description shows only the bracketed remote name');
   assert.deepEqual(targetPicker.selectedItems, [], 'the Push branch picker starts without selecting the current upstream');
   // 点击新增入口后，在同一个新建 QuickPick 中输入分支名并选择 remote。
   const createAction = targetPicker.items[0];
@@ -1650,6 +1651,7 @@ async function verifyProvider() {
   assert.equal(createPicker.title, '新增远程分支');
   assert.equal(createPicker.placeholder, '输入新分支名，并勾选目标 remote');
   assert.deepEqual(createPicker.items.map(item => item.label), ['$(remote) origin', '$(remote) upstream']);
+  assert.deepEqual(createPicker.selectedItems, [], 'with several remotes nothing is selected by default');
   const originRemote = createPicker.items[0];
   createPicker.selectedItems = [originRemote];
   createPicker.changeSelection(createPicker.selectedItems);
@@ -1663,11 +1665,11 @@ async function verifyProvider() {
   assert.ok(pendingTargetItem, 'completed creation returns to the target picker with the pending branch');
   assert.deepEqual(targetPicker.items.map(item => item.label), [
     '$(add) 新增远程分支…',
-    '$(git-branch-create) origin/feature/new-ui',
+    '$(cloud) origin/feature/new-ui',
     '$(cloud) origin/ink_master',
     '$(cloud) upstream/develop',
   ], 'a newly entered remote branch is placed before every existing push target');
-  assert.equal(pendingTargetItem.description, '即将新建远程分支');
+  assert.equal(pendingTargetItem.description, '[origin] · [即将新建远程分支]');
   assert.deepEqual(targetPicker.selectedItems.map(item => item.target?.remoteName), ['origin/feature/new-ui'], 'the pending branch is selected automatically');
   // 再次进入后取消，应返回并保留之前的待新建目标。
   targetPicker.selectedItems = [pendingTargetItem, targetPicker.items[0]];
@@ -1684,6 +1686,23 @@ async function verifyProvider() {
     remote: 'origin', branch: 'feature/new-ui', remoteName: 'origin/feature/new-ui',
     isUpstream: false, tipTimestamp: 0, unpushedCommitCount: 0, isNewBranch: true,
   }]);
+  // 只有一个 remote 时, 新增远程分支默认勾选该 remote, 输入分支名后可直接确认。
+  const singleRemotePlan = { source: pushDialogPlan.source, targets: [pushDialogPlan.targets[0]] };
+  const singleRemoteSelection = pickPushTargets(singleRemotePlan);
+  const singleRemoteTargetPicker = pushQuickPick;
+  singleRemoteTargetPicker.selectedItems = [singleRemoteTargetPicker.items[0]];
+  singleRemoteTargetPicker.changeSelection(singleRemoteTargetPicker.selectedItems);
+  await new Promise(resolve => setImmediate(resolve));
+  const singleRemoteCreatePicker = pushQuickPicks.at(-1);
+  assert.notEqual(singleRemoteCreatePicker, singleRemoteTargetPicker);
+  assert.deepEqual(singleRemoteCreatePicker.selectedItems.map(item => item.remote), ['origin'], 'the only remote is selected by default');
+  singleRemoteCreatePicker.value = 'feature/solo';
+  singleRemoteCreatePicker.changeValue(singleRemoteCreatePicker.value);
+  assert.deepEqual(singleRemoteCreatePicker.selectedItems.map(item => item.remote), ['origin'], 'typing the branch name keeps the default selection');
+  singleRemoteCreatePicker.accept();
+  await new Promise(resolve => setImmediate(resolve));
+  singleRemoteTargetPicker.accept();
+  assert.deepEqual((await singleRemoteSelection).map(target => target.remoteName), ['origin/feature/solo'], 'the new branch is created on the only remote without manual selection');
   // detached HEAD 没有分支名: 标题与行文本退回短 hash, 且明确标注游离状态。
   void pickPushTargets(detachedPlan);
   assert.equal(pushQuickPick.title, '游离 HEAD dddddddd 要推送的远程分支');

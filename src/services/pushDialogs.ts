@@ -33,14 +33,15 @@ function describeSourceLabel(source: PushSourceBranch): string {
 function buildTargetItems(targets: readonly PushTargetOption[]): PushTargetQuickPickItem[] {
     return targets.map(target => target.isNewBranch
         ? {
-            label: `$(git-branch-create) ${target.remoteName}`,
-            description: '即将新建远程分支',
+            label: `$(cloud) ${target.remoteName}`,
+            description: `[${target.remote}] · [即将新建远程分支]`,
             detail: '确认推送后创建',
             itemType: 'target' as const,
             target,
         }
         : {
             label: `$(cloud) ${target.remoteName}`,
+            description: `[${target.remote}]`,
             detail: `未推送提交：${target.unpushedCommitCount}`,
             itemType: 'target' as const,
             target,
@@ -76,7 +77,8 @@ function pickNewPushTargets(
 ): Promise<PushTargetOption[] | undefined> {
     const remotes = [...new Set(plan.targets.map(target => target.remote).filter(Boolean))];
     const quickPick = vscode.window.createQuickPick<PushRemoteQuickPickItem>();
-    let selectedRemotes = new Set<string>();
+    // 只有一个 remote 时没有可选项, 默认勾选; 多个 remote 仍由用户自己选择。
+    let selectedRemotes = new Set<string>(remotes.length === 1 ? remotes : []);
     let updatingItems = false;
     quickPick.title = '新增远程分支';
     quickPick.placeholder = '输入新分支名，并勾选目标 remote';
