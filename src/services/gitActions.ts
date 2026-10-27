@@ -222,7 +222,7 @@ export class GitActionRunner {
         }
     }
 
-    async syncRepository(action: 'fetch' | 'pull' | 'push', repositoryPath: string, selectedRemotes: { fetch: readonly string[]; pull: readonly string[]; push: readonly string[] }): Promise<void> {
+    async syncRepository(action: 'fetch' | 'pull' | 'push', repositoryPath: string, selectedRemotes: { fetch: readonly string[]; pull: readonly string[] }): Promise<void> {
         const rootUri = this.getRootUri(repositoryPath);
         if (!rootUri) { return; }
         if (this.syncInProgress) {
@@ -257,22 +257,13 @@ export class GitActionRunner {
                     void vscode.window.showWarningMessage('当前仓库没有可推送的远程分支。');
                     return;
                 }
-                const pushRemotes = new Set(selectedRemotes.push);
-                const remotePlan = {
-                    ...plan,
-                    targets: plan.targets.filter(target => pushRemotes.has(target.remote)),
-                };
-                if (remotePlan.targets.length === 0) {
-                    void vscode.window.showWarningMessage('勾选的 Push remote 没有可推送的远程分支。');
-                    return;
-                }
-                selectedPushTargets = await pickPushTargets(remotePlan);
+                selectedPushTargets = await pickPushTargets(plan);
                 if (!selectedPushTargets || selectedPushTargets.length === 0) { return; }
                 const repositoryLabel = path.basename(rootUri.fsPath) || repositoryPath;
                 const confirmed = await confirmPush(
                     selectedPushTargets.map(target => ({ source: plan.source, target })),
                     repositoryLabel,
-                    selectedRemotes.push,
+                    [...new Set(selectedPushTargets.map(target => target.remote))],
                 );
                 if (!confirmed) { return; }
             }

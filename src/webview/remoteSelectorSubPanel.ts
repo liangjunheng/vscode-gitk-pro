@@ -1,5 +1,5 @@
 /**
- * Commit 列表仓库行中的 remote 操作窗口: 显示 remote/upstream，并配置 Fetch/Pull/Push 使用的 remote。
+ * Commit 列表仓库行中的 remote 操作窗口: 显示 remote/upstream，并配置 Fetch/Pull 使用的 remote。
  * 结构与交互片段由 gitkWebviewDocument.ts 注入到仓库名称前方。
  */
 
@@ -71,7 +71,7 @@ export const REMOTE_SELECTOR_SUB_PANEL_SCRIPT = `
     var remoteSelectorRemotes = [];
     var remoteSelectorCache = new Map();
     var remoteSelectorUpstream = '';
-    var remoteSelectorOperations = { fetch: [], pull: [], push: [] };
+    var remoteSelectorOperations = { fetch: [], pull: [] };
     var remoteSelectorPendingOperations = new Map();
     var remoteSelectorLoading = false;
     var remoteSelectorLoaded = false;
@@ -106,11 +106,10 @@ export const REMOTE_SELECTOR_SUB_PANEL_SCRIPT = `
       var fallback = fallbackRemote ? [fallbackRemote] : [];
       return {
         fetch: Array.isArray(input.fetch) ? input.fetch.filter(Boolean) : fallback.slice(),
-        pull: Array.isArray(input.pull) ? input.pull.filter(Boolean) : fallback.slice(),
-        push: Array.isArray(input.push) ? input.push.filter(Boolean) : fallback.slice()
+        pull: Array.isArray(input.pull) ? input.pull.filter(Boolean) : fallback.slice()
       };
     }
-    function operationLabel(operation) { return operation === 'fetch' ? 'Fetch' : operation === 'pull' ? 'Pull' : 'Push'; }
+    function operationLabel(operation) { return operation === 'fetch' ? 'Fetch' : 'Pull'; }
     function pendingOperationKey(operation, name) { return operation + '\\n' + name; }
     function mergePendingRemoteOperations(operations) {
       remoteSelectorPendingOperations.forEach(function(enabled, key) {
@@ -145,7 +144,7 @@ export const REMOTE_SELECTOR_SUB_PANEL_SCRIPT = `
         var displayUrl = remote.fetchUrl || remote.pushUrl || '';
         var name = remoteSelectorEscapeAttr(remote.name);
         var bound = remote.name === remoteSelectorUpstream;
-        var checks = ['fetch', 'pull', 'push'].map(function(operation) {
+        var checks = ['fetch', 'pull'].map(function(operation) {
           var checked = operationChecked(operation, remote.name);
           return '<label class="remote-operation-check"><input type="checkbox" class="remote-operation-checkbox" data-operation="' + operation + '" data-remote-name="' + name + '"' + (checked ? ' checked' : '') + '><span>' + operationLabel(operation) + '</span></label>';
         }).join('');
@@ -172,7 +171,7 @@ export const REMOTE_SELECTOR_SUB_PANEL_SCRIPT = `
       if (!checkbox) return;
       var operation = checkbox.dataset.operation || '';
       var name = checkbox.dataset.remoteName || '';
-      if (!name || !['fetch', 'pull', 'push'].includes(operation)) return;
+      if (!name || !['fetch', 'pull'].includes(operation)) return;
       if (!Array.isArray(remoteSelectorOperations[operation])) remoteSelectorOperations[operation] = [];
       if (checkbox.checked && !operationChecked(operation, name)) remoteSelectorOperations[operation].push(name);
       if (!checkbox.checked) remoteSelectorOperations[operation] = remoteSelectorOperations[operation].filter(function(value) { return value !== name; });

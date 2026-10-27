@@ -32,8 +32,9 @@ import { resolveWorkingTreeSelection } from './workingTreeSelection';
 
 type SetiIconDefinitions = Record<string, readonly [string, string]>;
 
-type RemoteOperation = 'fetch' | 'pull' | 'push';
-type RemoteOperationSnapshot = { fetch: readonly string[]; pull: readonly string[]; push: readonly string[] };
+type RemoteOperation = 'fetch' | 'pull';
+type GitSyncAction = RemoteOperation | 'push';
+type RemoteOperationSnapshot = { fetch: readonly string[]; pull: readonly string[] };
 type RemoteStateSnapshot = { readonly remotes: readonly GitRemote[]; readonly upstreamRemote: string; readonly operations: RemoteOperationSnapshot };
 type RemotePublishRequest = { promise: Promise<void>; refreshAfter: boolean; upstreamRemoteOverride?: string };
 
@@ -2079,7 +2080,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 return remote.name === upstreamRemote ? configuredValue !== false : configuredValue === true;
             })
             .map(remote => remote.name);
-        return { fetch: names('fetch'), pull: names('pull'), push: names('push') };
+        return { fetch: names('fetch'), pull: names('pull') };
     }
 
     private invalidateRemotePublish(repositoryPath: string): number {
@@ -2182,24 +2183,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     }
 
     private operationRemotes(repositoryPath: string): RemoteOperationSnapshot {
-        return this.remoteStateByRepository?.get(repositoryPath)?.operations ?? { fetch: [], pull: [], push: [] };
+        return this.remoteStateByRepository?.get(repositoryPath)?.operations ?? { fetch: [], pull: [] };
     }
 
-    /**
-     * Commit 面板的 Push 入口也必须使用 Remote 选择器的最新配置。
-     * 远程状态通常由仓库扫描预热, 但提交面板可能在预热完成前被打开, 因此这里复用与顶部同步按钮相同的就绪等待。
-     */
-    private async readyOperationRemotes(repositoryPath: string): Promise<RemoteOperationSnapshot> {
-        await this.waitForRemoteMutations(repositoryPath);
-        const cached = this.remoteStateByRepository.has(repositoryPath);
-        const pending = this.remotePublishInFlight.get(repositoryPath);
-        if (!cached) {
-            await this.publishRemoteList(repositoryPath, undefined, true);
-        } else if (pending) {
-            await pending.promise;
-        }
-        return this.operationRemotes(repositoryPath);
-    }
 
     private enqueueRemoteMutation(repositoryPath: string | undefined, mutation: () => Promise<void>): void {
         if (!repositoryPath) { void mutation(); return; }
@@ -2222,19 +2208,21 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async runSelectedRepositorySync(action: RemoteOperation, repositoryPath: string): Promise<void> {
-        await this.waitForRemoteMutations(repositoryPath);
-        const cached = this.remoteStateByRepository.has(repositoryPath);
-        const pending = this.remotePublishInFlight.get(repositoryPath);
-        if (!cached) {
-            // 仓库刚切换时 Remote 预热可能仍在途；强制排一次追加读取，不能把“尚未加载”误判成“没有勾选”。
-            await this.publishRemoteList(repositoryPath, undefined, true);
-        } else if (pending) {
-            // 已有缓存但正在刷新配置/upstream 时，以在途的最新快照执行本次操作。
-            await pending.promise;
+    private async runSelectedRepositorySync(action: GitSyncAction, repositoryPath: string): Promise<void> {
+        if (action !== 'push') {
+            await this.waitForRemoteMutations(repositoryPath);
+            const cached = this.remoteStateByRepository.has(repositoryPath);
+            const pending = this.remotePublishInFlight.get(repositoryPath);
+            if (!cached) {
+                // 仓库刚切换时 Remote 预热可能仍在途；强制排一次追加读取，不能把“尚未加载”误判成“没有勾选”。
+                await this.publishRemoteList(repositoryPath, undefined, true);
+            } else if (pending) {
+                // 已有缓存但正在刷新配置/upstream 时，以在途的最新快照执行本次操作。
+                await pending.promise;
+            }
         }
         const remotes = this.operationRemotes(repositoryPath);
-        if (remotes[action].length === 0) {
+        if (action !== 'push' && remotes[action].length === 0) {
             void vscode.window.showWarningMessage(`请先在 Remote 选择器中勾选 ${action} 使用的远程仓库。`);
             return;
         }
@@ -2335,7 +2323,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const name = message.name;
             this.enqueueRemoteMutation(repositoryPath, () => this.deleteRemoteForSelectedRepository(name, repositoryPath));
         } else if (message.type === 'setRemoteOperation'
-            && (message.operation === 'fetch' || message.operation === 'pull' || message.operation === 'push')
+            && (message.operation === 'fetch' || message.operation === 'pull')
             && typeof message.name === 'string' && typeof message.enabled === 'boolean') {
             const repositoryPath = this.selectedRepositoryPath;
             const operation = message.operation;
@@ -3575,12 +3563,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (this.pushTargetByRepository.has(repositoryPath)) { return; }
         const rootUri = this.getRepoRootUri(repositoryPath);
         if (!rootUri) { return; }
-        const operations = await this.readyOperationRemotes(repositoryPath);
         const plan = await getPushPlan(rootUri);
-        const filteredPlan = plan
-            ? { ...plan, targets: plan.targets.filter(target => operations.push.includes(target.remote)) }
-            : undefined;
-        const target = filteredPlan ? defaultPushTarget(filteredPlan) : undefined;
+        const target = plan ? defaultPushTarget(plan) : undefined;
         if (!target) { return; }
         this.pushTargetByRepository.set(repositoryPath, target);
         if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
@@ -3589,20 +3573,14 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private async pickCommitPanelPushTarget(repositoryPath: string): Promise<void> {
         const rootUri = this.getRepoRootUri(repositoryPath);
         if (!rootUri) { return; }
-        const operations = await this.readyOperationRemotes(repositoryPath);
         const plan = await getPushPlan(rootUri);
-        const filteredPlan = plan
-            ? { ...plan, targets: plan.targets.filter(target => operations.push.includes(target.remote)) }
-            : undefined;
-        if (!filteredPlan || filteredPlan.targets.length === 0) {
-            void vscode.window.showInformationMessage('勾选的 Push remote 没有可推送的远程分支。');
+        if (!plan || plan.targets.length === 0) {
+            void vscode.window.showInformationMessage('当前仓库没有可推送的远程分支。');
             return;
         }
-        const savedTarget = this.pushTargetByRepository.get(repositoryPath);
-        const defaultTarget = savedTarget && operations.push.includes(savedTarget.remote)
-            ? savedTarget
-            : defaultPushTarget(filteredPlan);
-        const picked = await pickPushTarget(filteredPlan, defaultTarget);
+        const defaultTarget = this.pushTargetByRepository.get(repositoryPath)
+            ?? defaultPushTarget(plan);
+        const picked = await pickPushTarget(plan, defaultTarget);
         if (!picked) { return; }
         this.pushTargetByRepository.set(repositoryPath, picked);
         if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
@@ -3645,17 +3623,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (!rootRepositoryPath) { return; }
         const rootUri = this.getRepoRootUri(rootRepositoryPath);
         if (!rootUri) { return; }
-        const rootOperations = await this.readyOperationRemotes(rootRepositoryPath);
         const rootPlan = await getPushPlan(rootUri);
-        const filteredRootPlan = rootPlan
-            ? { ...rootPlan, targets: rootPlan.targets.filter(target => rootOperations.push.includes(target.remote)) }
-            : undefined;
-        if (!filteredRootPlan || filteredRootPlan.targets.length === 0) {
-            void vscode.window.showInformationMessage('勾选的 Push remote 没有可推送的远程分支。');
+        if (!rootPlan || rootPlan.targets.length === 0) {
+            void vscode.window.showInformationMessage('当前仓库没有可推送的远程分支。');
             return;
         }
-        const selectedTargets = (await pickPushTargets(filteredRootPlan))
-            ?.filter(target => rootOperations.push.includes(target.remote));
+        const selectedTargets = await pickPushTargets(rootPlan);
         if (!selectedTargets || selectedTargets.length === 0) { return; }
         this.pushTargetByRepository.set(rootRepositoryPath, selectedTargets.at(-1) ?? selectedTargets[0]);
         if (this.commitPanel.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
@@ -3675,10 +3648,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             if (repositoryPath === rootRepositoryPath) { continue; }
             const target = this.pushTargetByRepository.get(repositoryPath);
             const repositoryUri = this.getRepoRootUri(repositoryPath);
-            const operations = await this.readyOperationRemotes(repositoryPath);
             const plan = repositoryUri ? await getPushPlan(repositoryUri) : undefined;
-            if (!target || !plan || !operations.push.includes(target.remote)) {
-                void vscode.window.showWarningMessage(`仓库未选择已勾选 Push remote 的可推送远程分支：${repositoryPath}`);
+            if (!target || !plan) {
+                void vscode.window.showWarningMessage(`仓库未选择可推送的远程分支：${repositoryPath}`);
                 return;
             }
             plansByRepository.set(repositoryPath, { source: plan.source, targets: [target] });
@@ -3702,10 +3674,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             })));
         const repositoryLabel = this.repositories.find(repository => repository.path === rootRepositoryPath)?.label
             ?? path.basename(rootUri.fsPath);
-        const configuredPushRemotes = rootOperations.push;
-        const displayedPushRemotes = configuredPushRemotes.length > 0
-            ? configuredPushRemotes
-            : [...new Set(confirmRows.map(row => row.target.remote))];
+        const displayedPushRemotes = [...new Set(confirmRows.map(row => row.target.remote))];
         let syncing = false;
         if (pullBeforePush) {
             const choice = await confirmSync(confirmRows, [...pullTargetByRepository].map(([repositoryPath, target]) => {

@@ -290,16 +290,6 @@ export function defaultPushTarget(plan: PushPlan): PushTargetOption | undefined 
     return plan.targets.find(target => target.isUpstream) ?? plan.targets[0];
 }
 
-/** 每个勾选 remote 默认选中一个推送目标：upstream、同名分支、该 remote 的第一候选，依次回退。 */
-export function defaultPushTargets(plan: PushPlan, remotes: readonly string[]): PushTargetOption[] {
-    return [...new Set(remotes)].flatMap(remote => {
-        const candidates = plan.targets.filter(target => target.remote === remote);
-        const target = candidates.find(candidate => candidate.isUpstream)
-            ?? candidates.find(candidate => Boolean(plan.source.branchName) && candidate.branch === plan.source.branchName)
-            ?? candidates[0];
-        return target ? [target] : [];
-    });
-}
 
 /**
  * 每个远程分支的未推送提交总数。recentUnpushedCommits 受 limit 截断, 直接取其长度会把
@@ -524,7 +514,7 @@ export async function runGitSync(
     action: 'fetch' | 'pull' | 'push',
     onProgress?: (message: string) => void,
     pushTargets?: readonly PushTargetOption[],
-    selectedRemotes?: { fetch: readonly string[]; pull: readonly string[]; push: readonly string[] },
+    selectedRemotes?: { fetch: readonly string[]; pull: readonly string[] },
 ): Promise<GitSyncResult> {
     if (action === 'fetch') {
         const repositories = await collectSubmoduleRepositories([{ rootPath: rootUri.fsPath }]);
@@ -602,12 +592,7 @@ export async function runGitSync(
     }
     onProgress?.('正在通过 Git 推送本地提交...');
     const plan = await getPushPlan(rootUri);
-    const pushRemotes = new Set(selectedRemotes?.push ?? []);
-    const remotePlan = plan ? { ...plan, targets: plan.targets.filter(target => pushRemotes.has(target.remote)) } : plan;
-    const fallbackTargets = remotePlan ? defaultPushTargets(remotePlan, selectedRemotes?.push ?? []) : [];
-    const targets = pushTargets && pushTargets.length > 0
-        ? pushTargets.filter(target => pushRemotes.has(target.remote))
-        : fallbackTargets;
+    const targets = pushTargets ?? [];
     if (targets.length === 0) { throw new Error('当前仓库没有可推送的远程分支。'); }
     const pushResults: NativePushResult[] = [];
     for (const target of targets) {

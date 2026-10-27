@@ -226,7 +226,8 @@ export async function readNativeRemoteState(rootUri: vscode.Uri): Promise<{
     const state = await invokeNativeGitPriorityRead<NativeRemoteState>('remoteState', { rootPath: rootUri.fsPath });
     const operations = new Map<string, Map<FasterGitRemoteOperation, boolean>>();
     for (const [name, values] of Object.entries(state.operations ?? {})) {
-        operations.set(name, new Map(Object.entries(values) as Array<[FasterGitRemoteOperation, boolean]>));
+        const entries = Object.entries(values).filter(([operation]) => operation === 'fetch' || operation === 'pull');
+        operations.set(name, new Map(entries as Array<[FasterGitRemoteOperation, boolean]>));
     }
     return { remotes: state.remotes, operations, upstreamRemote: state.upstreamRemote ?? '' };
 }
@@ -245,7 +246,7 @@ function validateRemoteUrl(url: string): string {
     return value;
 }
 
-export type FasterGitRemoteOperation = 'fetch' | 'pull' | 'push';
+export type FasterGitRemoteOperation = 'fetch' | 'pull';
 
 export async function readFasterGitRemoteOperations(
     rootUri: vscode.Uri,
@@ -261,7 +262,7 @@ export async function readFasterGitRemoteOperations(
     }
     let output = '';
     try {
-        output = await runGitCli(rootUri, ['config', '--local', '--get-regexp', '^fastergit\\.remote\\..+\\.(fetch|pull|push)$']);
+        output = await runGitCli(rootUri, ['config', '--local', '--get-regexp', '^fastergit\\.remote\\..+\\.(fetch|pull)$']);
     } catch {
         return operations;
     }
@@ -276,7 +277,7 @@ export async function readFasterGitRemoteOperations(
             ? true
             : ['false', 'no', 'off', '0'].includes(value) ? false : undefined;
         if (enabled === undefined) { continue; }
-        const match = key.match(/^fastergit\.remote\.(.+)\.(fetch|pull|push)$/i);
+        const match = key.match(/^fastergit\.remote\.(.+)\.(fetch|pull)$/i);
         if (!match) { continue; }
         const remote = match[1];
         if (!knownRemotes.has(remote)) { continue; }
@@ -312,6 +313,7 @@ export async function clearFasterGitRemoteOperations(rootUri: vscode.Uri, remote
         await invokeNativeGitMutation<void>('clearRemoteOperations', { rootPath: rootUri.fsPath, remoteName: remote });
     } catch (error) {
         if (!isUnsupportedNativeOperation(error)) { throw error; }
+        // Remove the retired Push key as migration cleanup when a remote is deleted.
         for (const operation of ['fetch', 'pull', 'push']) {
             await runGitCli(rootUri, ['config', '--local', '--unset-all', `fastergit.remote.${remote}.${operation}`]).catch(() => undefined);
         }

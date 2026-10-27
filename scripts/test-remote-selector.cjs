@@ -85,7 +85,8 @@ async function main() {
                 upstreamRemote: 'origin'
             }
         } })));
-        assert.equal(await page.locator('.remote-operation-checkbox[data-remote-name="origin"]:checked').count(), 3, 'bound upstream remote is enabled for Fetch, Pull, and Push by default');
+        assert.equal(await page.locator('.remote-operation-checkbox[data-remote-name="origin"]:checked').count(), 2, 'bound upstream remote is enabled for Fetch and Pull by default');
+        assert.equal(await page.locator('.remote-operation-checkbox[data-operation="push"]').count(), 0, 'Push is selected only in the Push target dialog, not in the Remote selector');
         assert.equal(await page.locator('.remote-operation-checkbox[data-remote-name="origin"]:disabled').count(), 0, 'bound upstream operation checkboxes remain configurable');
         assert.equal(await page.locator('.remote-operation-checkbox[data-remote-name="upstream"]:checked').count(), 0, 'other remotes start unchecked without local config');
         await page.locator('.remote-operation-checkbox[data-operation="pull"][data-remote-name="upstream"]').check();
@@ -97,7 +98,7 @@ async function main() {
                 { name: 'origin', fetchUrl: 'https://example.com/origin.git', pushUrl: 'https://example.com/origin.git' },
                 { name: 'upstream', fetchUrl: 'https://example.com/upstream.git', pushUrl: 'https://example.com/upstream.git' },
             ],
-            upstreamRemote: 'origin', operations: { fetch: ['origin'], pull: ['origin'], push: ['origin'] }
+            upstreamRemote: 'origin', operations: { fetch: ['origin'], pull: ['origin'] }
         } })));
         assert.equal(await page.locator('.remote-operation-checkbox[data-operation="pull"][data-remote-name="upstream"]').isChecked(), true, 'an older background snapshot cannot clear an optimistic check');
         await page.evaluate(() => window.dispatchEvent(new MessageEvent('message', { data: {
@@ -106,7 +107,7 @@ async function main() {
                 { name: 'origin', fetchUrl: 'https://example.com/origin.git', pushUrl: 'https://example.com/origin.git' },
                 { name: 'upstream', fetchUrl: 'https://example.com/upstream.git', pushUrl: 'https://example.com/upstream.git' },
             ],
-            upstreamRemote: 'origin', operations: { fetch: ['origin'], pull: ['origin', 'upstream'], push: ['origin'] }
+            upstreamRemote: 'origin', operations: { fetch: ['origin'], pull: ['origin', 'upstream'] }
         } })));
         assert.equal(await page.locator('.remote-operation-checkbox[data-operation="pull"][data-remote-name="upstream"]').isChecked(), true, 'persisted config confirms the checked state without flicker');
         await page.locator('.remote-delete-button').first().click();
@@ -131,7 +132,7 @@ async function main() {
             { type: 'addRemote' },
         ]);
         assert.deepEqual(pageErrors, []);
-        console.log('Remote selector UI passed: upstream display, operation checkboxes, add/delete actions, empty-state direct add, and repository-row placement.');
+        console.log('Remote selector UI passed: upstream display, Fetch/Pull checkboxes, no Push checkbox, add/delete actions, empty-state direct add, and repository-row placement.');
     } finally {
         await browser.close();
     }

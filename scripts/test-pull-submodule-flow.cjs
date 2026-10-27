@@ -53,7 +53,7 @@ async function testFetchesRootAndSubmodulesInParallel() {
         },
     });
     const rootUri = { fsPath: rootPath, toString: () => rootPath };
-    const pending = provider.runGitSync(rootUri, 'fetch', message => progress.push(message), undefined, { fetch: ['origin'], pull: ['origin'], push: ['origin'] });
+    const pending = provider.runGitSync(rootUri, 'fetch', message => progress.push(message), undefined, { fetch: ['origin'], pull: ['origin'] });
     await new Promise(resolve => setImmediate(resolve));
     nodeAssert.deepEqual(fetchStarts, [
         [rootPath, 'origin'],
@@ -95,7 +95,7 @@ async function testPullChecksStaleSubmodulesWithoutHeadChange() {
         },
     });
     const rootUri = { fsPath: '/fixture', toString: () => '/fixture' };
-    const result = await provider.runGitSync(rootUri, 'pull', message => progress.push(message), undefined, { fetch: ['upstream'], pull: ['upstream', 'backup'], push: ['upstream'] });
+    const result = await provider.runGitSync(rootUri, 'pull', message => progress.push(message), undefined, { fetch: ['upstream'], pull: ['upstream', 'backup'] });
     nodeAssert.deepEqual(pullRemotes, ['upstream', 'backup'], 'pull runs every remote checked in the Remote selector');
     nodeAssert.equal(result.headChanged, false);
     nodeAssert.equal(result.submodulesNeedUpdate, true, 'a no-op pull still checks submodule state');
@@ -167,7 +167,7 @@ async function testPullChecksNestedUninitializedSubmodulesWithoutHeadChange() {
         },
     });
     const rootUri = { fsPath: rootPath, toString: () => rootPath };
-    const pending = provider.runGitSync(rootUri, 'pull', message => progress.push(message), undefined, { fetch: ['origin'], pull: ['origin'], push: ['origin'] });
+    const pending = provider.runGitSync(rootUri, 'pull', message => progress.push(message), undefined, { fetch: ['origin'], pull: ['origin'] });
     await new Promise(resolve => setImmediate(resolve));
     nodeAssert.deepEqual([...nestedScanStarts].sort(), [nestedLeftPath, nestedRightPath].sort(),
         'sibling repositories at the same recursive level are checked concurrently');
@@ -249,7 +249,7 @@ async function testPullPromptsBeforeUpdatingSubmodules() {
         {},
     );
 
-    await runner.syncRepository('pull', '/fixture', { fetch: ['origin'], pull: ['origin'], push: ['origin'] });
+    await runner.syncRepository('pull', '/fixture', { fetch: ['origin'], pull: ['origin'] });
     const prompt = events.find(event => event[0] === 'prompt');
     nodeAssert.ok(prompt, 'a no-op pull still prompts when submodules are stale');
     nodeAssert.ok(prompt[1].includes('2 个子模块版本不一致'));
@@ -263,7 +263,7 @@ async function testPullPromptsBeforeUpdatingSubmodules() {
 
     answer = '暂不更新';
     events = [];
-    await runner.syncRepository('pull', '/fixture', { fetch: ['origin'], pull: ['origin'], push: ['origin'] });
+    await runner.syncRepository('pull', '/fixture', { fetch: ['origin'], pull: ['origin'] });
     nodeAssert.equal(updateCalls.length, 1, 'declining the prompt does not update submodules');
     nodeAssert.ok(events.some(event => event[0] === 'information'
         && event[1] === '拉取完成：当前分支已是最新（aaaaaaaa）；有 2 个子模块暂未更新。'));
@@ -313,7 +313,7 @@ async function testMultiRemotePullConfirmation() {
         async () => { events.push(['mutated']); },
         {},
     );
-    const remotes = { fetch: ['origin'], pull: ['origin', 'upstream', 'backup'], push: ['origin'] };
+    const remotes = { fetch: ['origin'], pull: ['origin', 'upstream', 'backup'] };
     for (const count of [2, 3]) {
         for (answer of [undefined, '取消']) {
             events.length = 0;
@@ -370,7 +370,30 @@ async function testMultiRemotePullConfirmation() {
     nodeAssert.equal(syncCalls.length, afterFailure + 1, 'a failed confirmed Pull also releases the sync lock');
 }
 
-async function testPushTargetsSelectedRemoteOnly() {
+async function testPushUsesExplicitTargetsWithoutRemoteCheckboxes() {
+    const pushes = [];
+    const sourceHash = 'a'.repeat(40);
+    const target = { remote: 'upstream', branch: 'develop', remoteName: 'upstream/develop', isUpstream: false, tipTimestamp: 1, unpushedCommitCount: 1 };
+    const provider = loadFresh('../out/git/gitLogProvider', {
+        vscode: { Uri: { file: fsPath => ({ fsPath, toString: () => fsPath }) } },
+        './nativeGitBinding': { invokeNativeGit: async operation => {
+            if (operation === 'pushBranches') return [];
+            if (operation === 'head') return { hash: sourceHash, branch: 'main' };
+            throw new Error(`Unexpected native operation: ${operation}`);
+        } },
+        './gitNativeOperations': {
+            fetchRemotes: async () => {}, pull: async () => {}, updateSubmodules: async () => {},
+            push: async (_rootUri, request) => { pushes.push(request); return request; },
+        },
+    });
+    const rootUri = { fsPath: '/fixture', toString: () => '/fixture' };
+    await provider.runGitSync(rootUri, 'push', undefined, [target], { fetch: ['origin'], pull: ['origin'] });
+    nodeAssert.deepEqual(pushes, [{
+        remote: 'upstream', remoteBranch: 'develop', sourceBranchName: 'main', sourceHash,
+    }], 'the target dialog selection is the sole authority for the Push destination');
+}
+
+async function testPushTargetDialogOwnsRemoteSelection() {
     const selectedPlans = [];
     const pickerArgumentCounts = [];
     const confirmationCalls = [];
@@ -412,12 +435,12 @@ async function testPushTargetsSelectedRemoteOnly() {
         },
     });
     const runner = new actions.GitActionRunner(() => ({ fsPath: '/fixture' }), async () => {}, {});
-    await runner.syncRepository('push', '/fixture', { fetch: ['origin', 'upstream'], pull: ['origin', 'upstream'], push: ['origin', 'upstream'] });
-    nodeAssert.deepEqual(selectedPlans[0].targets.map(target => target.remoteName), ['origin/main', 'upstream/develop'], 'Push dialog includes the selected existing remote branches');
+    await runner.syncRepository('push', '/fixture', { fetch: ['origin', 'upstream'], pull: ['origin', 'upstream'] });
+    nodeAssert.deepEqual(selectedPlans[0].targets.map(target => target.remoteName), ['origin/main', 'upstream/develop'], 'Push dialog owns remote selection and includes every existing remote branch');
     nodeAssert.equal(pickerArgumentCounts[0], 1, 'Push opens the branch picker without a default-selected current remote branch');
     nodeAssert.equal(confirmationCalls[0][1], 'fixture', 'Push confirmation displays the repository name');
-    nodeAssert.deepEqual(confirmationCalls[0][2], ['origin', 'upstream'], 'Push confirmation displays the remotes checked for Push');
-    nodeAssert.deepEqual(syncCalls[0][4].push, ['origin', 'upstream'], 'Push execution receives every checked remote');
+    nodeAssert.deepEqual(confirmationCalls[0][2], ['origin', 'upstream'], 'Push confirmation derives remotes from the branches selected in the target dialog');
+    nodeAssert.equal(syncCalls[0][4].push, undefined, 'Push execution no longer receives Remote-selector checkbox state');
     nodeAssert.deepEqual(syncCalls[0][3].map(target => target.remoteName), ['origin/main', 'upstream/develop']);
 }
 
@@ -427,7 +450,8 @@ async function main() {
     await testPullChecksNestedUninitializedSubmodulesWithoutHeadChange();
     await testPullPromptsBeforeUpdatingSubmodules();
     await testMultiRemotePullConfirmation();
-    await testPushTargetsSelectedRemoteOnly();
+    await testPushUsesExplicitTargetsWithoutRemoteCheckboxes();
+    await testPushTargetDialogOwnsRemoteSelection();
     console.log('Fetch/Pull submodule flow: parallel fetch, recursive no-op check, multi-remote Pull confirmation/cancel, sync lock, initialization, per-module progress, updated/skipped copy passed');
 }
 

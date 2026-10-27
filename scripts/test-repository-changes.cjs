@@ -1497,8 +1497,7 @@ async function verifyProvider() {
   const load = Module._load;
   const branchReads = [], commitDetailReads = [], checkouts = [], pulls = [], pushes = [], headRefreshes = [], remoteCheckouts = [];
   const remoteFetchStarts = [], remoteFetchResolvers = [];
-  let pickedIndex = 2, options, branchItems, pushTargetDefaults, pushQuickPick, selectedPushTargetsResult, selectedSinglePushTargetResult, confirmRows, confirmOptions;
-  const pushPickerPlans = [], singlePushPickerCalls = [];
+  let pickedIndex = 2, options, branchItems, pushTargetDefaults, pushQuickPick, selectedPushTargetsResult, confirmRows, confirmOptions;
   const pushQuickPicks = [];
   let pulledHeadHash = 'a'.repeat(40), conflictAfterPull = false, pushFails = true, pullFails = false;
   const pushResultNotices = [];
@@ -1597,8 +1596,7 @@ async function verifyProvider() {
       };
       if (name === '../services/pushDialogs') return {
         ...load.call(this, name, ...args),
-        pickPushTargets: async (plan, defaultTargets) => { pushPickerPlans.push(plan); pushTargetDefaults = defaultTargets; return selectedPushTargetsResult; },
-        pickPushTarget: async (plan, defaultTarget) => { singlePushPickerCalls.push({ plan, defaultTarget }); return selectedSinglePushTargetResult; },
+        pickPushTargets: async (_plan, defaultTargets) => { pushTargetDefaults = defaultTargets; return selectedPushTargetsResult; },
         confirmPush: async (rows, repositoryLabel, pushRemotes) => { confirmRows = rows; confirmOptions = { repositoryLabel, pushRemotes }; return true; },
         confirmSync: async (rows, pullFrom, repositoryLabel, pushRemotes) => { confirmRows = rows; confirmOptions = { pullFrom, repositoryLabel, pushRemotes }; return syncChoice; },
         showPushResult: async (title, detail) => { pushResultNotices.push([title, detail]); },
@@ -1850,7 +1848,7 @@ async function verifyProvider() {
       switchedSyncProvider.remoteStateByRepository.set(switchedRepositoryPath, {
         remotes: [{ name: 'origin', fetchUrl: 'https://fetch', pushUrl: 'https://push' }],
         upstreamRemote: 'origin',
-        operations: { fetch: ['origin'], pull: ['origin'], push: ['origin'] },
+        operations: { fetch: ['origin'], pull: ['origin'] },
       });
     },
     gitActions: { syncRepository: async (...args) => { switchedSyncs.push(args); } },
@@ -1861,7 +1859,7 @@ async function verifyProvider() {
   assert.deepEqual(switchedSyncs, [], 'the Git action does not inspect an empty placeholder while Remote state is loading');
   releaseSwitchedRemote();
   await switchedSync;
-  assert.deepEqual(switchedSyncs, [['fetch', switchedRepositoryPath, { fetch: ['origin'], pull: ['origin'], push: ['origin'] }]], 'the original click continues with the loaded Remote snapshot');
+  assert.deepEqual(switchedSyncs, [['fetch', switchedRepositoryPath, { fetch: ['origin'], pull: ['origin'] }]], 'the original click continues with the loaded Remote snapshot');
 
   // 勾选写入与按钮点击并发时，按钮必须等待配置落盘后的权威快照，不能执行旧选择。
   const writeRaceSyncs = [], writeRacePublishes = [], remoteOperationWrites = [], remoteOperationWriteResolvers = [];
@@ -1883,7 +1881,7 @@ async function verifyProvider() {
     remoteStateByRepository: new Map([[switchedRepositoryPath, {
       remotes: [{ name: 'origin', fetchUrl: 'https://fetch', pushUrl: 'https://push' }],
       upstreamRemote: 'origin',
-      operations: { fetch: ['origin'], pull: ['origin'], push: ['origin'] },
+      operations: { fetch: ['origin'], pull: ['origin'] },
     }]]),
     remotePublishRevisionByRepository: new Map(), remotePublishInFlight: new Map(), remoteMutationsInFlight: new Map(),
     view: { webview: { postMessage() {} } },
@@ -1892,7 +1890,7 @@ async function verifyProvider() {
       writeRaceProvider.remoteStateByRepository.set(switchedRepositoryPath, {
         remotes: [{ name: 'origin', fetchUrl: 'https://fetch', pushUrl: 'https://push' }],
         upstreamRemote: 'origin',
-        operations: { fetch: storedFetchEnabled ? ['origin'] : [], pull: ['origin'], push: ['origin'] },
+        operations: { fetch: storedFetchEnabled ? ['origin'] : [], pull: ['origin'] },
       });
     },
     gitActions: { syncRepository: async (...args) => { writeRaceSyncs.push(args); } },
@@ -1919,7 +1917,7 @@ async function verifyProvider() {
   writeRaceProvider.remoteStateByRepository.set(switchedRepositoryPath, {
     remotes: [{ name: 'origin', fetchUrl: 'https://fetch', pushUrl: 'https://push' }],
     upstreamRemote: 'origin',
-    operations: { fetch: ['origin'], pull: ['origin'], push: ['origin'] },
+    operations: { fetch: ['origin'], pull: ['origin'] },
   });
   const writesBeforeRapidToggle = remoteOperationWrites.length;
   const publishesBeforeRapidToggle = writeRacePublishes.length;
@@ -1960,8 +1958,6 @@ async function verifyProvider() {
     changedFileSummaryCache: new WeakMap(), selectedBranchesMap: new Map(),
     commitMessageByRepo: new Map([[repositories[1].path, 'child draft']]), commitCommittingByRepo: new Set(),
     repositoryCardDisplayLocks: new Set(),
-    remoteStateByRepository: new Map([[repositories[1].path, { remotes: [{ name: 'fork' }, { name: 'origin' }], upstreamRemote: 'origin', operations: { fetch: ['origin'], pull: ['origin'], push: ['fork', 'origin'] } }]]),
-    remotePublishInFlight: new Map(), remoteMutationsInFlight: new Map(), publishRemoteList: async () => {},
     pushTargetByRepository: new Map(), lastPushedTargetByRepository: new Map(),
     unpushedCommitCountByRepository: new Map([[repositories[1].path, 4]]),
     behindCommitCountByRepository: new Map([[repositories[1].path, 0]]), cloudCommitsByRepository: new Map(),
@@ -2276,26 +2272,6 @@ async function verifyProvider() {
   releaseWorktree({ staged: [], changes: [] });
   await pendingWorktree;
   assert.equal(selectedWorktrees.length, 1, 'a stale badge read cannot reselect a child after focus moves elsewhere');
-  provider.remoteStateByRepository.set(repositories[1].path, {
-    remotes: [{ name: 'fork' }, { name: 'origin' }],
-    upstreamRemote: 'origin',
-    operations: { fetch: ['origin'], pull: ['origin'], push: ['origin'] },
-  });
-  provider.pushTargetByRepository.delete(repositories[1].path);
-  await provider.loadDefaultPushTarget(repositories[1].path);
-  assert.equal(provider.pushTargetByRepository.get(repositories[1].path)?.remote, 'origin', 'the Commit panel default target comes only from checked Push remotes');
-  provider.pushTargetByRepository.set(repositories[1].path, pushTargetFixture[0]);
-  selectedSinglePushTargetResult = pushTargetFixture[1];
-  singlePushPickerCalls.length = 0;
-  await provider.pickCommitPanelPushTarget(repositories[1].path);
-  assert.deepEqual(singlePushPickerCalls.at(-1).plan.targets.map(target => target.remoteName), ['origin/main'], 'the single-target picker hides unchecked Push remotes');
-  assert.equal(singlePushPickerCalls.at(-1).defaultTarget.remote, 'origin', 'a remembered target on an unchecked remote is not reused as the picker default');
-  assert.equal(provider.pushTargetByRepository.get(repositories[1].path)?.remote, 'origin');
-  provider.remoteStateByRepository.set(repositories[1].path, {
-    remotes: [{ name: 'fork' }, { name: 'origin' }],
-    upstreamRemote: 'origin',
-    operations: { fetch: ['origin'], pull: ['origin'], push: ['fork', 'origin'] },
-  });
   provider.pushTargetByRepository.set(repositories[1].path, pushTargetFixture[0]);
   provider.lastPushedTargetByRepository.set(repositories[1].path, pushTargetFixture[0]);
   await provider.runCommitPanelPush([repositories[1].path], true, false);
@@ -2316,7 +2292,7 @@ async function verifyProvider() {
   await provider.runCommitPanelPush([childPath], true, false);
   // 确认行用的是 HEAD 现场读到的分支名与 hash, 而不是目标里的任何字段。
   assert.deepEqual(confirmRows.map(row => [row.source.branchName, row.source.hash, row.target.remoteName]), [['main', 'a'.repeat(40), 'origin/main']]);
-  assert.deepEqual(confirmOptions, { pullFrom: ['origin/main'], repositoryLabel: 'child', pushRemotes: ['fork', 'origin'] }, 'sync confirmation lists the repository, checked Push remotes, and upstream it pulls before pushing');
+  assert.deepEqual(confirmOptions, { pullFrom: ['origin/main'], repositoryLabel: 'child', pushRemotes: ['origin'] }, 'sync confirmation lists the repository, selected Push remotes, and upstream it pulls before pushing');
   assert.equal(checkouts.length, checkoutCountBeforePush, 'sync does not switch branches');
   assert.deepEqual(pulls, [[childPath, 'origin', 'main', undefined, { autostash: true }]], 'sync pulls the bound upstream once, with autostash so a dirty worktree cannot block it');
   assert.deepEqual(pushes.at(-1), [childPath, 'origin', 'main', 'main', 'a'.repeat(40)], 'sync sends the current HEAD to the selected remote branch, carrying branch name and hash in separate fields');
@@ -2327,26 +2303,9 @@ async function verifyProvider() {
   resetSyncState();
   await provider.runCommitPanelPush([childPath], false, false);
   assert.deepEqual(pulls, [], 'plain push never pulls');
-  assert.deepEqual(confirmOptions, { repositoryLabel: 'child', pushRemotes: ['fork', 'origin'] }, 'plain push confirmation lists the repository and checked Push remotes');
+  assert.deepEqual(confirmOptions, { repositoryLabel: 'child', pushRemotes: ['origin'] }, 'plain push confirmation lists the repository and selected Push remotes');
   assert.deepEqual(syncHeadRefreshes, [], 'a plain push failure does not reread an unpulled repository');
   assert.deepEqual(pushResultNotices.at(-1), ['Git Push 失败', 'stop after push']);
-  // Commit 面板的 Push 目标选择也必须先受 Remote 选择器的 Push 范围过滤。
-  resetSyncState(); pushFails = false;
-  provider.remoteStateByRepository.set(childPath, {
-    remotes: [{ name: 'fork' }, { name: 'origin' }],
-    upstreamRemote: 'origin',
-    operations: { fetch: ['origin'], pull: ['origin'], push: ['origin'] },
-  });
-  selectedPushTargetsResult = [pushTargetFixture[1]];
-  pushPickerPlans.length = 0;
-  await provider.runCommitPanelPush([childPath], false, false);
-  assert.deepEqual(pushPickerPlans.at(-1).targets.map(target => target.remoteName), ['origin/main'], 'unchecked Push remotes are removed from the Commit target picker');
-  assert.deepEqual(pushes.map(entry => entry.slice(1)), [['origin', 'main', 'main', 'a'.repeat(40)]], 'Commit Push executes only a target under a checked Push remote');
-  provider.remoteStateByRepository.set(childPath, {
-    remotes: [{ name: 'fork' }, { name: 'origin' }],
-    upstreamRemote: 'origin',
-    operations: { fetch: ['origin'], pull: ['origin'], push: ['fork', 'origin'] },
-  });
   // 待新建目标复用普通 HEAD:<remoteBranch> 推送路径，不在选择阶段提前创建远程分支。
   resetSyncState(); pushFails = false;
   const pendingRemoteTarget = {
@@ -2374,12 +2333,12 @@ async function verifyProvider() {
   assert.deepEqual(syncHistoryRefreshes, ['history'], 'history refreshes once');
   assert.equal(provider.unpushedCommitCountByRepository.has(childPath) || provider.behindCommitCountByRepository.has(childPath), false, 'cached ahead/behind counts are dropped so the card badge is recomputed');
   assert.ok(syncStatePublishes > 0, 'sync state cache invalidation republishes the card so ahead/behind is reread even when HEAD is unchanged');
-  // 没有勾选 upstream 时没有可拉取的来源: 同步入口仍保留全部按钮，“同步”会直接推送。
+  // 没有选择 upstream 目标时没有可拉取的来源: 同步入口仍保留全部按钮，“同步”会直接推送。
   resetSyncState();
   selectedPushTargetsResult = [pushTargetFixture[0]];
   await provider.runCommitPanelPush([childPath], true, false);
   assert.deepEqual(pulls, [], 'unticking the upstream leaves nothing to pull from');
-  assert.deepEqual(confirmOptions, { pullFrom: [], repositoryLabel: 'child', pushRemotes: ['fork', 'origin'] });
+  assert.deepEqual(confirmOptions, { pullFrom: [], repositoryLabel: 'child', pushRemotes: ['fork'] });
   assert.equal(pushResultNotices.at(-1)[0], 'Git Sync 已完成');
   // 选择"仅推送": 不拉取, 对所有勾选分支推送当前 HEAD, 结果按普通推送表述且不重读未拉取的仓库。
   resetSyncState(); syncChoice = 'push';
@@ -2493,8 +2452,8 @@ async function verifyVisibilityFetch(Provider, store, repositories, fetchStarts,
   const [root, child, clean] = repositoryPaths;
   checkedProvider.remoteMutationsInFlight = new Map();
   checkedProvider.remoteStateByRepository = new Map([
-    [root, { remotes: [], upstreamRemote: 'origin', operations: { fetch: ['origin', 'mirror'], pull: [], push: [] } }],
-    [child, { remotes: [], upstreamRemote: 'origin', operations: { fetch: [], pull: [], push: [] } }],
+    [root, { remotes: [], upstreamRemote: 'origin', operations: { fetch: ['origin', 'mirror'], pull: [] } }],
+    [child, { remotes: [], upstreamRemote: 'origin', operations: { fetch: [], pull: [] } }],
   ]);
   fetchStarts.length = 0;
   const checkedFetch = checkedProvider.fetchRepositories([root, child, clean]);
@@ -2506,11 +2465,11 @@ async function verifyVisibilityFetch(Provider, store, repositories, fetchStarts,
 
   // A visibility Fetch that overlaps a config mutation must use the post-write checkboxes, not stale cache.
   fetchStarts.length = 0;
-  checkedProvider.remoteStateByRepository.set(root, { remotes: [], upstreamRemote: 'origin', operations: { fetch: ['origin'], pull: [], push: [] } });
+  checkedProvider.remoteStateByRepository.set(root, { remotes: [], upstreamRemote: 'origin', operations: { fetch: ['origin'], pull: [] } });
   let releaseVisibilityMutation;
   const visibilityMutation = new Promise(resolve => {
     releaseVisibilityMutation = () => {
-      checkedProvider.remoteStateByRepository.set(root, { remotes: [], upstreamRemote: 'origin', operations: { fetch: [], pull: [], push: [] } });
+      checkedProvider.remoteStateByRepository.set(root, { remotes: [], upstreamRemote: 'origin', operations: { fetch: [], pull: [] } });
       checkedProvider.remoteMutationsInFlight.delete(root);
       resolve();
     };

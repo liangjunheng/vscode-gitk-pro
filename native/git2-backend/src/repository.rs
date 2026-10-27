@@ -128,6 +128,7 @@ pub fn clear_remote_operations(payload: &Value) -> NativeResult<Value> {
         .map_err(format_git_error)?
         .open_level(ConfigLevel::Local)
         .map_err(format_git_error)?;
+    // Push selection was retired; remove its old key as migration cleanup.
     for operation in ["fetch", "pull", "push"] {
         remove_config_values(&mut config, &format!("fastergit.remote.{name}.{operation}"))?;
     }
@@ -214,7 +215,7 @@ pub fn remove_remote(payload: &Value) -> NativeResult<Value> {
             keys.insert(format!("branch.{branch}.merge"));
         }
     }
-    // Clean extension settings only after confirming the remote exists.
+    // Clean active Fetch/Pull settings and the retired Push key only after confirming the remote exists.
     for operation in ["fetch", "pull", "push"] {
         keys.insert(format!("fastergit.remote.{name}.{operation}"));
     }
@@ -235,7 +236,7 @@ pub fn set_remote_operation(payload: &Value) -> NativeResult<Value> {
     let root_path = string_arg(payload, "rootPath")?;
     let remote_name = string_arg(payload, "remoteName")?;
     let operation = string_arg(payload, "operation")?;
-    if !matches!(operation, "fetch" | "pull" | "push") {
+    if !matches!(operation, "fetch" | "pull") {
         return Err(format!("不支持的 remote 操作: {operation}"));
     }
     let enabled = payload
@@ -315,7 +316,7 @@ pub fn remote_state(payload: &Value) -> NativeResult<Value> {
         let Some((remote, operation)) = rest.rsplit_once('.') else {
             continue;
         };
-        if !matches!(operation, "fetch" | "pull" | "push")
+        if !matches!(operation, "fetch" | "pull")
             || !remote_name_set.iter().any(|name| name.as_str() == remote)
         {
             continue;

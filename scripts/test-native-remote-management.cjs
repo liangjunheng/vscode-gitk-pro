@@ -101,11 +101,16 @@ async function main() {
     await assert.rejects(operations.addRemote(uri, 'bad name', 'https://example.com/invalid'));
     await assert.rejects(operations.addRemote(uri, 'empty', '  '));
     assert.deepEqual(config(local), before, 'invalid/duplicate creation does not change config');
-    for (const operation of ['fetch', 'pull', 'push']) await operations.setFasterGitRemoteOperation(uri, 'origin', operation, false);
-    assert.deepEqual([...((await operations.readFasterGitRemoteOperations(uri, ['origin'])).get('origin')).values()], [false, false, false]);
+    for (const operation of ['fetch', 'pull']) await operations.setFasterGitRemoteOperation(uri, 'origin', operation, false);
+    git(local, 'config', 'fastergit.remote.origin.push', 'true');
+    const configuredOperations = (await operations.readFasterGitRemoteOperations(uri, ['origin'])).get('origin');
+    assert.deepEqual([...configuredOperations.values()], [false, false]);
+    assert.equal(configuredOperations.has('push'), false, 'the retired Push setting is ignored when reading Remote state');
+    await assert.rejects(invoke('setRemoteOperation', local, { remoteName: 'origin', operation: 'push', enabled: true }), /不支持的 remote 操作/);
     await operations.clearFasterGitRemoteOperations(uri, 'origin');
     await operations.clearFasterGitRemoteOperations(uri, 'origin');
     assert.equal((await operations.readFasterGitRemoteOperations(uri, ['origin'])).size, 0);
+    assert.equal(config(local).some(line => line.startsWith('fastergit.remote.origin.push=')), false, 'cleanup removes the retired Push key');
     assert.deepEqual((await operations.listRemotes(uri)).map(remote => remote.name).sort(), ['Origin', 'origin'].sort());
     await assert.rejects(invoke('removeRemote', local, { remoteName: 'missing' }));
     await assert.rejects(binding.invokeNativeGitPriorityRead('removeRemote', { rootPath: local, remoteName: 'origin' }), /只允许读取操作/);
@@ -144,7 +149,7 @@ async function main() {
       }
       console.log(JSON.stringify(Object.fromEntries(Object.entries(values).map(([key, value]) => [key, summary(value)])), null, 2));
     }
-    console.log('Native remote management passed: Git parity, shared/local refs, dotted/case-sensitive names, explicit false, cleanup, errors, zero subprocesses, legacy fallback.');
+    console.log('Native remote management passed: Git parity, Fetch/Pull settings, retired Push cleanup, shared/local refs, dotted/case-sensitive names, explicit false, errors, zero subprocesses, legacy fallback.');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
