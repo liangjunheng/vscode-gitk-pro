@@ -134,9 +134,9 @@ async function main() {
         execFileSync('git', ['-c', 'protocol.file.allow=always', '-C', local,
             'submodule', 'add', childOrigin, 'modules/child']);
         git(local, 'commit', '-m', 'add child submodule');
-        git(local, 'submodule', 'deinit', '-f', '--', 'modules/child');
-        assert.equal(fs.existsSync(path.join(local, 'modules', 'child', 'child.txt')), false,
-            'fixture starts with the child submodule uninitialized');
+        const childPath = path.join(local, 'modules', 'child');
+        const childBranch = git(childPath, 'branch', '--show-current');
+        assert.ok(childBranch, 'fixture starts with the initialized child on a branch');
 
         const previousAllowedProtocols = process.env.GIT_ALLOW_PROTOCOL;
         process.env.GIT_ALLOW_PROTOCOL = 'file';
@@ -147,11 +147,44 @@ async function main() {
             else process.env.GIT_ALLOW_PROTOCOL = previousAllowedProtocols;
         }
         assert.equal(fs.existsSync(path.join(local, 'modules', 'child', 'child.txt')), true,
-            'submodule update initializes the selected child before checkout');
+            'submodule update keeps the selected child initialized');
+        assert.equal(git(childPath, 'branch', '--show-current'), childBranch,
+            'submodule update rebases the checked-out branch instead of detaching HEAD');
         assert.equal(fs.existsSync(path.join(local, 'modules', 'child', 'nested', 'nested.txt')), true,
             'submodule update recursively initializes nested children');
+
+        fs.writeFileSync(path.join(childSeed, 'remote-child.txt'), 'remote child update\n');
+        git(childSeed, 'add', 'remote-child.txt');
+        git(childSeed, 'commit', '-m', 'advance child default branch');
+        git(childSeed, 'push');
+        const remoteChildHead = git(childSeed, 'rev-parse', 'HEAD');
+
+        git(local, 'submodule', 'deinit', '-f', '--', 'modules/child');
+        fs.rmSync(path.join(local, '.git', 'modules', 'modules', 'child'), { recursive: true, force: true });
+        assert.equal(fs.existsSync(path.join(local, 'modules', 'child', 'child.txt')), false,
+            'fixture can exercise a child that has never been initialized locally');
+        process.env.GIT_ALLOW_PROTOCOL = 'file';
+        try {
+            await operations.updateSubmodules(rootUri, ['modules/child']);
+        } finally {
+            if (previousAllowedProtocols === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+            else process.env.GIT_ALLOW_PROTOCOL = previousAllowedProtocols;
+        }
+        assert.equal(fs.existsSync(path.join(local, 'modules', 'child', 'child.txt')), true,
+            'submodule rebase update initializes the selected child');
+        assert.equal(git(childPath, 'branch', '--show-current'), childBranch,
+            'a newly initialized child switches to the remote default branch');
+        assert.equal(git(childPath, 'rev-parse', 'HEAD'), remoteChildHead,
+            'the new local branch starts at the current remote default-branch tip');
+        assert.equal(git(childPath, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'), 'origin/' + childBranch,
+            'the new local branch tracks the detected remote branch');
+        const nestedPath = path.join(childPath, 'nested');
+        assert.equal(fs.existsSync(path.join(nestedPath, 'nested.txt')), true,
+            'submodule update recursively initializes nested children');
+        assert.ok(git(nestedPath, 'branch', '--show-current'),
+            'newly initialized nested children also switch away from detached HEAD');
         assert.deepEqual(nativeOperations, ['resolveRevision']);
-        console.log('Git CLI remote-operation tests passed: fetch single-flight/retry, pull, push, and recursive submodule initialization bypass libgit2.');
+        console.log('Git CLI remote-operation tests passed: fetch single-flight/retry, pull, push, branch-preserving rebase, remote-default checkout for new submodules, and recursive initialization bypass libgit2.');
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }

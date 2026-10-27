@@ -606,11 +606,95 @@ export async function push(rootUri: vscode.Uri, request: NativePushRequest): Pro
     return runGitCli(rootUri, cliArgs).then(output => ({ ...requestedTarget, output }));
 }
 
-export function updateSubmodules(rootUri: vscode.Uri, paths: readonly string[] = []): Promise<void> {
-    return runGitCli(
+async function readDeclaredSubmodulePaths(rootUri: vscode.Uri): Promise<string[]> {
+    let output: string;
+    try {
+        output = await runGitCli(rootUri, [
+            'config', '-f', '.gitmodules', '--get-regexp', '^submodule\\..*\\.path$',
+        ]);
+    } catch {
+        return [];
+    }
+    return output.split(/\r?\n/).flatMap(line => {
+        const separator = line.search(/\s/);
+        const submodulePath = separator < 0 ? '' : line.slice(separator).trim();
+        return submodulePath ? [submodulePath] : [];
+    });
+}
+
+async function isGitWorkingTree(rootUri: vscode.Uri): Promise<boolean> {
+    try {
+        return await runGitCli(rootUri, ['rev-parse', '--show-prefix']) === '';
+    } catch {
+        return false;
+    }
+}
+
+async function localBranchExists(rootUri: vscode.Uri, branch: string): Promise<boolean> {
+    try {
+        await runGitCli(rootUri, ['show-ref', '--verify', '--quiet', 'refs/heads/' + branch]);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function switchNewSubmoduleTreeToRemoteBranch(
+    submoduleUri: vscode.Uri,
+    visited: Set<string>,
+): Promise<void> {
+    const normalizedPath = path.resolve(submoduleUri.fsPath);
+    const key = process.platform === 'win32' ? normalizedPath.toLowerCase() : normalizedPath;
+    if (visited.has(key)) { return; }
+    visited.add(key);
+    if (!await isGitWorkingTree(submoduleUri)) { return; }
+
+    await runGitCli(submoduleUri, ['fetch', 'origin', '--prune']);
+    await runGitCli(submoduleUri, ['remote', 'set-head', 'origin', '--auto']);
+    const remoteHead = await runGitCli(
+        submoduleUri,
+        ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'],
+    );
+    if (!remoteHead.startsWith('origin/') || remoteHead.length <= 'origin/'.length) {
+        throw new Error('无法确定子模块远程默认分支：' + submoduleUri.fsPath);
+    }
+    const branch = remoteHead.slice('origin/'.length);
+    if (await localBranchExists(submoduleUri, branch)) {
+        await runGitCli(submoduleUri, ['switch', branch]);
+    } else {
+        await runGitCli(submoduleUri, ['switch', '-c', branch, '--track', remoteHead]);
+    }
+
+    // The remote branch may declare a different nested-submodule topology.
+    await runGitCli(submoduleUri, ['submodule', 'update', '--init', '--recursive']);
+    for (const nestedPath of await readDeclaredSubmodulePaths(submoduleUri)) {
+        await switchNewSubmoduleTreeToRemoteBranch(
+            vscode.Uri.file(path.resolve(submoduleUri.fsPath, nestedPath)),
+            visited,
+        );
+    }
+}
+
+export async function updateSubmodules(rootUri: vscode.Uri, paths: readonly string[] = []): Promise<void> {
+    const requestedPaths = paths.length > 0 ? [...paths] : await readDeclaredSubmodulePaths(rootUri);
+    const uninitializedPaths: string[] = [];
+    for (const submodulePath of requestedPaths) {
+        const submoduleUri = vscode.Uri.file(path.resolve(rootUri.fsPath, submodulePath));
+        if (!await isGitWorkingTree(submoduleUri)) { uninitializedPaths.push(submodulePath); }
+    }
+
+    await runGitCli(
         rootUri,
-        ['submodule', 'update', '--init', '--recursive', ...(paths.length > 0 ? ['--', ...paths] : [])],
-    ).then(() => undefined);
+        ['submodule', 'update', '--init', '--rebase', '--recursive', ...(paths.length > 0 ? ['--', ...paths] : [])],
+    );
+
+    const visited = new Set<string>();
+    for (const submodulePath of uninitializedPaths) {
+        await switchNewSubmoduleTreeToRemoteBranch(
+            vscode.Uri.file(path.resolve(rootUri.fsPath, submodulePath)),
+            visited,
+        );
+    }
 }
 export const restoreSubmodule = (rootUri: vscode.Uri, revision: string): Promise<void> =>
     invokeNativeGit<void>('restoreSubmodule', { rootPath: rootUri.fsPath, revision });
