@@ -36,12 +36,16 @@ const invokePriorityRead = async (operation, payload = {}) => invokeNativeGitPri
       await invoke('commits', { refs: [hash], limit: 50, skip: 0 }));
     assert.deepEqual(await invokePriorityRead('commitDetails', { hashes: [hash] }),
       await invoke('commitDetails', { hashes: [hash] }));
+    assert.deepEqual(await invokePriorityRead('resolveRevision', { specs: ['HEAD'] }),
+      await invoke('resolveRevision', { specs: ['HEAD'] }));
     assert.equal((await invoke('commitDetails', { hashes: [hash] }))[0].message, 'subject\n\nbody');
     assert.deepEqual(await invoke('status'), { staged: [], changes: [] });
     git('commit', '--allow-empty', '-m', 'current stage');
     const ours = git('rev-parse', 'HEAD');
     git('commit', '--allow-empty', '-m', 'incoming stage');
     const theirs = git('rev-parse', 'HEAD');
+    assert.deepEqual(await invokePriorityRead('rangeCommits', { from: hash, to: theirs }),
+      await invoke('rangeCommits', { from: hash, to: theirs }));
     execFileSync('git', ['-C', root, 'update-index', '--index-info'], {
       input: [hash, ours, theirs].map((oid, i) => `160000 ${oid} ${i + 1}\tchild\n`).join(''),
     });

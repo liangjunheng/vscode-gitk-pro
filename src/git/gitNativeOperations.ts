@@ -638,7 +638,15 @@ export async function resolveRevision(rootUri: vscode.Uri, spec: string): Promis
     const values = await invokeNativeGit<string[]>('resolveRevision', { rootPath: rootUri.fsPath, specs: [spec] });
     return values[0];
 }
+export async function resolveRevisionPriority(rootUri: vscode.Uri, spec: string): Promise<string | undefined> {
+    const values = await invokeNativeGitPriorityRead<string[]>('resolveRevision', { rootPath: rootUri.fsPath, specs: [spec] });
+    return values[0];
+}
 export const commitDetails = (rootUri: vscode.Uri, hashes: readonly string[]): Promise<NativeCommitDetails[]> =>
     invokeNativeGit<NativeCommitDetails[]>('commitDetails', { rootPath: rootUri.fsPath, hashes });
+export const commitDetailsPriority = (rootUri: vscode.Uri, hashes: readonly string[]): Promise<NativeCommitDetails[]> =>
+    invokeNativeGitPriorityRead<NativeCommitDetails[]>('commitDetails', { rootPath: rootUri.fsPath, hashes });
 export const rangeCommits = (rootUri: vscode.Uri, from: string, to: string): Promise<NativeCommitDetails[]> =>
     invokeNativeGit<NativeCommitDetails[]>('rangeCommits', { rootPath: rootUri.fsPath, from, to });
+export const rangeCommitsPriority = (rootUri: vscode.Uri, from: string, to: string): Promise<NativeCommitDetails[]> =>
+    invokeNativeGitPriorityRead<NativeCommitDetails[]>('rangeCommits', { rootPath: rootUri.fsPath, from, to });

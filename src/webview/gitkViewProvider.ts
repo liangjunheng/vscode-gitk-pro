@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { type AppState, type ChangeSetMode, type ChangedFile, GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
 import { defaultPushTarget, getCloudCommits, getCommitFiles, getStashes, getStashFiles, type StashEntry, getCurrentGitBranchPriority, getCurrentGitBranch, getCurrentGitHeadHashPriority, getCurrentGitHeadHash, getGitAheadBehind, getGitAheadCount, getGitBranchesPriority, getGitBranches, getGitlinkPathsInCommit, getPushPlan, type PushSourceBranch, type PushTargetOption, readCurrentCommitMessage } from '../git/gitLogProvider';
-import { addRemote, checkoutBranch, checkoutRemoteBranch, commitDetails, configGet, fetchRemotes, hasConflicts, indexGitlink, listRemoteBranchesContaining, listRemotes, pull, push, rangeCommits, readFasterGitRemoteOperations, readNativeRemoteState, removeRemote, resolveRevision, restoreAll, restoreSubmodule, setFasterGitRemoteOperation, trackedPaths, type FasterGitRemoteOperation, type GitRemote, type NativeCommitDetails, type NativePushResult } from '../git/gitNativeOperations';
+import { addRemote, checkoutBranch, checkoutRemoteBranch, commitDetails, commitDetailsPriority, configGet, fetchRemotes, hasConflicts, indexGitlink, listRemoteBranchesContaining, listRemotes, pull, push, rangeCommitsPriority, readFasterGitRemoteOperations, readNativeRemoteState, removeRemote, resolveRevision, resolveRevisionPriority, restoreAll, restoreSubmodule, setFasterGitRemoteOperation, trackedPaths, type FasterGitRemoteOperation, type GitRemote, type NativeCommitDetails, type NativePushResult } from '../git/gitNativeOperations';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { FILE_CONTEXT_MENU_ACTIONS } from './fileContextMenu';
 import { beginStashOperation, clearStashOperation, describeMergeOperation, identifyStashConflict, markStashOperationConflicted, readMergeOperation, runMergeOperation, writeStashOperation, type MergeOperation } from '../git/mergeOperation';
@@ -4575,7 +4575,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async readGitlinkCommitSubjects(rootUri: vscode.Uri, files: CommitFile[]): Promise<void> {
+    private async readGitlinkCommitSubjects(
+        rootUri: vscode.Uri,
+        files: CommitFile[],
+        onUpdated?: (file: CommitFile) => void,
+    ): Promise<void> {
         const gitlinkFiles = files.filter(file => file.isGitlink);
         let nextIndex = 0;
         const worker = async (): Promise<void> => {
@@ -4589,37 +4593,27 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 const isRealObjectId = (hash: string | undefined): hash is string => Boolean(hash) && !/^0+$/.test(hash);
                 const childBranch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
                     .find(branch => branch.repoOption.path === submoduleUri.toString());
-                // A parent unstaged Gitlink does not by itself mean the child
-                // worktree is dirty: the child HEAD may simply have moved.
-                // A watcher can briefly hold an empty bootstrap snapshot, so
-                // never let that snapshot erase the parent Gitlink dirty hint.
-                if (file.workingTreeKind) {
-                    try {
-                        const watcherChanges = childBranch
-                            ? await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(childBranch)
-                            : undefined;
-                        const watcherCount = watcherChanges ? workingTreeChangeCount(watcherChanges) : 0;
-                        if (watcherCount > 0) {
-                            file.gitlinkWorktreeChangeCount = watcherCount;
-                            file.gitlinkWorktreeDirty = true;
-                        } else if (file.gitlinkWorktreeDirty) {
-                            const directChanges = await this.gitBackend.getWorkingTreeStatus(submoduleUri);
-                            file.gitlinkWorktreeChangeCount = workingTreeChangeCount(directChanges);
-                            file.gitlinkWorktreeDirty = file.gitlinkWorktreeChangeCount > 0;
-                        }
-                    } catch {
-                        // The navigation card stays usable if the child status
-                        // refresh races a HEAD change; retain the backend hint.
+                // Cached positive status is safe to publish with commit metadata. An empty
+                // bootstrap snapshot is not authoritative, so it must not erase a known dirty hint.
+                if (file.workingTreeKind && childBranch) {
+                    const watcherChanges = this.uncommittedFilesWatcher.getCachedUncommittedFilesByHeadBranch(childBranch);
+                    const watcherCount = watcherChanges ? workingTreeChangeCount(watcherChanges) : 0;
+                    if (watcherCount > 0) {
+                        file.gitlinkWorktreeChangeCount = watcherCount;
+                        file.gitlinkWorktreeDirty = true;
                     }
                 }
                 // `git diff` 的工作区端 gitlink OID 是零占位；真实新端只能由子模块工作区 HEAD 提供。
                 if (file.workingTreeKind === 'unstaged' && !isRealObjectId(file.newObjectId)) {
-                    file.newObjectId = await resolveRevision(submoduleUri, 'HEAD');
+                    file.newObjectId = await resolveRevisionPriority(submoduleUri, 'HEAD');
                 }
                 const hashes = [file.oldObjectId, file.newObjectId, file.gitlinkConflictBaseObjectId, file.gitlinkConflictCurrentObjectId, file.gitlinkConflictIncomingObjectId].filter(isRealObjectId);
-                if (hashes.length === 0) { continue; }
+                if (hashes.length === 0) {
+                    onUpdated?.(file);
+                    continue;
+                }
                 try {
-                    const details = await commitDetails(submoduleUri, hashes);
+                    const details = await commitDetailsPriority(submoduleUri, hashes);
                     const commits = new Map(details.map(detail => [detail.hash, toGitlinkCommit(detail)]));
                     file.oldGitlinkCommit = file.oldObjectId ? commits.get(file.oldObjectId) : undefined;
                     file.newGitlinkCommit = file.newObjectId ? commits.get(file.newObjectId) : undefined;
@@ -4628,12 +4622,55 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                     file.gitlinkConflictIncomingCommit = file.gitlinkConflictIncomingObjectId ? commits.get(file.gitlinkConflictIncomingObjectId) : undefined;
                     if (file.status !== 'A' && file.status !== 'D'
                         && isRealObjectId(file.oldObjectId) && isRealObjectId(file.newObjectId)) {
-                        const detailsInRange = await rangeCommits(submoduleUri, file.oldObjectId, file.newObjectId);
+                        const detailsInRange = await rangeCommitsPriority(submoduleUri, file.oldObjectId, file.newObjectId);
                         // `old..new` contains only commits introduced after the old gitlink OID.
                         file.gitlinkRangeCommits = detailsInRange.map(toGitlinkCommit);
                     }
                 } catch {
                     // SHA 仍由父仓库 gitlink 保存；子模块本地缺少对象或两端非线性时仅不显示范围消息。
+                }
+                onUpdated?.(file);
+            }
+        };
+        const workerCount = Math.min(GITLINK_METADATA_READ_CONCURRENCY, gitlinkFiles.length);
+        await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    }
+
+    /** Commit metadata is published first; the potentially slow child status only enriches the visible card later. */
+    private async refreshGitlinkWorktreeStates(
+        rootUri: vscode.Uri,
+        files: CommitFile[],
+        onUpdated?: (file: CommitFile) => void,
+    ): Promise<void> {
+        const gitlinkFiles = files.filter(file => file.isGitlink && file.workingTreeKind);
+        let nextIndex = 0;
+        const worker = async (): Promise<void> => {
+            while (true) {
+                const index = nextIndex++;
+                if (index >= gitlinkFiles.length) { return; }
+                const file = gitlinkFiles[index];
+                const submoduleUri = vscode.Uri.file(path.resolve(rootUri.fsPath, file.path));
+                const childBranch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
+                    .find(branch => branch.repoOption.path === submoduleUri.toString());
+                try {
+                    const watcherChanges = childBranch
+                        ? await this.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch(childBranch)
+                        : undefined;
+                    const watcherCount = watcherChanges ? workingTreeChangeCount(watcherChanges) : 0;
+                    if (watcherCount > 0) {
+                        file.gitlinkWorktreeChangeCount = watcherCount;
+                        file.gitlinkWorktreeDirty = true;
+                    } else if (file.gitlinkWorktreeDirty) {
+                        // A parent unstaged Gitlink can mean only that child HEAD moved. Confirm
+                        // the worktree before clearing the dirty hint retained through bootstrap.
+                        const directChanges = await this.gitBackend.getWorkingTreeStatus(submoduleUri);
+                        file.gitlinkWorktreeChangeCount = workingTreeChangeCount(directChanges);
+                        file.gitlinkWorktreeDirty = file.gitlinkWorktreeChangeCount > 0;
+                    }
+                } catch {
+                    // The commit card stays usable if child status races a HEAD change; retain its hint.
+                } finally {
+                    onUpdated?.(file);
                 }
             }
         };
@@ -4641,18 +4678,15 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         await Promise.all(Array.from({ length: workerCount }, () => worker()));
     }
 
-    private async refreshGitlinkDiffs(
+    private publishGitlinkDiffs(
         rootUri: vscode.Uri,
-        files: readonly CommitFile[],
+        gitlinkFiles: readonly CommitFile[],
         generation: number,
         workingTreeDiffCacheKey?: string,
-    ): Promise<void> {
-        const gitlinkFiles = files.filter(file => file.isGitlink);
-        if (gitlinkFiles.length === 0) { return; }
-        await this.readGitlinkCommitSubjects(rootUri, gitlinkFiles as CommitFile[]);
+    ): boolean {
         if (generation !== this.commitFilesGeneration
             || this.currentRepositoryPath !== rootUri.toString()
-            || !this.files.some(file => file.isGitlink)) { return; }
+            || !this.files.some(file => file.isGitlink)) { return false; }
         const currentFiles = store.getState().files;
         const currentDiffs = currentFiles.filter((file): file is DiffPayload => 'original' in file && 'modified' in file);
         const updatedDiffs = this.diffReader.updateGitlinkPayloads(currentDiffs, gitlinkFiles);
@@ -4668,6 +4702,27 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             diffError: undefined,
             diffProgress: { completed: loadedCount, total: updated.length },
         });
+        return true;
+    }
+
+    private async refreshGitlinkDiffs(
+        rootUri: vscode.Uri,
+        files: readonly CommitFile[],
+        generation: number,
+        workingTreeDiffCacheKey?: string,
+    ): Promise<void> {
+        const gitlinkFiles = files.filter(file => file.isGitlink);
+        if (gitlinkFiles.length === 0) { return; }
+        let current = true;
+        const publishFile = (file: CommitFile): void => {
+            if (current) {
+                current = this.publishGitlinkDiffs(rootUri, [file], generation, workingTreeDiffCacheKey);
+            }
+        };
+        await this.readGitlinkCommitSubjects(rootUri, gitlinkFiles as CommitFile[], publishFile);
+        if (!current) { return; }
+        if (!gitlinkFiles.some(file => file.workingTreeKind)) { return; }
+        await this.refreshGitlinkWorktreeStates(rootUri, gitlinkFiles as CommitFile[], publishFile);
     }
 
     private async refreshPendingGitlinkDiff(): Promise<void> {
