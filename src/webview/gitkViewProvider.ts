@@ -297,6 +297,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private readonly remotePublishRevisionByRepository = new Map<string, number>();
     /** 同一仓库的普通 remote 刷新只允许一个在途请求；真正的配置变更会排队一次追加刷新。 */
     private readonly remotePublishInFlight = new Map<string, RemotePublishRequest>();
+    /** add/remove/勾选写入未完成时，Remote 操作必须等待配置落盘与权威快照回读。 */
+    private readonly remoteMutationsInFlight = new Map<string, Promise<void>>();
     private selectedBranchDisplaySnapshot: { label: string; title: string; names: string[]; kind?: GitBranchOption['kind'] } = {
         label: '未选择分支',
         title: '未选择分支',
@@ -1994,6 +1996,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private async fetchRepositories(repositoryPaths: readonly string[]): Promise<void> {
         await Promise.all(repositoryPaths.map(async repositoryPath => {
             const rootUri = vscode.Uri.parse(repositoryPath);
+            await this.waitForRemoteMutations(repositoryPath);
             const state = this.remoteStateByRepository.get(repositoryPath);
             const remotes: readonly (string | undefined)[] = state ? state.operations.fetch : [undefined];
             await Promise.all(remotes.map(async remote => {
@@ -2160,8 +2163,47 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         return this.remoteStateByRepository?.get(repositoryPath)?.operations ?? { fetch: [], pull: [], push: [] };
     }
 
-    private async addRemoteForSelectedRepository(): Promise<void> {
-        const repositoryPath = this.selectedRepositoryPath;
+    private enqueueRemoteMutation(repositoryPath: string | undefined, mutation: () => Promise<void>): void {
+        if (!repositoryPath) { void mutation(); return; }
+        const previous = this.remoteMutationsInFlight.get(repositoryPath) ?? Promise.resolve();
+        const task = previous.catch(() => undefined).then(mutation);
+        this.remoteMutationsInFlight.set(repositoryPath, task);
+        const cleanup = (): void => {
+            if (this.remoteMutationsInFlight.get(repositoryPath) === task) {
+                this.remoteMutationsInFlight.delete(repositoryPath);
+            }
+        };
+        void task.then(cleanup, cleanup);
+    }
+
+    private async waitForRemoteMutations(repositoryPath: string): Promise<void> {
+        while (true) {
+            const pending = this.remoteMutationsInFlight.get(repositoryPath);
+            if (!pending) { return; }
+            await pending.catch(() => undefined);
+        }
+    }
+
+    private async runSelectedRepositorySync(action: RemoteOperation, repositoryPath: string): Promise<void> {
+        await this.waitForRemoteMutations(repositoryPath);
+        const cached = this.remoteStateByRepository.has(repositoryPath);
+        const pending = this.remotePublishInFlight.get(repositoryPath);
+        if (!cached) {
+            // 仓库刚切换时 Remote 预热可能仍在途；强制排一次追加读取，不能把“尚未加载”误判成“没有勾选”。
+            await this.publishRemoteList(repositoryPath, undefined, true);
+        } else if (pending) {
+            // 已有缓存但正在刷新配置/upstream 时，以在途的最新快照执行本次操作。
+            await pending.promise;
+        }
+        const remotes = this.operationRemotes(repositoryPath);
+        if (remotes[action].length === 0) {
+            void vscode.window.showWarningMessage(`请先在 Remote 选择器中勾选 ${action} 使用的远程仓库。`);
+            return;
+        }
+        await this.gitActions.syncRepository(action, repositoryPath, remotes);
+    }
+
+    private async addRemoteForSelectedRepository(repositoryPath = this.selectedRepositoryPath): Promise<void> {
         if (!repositoryPath) {
             void vscode.window.showWarningMessage('请先选择一个仓库。');
             return;
@@ -2193,8 +2235,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async deleteRemoteForSelectedRepository(name: string): Promise<void> {
-        const repositoryPath = this.selectedRepositoryPath;
+    private async deleteRemoteForSelectedRepository(name: string, repositoryPath = this.selectedRepositoryPath): Promise<void> {
         if (!repositoryPath || !name) { return; }
         const choice = await vscode.window.showWarningMessage(
             `确认删除 remote「${name}」？此操作只会移除本地 remote 配置。`,
@@ -2212,8 +2253,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async setRemoteOperationForSelectedRepository(operation: RemoteOperation, name: string, enabled: boolean): Promise<void> {
-        const repositoryPath = this.selectedRepositoryPath;
+    private async setRemoteOperationForSelectedRepository(
+        operation: RemoteOperation,
+        name: string,
+        enabled: boolean,
+        repositoryPath = this.selectedRepositoryPath,
+    ): Promise<void> {
         if (!repositoryPath || !name) { return; }
         const rootUri = vscode.Uri.parse(repositoryPath);
         this.invalidateRemotePublish(repositoryPath);
@@ -2245,13 +2290,21 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (message.type === 'requestRemoteList') {
             void this.publishRemoteList(this.selectedRepositoryPath);
         } else if (message.type === 'addRemote') {
-            void this.addRemoteForSelectedRepository();
+            const repositoryPath = this.selectedRepositoryPath;
+            this.enqueueRemoteMutation(repositoryPath, () => this.addRemoteForSelectedRepository(repositoryPath));
         } else if (message.type === 'deleteRemote' && typeof message.name === 'string') {
-            void this.deleteRemoteForSelectedRepository(message.name);
+            const repositoryPath = this.selectedRepositoryPath;
+            const name = message.name;
+            this.enqueueRemoteMutation(repositoryPath, () => this.deleteRemoteForSelectedRepository(name, repositoryPath));
         } else if (message.type === 'setRemoteOperation'
             && (message.operation === 'fetch' || message.operation === 'pull' || message.operation === 'push')
             && typeof message.name === 'string' && typeof message.enabled === 'boolean') {
-            void this.setRemoteOperationForSelectedRepository(message.operation, message.name, message.enabled);
+            const repositoryPath = this.selectedRepositoryPath;
+            const operation = message.operation;
+            const name = message.name;
+            const enabled = message.enabled;
+            this.enqueueRemoteMutation(repositoryPath, () =>
+                this.setRemoteOperationForSelectedRepository(operation, name, enabled, repositoryPath));
         }
     }
 
@@ -2899,13 +2952,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             case 'gitSync': {
                 const repositoryPath = this.selectedRepositoryPath;
                 if (repositoryPath && (effect.action === 'fetch' || effect.action === 'pull' || effect.action === 'push')) {
-                    const remotes = this.operationRemotes(repositoryPath);
-                    const selected = remotes[effect.action];
-                    if (!selected || selected.length === 0) {
-                        void vscode.window.showWarningMessage(`请先在 Remote 选择器中勾选 ${effect.action} 使用的远程仓库。`);
-                        break;
-                    }
-                    void this.gitActions.syncRepository(effect.action, repositoryPath, remotes);
+                    void this.runSelectedRepositorySync(effect.action, repositoryPath);
                 }
                 break;
             }

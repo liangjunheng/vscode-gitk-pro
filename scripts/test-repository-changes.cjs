@@ -1506,6 +1506,8 @@ async function verifyProvider() {
   let syncStatePublishes = 0;
   let aheadBehindImpl = async () => ({ ahead: 4, behind: 2 });
   let cloudCommitsImpl = async () => [];
+  let nativeRemoteStateImpl = async () => ({ remotes: [], operations: new Map(), upstreamRemote: '' });
+  let setRemoteOperationImpl = async () => {};
   const cloudFixture = (hash, parent, message) => ({ hash: hash.repeat(40).slice(0, 40), shortHash: hash.repeat(8).slice(0, 8), parents: parent ? [parent.repeat(40).slice(0, 40)] : [], message, author: 'cloud author', authorDateLabel: '2026-10-21 10:00:00', refs: [] });
   // 推送目标只描述远程分支; 本地分支名与 HEAD hash 属于 plan.source。
   const pushTargetFixture = [
@@ -1607,6 +1609,8 @@ async function verifyProvider() {
           remoteFetchStarts.push(remote ? uri.toString() + '#' + remote : uri.toString());
           await new Promise(resolve => remoteFetchResolvers.push(resolve));
         },
+        readNativeRemoteState: (...args) => nativeRemoteStateImpl(...args),
+        setFasterGitRemoteOperation: (...args) => setRemoteOperationImpl(...args),
         resolveRevision: async (_uri, spec) => spec.endsWith('^') ? 'a'.repeat(40) : undefined,
         commitDetails: async (uri, hashes) => {
           commitDetailReads.push([uri.toString(), [...hashes]]);
@@ -1828,6 +1832,119 @@ async function verifyProvider() {
     repoOption: repositories[0], name: 'refs/heads/main', label: 'main', kind: 'current', hash: 'a'.repeat(40),
   }]]]));
   assert.deepEqual(branchReadyRemoteRefreshes, [[repositories[0].path, undefined, true]], 'branch readiness queues a forced Remote refresh instead of losing it behind the initialization read');
+
+  // 仓库刚切换时按钮可能早于 Remote 预热完成；操作必须等待目标仓库快照，不能把未加载当成空选择。
+  const switchedRepositoryPath = repositories[1].path;
+  const switchedRemotePublishes = [], switchedSyncs = [];
+  let releaseSwitchedRemote;
+  const switchedSyncProvider = Object.create(GitkViewProvider.prototype);
+  Object.assign(switchedSyncProvider, {
+    remoteStateByRepository: new Map(),
+    remotePublishInFlight: new Map(),
+    remoteMutationsInFlight: new Map(),
+    publishRemoteList: async (...args) => {
+      switchedRemotePublishes.push(args);
+      await new Promise(resolve => { releaseSwitchedRemote = resolve; });
+      switchedSyncProvider.remoteStateByRepository.set(switchedRepositoryPath, {
+        remotes: [{ name: 'origin', fetchUrl: 'https://fetch', pushUrl: 'https://push' }],
+        upstreamRemote: 'origin',
+        operations: { fetch: ['origin'], pull: ['origin'], push: ['origin'] },
+      });
+    },
+    gitActions: { syncRepository: async (...args) => { switchedSyncs.push(args); } },
+  });
+  const switchedSync = switchedSyncProvider.runSelectedRepositorySync('fetch', switchedRepositoryPath);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(switchedRemotePublishes, [[switchedRepositoryPath, undefined, true]], 'a missing cache forces one queued Remote refresh for the switched repository');
+  assert.deepEqual(switchedSyncs, [], 'the Git action does not inspect an empty placeholder while Remote state is loading');
+  releaseSwitchedRemote();
+  await switchedSync;
+  assert.deepEqual(switchedSyncs, [['fetch', switchedRepositoryPath, { fetch: ['origin'], pull: ['origin'], push: ['origin'] }]], 'the original click continues with the loaded Remote snapshot');
+
+  // 勾选写入与按钮点击并发时，按钮必须等待配置落盘后的权威快照，不能执行旧选择。
+  const writeRaceSyncs = [], writeRacePublishes = [], remoteOperationWrites = [], remoteOperationWriteResolvers = [];
+  let storedFetchEnabled = true;
+  nativeRemoteStateImpl = async () => ({
+    remotes: [{ name: 'origin', fetchUrl: 'https://fetch', pushUrl: 'https://push' }],
+    operations: new Map([['origin', new Map([['fetch', true]])]]),
+    upstreamRemote: 'origin',
+  });
+  setRemoteOperationImpl = async (uri, name, operation, enabled) => {
+    remoteOperationWrites.push([uri.toString(), name, operation, enabled]);
+    await new Promise(resolve => {
+      remoteOperationWriteResolvers.push(() => { storedFetchEnabled = enabled; resolve(); });
+    });
+  };
+  const writeRaceProvider = Object.create(GitkViewProvider.prototype);
+  Object.defineProperty(writeRaceProvider, 'selectedRepositoryPaths', { value: [switchedRepositoryPath] });
+  Object.assign(writeRaceProvider, {
+    remoteStateByRepository: new Map([[switchedRepositoryPath, {
+      remotes: [{ name: 'origin', fetchUrl: 'https://fetch', pushUrl: 'https://push' }],
+      upstreamRemote: 'origin',
+      operations: { fetch: ['origin'], pull: ['origin'], push: ['origin'] },
+    }]]),
+    remotePublishRevisionByRepository: new Map(), remotePublishInFlight: new Map(), remoteMutationsInFlight: new Map(),
+    view: { webview: { postMessage() {} } },
+    publishRemoteList: async (...args) => {
+      writeRacePublishes.push(args);
+      writeRaceProvider.remoteStateByRepository.set(switchedRepositoryPath, {
+        remotes: [{ name: 'origin', fetchUrl: 'https://fetch', pushUrl: 'https://push' }],
+        upstreamRemote: 'origin',
+        operations: { fetch: storedFetchEnabled ? ['origin'] : [], pull: ['origin'], push: ['origin'] },
+      });
+    },
+    gitActions: { syncRepository: async (...args) => { writeRaceSyncs.push(args); } },
+  });
+  const warningCountBeforeWriteRace = errorMessages.length;
+  writeRaceProvider.handleRemoteMessage({ type: 'setRemoteOperation', operation: 'fetch', name: 'origin', enabled: false });
+  await new Promise(resolve => setImmediate(resolve));
+  const pendingRemoteOperationWrite = writeRaceProvider.remoteMutationsInFlight.get(switchedRepositoryPath);
+  assert.ok(pendingRemoteOperationWrite, 'the checkbox write is tracked before another Remote action can run');
+  const pendingWriteRaceSync = writeRaceProvider.runSelectedRepositorySync('fetch', switchedRepositoryPath);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(writeRaceSyncs, [], 'Fetch waits while the preceding checkbox write is still pending');
+  remoteOperationWriteResolvers.shift()();
+  await Promise.all([pendingRemoteOperationWrite, pendingWriteRaceSync]);
+  assert.deepEqual(remoteOperationWrites, [[switchedRepositoryPath, 'origin', 'fetch', false]]);
+  assert.deepEqual(writeRacePublishes, [[switchedRepositoryPath, 'origin', true]], 'the completed write republishes the authoritative Remote snapshot');
+  assert.deepEqual(writeRaceSyncs, [], 'an unchecked Remote is not fetched once the pending write finishes');
+  assert.equal(errorMessages.at(-1), '请先在 Remote 选择器中勾选 fetch 使用的远程仓库。');
+  assert.equal(errorMessages.length, warningCountBeforeWriteRace + 1);
+  assert.equal(writeRaceProvider.remoteMutationsInFlight.has(switchedRepositoryPath), false, 'the mutation barrier is released after the write and refresh finish');
+
+  // 同一仓库连续快速切换配置必须按消息顺序写入；最后一次点击决定最终值。
+  storedFetchEnabled = true;
+  writeRaceProvider.remoteStateByRepository.set(switchedRepositoryPath, {
+    remotes: [{ name: 'origin', fetchUrl: 'https://fetch', pushUrl: 'https://push' }],
+    upstreamRemote: 'origin',
+    operations: { fetch: ['origin'], pull: ['origin'], push: ['origin'] },
+  });
+  const writesBeforeRapidToggle = remoteOperationWrites.length;
+  const publishesBeforeRapidToggle = writeRacePublishes.length;
+  writeRaceProvider.handleRemoteMessage({ type: 'setRemoteOperation', operation: 'fetch', name: 'origin', enabled: false });
+  writeRaceProvider.handleRemoteMessage({ type: 'setRemoteOperation', operation: 'fetch', name: 'origin', enabled: true });
+  const rapidToggleTail = writeRaceProvider.remoteMutationsInFlight.get(switchedRepositoryPath);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(remoteOperationWrites.length, writesBeforeRapidToggle + 1, 'the second checkbox write does not start before the first finishes');
+  remoteOperationWriteResolvers.shift()();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(remoteOperationWrites.length, writesBeforeRapidToggle + 2, 'the queued checkbox write starts after the first publishes its snapshot');
+  remoteOperationWriteResolvers.shift()();
+  await rapidToggleTail;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(remoteOperationWrites.slice(writesBeforeRapidToggle).map(entry => entry[3]), [false, true], 'rapid toggles preserve message order');
+  assert.equal(writeRacePublishes.length, publishesBeforeRapidToggle + 2, 'each ordered write republishes one authoritative snapshot');
+  assert.deepEqual(writeRaceProvider.remoteStateByRepository.get(switchedRepositoryPath).operations.fetch, ['origin'], 'the final Remote snapshot matches the last checkbox click');
+  assert.equal(writeRaceProvider.remoteMutationsInFlight.has(switchedRepositoryPath), false);
+  nativeRemoteStateImpl = async () => ({ remotes: [], operations: new Map(), upstreamRemote: '' });
+  setRemoteOperationImpl = async () => {};
+
+  const routedSyncs = [];
+  const routedSyncProvider = Object.create(GitkViewProvider.prototype);
+  Object.defineProperty(routedSyncProvider, 'selectedRepositoryPaths', { value: [switchedRepositoryPath] });
+  routedSyncProvider.runSelectedRepositorySync = (...args) => { routedSyncs.push(args); return Promise.resolve(); };
+  routedSyncProvider.runEffect({ type: 'gitSync', action: 'pull' });
+  assert.deepEqual(routedSyncs, [['pull', switchedRepositoryPath]], 'the toolbar action captures the selected repository and uses the readiness-aware path');
 
   const provider = Object.create(GitkViewProvider.prototype);
   Object.defineProperties(provider, {
@@ -2274,6 +2391,7 @@ async function verifyVisibilityFetch(Provider, store, repositories, fetchStarts,
   provider.remoteFetchRefresh = undefined;
   // No cached Remote state yet: every repository falls back to fetching all of its remotes.
   provider.remoteStateByRepository = new Map();
+  provider.remoteMutationsInFlight = new Map();
   const setVisible = visible => {
     provider.view = { visible };
     provider.onViewVisibilityChanged(provider.view);
@@ -2332,6 +2450,7 @@ async function verifyVisibilityFetch(Provider, store, repositories, fetchStarts,
   // With cached Remote state the background fetch obeys the Fetch checkboxes, like the manual button.
   const checkedProvider = Object.create(Provider.prototype);
   const [root, child, clean] = repositoryPaths;
+  checkedProvider.remoteMutationsInFlight = new Map();
   checkedProvider.remoteStateByRepository = new Map([
     [root, { remotes: [], upstreamRemote: 'origin', operations: { fetch: ['origin', 'mirror'], pull: [], push: [] } }],
     [child, { remotes: [], upstreamRemote: 'origin', operations: { fetch: [], pull: [], push: [] } }],
@@ -2343,6 +2462,25 @@ async function verifyVisibilityFetch(Provider, store, repositories, fetchStarts,
     'checked remotes are fetched individually, an all-unchecked repository is skipped, an unread repository fetches all');
   fetchResolvers.splice(0).forEach(resolve => resolve());
   await checkedFetch;
+
+  // A visibility Fetch that overlaps a config mutation must use the post-write checkboxes, not stale cache.
+  fetchStarts.length = 0;
+  checkedProvider.remoteStateByRepository.set(root, { remotes: [], upstreamRemote: 'origin', operations: { fetch: ['origin'], pull: [], push: [] } });
+  let releaseVisibilityMutation;
+  const visibilityMutation = new Promise(resolve => {
+    releaseVisibilityMutation = () => {
+      checkedProvider.remoteStateByRepository.set(root, { remotes: [], upstreamRemote: 'origin', operations: { fetch: [], pull: [], push: [] } });
+      checkedProvider.remoteMutationsInFlight.delete(root);
+      resolve();
+    };
+  });
+  checkedProvider.remoteMutationsInFlight.set(root, visibilityMutation);
+  const postMutationFetch = checkedProvider.fetchRepositories([root]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fetchStarts, [], 'background Fetch waits for an in-flight Remote config mutation');
+  releaseVisibilityMutation();
+  await postMutationFetch;
+  assert.deepEqual(fetchStarts, [], 'background Fetch honors the all-unchecked snapshot produced by that mutation');
 }
 async function verifyFocusedRefresh(Provider, repositories) {
   const provider = Object.create(Provider.prototype);
