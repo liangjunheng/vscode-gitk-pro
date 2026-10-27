@@ -214,6 +214,109 @@ pub fn create_tag(payload: &Value) -> NativeResult<Value> {
     Ok(Value::String(oid.to_string()))
 }
 
+/// Same contract as `git tag --delete -- <name>`: only the local ref is removed.
+pub fn delete_tag(payload: &Value) -> NativeResult<Value> {
+    let repo = open_repository(string_arg(payload, "rootPath")?)?;
+    let name = string_arg(payload, "name")?;
+    let reference = format!("refs/tags/{name}");
+    if name.is_empty() || !git2::Reference::is_valid_name(&reference) {
+        return Err(format!("Invalid tag name: {name}"));
+    }
+    repo.find_reference(&reference)
+        .map_err(|_| format!("tag '{name}' not found."))?
+        .delete()
+        .map_err(format_git_error)?;
+    Ok(Value::Null)
+}
+
+fn valid_branch_name(name: &str) -> bool {
+    // git check-ref-format --branch: rejects '-' prefixes, "HEAD" and any '@{' sequence.
+    !name.is_empty()
+        && !name.starts_with('-')
+        && name != "HEAD"
+        && !name.contains("@{")
+        && git2::Reference::is_valid_name(&format!("refs/heads/{name}"))
+}
+
+/// Equivalent of `git checkout --track -b <local> <refs/remotes/...>`. The upstream is
+/// derived from the remote's fetch refspecs like Git, and the new branch is removed again
+/// when the safe checkout refuses to overwrite local edits.
+pub fn checkout_remote_branch(payload: &Value) -> NativeResult<Value> {
+    let root_path = string_arg(payload, "rootPath")?;
+    let remote_ref = string_arg(payload, "remoteRef")?;
+    let local_name = string_arg(payload, "localName")?;
+    if !remote_ref.starts_with("refs/remotes/") || remote_ref.ends_with("/HEAD") {
+        return Err("Invalid remote branch reference".to_owned());
+    }
+    if !valid_branch_name(local_name) {
+        return Err(format!("'{local_name}' is not a valid branch name"));
+    }
+    let repo = open_repository(root_path)?;
+    if repo.find_branch(local_name, BranchType::Local).is_ok() {
+        return Err(format!("a branch named '{local_name}' already exists"));
+    }
+    // Like Git's tracking setup, the first remote/refspec (in config order) whose
+    // destination matches decides the upstream branch.
+    let mut upstream = None;
+    let names = repo.remotes().map_err(format_git_error)?;
+    'remotes: for remote_name in names.iter().filter_map(|name| name.ok().flatten()) {
+        let remote = repo.find_remote(remote_name).map_err(format_git_error)?;
+        for spec in remote.refspecs() {
+            if spec.direction() != git2::Direction::Fetch || !spec.dst_matches(remote_ref) {
+                continue;
+            }
+            if let Ok(source) = spec.rtransform(remote_ref)
+                && let Ok(source) = source.as_str()
+            {
+                upstream = Some((remote_name.to_owned(), source.to_owned()));
+                break 'remotes;
+            }
+        }
+    }
+    let Some((remote_name, merge_ref)) = upstream else {
+        return Err(format!(
+            "cannot set up tracking information; starting point '{remote_ref}' is not a branch"
+        ));
+    };
+    let commit = repo
+        .find_reference(remote_ref)
+        .map_err(format_git_error)?
+        .peel_to_commit()
+        .map_err(format_git_error)?;
+    repo.branch(local_name, &commit, false)
+        .map_err(format_git_error)?;
+    let configure = || -> NativeResult<()> {
+        let mut config = repo
+            .config()
+            .map_err(format_git_error)?
+            .open_level(git2::ConfigLevel::Local)
+            .map_err(format_git_error)?;
+        config
+            .set_str(&format!("branch.{local_name}.remote"), &remote_name)
+            .map_err(format_git_error)?;
+        config
+            .set_str(&format!("branch.{local_name}.merge"), &merge_ref)
+            .map_err(format_git_error)?;
+        checkout(&json!({ "rootPath": root_path, "revision": local_name, "detach": false }))?;
+        Ok(())
+    };
+    if let Err(error) = configure() {
+        // Roll back the branch and its tracking config so a refused checkout leaves no trace.
+        if let Ok(mut branch) = repo.find_branch(local_name, BranchType::Local) {
+            let _ = branch.delete();
+        }
+        if let Ok(mut config) = repo
+            .config()
+            .and_then(|config| config.open_level(git2::ConfigLevel::Local))
+        {
+            let _ = config.remove(&format!("branch.{local_name}.remote"));
+            let _ = config.remove(&format!("branch.{local_name}.merge"));
+        }
+        return Err(error);
+    }
+    Ok(Value::Null)
+}
+
 pub fn checkout(payload: &Value) -> NativeResult<Value> {
     let repo = open_repository(string_arg(payload, "rootPath")?)?;
     let revision = string_arg(payload, "revision")?;

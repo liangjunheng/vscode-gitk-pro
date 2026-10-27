@@ -104,6 +104,12 @@ fn is_mutating_operation(operation: &str) -> bool {
         "stage"
             | "saveMergeResult"
             | "stageAll"
+            | "setRemoteOperation"
+            | "addRemote"
+            | "removeRemote"
+            | "clearRemoteOperations"
+            | "deleteTag"
+            | "checkoutRemoteBranch"
             | "unstage"
             | "restoreWorktree"
             | "restoreAll"
@@ -135,6 +141,14 @@ fn dispatch_operation(operation: &str, payload: &Value) -> std::result::Result<V
     match operation {
         "discover" => repository::discover(payload),
         "configGet" => repository::config_get(payload),
+        "setRemoteOperation" => repository::set_remote_operation(payload),
+        "addRemote" => repository::add_remote(payload),
+        "removeRemote" => repository::remove_remote(payload),
+        "clearRemoteOperations" => repository::clear_remote_operations(payload),
+        "explicitProxyConfigured" => repository::explicit_proxy_configured(payload),
+        "tagTargets" => repository::tag_targets(payload),
+        "deleteTag" => operations::delete_tag(payload),
+        "checkoutRemoteBranch" => operations::checkout_remote_branch(payload),
         "remoteState" => repository::remote_state(payload),
         "submoduleTopology" => repository::submodule_topology(payload),
         "remoteBranchesContainingHead" => repository::remote_branches_containing_head(payload),

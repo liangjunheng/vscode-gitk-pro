@@ -27,7 +27,15 @@ function loadOperations(invokeNativeGit) {
                     getConfiguration: () => ({ get: (_key, defaultValue) => defaultValue }),
                 },
             };
-            if (request === './nativeGitBinding') return { invokeNativeGit };
+            if (request === './nativeGitBinding') return {
+                invokeNativeGit,
+                invokeNativeGitPriorityRead: async operation => {
+                    throw new Error(`不支持的 libgit2 操作: ${operation}`);
+                },
+                invokeNativeGitMutation: async operation => {
+                    throw new Error(`不支持的 libgit2 操作: ${operation}`);
+                },
+            };
             return originalLoad.call(this, request, parent, isMain);
         };
         return require(modulePath);

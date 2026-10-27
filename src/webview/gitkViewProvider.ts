@@ -2,8 +2,8 @@ import { existsSync, readFileSync } from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { type AppState, type ChangeSetMode, type ChangedFile, GitBranchOption, CommitFile, CommitMetadata, DiffPayload, type GitkIntent, type GitRepositoryOption, type GitlinkCommit, WorkingTreeChanges, isWorkingTreeHash } from '../types';
-import { defaultPushTarget, getCloudCommits, getCommitFiles, getStashes, getStashFiles, type StashEntry, getCurrentGitBranch, getCurrentGitHeadHash, getGitAheadBehind, getGitAheadCount, getGitBranches, getGitlinkPathsInCommit, getPushPlan, type PushSourceBranch, type PushTargetOption, readCurrentCommitMessage } from '../git/gitLogProvider';
-import { addRemote, checkoutBranch, checkoutRemoteBranch, clearFasterGitRemoteOperations, commitDetails, configGet, fetchRemotes, hasConflicts, indexGitlink, listRemoteBranchesContaining, listRemotes, pull, push, rangeCommits, readFasterGitRemoteOperations, readNativeRemoteState, removeRemote, resolveRevision, restoreAll, restoreSubmodule, setFasterGitRemoteOperation, trackedPaths, type FasterGitRemoteOperation, type GitRemote, type NativeCommitDetails, type NativePushResult } from '../git/gitNativeOperations';
+import { defaultPushTarget, getCloudCommits, getCommitFiles, getStashes, getStashFiles, type StashEntry, getCurrentGitBranchPriority, getCurrentGitBranch, getCurrentGitHeadHashPriority, getCurrentGitHeadHash, getGitAheadBehind, getGitAheadCount, getGitBranchesPriority, getGitBranches, getGitlinkPathsInCommit, getPushPlan, type PushSourceBranch, type PushTargetOption, readCurrentCommitMessage } from '../git/gitLogProvider';
+import { addRemote, checkoutBranch, checkoutRemoteBranch, commitDetails, configGet, fetchRemotes, hasConflicts, indexGitlink, listRemoteBranchesContaining, listRemotes, pull, push, rangeCommits, readFasterGitRemoteOperations, readNativeRemoteState, removeRemote, resolveRevision, restoreAll, restoreSubmodule, setFasterGitRemoteOperation, trackedPaths, type FasterGitRemoteOperation, type GitRemote, type NativeCommitDetails, type NativePushResult } from '../git/gitNativeOperations';
 import { MultiDiffPanel } from './multiDiffPanel';
 import { FILE_CONTEXT_MENU_ACTIONS } from './fileContextMenu';
 import { beginStashOperation, clearStashOperation, describeMergeOperation, identifyStashConflict, markStashOperationConflicted, readMergeOperation, runMergeOperation, writeStashOperation, type MergeOperation } from '../git/mergeOperation';
@@ -727,6 +727,11 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             this.reposLoadingSubscription,
             this.repoHeadBranchWatcher.onEachRepoStashChanged(event => {
                 void this.loadRepositoryStashes(event.repositoryPath, true);
+            }),
+            this.repoHeadBranchWatcher.onEachRepoConfigChanged(event => {
+                // 外部 git remote add/remove/set-url 或改 upstream/勾选: 用强制刷新排一次追加读取,
+                // 复用 publishRemoteList 的单飞与过期结果丢弃, 不会与正在进行的读取互相覆盖。
+                void this.publishRemoteList(event.repositoryPath, undefined, true);
             }),
             this.repoHeadBranchWatcher.onEachRepoRemoteRefsChanged(event => {
                 // 外部 fetch 只改写 refs/remotes/*, 不会触发 HEAD 事件; 仅刷新对应卡片的 ahead/behind。
@@ -1982,13 +1987,22 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         return this.viewDataRefresh;
     }
 
+    /**
+     * 后台 Fetch 与手动 Fetch 使用同一份勾选: 已读到 Remote 状态的仓库只获取勾选了 Fetch 的 remote,
+     * 一个都没勾就跳过; 还没读到状态的仓库(例如从未在选择器打开过的子模块)沿用获取全部 remote。
+     */
     private async fetchRepositories(repositoryPaths: readonly string[]): Promise<void> {
         await Promise.all(repositoryPaths.map(async repositoryPath => {
-            try {
-                await fetchRemotes(vscode.Uri.parse(repositoryPath));
-            } catch (error) {
-                console.warn(`无法获取远程更新: ${repositoryPath}`, error);
-            }
+            const rootUri = vscode.Uri.parse(repositoryPath);
+            const state = this.remoteStateByRepository.get(repositoryPath);
+            const remotes: readonly (string | undefined)[] = state ? state.operations.fetch : [undefined];
+            await Promise.all(remotes.map(async remote => {
+                try {
+                    await fetchRemotes(rootUri, remote);
+                } catch (error) {
+                    console.warn(`无法获取远程更新: ${repositoryPath}${remote ? ` (${remote})` : ''}`, error);
+                }
+            }));
         }));
     }
 
@@ -2006,7 +2020,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private async currentUpstreamRemote(repositoryPath: string, remotes: readonly GitRemote[]): Promise<string> {
         const rootUri = vscode.Uri.parse(repositoryPath);
         try {
-            const branch = await getCurrentGitBranch(rootUri);
+            const branch = await getCurrentGitBranchPriority(rootUri);
             if (branch) {
                 const configured = (await configGet(rootUri, `branch.${branch}.remote`, '')).trim();
                 return configured && remotes.some(remote => remote.name === configured) ? configured : '';
@@ -2016,9 +2030,9 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 .map(branch => branch.split('/')[0])
                 .find(name => remotes.some(remote => remote.name === name));
             if (containingRemoteName) { return containingRemoteName; }
-            const headHash = await getCurrentGitHeadHash(rootUri);
+            const headHash = await getCurrentGitHeadHashPriority(rootUri);
             if (headHash) {
-                const branches = await getGitBranches(rootUri);
+                const branches = await getGitBranchesPriority(rootUri);
                 const remoteBranch = branches.find(candidate => candidate.kind === 'remote' && candidate.hash === headHash);
                 const remoteName = remoteBranch?.label.split('/')[0];
                 if (remoteName && remotes.some(remote => remote.name === remoteName)) { return remoteName; }
@@ -2114,11 +2128,32 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             if (this.remotePublishRevisionByRepository.get(repositoryPath) !== revision) { return; }
             const snapshot: RemoteStateSnapshot = { remotes: orderedRemotes, upstreamRemote, operations };
             this.remoteStateByRepository.set(repositoryPath, snapshot);
+            this.forgetPushTargetsOfRemovedRemotes(repositoryPath, orderedRemotes);
             this.view?.webview.postMessage({ type: 'remoteListChanged', repositoryPath, remotes: orderedRemotes, upstreamRemote, operations });
         } catch (error) {
             if (this.remotePublishRevisionByRepository.get(repositoryPath) !== revision) { return; }
             this.view?.webview.postMessage({ type: 'remoteListChanged', repositoryPath, remotes: cached?.remotes ?? [], upstreamRemote: cached?.upstreamRemote ?? '', operations: cached?.operations, error: error instanceof Error ? error.message : String(error) });
         }
+    }
+
+    /**
+     * 删除 remote 后, Commit 面板记住的推送目标(内存与 workspaceState)不能再指向它。
+     * 只在拿到权威 remote 列表后调用, 因此扩展内删除与终端 git remote remove 都会被清理。
+     */
+    private forgetPushTargetsOfRemovedRemotes(repositoryPath: string, remotes: readonly GitRemote[]): void {
+        const known = new Set(remotes.map(remote => remote.name));
+        const stale = (target: StoredPushTarget | undefined): boolean => Boolean(target && !known.has(target.remote));
+        let changed = false;
+        if (stale(this.pushTargetByRepository.get(repositoryPath))) {
+            this.pushTargetByRepository.delete(repositoryPath);
+            changed = true;
+        }
+        if (stale(this.lastPushedTargetByRepository.get(repositoryPath))) {
+            this.lastPushedTargetByRepository.delete(repositoryPath);
+            void this.context.workspaceState.update('lastPushedTargets', Object.fromEntries(this.lastPushedTargetByRepository));
+            changed = true;
+        }
+        if (changed && this.commitPanel?.isVisible()) { this.commitPanel.update(this.buildCommitSnapshot()); }
     }
 
     private operationRemotes(repositoryPath: string): RemoteOperationSnapshot {
@@ -2169,7 +2204,6 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         if (choice !== '删除') { return; }
         try {
             const rootUri = vscode.Uri.parse(repositoryPath);
-            await clearFasterGitRemoteOperations(rootUri, name);
             await removeRemote(rootUri, name);
             this.remoteStateByRepository.delete(repositoryPath);
             await this.publishRemoteList(repositoryPath, undefined, true);

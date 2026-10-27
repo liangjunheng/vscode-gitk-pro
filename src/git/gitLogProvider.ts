@@ -389,10 +389,11 @@ export function getGitBranchesPriority(rootUri: vscode.Uri, signal?: AbortSignal
     return readGitBranches(rootUri, signal, true);
 }
 
-export async function getCurrentGitBranch(rootUri: vscode.Uri, signal?: AbortSignal): Promise<string | undefined> {
+async function readCurrentGitBranch(rootUri: vscode.Uri, signal: AbortSignal | undefined, priority: boolean): Promise<string | undefined> {
     throwIfAborted(signal);
     try {
-        const head = await invokeNativeGit<{ branch?: string } | null>('head', { rootPath: rootUri.fsPath });
+        const invoke = priority ? invokeNativeGitPriorityRead : invokeNativeGit;
+        const head = await invoke<{ branch?: string } | null>('head', { rootPath: rootUri.fsPath });
         throwIfAborted(signal);
         return head?.branch;
     } catch (error) {
@@ -401,6 +402,13 @@ export async function getCurrentGitBranch(rootUri: vscode.Uri, signal?: AbortSig
     }
 }
 
+export function getCurrentGitBranch(rootUri: vscode.Uri, signal?: AbortSignal): Promise<string | undefined> {
+    return readCurrentGitBranch(rootUri, signal, false);
+}
+
+export function getCurrentGitBranchPriority(rootUri: vscode.Uri, signal?: AbortSignal): Promise<string | undefined> {
+    return readCurrentGitBranch(rootUri, signal, true);
+}
 async function readCurrentGitHeadHash(rootUri: vscode.Uri, signal: AbortSignal | undefined, priority: boolean): Promise<string | undefined> {
     throwIfAborted(signal);
     try {

@@ -232,6 +232,23 @@ export class GitActionRunner {
 
         this.syncInProgress = true;
         try {
+            if (action === 'pull' && selectedRemotes.pull.length >= 2) {
+                const choice = await vscode.window.showWarningMessage(
+                    `已勾选 ${selectedRemotes.pull.length} 个 Pull remote，是否继续拉取？`,
+                    {
+                        modal: true,
+                        detail: [
+                            '将按以下顺序对当前分支执行 Pull：',
+                            ...selectedRemotes.pull.map(remote => `• ${remote}`),
+                            '',
+                            '多个 remote 的提交可能被依次合入当前分支，并可能产生冲突。',
+                            '任一 remote 拉取失败后会停止，已完成的拉取不会自动撤销。',
+                        ].join('\n'),
+                    },
+                    '继续拉取',
+                );
+                if (choice !== '继续拉取') { return; }
+            }
             const operation = action === 'fetch' ? '获取' : action === 'pull' ? '拉取' : '推送';
             let selectedPushTargets: PushTargetOption[] | undefined;
             if (action === 'push') {

@@ -3,7 +3,7 @@ const Module = require('node:module');
 
 const originalLoad = Module._load;
 
-function loadOperations({ useSystemProxy, vscodeProxy = '', fetchFailures = 0 }) {
+function loadOperations({ useSystemProxy, vscodeProxy = '', fetchFailures = 0, nativeProxyCheck }) {
     const calls = [];
     let remainingFetchFailures = fetchFailures;
     const modulePath = require.resolve('../out/git/gitNativeOperations');
@@ -22,7 +22,15 @@ function loadOperations({ useSystemProxy, vscodeProxy = '', fetchFailures = 0 })
                     }),
                 },
             };
-            if (request === './nativeGitBinding') return { invokeNativeGit: async () => { throw new Error('Unexpected native call'); } };
+            if (request === './nativeGitBinding') return {
+                invokeNativeGit: async () => { throw new Error('Unexpected native call'); },
+                invokeNativeGitPriorityRead: async operation => {
+                    if (operation !== 'explicitProxyConfigured') throw new Error('Unexpected native call: ' + operation);
+                    // Default: an older binary without the operation, so the Git CLI config check runs.
+                    if (nativeProxyCheck === undefined) throw new Error('不支持的 libgit2 操作: ' + operation);
+                    return nativeProxyCheck;
+                },
+            };
             if (request === 'child_process') return {
                 execFile: (file, args, options, callback) => {
                     calls.push({ file, args, options });
@@ -130,6 +138,23 @@ async function testVscodeProxyTakesPrecedence() {
     assert.equal(git.options.env.HTTPS_PROXY, 'http://vscode-proxy:9000');
 }
 
+async function testNativeProxyCheckSkipsGitConfig() {
+    const { operations, calls } = loadOperations({ useSystemProxy: true, nativeProxyCheck: false });
+    await Promise.all(Array.from({ length: 6 }, (_value, index) => operations.fetchRemotes({ fsPath: `C:/native-${index}` })));
+    assert.equal(calls.filter(call => call.file === 'git' && call.args.includes('config')).length, 0,
+        'the native explicit-proxy check replaces one git config process per repository');
+    assert.equal(calls.filter(call => call.file === 'git' && call.args.includes('fetch')).length, 6);
+    assert.equal(calls.length, 11, 'six repositories need 5 registry reads and 6 fetches, down from 17 processes');
+    const git = calls.find(call => call.file === 'git' && call.args.includes('fetch'));
+    assert.equal(git.options.env.HTTP_PROXY, 'http://proxy-http:8080', 'system proxy still applies without explicit Git proxy');
+
+    const explicit = loadOperations({ useSystemProxy: true, nativeProxyCheck: true });
+    await explicit.operations.fetchRemotes({ fsPath: 'C:/explicit' }, 'origin');
+    assert.equal(explicit.calls.filter(call => call.file === 'reg').length, 0, 'an explicit Git proxy skips the system lookup');
+    const explicitFetch = explicit.calls.find(call => call.file === 'git' && call.args.includes('fetch'));
+    assert.equal(explicitFetch.options.env.HTTP_PROXY, process.env.HTTP_PROXY, 'explicit Git proxy keeps the inherited environment');
+}
+
 async function testDisabledSystemProxy() {
     const { operations, calls } = loadOperations({ useSystemProxy: false });
     await operations.fetchRemotes({ fsPath: 'C:/repo' }, 'origin');
@@ -144,6 +169,7 @@ async function testDisabledSystemProxy() {
     await testConcurrentFetchWaveSharesSystemProxyLookup();
     await testOverlappingFetchSharesGitCommand();
     await testDifferentRemotesDoNotShareFetch();
+    await testNativeProxyCheckSkipsGitConfig();
     await testFailedFetchReleasesSingleFlight();
     await testVscodeProxyTakesPrecedence();
     await testDisabledSystemProxy();

@@ -271,6 +271,105 @@ async function testPullPromptsBeforeUpdatingSubmodules() {
     nodeAssert.deepEqual(syncCalls.map(call => call[4].pull), [['origin'], ['origin']], 'GitActionRunner forwards the Remote selector value to Pull');
 }
 
+async function testMultiRemotePullConfirmation() {
+    const events = [];
+    const syncCalls = [];
+    let answer;
+    let confirmPending;
+    let failSync = false;
+    const vscode = {
+        ProgressLocation: { Notification: 15 },
+        window: {
+            withProgress: async (_options, task) => {
+                events.push(['start']);
+                return task({ report() {} });
+            },
+            showWarningMessage: async (...args) => {
+                events.push(['warning', ...args]);
+                if (!args[1]?.modal) { return undefined; }
+                if (answer === 'pending') { return new Promise(resolve => { confirmPending = resolve; }); }
+                return answer;
+            },
+            showInformationMessage: message => events.push(['information', message]),
+            showErrorMessage: message => events.push(['error', message]),
+        },
+    };
+    const actions = loadFresh('../out/services/gitActions', {
+        vscode,
+        '../git/gitLogProvider': {
+            runGitSync: async (...args) => {
+                events.push(['sync', args[1]]);
+                syncCalls.push(args);
+                if (failSync) { throw new Error('pull failed'); }
+                return { headChanged: false, submodulesNeedUpdate: false, submoduleTopologyChanged: false, submodulePaths: [], summary: '拉取完成' };
+            },
+        },
+        '../git/gitNativeOperations': {},
+        '../webview/gitCommitEditMsgEditor': { GitCommitEditMsgEditor: class {} },
+        './pushDialogs': {},
+    });
+    const runner = new actions.GitActionRunner(
+        () => ({ fsPath: '/fixture' }),
+        async () => { events.push(['mutated']); },
+        {},
+    );
+    const remotes = { fetch: ['origin'], pull: ['origin', 'upstream', 'backup'], push: ['origin'] };
+    for (const count of [2, 3]) {
+        for (answer of [undefined, '取消']) {
+            events.length = 0;
+            await runner.syncRepository('pull', '/fixture', { ...remotes, pull: remotes.pull.slice(0, count) });
+            const warnings = events.filter(event => event[0] === 'warning');
+            nodeAssert.equal(warnings.length, 1, 'each multi-remote Pull asks once before running');
+            nodeAssert.equal(warnings[0][1], `已勾选 ${count} 个 Pull remote，是否继续拉取？`);
+            nodeAssert.equal(warnings[0][2].modal, true);
+            nodeAssert.equal(warnings[0][3], '继续拉取');
+            nodeAssert.ok(warnings[0][2].detail.includes(remotes.pull.slice(0, count).map(remote => '• ' + remote).join('\n')), 'the confirmation lists every remote in execution order');
+            nodeAssert.ok(warnings[0][2].detail.includes('冲突'));
+            nodeAssert.ok(warnings[0][2].detail.includes('不会自动撤销'));
+            nodeAssert.equal(events.some(event => ['start', 'sync', 'mutated'].includes(event[0])), false, 'cancel/dismiss does not start progress, Git, or refresh');
+        }
+    }
+    nodeAssert.equal(syncCalls.length, 0);
+
+    answer = '继续拉取';
+    events.length = 0;
+    await runner.syncRepository('pull', '/fixture', remotes);
+    nodeAssert.deepEqual(events.slice(0, 3).map(event => event[0]), ['warning', 'start', 'sync'], 'confirmation happens before progress and any Git operation');
+    nodeAssert.deepEqual(syncCalls[0][4].pull, remotes.pull, 'confirming preserves all checked remotes and their order');
+
+    const single = { ...remotes, pull: ['origin'] };
+    events.length = 0;
+    await runner.syncRepository('pull', '/fixture', single);
+    nodeAssert.equal(events.some(event => event[0] === 'warning'), false, 'one Pull remote needs no new confirmation');
+    events.length = 0;
+    await runner.syncRepository('fetch', '/fixture', remotes);
+    nodeAssert.equal(events.some(event => event[0] === 'warning'), false, 'Fetch does not confirm even when multiple Pull remotes are checked');
+
+    answer = 'pending';
+    events.length = 0;
+    const beforePending = syncCalls.length;
+    const pending = runner.syncRepository('pull', '/fixture', remotes);
+    await new Promise(resolve => setImmediate(resolve));
+    nodeAssert.equal(syncCalls.length, beforePending, 'no Git operation runs while confirmation is open');
+    await runner.syncRepository('pull', '/fixture', single);
+    nodeAssert.equal(events.at(-1)[1], '已有 Git 同步操作正在进行，请稍候。');
+    nodeAssert.equal(syncCalls.length, beforePending, 'a second click cannot bypass the pending confirmation');
+    confirmPending(undefined);
+    await pending;
+    await runner.syncRepository('pull', '/fixture', single);
+    nodeAssert.equal(syncCalls.length, beforePending + 1, 'cancelling releases the sync lock');
+
+    answer = '继续拉取';
+    failSync = true;
+    events.length = 0;
+    await runner.syncRepository('pull', '/fixture', remotes);
+    nodeAssert.ok(events.some(event => event[0] === 'error' && event[1].includes('pull failed')));
+    failSync = false;
+    const afterFailure = syncCalls.length;
+    await runner.syncRepository('pull', '/fixture', single);
+    nodeAssert.equal(syncCalls.length, afterFailure + 1, 'a failed confirmed Pull also releases the sync lock');
+}
+
 async function testPushTargetsSelectedRemoteOnly() {
     const selectedPlans = [];
     const pickerArgumentCounts = [];
@@ -327,8 +426,9 @@ async function main() {
     await testPullChecksStaleSubmodulesWithoutHeadChange();
     await testPullChecksNestedUninitializedSubmodulesWithoutHeadChange();
     await testPullPromptsBeforeUpdatingSubmodules();
+    await testMultiRemotePullConfirmation();
     await testPushTargetsSelectedRemoteOnly();
-    console.log('Fetch/Pull submodule flow: parallel fetch, recursive no-op check, confirmation, initialization, per-module progress, updated/skipped copy passed');
+    console.log('Fetch/Pull submodule flow: parallel fetch, recursive no-op check, multi-remote Pull confirmation/cancel, sync lock, initialization, per-module progress, updated/skipped copy passed');
 }
 
 main().catch(error => {

@@ -1,7 +1,7 @@
 import { execFile } from 'child_process';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { invokeNativeGit, invokeNativeGitPriorityRead } from './nativeGitBinding';
+import { invokeNativeGit, invokeNativeGitMutation, invokeNativeGitPriorityRead } from './nativeGitBinding';
 
 interface SystemProxy {
     readonly http?: string;
@@ -105,6 +105,11 @@ function isNetworkCommand(args: readonly string[]): boolean {
 }
 
 async function hasExplicitGitProxy(rootUri: vscode.Uri): Promise<boolean> {
+    try {
+        return await invokeNativeGitPriorityRead<boolean>('explicitProxyConfigured', { rootPath: rootUri.fsPath });
+    } catch (error) {
+        if (!isUnsupportedNativeOperation(error)) { throw error; }
+    }
     return new Promise(resolve => {
         execFile('git', ['-C', rootUri.fsPath, 'config', '--get-regexp', '^(http\\.proxy|remote\\..*\\.proxy)$'], {
             windowsHide: true,
@@ -116,6 +121,11 @@ async function hasExplicitGitProxy(rootUri: vscode.Uri): Promise<boolean> {
 
 async function gitCliEnvironment(rootUri: vscode.Uri, args: readonly string[]): Promise<NodeJS.ProcessEnv> {
     const environment = { ...process.env };
+    if (isNetworkCommand(args)) {
+        // The extension has no terminal: an interactive prompt can only fail with an opaque error.
+        // Credential helpers (GCM, keychain, askpass) still run; only the TTY prompt is disabled.
+        environment.GIT_TERMINAL_PROMPT = '0';
+    }
     if (!isNetworkCommand(args)
         || !vscode.workspace.getConfiguration('fastergit').get<boolean>('useSystemProxy', true)
         || await hasExplicitGitProxy(rootUri)) {
@@ -135,6 +145,23 @@ async function gitCliEnvironment(rootUri: vscode.Uri, args: readonly string[]): 
     return environment;
 }
 
+/** Network Git commands get an upper bound so an unresponsive host cannot hang the operation forever. */
+export const NETWORK_GIT_TIMEOUT_MS = 10 * 60 * 1000;
+
+const AUTHENTICATION_FAILURE = /could not read (Username|Password)|terminal prompts disabled|Authentication failed|Permission denied \(publickey|Host key verification failed|HTTP Basic: Access denied|returned error: 40[13]\b/i;
+
+/** Translate a failed Git CLI run into a message the user can act on. Exported for tests. */
+export function describeGitCliFailure(args: readonly string[], output: string, timedOut: boolean): string {
+    if (timedOut) {
+        return `Git 网络操作超过 ${NETWORK_GIT_TIMEOUT_MS / 60000} 分钟未完成，已终止。请检查网络或远程地址后重试。`;
+    }
+    if (isNetworkCommand(args) && AUTHENTICATION_FAILURE.test(output)) {
+        return '远程仓库需要认证，但当前没有可用的凭据。请在终端对该仓库执行一次 git fetch 完成登录，'
+            + `或配置 Git 凭据管理器 / SSH 密钥后重试。\n\nGit 输出：${output}`;
+    }
+    return `Git CLI 执行失败：${output}`;
+}
+
 async function runGitCli(rootUri: vscode.Uri, args: readonly string[]): Promise<string> {
     const env = await gitCliEnvironment(rootUri, args);
     return new Promise((resolve, reject) => {
@@ -143,14 +170,15 @@ async function runGitCli(rootUri: vscode.Uri, args: readonly string[]): Promise<
             encoding: 'utf8',
             maxBuffer: 64 * 1024 * 1024,
             env,
+            timeout: isNetworkCommand(args) ? NETWORK_GIT_TIMEOUT_MS : 0,
         }, (error, stdout, stderr) => {
             const output = sanitizeGitOutput([stdout, stderr].filter(Boolean).join('\n'));
             if (!error) {
                 resolve(output);
                 return;
             }
-            const reason = output || error.message;
-            reject(new Error(`Git CLI 执行失败：${reason}`));
+            const timedOut = Boolean((error as { killed?: boolean }).killed) && isNetworkCommand(args);
+            reject(new Error(describeGitCliFailure(args, output || error.message, timedOut)));
         });
     });
 }
@@ -159,7 +187,7 @@ export interface NativeStatusSummary { hasStagedChanges: boolean; hasUnstagedCha
 export interface NativeSyncResult { changed?: boolean; fastForward?: boolean; }
 
 export async function configGet(rootUri: vscode.Uri, key: string, defaultValue = ''): Promise<string> {
-    return invokeNativeGit<string>('configGet', { rootPath: rootUri.fsPath, key, defaultValue });
+    return invokeNativeGitPriorityRead<string>('configGet', { rootPath: rootUri.fsPath, key, defaultValue });
 }
 
 export async function statusSummary(rootUri: vscode.Uri): Promise<NativeStatusSummary> {
@@ -195,7 +223,7 @@ export async function readNativeRemoteState(rootUri: vscode.Uri): Promise<{
     operations: Map<string, Map<FasterGitRemoteOperation, boolean>>;
     upstreamRemote: string;
 }> {
-    const state = await invokeNativeGit<NativeRemoteState>('remoteState', { rootPath: rootUri.fsPath });
+    const state = await invokeNativeGitPriorityRead<NativeRemoteState>('remoteState', { rootPath: rootUri.fsPath });
     const operations = new Map<string, Map<FasterGitRemoteOperation, boolean>>();
     for (const [name, values] of Object.entries(state.operations ?? {})) {
         operations.set(name, new Map(Object.entries(values) as Array<[FasterGitRemoteOperation, boolean]>));
@@ -225,13 +253,20 @@ export async function readFasterGitRemoteOperations(
 ): Promise<Map<string, Map<FasterGitRemoteOperation, boolean>>> {
     const operations = new Map<string, Map<FasterGitRemoteOperation, boolean>>();
     if (remotes.length === 0) { return operations; }
+    try {
+        const state = await readNativeRemoteState(rootUri);
+        return new Map(remotes.filter(name => state.operations.has(name)).map(name => [name, state.operations.get(name)!]));
+    } catch (error) {
+        if (!isUnsupportedNativeOperation(error)) { throw error; }
+    }
     let output = '';
     try {
         output = await runGitCli(rootUri, ['config', '--local', '--get-regexp', '^fastergit\\.remote\\..+\\.(fetch|pull|push)$']);
     } catch {
         return operations;
     }
-    const remoteByLowerName = new Map(remotes.map(name => [name.toLowerCase(), name]));
+    // Git lowercases section/key names, but remote subsection names stay case-sensitive.
+    const knownRemotes = new Set(remotes);
     for (const line of output.split(/\r?\n/)) {
         const separator = line.search(/\s/);
         if (separator < 0) { continue; }
@@ -243,8 +278,8 @@ export async function readFasterGitRemoteOperations(
         if (enabled === undefined) { continue; }
         const match = key.match(/^fastergit\.remote\.(.+)\.(fetch|pull|push)$/i);
         if (!match) { continue; }
-        const remote = remoteByLowerName.get(match[1].toLowerCase());
-        if (!remote) { continue; }
+        const remote = match[1];
+        if (!knownRemotes.has(remote)) { continue; }
         const configured = operations.get(remote) ?? new Map<FasterGitRemoteOperation, boolean>();
         configured.set(match[2].toLowerCase() as FasterGitRemoteOperation, enabled);
         operations.set(remote, configured);
@@ -259,14 +294,28 @@ export async function setFasterGitRemoteOperation(
     enabled: boolean,
 ): Promise<void> {
     const remote = validateRemoteName(remoteName);
-    const key = `fastergit.remote.${remote}.${operation}`;
-    await runGitCli(rootUri, ['config', '--local', key, enabled ? 'true' : 'false']);
+    try {
+        await invokeNativeGitMutation<void>('setRemoteOperation', {
+            rootPath: rootUri.fsPath, remoteName: remote, operation, enabled,
+        });
+    } catch (error) {
+        // Keep compatibility with an older installed native binary until it is rebuilt.
+        if (!isUnsupportedNativeOperation(error)) { throw error; }
+        const key = `fastergit.remote.${remote}.${operation}`;
+        await runGitCli(rootUri, ['config', '--local', key, enabled ? 'true' : 'false']);
+    }
 }
 
 export async function clearFasterGitRemoteOperations(rootUri: vscode.Uri, remoteName: string): Promise<void> {
     const remote = validateRemoteName(remoteName);
-    await Promise.all((['fetch', 'pull', 'push'] as const).map(operation =>
-        runGitCli(rootUri, ['config', '--local', '--unset-all', `fastergit.remote.${remote}.${operation}`]).catch(() => undefined)));
+    try {
+        await invokeNativeGitMutation<void>('clearRemoteOperations', { rootPath: rootUri.fsPath, remoteName: remote });
+    } catch (error) {
+        if (!isUnsupportedNativeOperation(error)) { throw error; }
+        for (const operation of ['fetch', 'pull', 'push']) {
+            await runGitCli(rootUri, ['config', '--local', '--unset-all', `fastergit.remote.${remote}.${operation}`]).catch(() => undefined);
+        }
+    }
 }
 
 export async function listRemoteBranchesContaining(rootUri: vscode.Uri): Promise<string[]> {
@@ -287,6 +336,11 @@ export async function listRemoteBranchesContaining(rootUri: vscode.Uri): Promise
 }
 
 export async function listRemotes(rootUri: vscode.Uri): Promise<GitRemote[]> {
+    try {
+        return (await readNativeRemoteState(rootUri)).remotes.sort((a, b) => a.name.localeCompare(b.name));
+    } catch (error) {
+        if (!isUnsupportedNativeOperation(error)) { throw error; }
+    }
     const output = await runGitCli(rootUri, ['remote', '-v']);
     const remotes = new Map<string, { fetchUrl: string; pushUrl: string }>();
     for (const line of output.split(/\r?\n/)) {
@@ -302,10 +356,33 @@ export async function listRemotes(rootUri: vscode.Uri): Promise<GitRemote[]> {
         .map(([name, urls]) => ({ name, fetchUrl: urls.fetchUrl || urls.pushUrl, pushUrl: urls.pushUrl || urls.fetchUrl }));
 }
 
-export const addRemote = (rootUri: vscode.Uri, name: string, url: string): Promise<void> =>
-    runGitCli(rootUri, ['remote', 'add', validateRemoteName(name), validateRemoteUrl(url)]).then(() => undefined);
-export const removeRemote = (rootUri: vscode.Uri, name: string): Promise<void> =>
-    runGitCli(rootUri, ['remote', 'remove', validateRemoteName(name)]).then(() => undefined);
+function isUnsupportedNativeOperation(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.includes('不支持的 libgit2 操作')
+        || /^invokeMutation 只允许修改操作: (addRemote|removeRemote|clearRemoteOperations|setRemoteOperation|deleteTag|checkoutRemoteBranch)$/.test(message);
+}
+
+export async function addRemote(rootUri: vscode.Uri, name: string, url: string): Promise<void> {
+    const remoteName = validateRemoteName(name);
+    const remoteUrl = validateRemoteUrl(url);
+    try {
+        await invokeNativeGitMutation<void>('addRemote', { rootPath: rootUri.fsPath, remoteName, url: remoteUrl });
+    } catch (error) {
+        if (!isUnsupportedNativeOperation(error)) { throw error; }
+        await runGitCli(rootUri, ['remote', 'add', remoteName, remoteUrl]);
+    }
+}
+
+export async function removeRemote(rootUri: vscode.Uri, name: string): Promise<void> {
+    const remoteName = validateRemoteName(name);
+    try {
+        await invokeNativeGitMutation<void>('removeRemote', { rootPath: rootUri.fsPath, remoteName });
+    } catch (error) {
+        if (!isUnsupportedNativeOperation(error)) { throw error; }
+        await clearFasterGitRemoteOperations(rootUri, remoteName);
+        await runGitCli(rootUri, ['remote', 'remove', remoteName]);
+    }
+}
 
 export interface RemoteTagRef {
     readonly remote: string;
@@ -351,19 +428,17 @@ function parseRemoteTagTargets(output: string): Map<string, string> {
 
 /** Read local tags and live remote-tag availability for one commit. Failed remotes stay unavailable instead of being guessed. */
 export async function readCommitTagState(rootUri: vscode.Uri, revision: string): Promise<CommitTagState> {
-    const [resolved, localOutput, remoteOutput] = await Promise.all([
+    const [resolved, local] = await Promise.all([
         invokeNativeGit<string[]>('resolveRevision', { rootPath: rootUri.fsPath, specs: [`${revision}^{commit}`] }),
-        runGitCli(rootUri, ['for-each-ref', '--format=%(refname:strip=2)%00%(*objectname)%00%(objectname)', 'refs/tags']),
-        runGitCli(rootUri, ['remote']),
+        readLocalTagTargets(rootUri),
     ]);
     const targetHash = resolved[0];
     if (!targetHash) { throw new Error('无法解析所选提交'); }
-    const localTargets = parseLocalTagTargets(localOutput);
-    const localTags = [...localTargets]
+    const localTags = [...local.targets]
         .filter(([, hash]) => hash === targetHash)
         .map(([name]) => name)
         .sort((a, b) => a.localeCompare(b));
-    const remotes = remoteOutput.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+    const remotes = local.remotes;
     const remoteErrors: Array<{ remote: string; message: string }> = [];
     const snapshots = (await Promise.all(remotes.map(async remote => {
         try {
@@ -391,8 +466,32 @@ export async function readCommitTagState(rootUri: vscode.Uri, revision: string):
     return { localTags, remoteTags, pushableTags, remoteErrors };
 }
 
-export const deleteLocalTag = (rootUri: vscode.Uri, name: string): Promise<void> =>
-    runGitCli(rootUri, ['tag', '--delete', '--', name]).then(() => undefined);
+/** Local tag targets and remote names; ls-remote for the live remote view stays on Git CLI. */
+async function readLocalTagTargets(rootUri: vscode.Uri): Promise<{ targets: Map<string, string>; remotes: string[] }> {
+    try {
+        const state = await invokeNativeGitPriorityRead<{ tags: Record<string, string>; remotes: string[] }>('tagTargets', { rootPath: rootUri.fsPath });
+        return { targets: new Map(Object.entries(state.tags)), remotes: state.remotes };
+    } catch (error) {
+        if (!isUnsupportedNativeOperation(error)) { throw error; }
+    }
+    const [localOutput, remoteOutput] = await Promise.all([
+        runGitCli(rootUri, ['for-each-ref', '--format=%(refname:strip=2)%00%(*objectname)%00%(objectname)', 'refs/tags']),
+        runGitCli(rootUri, ['remote']),
+    ]);
+    return {
+        targets: parseLocalTagTargets(localOutput),
+        remotes: remoteOutput.split(/\r?\n/).map(value => value.trim()).filter(Boolean),
+    };
+}
+
+export async function deleteLocalTag(rootUri: vscode.Uri, name: string): Promise<void> {
+    try {
+        await invokeNativeGitMutation<void>('deleteTag', { rootPath: rootUri.fsPath, name });
+    } catch (error) {
+        if (!isUnsupportedNativeOperation(error)) { throw error; }
+        await runGitCli(rootUri, ['tag', '--delete', '--', name]);
+    }
+}
 export const deleteRemoteTag = (rootUri: vscode.Uri, remote: string, name: string): Promise<void> =>
     runGitCli(rootUri, ['push', remote, `:refs/tags/${name}`]).then(() => undefined);
 export const pushTag = (rootUri: vscode.Uri, remote: string, name: string): Promise<void> =>
@@ -404,10 +503,16 @@ export const checkout = (rootUri: vscode.Uri, revision: string, detach = false):
 export const checkoutBranch = (rootUri: vscode.Uri, branch: string): Promise<void> =>
     invokeNativeGit<void>('checkoutBranch', { rootPath: rootUri.fsPath, branch });
 
-/** Git CLI provides safe checkout + upstream setup for a new remote-tracking local branch. */
+/** Create a local branch tracking a remote branch and switch to it with a safe checkout. */
 export async function checkoutRemoteBranch(rootUri: vscode.Uri, remoteRef: string, localName: string): Promise<void> {
     if (!remoteRef.startsWith('refs/remotes/') || remoteRef.endsWith('/HEAD') || localName.startsWith('-')) {
         throw new Error('远程分支或本地分支名称无效');
+    }
+    try {
+        await invokeNativeGitMutation<void>('checkoutRemoteBranch', { rootPath: rootUri.fsPath, remoteRef, localName });
+        return;
+    } catch (error) {
+        if (!isUnsupportedNativeOperation(error)) { throw error; }
     }
     await runGitCli(rootUri, ['check-ref-format', '--branch', localName]);
     await runGitCli(rootUri, ['checkout', '--track', '-b', localName, remoteRef]);

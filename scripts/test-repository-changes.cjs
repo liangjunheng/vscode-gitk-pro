@@ -1603,8 +1603,8 @@ async function verifyProvider() {
         ...load.call(this, name, ...args),
         checkoutBranch: async (uri, branch) => { checkouts.push([uri.toString(), branch]); },
         checkoutRemoteBranch: async (uri, ref, localName) => remoteCheckouts.push([uri.toString(), ref, localName]),
-        fetchRemotes: async uri => {
-          remoteFetchStarts.push(uri.toString());
+        fetchRemotes: async (uri, remote) => {
+          remoteFetchStarts.push(remote ? uri.toString() + '#' + remote : uri.toString());
           await new Promise(resolve => remoteFetchResolvers.push(resolve));
         },
         resolveRevision: async (_uri, spec) => spec.endsWith('^') ? 'a'.repeat(40) : undefined,
@@ -1768,6 +1768,33 @@ async function verifyProvider() {
   queuedRemoteResolvers.shift()();
   await Promise.all(queuedRemotePromises);
   assert.equal(queuedRemoteProvider.remotePublishInFlight.size, 0, 'the Remote single-flight entry is released after the queued reads finish');
+
+  // Removing a remote (here or via `git remote remove` in a terminal, detected through .git/config)
+  // must also drop remembered Commit panel push targets that still point at it.
+  const savedWorkspaceTargets = [];
+  const staleTargetProvider = Object.create(GitkViewProvider.prototype);
+  Object.assign(staleTargetProvider, {
+    pushTargetByRepository: new Map([
+      [repositories[0].path, { remote: 'backup', branch: 'main', remoteName: 'backup/main' }],
+      [repositories[1].path, { remote: 'backup', branch: 'main', remoteName: 'backup/main' }],
+    ]),
+    lastPushedTargetByRepository: new Map([
+      [repositories[0].path, { remote: 'backup', branch: 'main', remoteName: 'backup/main' }],
+      [repositories[1].path, { remote: 'origin', branch: 'main', remoteName: 'origin/main' }],
+    ]),
+    context: { workspaceState: { update: async (key, value) => { savedWorkspaceTargets.push([key, value]); } } },
+    commitPanel: { isVisible: () => false },
+  });
+  const remainingRemotes = [{ name: 'origin', fetchUrl: 'u', pushUrl: 'u' }];
+  staleTargetProvider.forgetPushTargetsOfRemovedRemotes(repositories[0].path, remainingRemotes);
+  assert.equal(staleTargetProvider.pushTargetByRepository.has(repositories[0].path), false, 'a selected push target on a removed remote is dropped');
+  assert.equal(staleTargetProvider.lastPushedTargetByRepository.has(repositories[0].path), false, 'a remembered last-pushed target on a removed remote is dropped');
+  assert.deepEqual(savedWorkspaceTargets, [['lastPushedTargets', { [repositories[1].path]: { remote: 'origin', branch: 'main', remoteName: 'origin/main' } }]],
+    'the persisted last-pushed targets are rewritten without the removed remote');
+  assert.equal(staleTargetProvider.pushTargetByRepository.get(repositories[1].path)?.remote, 'backup', 'other repositories are untouched');
+  staleTargetProvider.forgetPushTargetsOfRemovedRemotes(repositories[1].path, [{ name: 'origin', fetchUrl: 'u', pushUrl: 'u' }, { name: 'backup', fetchUrl: 'u', pushUrl: 'u' }]);
+  assert.equal(savedWorkspaceTargets.length, 1, 'targets on existing remotes keep their state and do not rewrite workspaceState');
+  assert.equal(staleTargetProvider.pushTargetByRepository.get(repositories[1].path)?.remote, 'backup');
 
   const branchReadyRemoteRefreshes = [];
   const branchReadyProvider = Object.create(GitkViewProvider.prototype);
@@ -2226,6 +2253,8 @@ async function verifyVisibilityFetch(Provider, store, repositories, fetchStarts,
   Object.defineProperty(provider, 'repositories', { value: repositories, configurable: true });
   provider.updateMultiDiffVisibility = () => multiDiffUpdates.push(provider.view.visible);
   provider.remoteFetchRefresh = undefined;
+  // No cached Remote state yet: every repository falls back to fetching all of its remotes.
+  provider.remoteStateByRepository = new Map();
   const setVisible = visible => {
     provider.view = { visible };
     provider.onViewVisibilityChanged(provider.view);
@@ -2280,6 +2309,21 @@ async function verifyVisibilityFetch(Provider, store, repositories, fetchStarts,
   setVisible(true);
   assert.equal(provider.remoteFetchRefresh, undefined, 'no repositories means no fetch task');
   assert.deepEqual(fetchStarts, [], 'an empty repository list never fetches');
+
+  // With cached Remote state the background fetch obeys the Fetch checkboxes, like the manual button.
+  const checkedProvider = Object.create(Provider.prototype);
+  const [root, child, clean] = repositoryPaths;
+  checkedProvider.remoteStateByRepository = new Map([
+    [root, { remotes: [], upstreamRemote: 'origin', operations: { fetch: ['origin', 'mirror'], pull: [], push: [] } }],
+    [child, { remotes: [], upstreamRemote: 'origin', operations: { fetch: [], pull: [], push: [] } }],
+  ]);
+  fetchStarts.length = 0;
+  const checkedFetch = checkedProvider.fetchRepositories([root, child, clean]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fetchStarts, [root + '#origin', root + '#mirror', clean],
+    'checked remotes are fetched individually, an all-unchecked repository is skipped, an unread repository fetches all');
+  fetchResolvers.splice(0).forEach(resolve => resolve());
+  await checkedFetch;
 }
 async function verifyFocusedRefresh(Provider, repositories) {
   const provider = Object.create(Provider.prototype);

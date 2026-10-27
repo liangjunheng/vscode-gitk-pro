@@ -35,6 +35,236 @@ pub fn config_get(payload: &Value) -> NativeResult<Value> {
     Ok(Value::String(value))
 }
 
+fn remote_name_arg(payload: &Value) -> NativeResult<&str> {
+    let name = string_arg(payload, "remoteName")?.trim();
+    if name.is_empty()
+        || name.starts_with('-')
+        || name.chars().any(char::is_whitespace)
+        || !git2::Reference::is_valid_name(&format!("refs/remotes/{name}/test"))
+    {
+        return Err("Invalid remote name".to_owned());
+    }
+    Ok(name)
+}
+
+fn remove_config_values(config: &mut git2::Config, key: &str) -> NativeResult<()> {
+    match config.remove_multivar(key, ".*") {
+        Ok(()) => Ok(()),
+        Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(()),
+        Err(error) => Err(format_git_error(error)),
+    }
+}
+
+/// Mirror `git config --get-regexp '^(http\.proxy|remote\..*\.proxy)$'` across every
+/// config level: any such key, even with an empty value, counts as an explicit proxy choice.
+pub fn explicit_proxy_configured(payload: &Value) -> NativeResult<Value> {
+    let repo = open_repository(string_arg(payload, "rootPath")?)?;
+    let config = repo.config().map_err(format_git_error)?;
+    let mut entries = config.entries(None).map_err(format_git_error)?;
+    while let Some(entry) = entries.next() {
+        let entry = entry.map_err(format_git_error)?;
+        let Ok(name) = entry.name() else { continue };
+        if name == "http.proxy"
+            || name.strip_prefix("remote.").is_some_and(|rest| {
+                rest.rsplit_once('.')
+                    .is_some_and(|(remote, key)| !remote.is_empty() && key == "proxy")
+            })
+        {
+            return Ok(Value::Bool(true));
+        }
+    }
+    Ok(Value::Bool(false))
+}
+
+/// Local tag targets (annotated tags peeled to their commit) plus remote names, replacing
+/// `git for-each-ref refs/tags` and `git remote`.
+pub fn tag_targets(payload: &Value) -> NativeResult<Value> {
+    let repo = open_repository(string_arg(payload, "rootPath")?)?;
+    let mut tags = serde_json::Map::new();
+    for reference in repo
+        .references_glob("refs/tags/*")
+        .map_err(format_git_error)?
+    {
+        let reference = reference.map_err(format_git_error)?;
+        let Ok(name) = reference.name() else { continue };
+        let Some(short) = name.strip_prefix("refs/tags/") else {
+            continue;
+        };
+        let target = reference.peel(git2::ObjectType::Any).ok().map(|object| {
+            match object.peel(git2::ObjectType::Commit) {
+                Ok(commit) => commit.id(),
+                Err(_) => object.id(),
+            }
+        });
+        if let Some(target) = target {
+            tags.insert(short.to_owned(), Value::String(target.to_string()));
+        }
+    }
+    let remotes = repo
+        .remotes()
+        .map_err(format_git_error)?
+        .iter()
+        .filter_map(|name| name.ok().flatten().map(str::to_owned))
+        .collect::<Vec<_>>();
+    Ok(json!({ "tags": tags, "remotes": remotes }))
+}
+
+pub fn add_remote(payload: &Value) -> NativeResult<Value> {
+    let name = remote_name_arg(payload)?;
+    let url = string_arg(payload, "url")?.trim();
+    if url.is_empty() {
+        return Err("Remote URL is empty".to_owned());
+    }
+    let repo = open_repository(string_arg(payload, "rootPath")?)?;
+    repo.remote(name, url).map_err(format_git_error)?;
+    Ok(Value::Null)
+}
+
+pub fn clear_remote_operations(payload: &Value) -> NativeResult<Value> {
+    let name = remote_name_arg(payload)?;
+    let repo = open_repository(string_arg(payload, "rootPath")?)?;
+    let mut config = repo
+        .config()
+        .map_err(format_git_error)?
+        .open_level(ConfigLevel::Local)
+        .map_err(format_git_error)?;
+    for operation in ["fetch", "pull", "push"] {
+        remove_config_values(&mut config, &format!("fastergit.remote.{name}.{operation}"))?;
+    }
+    Ok(Value::Null)
+}
+
+pub fn remove_remote(payload: &Value) -> NativeResult<Value> {
+    let name = remote_name_arg(payload)?;
+    let repo = open_repository(string_arg(payload, "rootPath")?)?;
+    let remote = repo.find_remote(name).map_err(format_git_error)?;
+    let names = repo.remotes().map_err(format_git_error)?;
+    let others = names
+        .iter()
+        .filter_map(|name| name.ok().flatten())
+        .filter(|other| *other != name)
+        .map(|other| repo.find_remote(other).map_err(format_git_error))
+        .collect::<NativeResult<Vec<_>>>()?;
+    let fetch_matches = |remote: &git2::Remote<'_>, reference: &str| {
+        remote
+            .refspecs()
+            .any(|spec| spec.direction() == git2::Direction::Fetch && spec.dst_matches(reference))
+    };
+    // libgit2 remote_delete also deletes local/shared destinations. Git remote
+    // remove protects both, so select only exclusively owned tracking refs.
+    let mut references = Vec::new();
+    for reference in repo.references().map_err(format_git_error)? {
+        let reference = reference.map_err(format_git_error)?;
+        let reference_name = reference.name().map_err(format_git_error)?;
+        if reference_name.starts_with("refs/remotes/")
+            && fetch_matches(&remote, reference_name)
+            && !others
+                .iter()
+                .any(|other| fetch_matches(other, reference_name))
+        {
+            references.push(reference_name.to_owned());
+        }
+    }
+    let mut config = repo
+        .config()
+        .map_err(format_git_error)?
+        .open_level(ConfigLevel::Local)
+        .map_err(format_git_error)?;
+    let prefix = format!("remote.{name}.");
+    let mut keys = std::collections::BTreeSet::new();
+    let mut merge_counts = HashMap::<String, usize>::new();
+    let mut merge_candidates = Vec::new();
+    {
+        let mut entries = config.entries(None).map_err(format_git_error)?;
+        while let Some(entry) = entries.next() {
+            let entry = entry.map_err(format_git_error)?;
+            let key = entry.name().map_err(format_git_error)?;
+            if let Some(branch) = key
+                .strip_prefix("branch.")
+                .and_then(|branch| branch.strip_suffix(".merge"))
+            {
+                *merge_counts.entry(branch.to_owned()).or_default() += 1;
+            }
+            if key
+                .rsplit_once('.')
+                .is_some_and(|(section, _)| section == prefix.trim_end_matches('.'))
+            {
+                keys.insert(key.to_owned());
+            }
+            if entry.value().ok() != Some(name) {
+                continue;
+            }
+            if key == "remote.pushdefault" {
+                keys.insert(key.to_owned());
+            }
+            if let Some(branch) = key.strip_prefix("branch.") {
+                if let Some(branch) = branch.strip_suffix(".remote") {
+                    keys.insert(key.to_owned());
+                    merge_candidates.push(branch.to_owned());
+                } else if branch.ends_with(".pushremote") {
+                    keys.insert(key.to_owned());
+                }
+            }
+        }
+    }
+    // Git deletes branch.<name>.merge only when it is a single value; a
+    // multi-valued merge list survives because `git config --unset` refuses it.
+    for branch in merge_candidates {
+        if merge_counts.get(&branch) == Some(&1) {
+            keys.insert(format!("branch.{branch}.merge"));
+        }
+    }
+    // Clean extension settings only after confirming the remote exists.
+    for operation in ["fetch", "pull", "push"] {
+        keys.insert(format!("fastergit.remote.{name}.{operation}"));
+    }
+    for key in keys {
+        remove_config_values(&mut config, &key)?;
+    }
+    for name in references {
+        repo.find_reference(&name)
+            .map_err(format_git_error)?
+            .delete()
+            .map_err(format_git_error)?;
+    }
+    Ok(Value::Null)
+}
+
+/// Persist one FasterGit remote operation setting directly through libgit2.
+pub fn set_remote_operation(payload: &Value) -> NativeResult<Value> {
+    let root_path = string_arg(payload, "rootPath")?;
+    let remote_name = string_arg(payload, "remoteName")?;
+    let operation = string_arg(payload, "operation")?;
+    if !matches!(operation, "fetch" | "pull" | "push") {
+        return Err(format!("不支持的 remote 操作: {operation}"));
+    }
+    let enabled = payload
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "缺少参数: enabled".to_owned())?;
+    let repo = open_repository(root_path)?;
+    let remote_names = repo
+        .remotes()
+        .map_err(format_git_error)?
+        .iter()
+        .filter_map(|name| name.ok().flatten().map(str::to_owned))
+        .collect::<Vec<_>>();
+    let canonical_remote = remote_names
+        .iter()
+        .find(|name| name.as_str() == remote_name)
+        .ok_or_else(|| format!("不存在 remote: {remote_name}"))?;
+    let config = repo.config().map_err(format_git_error)?;
+    let mut local_config = config
+        .open_level(ConfigLevel::Local)
+        .map_err(format_git_error)?;
+    local_config
+        .set_str(
+            &format!("fastergit.remote.{canonical_remote}.{operation}"),
+            if enabled { "true" } else { "false" },
+        )
+        .map_err(format_git_error)?;
+    Ok(Value::Null)
+}
 /// Read the remote URLs, local FasterGit remote-operation settings, and the
 /// configured upstream remote without spawning Git CLI child processes.
 pub fn remote_state(payload: &Value) -> NativeResult<Value> {
@@ -86,9 +316,7 @@ pub fn remote_state(payload: &Value) -> NativeResult<Value> {
             continue;
         };
         if !matches!(operation, "fetch" | "pull" | "push")
-            || !remote_name_set
-                .iter()
-                .any(|name| name.eq_ignore_ascii_case(remote))
+            || !remote_name_set.iter().any(|name| name.as_str() == remote)
         {
             continue;
         }
@@ -102,12 +330,8 @@ pub fn remote_state(payload: &Value) -> NativeResult<Value> {
         }) else {
             continue;
         };
-        let canonical_remote = remote_names
-            .iter()
-            .find(|name| name.eq_ignore_ascii_case(remote))
-            .expect("remote was checked above");
         operations
-            .entry(canonical_remote.clone())
+            .entry(remote.to_owned())
             .or_default()
             .insert(operation.to_owned(), enabled);
     }

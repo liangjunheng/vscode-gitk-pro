@@ -19,6 +19,10 @@ type RepoStashChangedEvent = {
     repositoryPath: string;
 };
 
+type RepoConfigChangedEvent = {
+    repositoryPath: string;
+};
+
 type HeadReadSlot = {
     running: boolean;
     needsRefresh: boolean;
@@ -41,6 +45,7 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
     private readonly headBranchEmitter = new vscode.EventEmitter<RepoHeadBranchChangedEvent>();
     private readonly remoteRefsChangedEmitter = new vscode.EventEmitter<RepoRemoteRefsChangedEvent>();
     private readonly stashChangedEmitter = new vscode.EventEmitter<RepoStashChangedEvent>();
+    private readonly configChangedEmitter = new vscode.EventEmitter<RepoConfigChangedEvent>();
     private readonly repoController: GitRepoController;
     private syncingRepositories = false;
     private needsRepositorySync = false;
@@ -55,6 +60,8 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
     readonly onEachRepoRemoteRefsChanged = this.remoteRefsChangedEmitter.event;
     /** refs/stash 或其 reflog 变化: 创建、drop、pop 都会改写它们(drop 非最后一条时只改 reflog)。 */
     readonly onEachRepoStashChanged = this.stashChangedEmitter.event;
+    /** .git/config 变化: 外部 git remote add/remove/set-url、upstream 或 FasterGit 勾选配置被改写。 */
+    readonly onEachRepoConfigChanged = this.configChangedEmitter.event;
 
     constructor(repoController: GitRepoController) {
         this.repoController = repoController;
@@ -103,6 +110,7 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
         this.headBranchEmitter.dispose();
         this.remoteRefsChangedEmitter.dispose();
         this.stashChangedEmitter.dispose();
+        this.configChangedEmitter.dispose();
     }
 
     private requestRepositorySync(): void {
@@ -173,6 +181,19 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
             const stashWatcher = vscode.workspace.createFileSystemWatcher(
                 new vscode.RelativePattern(vscode.Uri.file(gitDir), '{refs/stash,logs/refs/stash,packed-refs}'),
             );
+            // 写 config 时 Git 先写 config.lock 再改名, 一次修改会触发多个事件; 合并成一次通知。
+            const configWatcher = vscode.workspace.createFileSystemWatcher(
+                new vscode.RelativePattern(vscode.Uri.file(gitDir), 'config'),
+            );
+            let configNotifyTimer: ReturnType<typeof setTimeout> | undefined;
+            const notifyConfigChanged = () => {
+                if (configNotifyTimer) { clearTimeout(configNotifyTimer); }
+                configNotifyTimer = setTimeout(() => {
+                    configNotifyTimer = undefined;
+                    const currentRepository = this.repositories.get(key);
+                    if (currentRepository) { this.configChangedEmitter.fire({ repositoryPath: currentRepository.path }); }
+                }, 100);
+            };
             let stashNotifyTimer: ReturnType<typeof setTimeout> | undefined;
             let remoteRefsNotifyTimer: ReturnType<typeof setTimeout> | undefined;
             const notifyStashChanged = () => {
@@ -201,10 +222,15 @@ export class RepoHeadBranchWatcher implements vscode.Disposable {
                 headWatcher,
                 remoteRefsWatcher,
                 stashWatcher,
+                configWatcher,
                 { dispose: () => {
+                    if (configNotifyTimer) { clearTimeout(configNotifyTimer); configNotifyTimer = undefined; }
                     if (stashNotifyTimer) { clearTimeout(stashNotifyTimer); stashNotifyTimer = undefined; }
                     if (remoteRefsNotifyTimer) { clearTimeout(remoteRefsNotifyTimer); remoteRefsNotifyTimer = undefined; }
                 } },
+                configWatcher.onDidCreate(notifyConfigChanged),
+                configWatcher.onDidChange(notifyConfigChanged),
+                configWatcher.onDidDelete(notifyConfigChanged),
                 stashWatcher.onDidCreate(notifyStashChanged),
                 stashWatcher.onDidChange(notifyStashChanged),
                 stashWatcher.onDidDelete(notifyStashChanged),

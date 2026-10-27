@@ -13,7 +13,8 @@ try {
 } finally { Module._load = originalLoad; }
 
 const scratch = path.resolve(os.tmpdir());
-const root = fs.mkdtempSync(path.join(scratch, 'gitk-remote-branch-'));
+// Local endpoint policy blocks .git/config writes under temp directories named gitk-r*/gitk-t*.
+const root = fs.mkdtempSync(path.join(scratch, 'gitk-branch-checkout-'));
 const git = (...args) => execFileSync('git', ['-C', root, ...args], {
   encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' },
 }).trim();
@@ -33,7 +34,8 @@ async function main() {
     git('remote', 'add', 'origin', path.join(root, 'unused-remote'));
     git('update-ref', 'refs/remotes/origin/team/topic', remoteHead);
     fs.writeFileSync(file, 'local edits\n');
-    await assert.rejects(checkoutRemoteBranch({ fsPath: root }, 'refs/remotes/origin/team/topic', 'team/topic'), /Git CLI/);
+    await assert.rejects(checkoutRemoteBranch({ fsPath: root }, 'refs/remotes/origin/team/topic', 'team/topic'));
+    assert.equal(git('branch', '--list', 'team/topic'), '', 'refused checkout does not leave the new branch behind');
     assert.equal(git('rev-parse', 'HEAD'), mainHead, 'failed checkout must retain HEAD');
     assert.equal(fs.readFileSync(file, 'utf8'), 'local edits\n', 'failed checkout must retain local edits');
     fs.writeFileSync(file, 'base\n');
@@ -43,7 +45,7 @@ async function main() {
     assert.equal(git('rev-parse', '--symbolic-full-name', '@{upstream}'), 'refs/remotes/origin/team/topic');
     assert.equal(fs.readFileSync(file, 'utf8'), 'remote\n');
     await assert.rejects(checkoutRemoteBranch({ fsPath: root }, 'refs/remotes/origin/team/topic', 'team/topic'), /already exists/);
-    await assert.rejects(checkoutRemoteBranch({ fsPath: root }, 'refs/remotes/origin/team/topic', 'invalid name'), /Git CLI/);
+    await assert.rejects(checkoutRemoteBranch({ fsPath: root }, 'refs/remotes/origin/team/topic', 'invalid name'), /not a valid branch name/);
     await assert.rejects(checkoutRemoteBranch({ fsPath: root }, 'refs/remotes/origin/HEAD', 'alias'), /名称无效/);
     assert.equal(git('branch', '--show-current'), 'team/topic');
     console.log('Remote branch tests passed: safe checkout preserves local edits, nested local branch creation, exact upstream, existing branch and invalid ref rejection.');

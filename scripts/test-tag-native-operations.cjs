@@ -19,6 +19,9 @@ function loadOperations() {
           if (operation !== 'resolveRevision') throw new Error('Unexpected native operation: ' + operation);
           return payload.specs.map(spec => git(payload.rootPath, ['rev-parse', spec]));
         },
+        // An older binary without tagTargets/deleteTag: this test keeps covering the Git CLI fallback.
+        invokeNativeGitPriorityRead: async operation => { throw new Error('不支持的 libgit2 操作: ' + operation); },
+        invokeNativeGitMutation: async operation => { throw new Error('不支持的 libgit2 操作: ' + operation); },
       };
       return originalLoad.call(this, request, parent, isMain);
     };

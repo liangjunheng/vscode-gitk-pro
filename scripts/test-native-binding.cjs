@@ -82,6 +82,10 @@ const invokePriorityRead = async (operation, payload = {}) => invokeNativeGitPri
     assert.equal(remoteState.remotes[0].fetchUrl, 'https://example.com/origin.git');
     assert.equal(remoteState.remotes[0].pushUrl, 'https://example.com/origin.git');
     assert.equal(remoteState.operations.origin.fetch, true);
+    await invokeMutation('setRemoteOperation', { remoteName: 'origin', operation: 'pull', enabled: true });
+    assert.equal((await invoke('remoteState')).operations.origin.pull, true, 'native mutation writes local FasterGit remote settings');
+    await invokeMutation('setRemoteOperation', { remoteName: 'origin', operation: 'pull', enabled: false });
+    assert.equal((await invoke('remoteState')).operations.origin.pull, false, 'native mutation persists explicit false values');
     assert.deepEqual(await invokePriorityRead('remoteBranchesContainingHead'), []);
     assert.deepEqual(await invokePriorityRead('submoduleTopology'), []);
     assert.deepEqual(await invokePriorityRead('stashList'), []);

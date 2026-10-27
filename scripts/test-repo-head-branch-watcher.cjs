@@ -94,6 +94,8 @@ async function main() {
     const watcher = new RepoHeadBranchWatcher(repoController);
     const notifications = [];
     const subscription = watcher.onEachRepoRemoteRefsChanged(event => notifications.push(event));
+    const configNotifications = [];
+    const configSubscription = watcher.onEachRepoConfigChanged(event => configNotifications.push(event));
     try {
         const remoteWatcher = await waitForWatcher();
         assert.ok(priorityOperations.includes('discover'));
@@ -115,13 +117,30 @@ async function main() {
         await delay(60);
         assert.equal(notifications.length, 2, 'the quiet period publishes the next coalesced notification');
 
+        // Git rewrites config through config.lock + rename, so one external `git remote add`
+        // produces several events. They must collapse into one Remote refresh request.
+        const configWatcher = fileWatchers.find(item => item.pattern.pattern === 'config');
+        assert.ok(configWatcher, 'the repository .git/config is watched');
+        assert.equal(configWatcher.pattern.base.fsPath, path.join(repository.path, '.git'), 'config is watched inside the git dir');
+        configWatcher.create.fire();
+        configWatcher.change.fire();
+        configWatcher.change.fire();
+        await delay(40);
+        assert.equal(configNotifications.length, 0, 'a config write burst waits for the coalescing window');
+        await delay(100);
+        assert.deepEqual(configNotifications, [{ repositoryPath: repository.path }], 'one config burst publishes one notification');
+        assert.equal(notifications.length, 2, 'config changes do not masquerade as remote-ref changes');
+        configWatcher.change.fire();
+
         remoteWatcher.create.fire();
         watcher.dispose();
         await delay(100);
         assert.equal(notifications.length, 2, 'disposing the repository watcher cancels a pending notification');
-        console.log('Repository remote-ref watcher tests passed: bursts are trailing-debounced and disposal cancels pending work.');
+        assert.equal(configNotifications.length, 1, 'disposing the repository watcher cancels a pending config notification');
+        console.log('Repository remote-ref watcher tests passed: remote-ref and config bursts are trailing-debounced and disposal cancels pending work.');
     } finally {
         subscription.dispose();
+        configSubscription.dispose();
         watcher.dispose();
         repositoriesChanged.dispose();
     }
