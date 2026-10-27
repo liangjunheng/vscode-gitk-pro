@@ -18,6 +18,8 @@ const stashHash = '1'.repeat(40);
 const stashEntry = (hash, index, message) => ({ hash, shortHash: hash.slice(0, 8), parents: ['a'.repeat(40), 'b'.repeat(40)], message, rawMessage: message, body: '', author: 'me', authorDateLabel: 'today', stashIndex: index, stashRef: 'stash@{' + index + '}' });
 
 let stashReadResult = () => [];
+let nativeStashReadResult = async () => [];
+let actualGetStashes;
 const stashCalls = [], fileReads = [], commitFileReads = [], warnings = [], dialogs = [], controllerCalls = [], stashOperationWrites = [], stashOperationClears = [], stashCheckpointPaths = [];
 const configurationValues = new Map([['showStashes', false]]);
 const configurationWrites = [];
@@ -60,6 +62,15 @@ let GitkViewProvider, store;
 try {
   Module._load = function(name, ...args) {
     if (name === 'vscode') return vscode;
+    if (name === './nativeGitBinding') {
+      const actual = load.call(this, name, ...args);
+      return {
+        ...actual,
+        invokeNativeGitPriorityRead: async (operation, payload) => operation === 'stashList'
+          ? nativeStashReadResult(operation, payload)
+          : actual.invokeNativeGitPriorityRead(operation, payload),
+      };
+    }
     if (name === '../git/mergeOperation') return {
       readMergeOperation: async () => pendingOperation,
       runMergeOperation: async () => {},
@@ -81,12 +92,16 @@ try {
       ...load.call(this, name, ...args),
       resolveRevision: async () => heads[repoA.path].hash,
     };
-    if (name === '../git/gitLogProvider') return {
-      ...load.call(this, name, ...args),
-      getStashFiles: async (_uri, hash) => { fileReads.push(hash); return stashFilesResult.map(file => ({ ...file })); },
-      getStashes: async () => stashReadResult(),
-      getCommitFiles: async (_uri, hash) => { commitFileReads.push(hash); return []; },
-    };
+    if (name === '../git/gitLogProvider') {
+      const actual = load.call(this, name, ...args);
+      actualGetStashes ??= actual.getStashes;
+      return {
+        ...actual,
+        getStashFiles: async (_uri, hash) => { fileReads.push(hash); return stashFilesResult.map(file => ({ ...file })); },
+        getStashes: async () => stashReadResult(),
+        getCommitFiles: async (_uri, hash) => { commitFileReads.push(hash); return []; },
+      };
+    }
     return load.call(this, name, ...args);
   };
   ({ GitkViewProvider } = require('../out/webview/gitkViewProvider'));
@@ -96,6 +111,16 @@ try {
 const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
 
 (async () => {
+  nativeStashReadResult = async () => { throw new Error('native stash read failed'); };
+  await assert.rejects(() => actualGetStashes(vscode.Uri.parse(repoA.path)), /native stash read failed/,
+    'a native stash read failure is not converted into an authoritative empty list');
+  nativeStashReadResult = async () => [];
+  assert.deepEqual(await actualGetStashes(vscode.Uri.parse(repoA.path)), [],
+    'a successful empty native result remains an authoritative empty list');
+  nativeStashReadResult = async () => { throw new Error('不支持的 libgit2 操作: stashList'); };
+  assert.deepEqual(await actualGetStashes(vscode.Uri.parse(repoA.path)), [],
+    'an older native module without stashList keeps the compatibility fallback');
+
   const provider = Object.create(GitkViewProvider.prototype);
   let published;
   const selected = [];
@@ -664,10 +689,21 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   loaderPublications.length = 0; reads = 0;
   stashReadResult = async () => { if (++reads === 1) throw new Error('read failed'); return [older]; };
   const retry = makeLoader();
+  retry.stashesByRepository.set(repoA.path, [newest]);
   const failures = await Promise.allSettled([retry.loadRepositoryStashes(repoA.path, true), retry.loadRepositoryStashes(repoA.path, true)]);
-  assert.ok(failures.every(result => result.status === 'rejected'));
+  assert.ok(failures.every(result => result.status === 'fulfilled'), 'a failed refresh is absorbed after preserving the cache');
+  assert.deepEqual(retry.stashesByRepository.get(repoA.path).map(entry => entry.hash), [newest.hash],
+    'a failed read keeps the last known stash list');
+  assert.deepEqual(loaderPublications, [], 'a failed read never publishes an empty list');
   await retry.loadRepositoryStashes(repoA.path, true);
   assert.equal(reads, 2, 'a failed shared read must not poison later refreshes');
+  assert.deepEqual(retry.stashesByRepository.get(repoA.path).map(entry => entry.hash), [older.hash],
+    'the next successful refresh replaces the preserved cache');
+  assert.deepEqual(loaderPublications, [[older.hash]]);
+  stashReadResult = async () => { reads++; return []; };
+  await retry.loadRepositoryStashes(repoA.path, true);
+  assert.deepEqual(retry.stashesByRepository.get(repoA.path), [], 'a successful empty read still clears the cache');
+  assert.deepEqual(loaderPublications.at(-1), [], 'the confirmed empty list is published to the controller');
 
   loaderPublications.length = 0; reads = 0;
   stashReadResult = () => ++reads === 1 ? new Promise(resolve => { releaseFirst = resolve; }) : [older];

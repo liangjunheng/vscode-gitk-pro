@@ -3120,7 +3120,16 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 request.dirty = false;
                 const generation = (this.stashLoadingByRepository.get(repositoryPath) ?? 0) + 1;
                 this.stashLoadingByRepository.set(repositoryPath, generation);
-                const stashes = await getStashes(rootUri);
+                let stashes: StashEntry[];
+                try {
+                    stashes = await getStashes(rootUri);
+                } catch (error) {
+                    // A failed read is not an authoritative empty list. Keep the last known entries so
+                    // Pull/Fetch ref updates cannot make valid Stashes disappear from the commit list.
+                    console.warn('无法刷新 stash 列表，保留现有缓存:', repositoryPath, error);
+                    if (request.dirty) { continue; }
+                    return;
+                }
                 if (loads.get(repositoryPath) !== request
                     || this.stashLoadingByRepository.get(repositoryPath) !== generation) { return; }
                 if (request.dirty) { continue; }

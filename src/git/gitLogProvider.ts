@@ -723,8 +723,9 @@ interface NativeStashEntry extends NativeCommitMetadata {
 }
 
 /**
- * 读取仓库的全部 stash（最新在前）。只读，不联网；
- * 原生层不支持（旧二进制）或读取失败时返回空数组，保证状态刷新不被它打断。
+ * 读取仓库的全部 stash（最新在前）。只读，不联网。
+ * 除旧原生模块明确不支持 stashList 外，读取失败必须向调用方抛出：空数组只表示
+ * 一次成功读取确认仓库没有 stash，不能把临时 refs 竞态或原生读取错误伪装成空列表。
  */
 export async function getStashes(rootUri: vscode.Uri): Promise<StashEntry[]> {
     try {
@@ -736,8 +737,9 @@ export async function getStashes(rootUri: vscode.Uri): Promise<StashEntry[]> {
             stashRef: entry.stashRef,
         }) as StashEntry);
     } catch (error) {
-        console.warn('无法读取 stash 列表:', rootUri.toString(), error);
-        return [];
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes('不支持的 libgit2 操作')) { return []; }
+        throw error;
     }
 }
 
