@@ -440,6 +440,11 @@ function acquireSlot(entry){
   const initialHeight=Math.max(80,entry.bodyHeight||80);
   slot.owner=entry;slot.generation++;slot.host.style.height=initialHeight+'px';entry.body.style.height=initialHeight+'px';entry.body.replaceChildren(slot.host);return slot;
 }
+function flushEntrySave(entry){
+  if(!entry.saveTimer)return;
+  clearTimeout(entry.saveTimer);entry.saveTimer=0;
+  try{window.gitkVscode.postMessage({type:'saveFile',path:entry.diff.path,content:entry.modifiedValue})}catch(_){}
+}
 function disposeEntry(entry){
   disposeMerge(entry);
   mountedEntries.delete(entry);queuedEditorMounts.delete(entry);
@@ -447,18 +452,19 @@ function disposeEntry(entry){
   entry.mountVersion++;
   if(entry.path===activePath)globalHScroll.hidden=true;
   entry.searchOriginalDecorations=[];entry.searchModifiedDecorations=[];
-  if(entry.saveTimer){clearTimeout(entry.saveTimer);entry.saveTimer=0}
   if(entry.modified){
     entry.modifiedValue=entry.modified.getValue();
     entry.originalSelections=entry.editor.getOriginalEditor().getSelections();
     entry.modifiedSelections=entry.editor.getModifiedEditor().getSelections();
   }
+  // 折叠或虚拟化回收不能取消尚未到期的防抖保存，否则用户刚输入的内容只留在内存模型中。
+  flushEntrySave(entry);
   for(const disposable of entry.disposables||[]){try{disposable.dispose()}catch(_){}}
   entry.disposables=[];
   if(entry.slot)releaseSlot(entry.slot);
   if(entry.original){try{entry.original.dispose()}catch(_){}}
   if(entry.modified){try{entry.modified.dispose()}catch(_){}}
-  entry.slot=null;entry.editor=null;entry.original=null;entry.modified=null;entry.fit=function(){};entry.mounted=false;entry.mounting=false;
+  entry.slot=null;entry.editor=null;entry.original=null;entry.modified=null;entry.fit=function(){};entry.editHeightLock=0;entry.mounted=false;entry.mounting=false;
   if(entry.body&&!entry.collapsed&&!entry.staticContent){entry.body.replaceChildren();entry.body.style.height=Math.max(80,entry.bodyHeight||80)+'px'}
 }
 function dispose(){
@@ -600,7 +606,7 @@ function estimateBodyHeight(diff){
 // 先创建轻量逻辑项外壳，Monaco 模板只绑定可视范围，离屏后归还对象池。
 function createEntry(diff,order){
   const key=diffKey(diff),loaded=diff.loaded===true;
-  return {diff:diff,index:order,path:key,filePath:diff.path,card:null,header:null,meta:null,pinnedGroup:null,body:null,slot:null,editor:null,original:null,modified:null,modifiedValue:diff.modified||'',syncingModel:false,originalSelections:null,modifiedSelections:null,navigationChangeCount:null,bodyHeight:loaded?estimateBodyHeight(diff):80,pinnedHeight:62,horizontalLeft:0,flashOverlay:null,flashTimer:0,collapsed:false,staticContent:!loaded,mounted:false,mounting:false,mountVersion:0,saveTimer:0,searchOriginalDecorations:[],searchModifiedDecorations:[],disposables:[],fit:function(){}};
+  return {diff:diff,index:order,path:key,filePath:diff.path,card:null,header:null,meta:null,pinnedGroup:null,body:null,slot:null,editor:null,original:null,modified:null,modifiedValue:diff.modified||'',syncingModel:false,editHeightLock:0,originalSelections:null,modifiedSelections:null,navigationChangeCount:null,bodyHeight:loaded?estimateBodyHeight(diff):80,pinnedHeight:62,horizontalLeft:0,flashOverlay:null,flashTimer:0,collapsed:false,staticContent:!loaded,mounted:false,mounting:false,mountVersion:0,saveTimer:0,searchOriginalDecorations:[],searchModifiedDecorations:[],disposables:[],fit:function(){}};
 }
 function ensureVirtualRoot(){
   if(virtualRoot)return;
@@ -1047,15 +1053,26 @@ function mountEntry(entry,fromScroll=false){
     }));
     if(entryEditable){
       // 仅工作区一侧允许编辑回写，Staged 卡片保持只读。
+      const beginEditing=function(){if(!entry.editHeightLock)entry.editHeightLock=Math.max(80,entry.bodyHeight||80)};
+      entry.disposables.push(modifiedEditor.onDidFocusEditorText(beginEditing));
+      entry.disposables.push(modifiedEditor.onKeyDown(beginEditing));
+      const modifiedDom=modifiedEditor.getDomNode();
+      if(modifiedDom){modifiedDom.addEventListener('pointerdown',beginEditing,true);entry.disposables.push({dispose:function(){modifiedDom.removeEventListener('pointerdown',beginEditing,true)}})}
       entry.disposables.push(modified.onDidChangeContent(function(){
         if(entry.syncingModel)return;
+        // Monaco 会在每次输入后重新计算 diff 与折叠未改动区域；内容高度会经历多个中间值。
+        // 编辑期间锁住卡片外层高度，避免这些内部重排把整张 Unstaged 卡片拉伸/压缩并触发页面锚定跳动。
+        if(!entry.editHeightLock)entry.editHeightLock=Math.max(80,entry.bodyHeight||80);
         entry.modifiedValue=modified.getValue();
         if(entry.saveTimer)clearTimeout(entry.saveTimer);
-        entry.saveTimer=setTimeout(function(){
-          entry.saveTimer=0;
-          try{window.gitkVscode.postMessage({type:'saveFile',path:diff.path,content:entry.modifiedValue})}catch(_){}
-        },400);
+        entry.saveTimer=setTimeout(function(){flushEntrySave(entry)},400);
         scheduleSearchRefresh();
+      }));
+      entry.disposables.push(modifiedEditor.onDidBlurEditorText(function(){
+        if(!entry.editHeightLock)return;
+        entry.editHeightLock=0;
+        // 结束编辑后再按最终 diff 一次性收敛高度；不要把 Monaco 计算过程中的中间高度暴露给页面。
+        requestAnimationFrame(function(){if(entry.mountVersion===mountVersion&&entry.mounted)fit()});
       }));
     }
     // 折叠未改动区域的图标用 glyphMarginClassName 渲染, DiffEditor 默认只给左侧开 glyphMargin,
@@ -1115,11 +1132,14 @@ function mountEntry(entry,fromScroll=false){
     try{
       const left=editor.getOriginalEditor(),right=editor.getModifiedEditor();
       const width=Math.ceil(host.clientWidth||Math.max(0,window.innerWidth-18));
-      const currentHeight=Math.max(80,entry.bodyHeight||80);
+      const lockedHeight=entry.editHeightLock||0;
+      const currentHeight=Math.max(80,lockedHeight||entry.bodyHeight||80);
       // 先用当前卡片尺寸完成一次真实 layout，再读取 Monaco 内容高度；复用 host 或首次挂载时缓存值可能已过期。
       entry.body.style.height=currentHeight+'px';host.style.height=currentHeight+'px';
       editor.layout({width:width,height:currentHeight});
       const nextHeight=Math.ceil(Math.max(80,left.getContentHeight(),right.getContentHeight()));
+      // 输入时 diff worker / hideUnchangedRegions 会连续报告不同的 contentHeight；只更新 Monaco 内部布局，外层保持锁定。
+      if(lockedHeight){if(entry.path===activePath)updateGlobalHScroll();return}
       const delta=nextHeight-entry.bodyHeight;
       const heightChanged=Math.abs(delta)>.5;
       const viewportAnchor=heightChanged?captureViewportAnchorForEntry(entry):null;
@@ -1641,7 +1661,7 @@ function updateEntryFromSnapshot(entry,diff){
   try{
     const old=entry.diff;
     const wasLoaded=entry.diff.loaded===true,isLoaded=diff.loaded===true;
-    entry.diff=diff;entry.filePath=diff.path;entry.modifiedValue=diff.modified||entry.modifiedValue;
+    entry.diff=diff;entry.filePath=diff.path;if(typeof diff.modified==='string')entry.modifiedValue=diff.modified;
     if(entry.card)entry.card.dataset.workingTreeKind=diff.workingTreeKind||'';
     if(diff.workingTreeKind==='conflict'&&!diff.isGitlink){
       entry.staticContent=true;entry.bodyHeight=620;entry.navigationChangeCount=0;layoutDirty=true;
