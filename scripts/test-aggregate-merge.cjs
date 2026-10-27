@@ -308,13 +308,36 @@ async function main(){
   const currentText=baseText.replace('line 100\n','ours\n'),incomingText=baseText.replace('line 100\n','theirs\n');
   for(const [i,name] of ['before.ts','wheel.ts','after.ts'].entries())await publish({type:'mergeLoaded',key:'conflict:'+name,identity:scrollIdentity,sessionId:i+1,snapshot:{type:'snapshot',path:name,base:baseText,current:currentText,incoming:incomingText,plan:createMergePlan(baseText,currentText,incomingText)}});
   await page.waitForFunction(()=>document.querySelectorAll('.merge-card').length===3);
+  // The outer document must first place the whole Merge Editor at the sticky top;
+  // a wheel event over a partially visible card may not move any Monaco pane.
+  const gateHost=page.locator('.diff[data-path="wheel.ts"] .merge-result-host');
+  const gateBefore=await gateHost.evaluate(async node=>{
+   window.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));
+   const card=node.closest('.diff');
+   window.scrollTo(0,window.scrollY+card.getBoundingClientRect().top-160);
+   await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+   const editor=monaco.editor.getEditors().find(editor=>node.contains(editor.getDomNode()));
+   const max=editor.getScrollHeight()-editor.getLayoutInfo().height;
+   editor.setScrollTop(Math.floor(max/2));
+   return {page:window.scrollY,top:editor.getScrollTop()};
+  });
+  const gateRect=await gateHost.boundingBox();
+  await page.mouse.move(gateRect.x+gateRect.width/2,gateRect.y+Math.min(50,gateRect.height/2));
+  await page.mouse.wheel(0,120);
+  await page.waitForFunction(()=>Math.abs(document.querySelector('.diff[data-path="wheel.ts"]').getBoundingClientRect().top)<2);
+  const gateAfter=await gateHost.evaluate(node=>{const editor=monaco.editor.getEditors().find(editor=>node.contains(editor.getDomNode())),card=node.closest('.diff'),root=card.querySelector('.merge-card'),group=card.querySelector('.pinned-group'),rootRect=root.getBoundingClientRect(),groupRect=group.getBoundingClientRect();return {page:window.scrollY,top:editor.getScrollTop(),cardTop:card.getBoundingClientRect().top,rootTop:rootRect.top,rootBottom:rootRect.bottom,headerBottom:groupRect.bottom,viewportHeight:innerHeight}});
+  assert.notEqual(gateAfter.page,gateBefore.page,'Partially visible Merge Editor must first align its card with the sticky top');
+  assert.ok(Math.abs(gateAfter.cardTop)<2,'Merge Editor card must align with the sticky top before pane scrolling');
+  assert.ok(gateAfter.rootTop>=gateAfter.headerBottom-1&&gateAfter.rootBottom<=gateAfter.viewportHeight+1,'Merge Editor body must be fully displayed before pane scrolling');
+  assert.equal(gateAfter.top,gateBefore.top,'Alignment wheel must not scroll a pane before the card is fully displayed');
+
   for(const selector of ['.merge-pane:nth-child(1) .merge-editor-host','.merge-pane:nth-child(2) .merge-editor-host','.merge-result-host']){
    const host=page.locator('.diff[data-path="wheel.ts"] '+selector);
    for(const [boundary,delta] of [['top',-120],['bottom',120],['middle',120],['top',120],['bottom',-120]]){
     const before=await host.evaluate(async(node,boundary)=>{
      window.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));
      const card=node.closest('.diff');
-     window.scrollTo(0,window.scrollY+card.getBoundingClientRect().top-60);
+     window.scrollTo(0,window.scrollY+card.getBoundingClientRect().top);
      await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
      const editor=monaco.editor.getEditors().find(editor=>node.contains(editor.getDomNode()));
      const max=editor.getScrollHeight()-editor.getLayoutInfo().height;
@@ -345,7 +368,7 @@ async function main(){
    const before=await host.evaluate(async node=>{
     window.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));
     const card=node.closest('.diff');
-    window.scrollTo(0,window.scrollY+card.getBoundingClientRect().top-60);
+    window.scrollTo(0,window.scrollY+card.getBoundingClientRect().top);
     await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
     const editors=monaco.editor.getEditors().filter(editor=>card.contains(editor.getDomNode()));
     for(const editor of editors)editor.getModel().setValue('short\n');
