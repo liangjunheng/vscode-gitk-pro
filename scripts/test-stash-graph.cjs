@@ -3,7 +3,7 @@ const Module = require('node:module');
 
 // Stash 穿插进提交图: 用真实的 GitCommitController 验证
 //  - stash 作为单一父提交(基线)的一行, 放在第一条等于基线的提交之前, 并带上正确的泳道;
-//  - 基线未加载的 stash 不进图, 计入 hiddenStashCount;
+//  - 基线未加载或 Pull/rebase 后不再属于当前历史的 stash 仍显示为顶部未锚定行;
 //  - 开关/搜索关闭它; 缓存页只存真实提交 (分页偏移不被 stash 污染); 默认选中的是真实提交。
 class Emitter {
   listeners = new Set();
@@ -71,8 +71,8 @@ const rows = controller => controller.searchedCommitList.map(c => (c.isStash ? '
     assert.deepEqual(rows(controller), ['c4', 'c3', 'c2', 'c1'], 'no stash row by default');
     assert.equal(controller.hiddenStashCounts.get(repo.path), undefined, 'and nothing is reported as hidden while the toggle is off');
     assert.equal(controller.setStashesVisible(true), true);
-    assert.deepEqual(rows(controller), ['c4', 'c3', 'stash:stash@{0}', 'c2', 'c1'], 'turning the toggle on shows the loaded stash');
-    assert.equal(controller.hiddenStashCounts.get(repo.path), 1, 'and now the stash without a loaded base is counted');
+    assert.deepEqual(rows(controller), ['stash:stash@{1}', 'c4', 'c3', 'stash:stash@{0}', 'c2', 'c1'], 'turning the toggle on shows anchored and unanchored stashes');
+    assert.equal(controller.hiddenStashCounts.get(repo.path), undefined, 'every stash remains visible while the toggle is on');
     controller.setStashesVisible(false);
     assert.deepEqual(rows(controller), ['c4', 'c3', 'c2', 'c1'], 'turning it off hides them again');
   }
@@ -129,13 +129,34 @@ const rows = controller => controller.searchedCommitList.map(c => (c.isStash ? '
     assert.deepEqual(rows(controller), ['stash:stash@{2}', 'c4', 'c3', 'stash:stash@{0}', 'stash:stash@{1}', 'c2', 'c1'], 'each stash above its own base; newest first among the same base');
   }
 
-  // 3) 基线没加载 (分页没到 / 不在所选分支): 不进图, 如实计数
+  // 3) 基线没加载 (分页没到 / 不在所选分支): 仍显示为顶部未锚定行
   {
     const controller = make();
     await prime(controller, repo);
     controller.setStashes(repo.path, [stash('5', '2', 0), stash('9', 'f', 1)]);
-    assert.deepEqual(rows(controller), ['c4', 'c3', 'stash:stash@{0}', 'c2', 'c1']);
-    assert.equal(controller.hiddenStashCounts.get(repo.path), 1, 'the stash whose base is not loaded is counted, not silently dropped');
+    assert.deepEqual(rows(controller), ['stash:stash@{1}', 'c4', 'c3', 'stash:stash@{0}', 'c2', 'c1']);
+    const unanchored = controller.searchedCommitList[0];
+    assert.deepEqual(unanchored.parents, [], 'an unavailable base is not replaced with a misleading current-history parent');
+    assert.equal(controller.hiddenStashCounts.get(repo.path), undefined, 'the stash stays visible instead of becoming hidden');
+  }
+
+  // 3b) Pull/rebase 重写当前历史后，原 HEAD 上创建的 stash 不能从列表消失
+  {
+    const controller = make();
+    await prime(controller, repo);
+    controller.setStashes(repo.path, [stash('5', '4', 0)]);
+    assert.deepEqual(rows(controller), ['stash:stash@{0}', 'c4', 'c3', 'c2', 'c1'], 'the newly created stash starts above its original HEAD');
+    const pulled = [['8', '7'], ['7', '6'], ['6', null]].map(([hash, parent]) => ({
+      hash: h(hash), shortHash: hash.repeat(8), parents: parent ? [h(parent)] : [], refs: [], message: 'pulled ' + hash,
+      rawMessage: 'pulled ' + hash, author: 'me', authorDate: '2026-10-27T10:00:00+08:00',
+      gitBranchOption: branch(repo, h('8')),
+    }));
+    controller.branchesByRepository = new Map([[repo.path, [branch(repo, h('8'))]]]);
+    controller.commitPageByRepository.set(repo.path, pulled);
+    controller.commitPageOffsetByRepository.set(repo.path, pulled.length);
+    controller.searched = controller.buildPagedCommits();
+    assert.deepEqual(rows(controller), ['stash:stash@{0}', 'c8', 'c7', 'c6'], 'the stash remains visible after Pull rewrites away its base');
+    assert.deepEqual(controller.searchedCommitList[0].parents, [], 'the post-Pull fallback remains explicitly unanchored');
   }
 
   // 4) 开关关闭: 图里没有 stash; 重新打开恢复; 不重新读取 git log
@@ -216,16 +237,16 @@ const rows = controller => controller.searchedCommitList.map(c => (c.isStash ? '
     controller.commitPageByRepository.set(repo.path, linear.slice(0, 2).map(c => ({ ...c, parents: [...c.parents], gitBranchOption: branch(repo, c.hash) })));
     controller.commitPageOffsetByRepository.set(repo.path, 2);
     controller.setStashes(repo.path, [stash('5', '1', 0)]);
-    assert.deepEqual(rows(controller), ['c4', 'c3'], 'the base is not loaded yet, so no stash row');
-    assert.equal(controller.hiddenStashCounts.get(repo.path), 1, 'and it is reported as not yet shown');
+    assert.deepEqual(rows(controller), ['stash:stash@{0}', 'c4', 'c3'], 'the base is not loaded yet, so the stash stays visible at the top');
+    assert.equal(controller.hiddenStashCounts.get(repo.path), undefined, 'the fallback is visible, not hidden');
     // loadMoreCommits 追加下一页后会走同一条重建路径
     controller.commitPageByRepository.set(repo.path, [...controller.commitPageByRepository.get(repo.path), ...linear.slice(2).map(c => ({ ...c, parents: [...c.parents], gitBranchOption: branch(repo, c.hash) }))]);
     controller.commitPageOffsetByRepository.set(repo.path, 4);
     controller.searched = controller.buildPagedCommits();
     assert.deepEqual(rows(controller), ['c4', 'c3', 'c2', 'stash:stash@{0}', 'c1'], 'once the base page is loaded the stash appears above it');
-    assert.equal(controller.hiddenStashCounts.get(repo.path), undefined, 'and is no longer counted as hidden');
+    assert.equal(controller.hiddenStashCounts.get(repo.path), undefined, 'and remains visible after it becomes anchored');
     assert.ok(controller.searchedCommitList.every(c => c.gitBranchOption && c.gitBranchOption.repoOption.path === repo.path), 'every row, stash included, carries its repository branch');
   }
 
-  console.log('Stash graph passed: interleaved above the base commit on the base lane, same-base ordering, unloaded-base count, toggle without re-reading git, real-commit-only pages, search hides stashes, latest/default selection skips stash rows, repository isolation, in-flight guard.');
+  console.log('Stash graph passed: anchored placement, unanchored Pull/rebase fallback, same-base ordering, toggle without re-reading git, real-commit-only pages, search hides stashes, latest/default selection skips stash rows, repository isolation, in-flight guard.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
