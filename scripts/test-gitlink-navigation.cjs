@@ -141,6 +141,33 @@ async function main() {
   assert.equal(dirtyPayload.original, '');
   assert.equal(dirtyPayload.modified, '');
 
+  const uncommittedSelection = fixture();
+  uncommittedSelection.provider.commitFilesGeneration = 0;
+  uncommittedSelection.provider.pendingDiffPaths = new Set();
+  uncommittedSelection.provider.workingTreeDiffCache = new Map();
+  uncommittedSelection.provider.diffReader = { stop() {} };
+  uncommittedSelection.provider.priorityDiffReader = { stop() {} };
+  uncommittedSelection.provider.priorityDiffLoadGeneration = 0;
+  const uncommittedGitlink = new CommitFile({ path: 'child', status: 'M', isGitlink: true,
+    oldMode: '160000', newMode: '160000', oldObjectId: sha, newObjectId: sha });
+  const normalizedGitlink = new CommitFile({ ...uncommittedGitlink,
+    workingTreeKind: 'unstaged', diffKey: 'unstaged:child' });
+  const staleEmptyPayload = new DiffPayload({ ...normalizedGitlink, gitlinkScanPending: false,
+    gitlinkWorktreeDirty: false, original: '', modified: '' });
+  const cacheKey = uncommittedSelection.provider.getWorkingTreeDiffCacheKey(
+    uncommittedSelection.root.path, 'uncommitted', [normalizedGitlink],
+  );
+  uncommittedSelection.provider.workingTreeDiffCache.set(cacheKey, [staleEmptyPayload]);
+  store.setState({ currentHash: 'uncommitted', currentRepositoryPath: uncommittedSelection.root.path,
+    files: [], selectedPath: undefined, diffGeneration: 0 });
+  await uncommittedSelection.provider.selectWorkingTreeChanges(
+    new WorkingTreeChanges({ changes: [uncommittedGitlink] }), false, false, undefined, false,
+  );
+  const selectedUncommittedCard = store.getState().files[0];
+  assert.equal(selectedUncommittedCard instanceof DiffPayload, false,
+    'selecting Uncommitted Changes must re-read a cached Gitlink instead of restoring its false empty card');
+  assert.equal(selectedUncommittedCard.diffKey, 'unstaged:child');
+
   const nonBlocking = fixture();
   const oldHash = 'b'.repeat(40), newHash = 'c'.repeat(40);
   let releaseStatus, refreshSettled = false;
@@ -176,6 +203,40 @@ async function main() {
   releaseStatus(new WorkingTreeChanges({ changes: [new CommitFile({ path: 'late.ts' })] }));
   await refresh;
   assert.equal(store.getState().files[0].gitlinkWorktreeChangeCount, 1, 'child status enriches the already-visible card later');
+
+  const missingDirtyHint = fixture();
+  missingDirtyHint.provider.commitFilesGeneration = 8;
+  missingDirtyHint.provider.diffReader = reader;
+  let releaseEmptyBootstrap;
+  missingDirtyHint.provider.uncommittedFilesWatcher.listCurrentHeadBranches = () => [{
+    kind: 'current', hash: 'h'.repeat(40),
+    repoOption: { path: 'file://' + path.resolve('/root', 'child') },
+  }];
+  missingDirtyHint.provider.uncommittedFilesWatcher.getCachedUncommittedFilesByHeadBranch = () => undefined;
+  missingDirtyHint.provider.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch = () =>
+    new Promise(resolve => { releaseEmptyBootstrap = resolve; });
+  missingDirtyHint.provider.gitBackend = {
+    getWorkingTreeStatus: async () => new WorkingTreeChanges({ changes: [new CommitFile({ path: 'actual-dirty.ts' })] }),
+  };
+  priorityCommitDetails = async () => [];
+  priorityRangeCommits = async () => [];
+  const missingHintSource = new CommitFile({ path: 'child', diffKey: 'unstaged:child', isGitlink: true,
+    workingTreeKind: 'unstaged', gitlinkScanPending: true, oldObjectId: sha, newObjectId: sha, status: 'M' });
+  store.setState({ currentRepositoryPath: missingDirtyHint.root.path,
+    files: [new DiffPayload({ ...missingHintSource, original: '', modified: '' })] });
+  const missingHintRefresh = missingDirtyHint.provider.refreshGitlinkDiffs(
+    { fsPath: '/root', toString: () => missingDirtyHint.root.path }, [missingHintSource], 8,
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(store.getState().files[0].gitlinkScanPending, false,
+    'a valid parent Gitlink SHA is renderable while child status is unresolved');
+  assert.equal(store.getState().files[0].oldObjectId, sha);
+  releaseEmptyBootstrap(new WorkingTreeChanges());
+  await missingHintRefresh;
+  const recoveredDirtyCard = store.getState().files[0];
+  assert.equal(recoveredDirtyCard.gitlinkScanPending, false, 'the spinner clears after direct child status verification');
+  assert.equal(recoveredDirtyCard.gitlinkWorktreeDirty, true, 'direct status recovers a dirty child without a parent hint');
+  assert.equal(recoveredDirtyCard.gitlinkWorktreeChangeCount, 1);
 
   const independentCards = fixture('d'.repeat(40));
   independentCards.provider.commitFilesGeneration = 8;
@@ -217,10 +278,43 @@ async function main() {
   };
   transientMetadata.provider.uncommittedFilesWatcher.getUncommittedFilesByHeadBranch = async () => new WorkingTreeChanges();
   const transient = new CommitFile({ path: 'child', isGitlink: true, workingTreeKind: 'unstaged',
-    gitlinkWorktreeDirty: true, oldObjectId: sha, newObjectId: sha });
+    oldObjectId: sha, newObjectId: sha });
   await transientMetadata.provider.refreshGitlinkWorktreeStates({ fsPath: '/root', toString: () => 'file:///root' }, [transient]);
-  assert.equal(transient.gitlinkWorktreeDirty, true, 'an empty watcher bootstrap cannot hide a dirty child worktree');
+  assert.equal(transient.gitlinkWorktreeDirty, true, 'an empty watcher bootstrap cannot hide a dirty child without a parent hint');
   assert.equal(transient.gitlinkWorktreeChangeCount, 2, 'the card uses the direct child snapshot count');
+
+  const failedStatus = fixture();
+  failedStatus.provider.uncommittedFilesWatcher.listCurrentHeadBranches = () => [];
+  failedStatus.provider.gitBackend = { getWorkingTreeStatus: async () => { throw new Error('status raced'); } };
+  const unresolvedStatus = new CommitFile({ path: 'child', isGitlink: true, workingTreeKind: 'unstaged',
+    gitlinkScanPending: true, status: 'M' });
+  await failedStatus.provider.refreshGitlinkWorktreeStates(
+    { fsPath: '/root', toString: () => 'file:///root' }, [unresolvedStatus],
+  );
+  assert.equal(unresolvedStatus.gitlinkScanPending, true,
+    'a failed child status read remains unresolved instead of becoming a false empty result');
+
+  const cleanedWorktree = fixture();
+  cleanedWorktree.provider.commitFilesGeneration = 10;
+  cleanedWorktree.provider.diffReader = reader;
+  cleanedWorktree.provider.uncommittedFilesWatcher.listCurrentHeadBranches = () => [];
+  cleanedWorktree.provider.gitBackend = { getWorkingTreeStatus: async () => new WorkingTreeChanges() };
+  priorityCommitDetails = async (_uri, hashes) => hashes.map(hash => ({
+    hash, shortHash: hash.slice(0, 8), subject: 'same pointer', message: 'same pointer',
+  }));
+  priorityRangeCommits = async () => [];
+  const cleanedSource = new CommitFile({ path: 'child', diffKey: 'unstaged:child', isGitlink: true,
+    workingTreeKind: 'unstaged', gitlinkWorktreeDirty: true, gitlinkScanPending: true,
+    oldObjectId: sha, newObjectId: sha, status: 'M' });
+  store.setState({ currentRepositoryPath: cleanedWorktree.root.path, selectedPath: cleanedSource.diffKey,
+    files: [new DiffPayload({ ...cleanedSource, original: '', modified: '' })] });
+  await cleanedWorktree.provider.refreshGitlinkDiffs(
+    { fsPath: '/root', toString: () => cleanedWorktree.root.path }, [cleanedSource], 10,
+  );
+  assert.equal(store.getState().files.length, 0,
+    'a confirmed clean same-OID Gitlink is removed instead of rendering an empty card');
+  assert.equal(store.getState().selectedPath, undefined);
+
   console.log('Gitlink navigation: explicit SHA, all worktree groups, clean fallback, card ownership, cancellation and metadata patches passed');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

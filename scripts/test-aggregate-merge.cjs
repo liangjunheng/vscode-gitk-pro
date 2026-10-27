@@ -245,6 +245,16 @@ async function main(){
   await publish({type:'snapshot',revision:20.8,identity:'file:///gitlinks\0range',loading:false,editable:true,diffs:[{...links[1],workingTreeKind:undefined,gitlinkWorktreeDirty:false,oldObjectId:base,newObjectId:sha,oldGitlinkCommit:{hash:base,shortHash:'ccccccc',subject:'old pointer'},newGitlinkCommit:{hash:sha,shortHash:'aaaaaaa',subject:'new pointer'},gitlinkRangeCommits:[{hash:sha,shortHash:'aaaaaaa',subject:'new pointer'}]}],total:1,completed:1,selectionEpoch:20.8});
   await page.waitForFunction(hash=>document.querySelectorAll('.gitlink-commit[data-hash="'+hash+'"]').length===1,sha);
   assert.equal(await page.locator('.gitlink-commit[data-hash="'+base+'"]').count(),0,'the old index object is not a commit in the gitlink range list');
+  const emptyRange={...link(undefined),diffKey:'history:empty-range',workingTreeKind:undefined,gitlinkWorktreeDirty:false,
+   oldObjectId:base,newObjectId:sha,oldGitlinkCommit:{hash:base,shortHash:'ccccccc',subject:'old endpoint'},
+   newGitlinkCommit:{hash:sha,shortHash:'aaaaaaa',subject:'new endpoint'},gitlinkRangeCommits:[]};
+  await publish({type:'snapshot',revision:20.82,identity:'file:///gitlinks\0empty-range',loading:false,editable:false,diffs:[emptyRange],total:1,completed:1,selectionEpoch:20.82});
+  await page.waitForFunction(({oldHash,newHash})=>document.querySelectorAll('.gitlink-commit[data-hash="'+oldHash+'"]').length===1&&document.querySelectorAll('.gitlink-commit[data-hash="'+newHash+'"]').length===1,{oldHash:base,newHash:sha});
+  assert.equal(await page.getByText('没有可显示的子模块提交。').count(),0,'an empty old..new range falls back to endpoint commits');
+  const rawOnly={...emptyRange,diffKey:'history:raw-only',oldGitlinkCommit:undefined,newGitlinkCommit:undefined};
+  await publish({type:'snapshot',revision:20.84,identity:'file:///gitlinks\0raw-only',loading:false,editable:false,diffs:[rawOnly],total:1,completed:1,selectionEpoch:20.84});
+  await page.waitForFunction(({oldHash,newHash})=>document.querySelectorAll('.gitlink-commit[data-hash="'+oldHash+'"]').length===1&&document.querySelectorAll('.gitlink-commit[data-hash="'+newHash+'"]').length===1,{oldHash:base,newHash:sha});
+  assert.equal(await page.getByText('提交说明未加载').count(),2,'valid parent Gitlink SHAs remain visible without child commit metadata');
   await publish({type:'snapshot',revision:20.9,identity:'file:///gitlinks\0uncommitted',loading:false,editable:true,diffs:links,total:3,completed:3,selectionEpoch:20.9});
   await page.waitForFunction(()=>document.querySelectorAll('.gitlink-worktree').length===3);
   await publish({type:'diffUpdates',revision:21,identity:'file:///gitlinks\0uncommitted',loading:false,diffs:[{...links[0],gitlinkConflictIncomingCommit:{hash:incoming,shortHash:'bbbbbbb',subject:'incoming metadata loaded'}}]});

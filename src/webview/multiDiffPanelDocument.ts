@@ -502,6 +502,15 @@ function gitlinkDisplayState(diff){
   const pointerChanged=Boolean(diff.oldObjectId&&diff.newObjectId&&diff.oldObjectId!==diff.newObjectId);
   return {worktreeDirty,pointerChanged,worktreeOnly:worktreeDirty&&diff.oldObjectId===diff.newObjectId};
 }
+function realGitlinkObjectId(hash){return typeof hash==='string'&&hash.length>0&&!/^0+$/.test(hash)}
+function gitlinkCommitOrHash(commit,hash){
+  if(commit)return commit;
+  if(!realGitlinkObjectId(hash))return undefined;
+  return {hash:hash,shortHash:hash.slice(0,7),subject:'提交说明未加载'};
+}
+function gitlinkEndpointCommits(diff){
+  return [diff.status==='A'?undefined:gitlinkCommitOrHash(diff.oldGitlinkCommit,diff.oldObjectId),diff.status==='D'?undefined:gitlinkCommitOrHash(diff.newGitlinkCommit,diff.newObjectId)].filter(function(commit,index,values){return commit&&values.findIndex(function(item){return item&&item.hash===commit.hash})===index});
+}
 function gitlinkWorktreeStatusText(diff){const count=Number.isInteger(diff.gitlinkWorktreeChangeCount)?diff.gitlinkWorktreeChangeCount:null;return count===null?'子模块存在未提交变更':'子模块有 '+count+' 个未提交变更文件'}
 function gitlinkBodyHtml(diff){
   const state=gitlinkDisplayState(diff);
@@ -521,7 +530,8 @@ function gitlinkBodyHtml(diff){
     return '<div class="gitlink-commits gitlink-conflict-commits">'+notice+rows+worktree+'</div>';
   }
   if(diff.gitlinkScanPending)return (worktree?'<div class="gitlink-commits">'+worktree+'</div>':'')+'<div class="empty gitlink-loading"><span class="gitlink-loading-spinner" aria-hidden="true"></span><span>正在扫描子模块提交…</span></div>';
-  const commits=state.worktreeOnly?[]:(Array.isArray(diff.gitlinkRangeCommits)?diff.gitlinkRangeCommits:[diff.status==='A'?undefined:diff.oldGitlinkCommit,diff.status==='D'?undefined:diff.newGitlinkCommit].filter(function(commit,index,values){return commit&&values.findIndex(function(item){return item&&item.hash===commit.hash})===index}));
+  const rangeCommits=Array.isArray(diff.gitlinkRangeCommits)&&diff.gitlinkRangeCommits.length>0?diff.gitlinkRangeCommits:undefined;
+  const commits=state.worktreeOnly?[]:(rangeCommits||gitlinkEndpointCommits(diff));
   const rows=commits.map(function(commit){return '<button type="button" class="gitlink-commit" data-hash="'+escapeHtml(commit.hash)+'" title="查看子模块提交 '+escapeHtml(commit.hash)+'"><span class="gitlink-commit-hash">'+escapeHtml(commit.shortHash||String(commit.hash||'').slice(0,7))+'</span><span class="gitlink-commit-message">'+escapeHtml(commit.message||commit.subject||'')+'</span></button>'}).join('');
   return rows||worktree?'<div class="gitlink-commits">'+rows+worktree+'</div>':'<div class="empty">没有可显示的子模块提交。</div>';
 }
