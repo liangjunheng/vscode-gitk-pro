@@ -4417,11 +4417,13 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                                         return stashPathKeys.some(stashPath => filePathKey === stashPath
                                             || filePathKey.startsWith(`${stashPath}/`) || stashPath.startsWith(`${filePathKey}/`));
                                     };
-                                    const overlappingLocalPaths = [...statusBeforeApply.staged, ...statusBeforeApply.changes]
+                                    // Git merges staged-only paths (conflicts become Merge Changes); it aborts only
+                                    // when an unstaged or untracked local file would be overwritten.
+                                    const overlappingLocalPaths = statusBeforeApply.changes
                                         .filter(file => overlapsStashPath(file.path))
                                         .map(file => file.path);
                                     if (overlappingLocalPaths.length > 0) {
-                                        throw new Error(`以下 Stash 路径已有本地修改，Git 会在创建 Merge Changes 前中止：${[...new Set(overlappingLocalPaths)].join('、')}`);
+                                        throw new Error(`以下 Stash 路径已有本地修改（未暂存或未跟踪），Git 会在创建 Merge Changes 前中止：${[...new Set(overlappingLocalPaths)].join('、')}`);
                                     }
                                     const headBeforeApply = await resolveRevision(operation.rootUri, 'HEAD^{commit}');
                                     if (!headBeforeApply) { throw new Error('无法确定应用 Stash 前的 HEAD'); }

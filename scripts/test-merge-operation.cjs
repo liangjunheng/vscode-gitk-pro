@@ -168,6 +168,26 @@ async function main() {
         assert.equal(await readMergeOperation(uri), undefined);
 
         git('reset', '--hard', 'HEAD'); git('clean', '-fd');
+        fs.writeFileSync(file, 'staged local\n'); git('add', 'file.gkt');
+        const stagedStatusBefore = git('status', '--porcelain', '-uall');
+        const stagedIndexBefore = git('ls-files', '--stage');
+        const stagedStashPaths = ['file.gkt', 'stash-new.gkt', 'unrelated.gkt'];
+        const stagedHandle = await beginStashOperation(
+            uri, 'stash-apply', stashHash, stashHead, stagedStashPaths, stagedStashPaths,
+        );
+        try { git('stash', 'apply'); } catch {}
+        assert.ok(git('ls-files', '-u').includes('file.gkt'), 'Git merges a staged-only Stash path into a real conflict');
+        await markStashOperationConflicted(uri, stagedHandle, stagedStashPaths, ['file.gkt']);
+        await runMergeOperation(uri, 'stash-apply', 'abort');
+        assert.equal(git('ls-files', '-u'), '', 'Abort clears every unmerged stage');
+        assert.equal(git('status', '--porcelain', '-uall'), stagedStatusBefore, 'Abort restores the staged-only pre-state and preserves unrelated files');
+        assert.equal(git('ls-files', '--stage'), stagedIndexBefore, 'Abort restores the complete pre-operation index');
+        assert.equal(git('show', ':file.gkt'), 'staged local', 'Abort restores the exact staged blob');
+        assert.equal(fs.readFileSync(file, 'utf8'), 'staged local\n');
+        assert.equal(fs.existsSync(stashNewFile), false);
+        assert.equal(git('rev-parse', 'refs/stash'), stashHash);
+
+        git('reset', '--hard', 'HEAD'); git('clean', '-fd');
         try { git('stash', 'apply'); } catch {}
         await writeStashOperation(uri, 'stash-apply', stashHash, stashHead, ['file.gkt', 'stash-new.gkt']);
         fs.writeFileSync(file, 'resolved apply\n'); git('add', 'file.gkt');

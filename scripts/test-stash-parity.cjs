@@ -261,6 +261,14 @@ async function runParity() {
       assert.equal(git(onlyRoot, ['status', '--porcelain=v1']).stdout, 'MM a', 'only-unstaged apply must preserve the existing staged baseline');
       assert.equal(fs.readFileSync(path.join(onlyRoot, 'a'), 'utf8'), 'staged\nunstaged\n');
 
+      const disjointRoot = fixture(path.join(scratch, 'custom-unstaged-only-index-disjoint'));
+      write(disjointRoot, 'a', 'staged\n'); git(disjointRoot, ['add', 'a']);
+      write(disjointRoot, 'b', 'unstaged b\n');
+      const disjointStash = await invoke(binding, disjointRoot, 'stashCreate', { scope: 'unstaged' });
+      git(disjointRoot, ['config', 'stash.index', 'true']);
+      await invoke(binding, disjointRoot, 'stashApply', { stash: disjointStash.stash });
+      assert.equal(git(disjointRoot, ['status', '--porcelain=v1']).stdout, 'M  a\n M b', 'custom unstaged-only stashes never reinstate or reject a disjoint staged baseline');
+
       const root = fixture(path.join(scratch, 'custom-stash-index'));
       write(root, 'a', 'staged\n'); git(root, ['add', 'a']); write(root, 'a', 'staged\nunstaged\n');
       const stash = await invoke(binding, root, 'stashCreate', { scope: 'unstaged', mergeStagedIntoUnstaged: true });
@@ -490,6 +498,86 @@ async function runParity() {
         let error; try { await invoke(binding, native, operation, { stash: hash }); } catch (caught) { error = caught; }
         assert.equal(Boolean(error), expected.code !== 0, error?.message || expected.stderr);
         assert.deepEqual(snapshot(native), snapshot(cli));
+      }
+    });
+    await check('apply/pop merge staged-only and index-tracked added paths like Git', async () => {
+      const scenarios = {
+        'staged-conflict': root => { write(root, 'a', 'saved\n'); git(root, ['stash', 'push', '-q']); write(root, 'a', 'local staged\n'); git(root, ['add', 'a']); },
+        'staged-clean': root => {
+          write(root, 'a', 'base\nsaved\n'); git(root, ['stash', 'push', '-q']);
+          write(root, 'a', 'staged\nbase\n'); git(root, ['add', 'a']);
+        },
+        'staged-and-unstaged': root => {
+          write(root, 'a', 'saved\n'); git(root, ['stash', 'push', '-q']);
+          write(root, 'a', 'local staged\n'); git(root, ['add', 'a']); write(root, 'a', 'local unstaged\n');
+        },
+        'add-add-head': root => {
+          write(root, 'n', 'saved n\n'); git(root, ['add', 'n']); git(root, ['stash', 'push', '-q']);
+          write(root, 'n', 'head n\n'); git(root, ['add', 'n']); git(root, ['commit', '-q', '-m', 'add n']);
+        },
+        'add-add-staged': root => {
+          write(root, 'n', 'saved n\n'); git(root, ['add', 'n']); git(root, ['stash', 'push', '-q']);
+          write(root, 'n', 'local n\n'); git(root, ['add', 'n']);
+        },
+        'add-identical-staged': root => {
+          write(root, 'n', 'same n\n'); git(root, ['add', 'n']); git(root, ['stash', 'push', '-q']);
+          write(root, 'n', 'same n\n'); git(root, ['add', 'n']);
+        },
+        'add-tracked-dirty': root => {
+          write(root, 'n', 'saved n\n'); git(root, ['add', 'n']); git(root, ['stash', 'push', '-q']);
+          write(root, 'n', 'head n\n'); git(root, ['add', 'n']); git(root, ['commit', '-q', '-m', 'add n']); write(root, 'n', 'local n\n');
+        },
+        'add-untracked': root => {
+          write(root, 'n', 'saved n\n'); git(root, ['add', 'n']); git(root, ['stash', 'push', '-q']); write(root, 'n', 'local n\n');
+        },
+      };
+      const state = root => ({
+        status: git(root, ['status', '--porcelain=v1', '-uall']).stdout,
+        index: git(root, ['ls-files', '--stage']).stdout,
+        files: Object.fromEntries(['a', 'n'].map(name => {
+          const target = path.join(root, name);
+          return [name, fs.existsSync(target) ? fs.readFileSync(target).toString('hex') : null];
+        })),
+        stashes: git(root, ['stash', 'list']).stdout.split(/\r?\n/).filter(Boolean).length,
+      });
+      for (const operation of ['stashApply', 'stashPop']) for (const [kind, prepare] of Object.entries(scenarios)) {
+        const cli = path.join(scratch, `${operation}-${kind}-merge-cli`);
+        const native = path.join(scratch, `${operation}-${kind}-merge-native`);
+        fixture(cli); fixture(native); prepare(cli); prepare(native);
+        const hash = git(native, ['rev-parse', 'refs/stash']).stdout;
+        const expected = git(cli, ['stash', operation === 'stashPop' ? 'pop' : 'apply'], true);
+        const conflicted = /^CONFLICT/m.test(expected.stdout);
+        let result, error;
+        try { result = await invoke(binding, native, operation, { stash: hash }); } catch (caught) { error = caught; }
+        const label = `${operation} ${kind}: ${error?.message || expected.stdout + expected.stderr}`;
+        assert.equal(Boolean(error), expected.code !== 0 && !conflicted, label);
+        if (!error) assert.equal(result.conflicts, conflicted, label);
+        assert.deepEqual(state(native), state(cli), label);
+      }
+    });
+    await check('stash.index refuses a dirty index before mutation like Git', async () => {
+      const scenarios = {
+        'same-path': root => {
+          write(root, 'a', 'one\ntwo\nthree\nfour\nfive\n'); git(root, ['commit', '-q', '-am', 'lines']);
+          write(root, 'a', 'ONE\ntwo\nthree\nfour\nfive\n'); git(root, ['add', 'a']); git(root, ['stash', 'push', '-q']);
+          write(root, 'a', 'one\ntwo\nthree\nfour\nFIVE\n'); git(root, ['add', 'a']);
+        },
+        'other-path': root => {
+          write(root, 'a', 'saved staged\n'); git(root, ['add', 'a']); git(root, ['stash', 'push', '-q']);
+          write(root, 'b', 'local staged\n'); git(root, ['add', 'b']);
+        },
+      };
+      for (const operation of ['stashApply', 'stashPop']) for (const [kind, prepare] of Object.entries(scenarios)) {
+        const cli = path.join(scratch, `${operation}-${kind}-index-dirty-cli`);
+        const native = path.join(scratch, `${operation}-${kind}-index-dirty-native`);
+        for (const root of [cli, native]) { fixture(root); prepare(root); git(root, ['config', 'stash.index', 'true']); }
+        const expected = git(cli, ['stash', operation === 'stashPop' ? 'pop' : 'apply'], true);
+        assert.notEqual(expected.code, 0, `${kind}: Git refuses --index with a dirty index`);
+        assert.doesNotMatch(expected.stdout, /^CONFLICT/m);
+        const before = snapshot(native);
+        const hash = git(native, ['rev-parse', 'refs/stash']).stdout;
+        await assert.rejects(() => invoke(binding, native, operation, { stash: hash }), /暂存区是干净/);
+        assert.deepEqual(snapshot(native), before, `${kind}: the refusal happens before any mutation`);
       }
     });
     await check('apply/pop conflict markers honor merge.conflictStyle and Git labels', async () => {

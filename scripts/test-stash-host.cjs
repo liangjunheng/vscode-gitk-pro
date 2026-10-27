@@ -557,6 +557,36 @@ const file = (path, extra = {}) => ({ path, status: 'M', ...extra });
   assert.ok(warnings.some(w => /Stash 路径已有本地修改.*stashed.txt/.test(w)));
 
   resetOps(); setStashList([newest, older]);
+  setSnapshot([file('stashed.txt')], [file('stashed.txt')]);
+  await queue('stashApply');
+  assert.deepEqual(opCalls, [], 'a staged path that also has unstaged edits still stops before native Apply');
+
+  resetOps(); setStashList([newest, older]);
+  setSnapshot([file('stashed.txt')], []);
+  await queue('stashApply');
+  assert.deepEqual(opCalls, [['apply', repoA.path, stashHash]], 'a staged-only Stash path is merged by Git instead of being refused');
+  assert.deepEqual(stashCheckpointPaths, [['new-name.txt', 'old-name.txt', 'stashed.txt']], 'the checkpoint captures the staged pre-state for Abort');
+
+  for (const [action, nativeAction, mergeAction] of [['stashApply', 'apply', 'stash-apply'], ['stashPop', 'pop', 'stash-pop']]) {
+    resetOps(); setStashList([newest, older]);
+    setSnapshot([file('stashed.txt')], []);
+    backendOpImpl = async (_operation, hash) => {
+      setSnapshot([file('stashed.txt', { isConflict: true })], [file('stashed.txt', { isConflict: true })]);
+      return { stash: hash, conflicts: true, dropped: false };
+    };
+    await queue(action);
+    assert.deepEqual(opCalls, [[nativeAction, repoA.path, stashHash]], 'staged-only conflicts reach native Apply/Pop');
+    assert.equal(provider.mergeOperations.get(repoA.path), mergeAction, 'staged-only conflicts publish Merge Changes');
+    assert.deepEqual(stashOperationClears, [], 'conflicting Apply/Pop keeps its checkpoint');
+    assert.ok(warnings.some(w => /存在冲突.*点击 √.*点击 ×/.test(w)));
+  }
+
+  resetOps(); setStashList([newest, older]);
+  setSnapshot([], [file('stashed.txt', { isUntracked: true })]);
+  await queue('stashPop');
+  assert.deepEqual(opCalls, [], 'overlapping untracked files still block Pop');
+
+  resetOps(); setStashList([newest, older]);
   setSnapshot([], [file('stashed.txt/nested-local.txt')]);
   await queue('stashApply');
   assert.deepEqual(opCalls, [], 'a nested local path overlapping a Stash file stops before native Apply');

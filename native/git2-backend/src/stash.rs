@@ -1430,8 +1430,11 @@ fn preflight_apply(repo: &Repository, stash: &Commit<'_>) -> NativeResult<ApplyP
     }
 
     let root = repository_root(repo)?;
+    // Like Git, a stash-added path that is already in the index is merged
+    // (add/add or an identical add); only untracked occupants would be lost.
     let clashes = added
         .iter()
+        .filter(|path| index.get_path(Path::new(path.as_str()), 0).is_none())
         .chain(untracked.iter())
         .filter(|path| root.join(path.as_str()).symlink_metadata().is_ok())
         .cloned()
@@ -1508,13 +1511,53 @@ fn stash_reinstate_index(repo: &Repository) -> NativeResult<bool> {
     }
 }
 
+/// With `stash.index=true` Git saves the reinstated index and resets it to HEAD
+/// before merging. Refuse a dirty, non-matching index before any mutation
+/// instead of reproducing Git's partial reset. Unstaged-only stashes never
+/// reinstate the saved index and must bypass this guard.
+fn ensure_index_reinstatable(repo: &Repository, stash: &Commit<'_>) -> NativeResult<()> {
+    if is_unstaged_only_stash(stash) {
+        return Ok(());
+    }
+    let tree_of = |parent: usize| {
+        stash
+            .parent(parent)
+            .and_then(|commit| commit.tree())
+            .map_err(format_git_error)
+    };
+    let base_tree = tree_of(0)?;
+    let index_tree = tree_of(1)?;
+    if index_tree.id() == base_tree.id() {
+        return Ok(());
+    }
+    let index = repo.index().map_err(format_git_error)?;
+    let differs = |tree: &git2::Tree<'_>| -> NativeResult<bool> {
+        let diff = repo
+            .diff_tree_to_index(Some(tree), Some(&index), None)
+            .map_err(format_git_error)?;
+        Ok(diff.deltas().next().is_some())
+    };
+    let head_tree = repo
+        .head()
+        .and_then(|head| head.peel_to_tree())
+        .map_err(format_git_error)?;
+    if !differs(&head_tree)? || !differs(&index_tree)? {
+        return Ok(());
+    }
+    Err("stash.index=true 时 Git 要求暂存区是干净的才能恢复 Stash 的暂存内容；请先提交或取消暂存后再应用".to_owned())
+}
+
 fn apply_by_hash(repo: &mut Repository, hash: &str) -> NativeResult<bool> {
     let reinstate_index = stash_reinstate_index(repo)?;
     let index = stash_index(repo, hash)?;
     let oid = parse_stash_hash(hash)?;
     let plan = {
         let commit = repo.find_commit(oid).map_err(format_git_error)?;
-        preflight_apply(repo, &commit)?
+        let plan = preflight_apply(repo, &commit)?;
+        if reinstate_index {
+            ensure_index_reinstatable(repo, &commit)?;
+        }
+        plan
     };
     let mut checkout = CheckoutBuilder::new();
     checkout
