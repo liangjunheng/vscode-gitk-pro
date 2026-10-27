@@ -2184,9 +2184,18 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
         const rootUri = vscode.Uri.parse(repositoryPath);
         this.invalidateRemotePublish(repositoryPath);
         try {
-            const remotes = await listRemotes(rootUri);
+            let remotes: GitRemote[];
+            let upstreamRemote = '';
+            try {
+                const nativeState = await readNativeRemoteState(rootUri);
+                remotes = nativeState.remotes;
+                upstreamRemote = nativeState.upstreamRemote;
+            } catch {
+                // Keep compatibility with an older installed native binary until it is rebuilt.
+                remotes = await listRemotes(rootUri);
+            }
             if (!remotes.some(remote => remote.name === name)) { return; }
-            const upstreamRemote = await this.currentUpstreamRemote(repositoryPath, remotes);
+            if (!upstreamRemote) { upstreamRemote = await this.currentUpstreamRemote(repositoryPath, remotes); }
             await setFasterGitRemoteOperation(rootUri, name, operation, enabled);
             this.remoteStateByRepository.delete(repositoryPath);
             await this.publishRemoteList(repositoryPath, upstreamRemote, true);
