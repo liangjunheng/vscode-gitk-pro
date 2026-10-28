@@ -8,6 +8,7 @@ import {
     type GitRepositoryOption,
     WorkingTreeChanges,
     isWorkingTreeHash,
+    rewrittenCommitIdentity,
 } from '../types';
 import { DiffReader } from './diffReader';
 import type { GitBackend } from './gitBackend';
@@ -260,7 +261,9 @@ export class GitCommitController implements vscode.Disposable {
     setStashes(repositoryPath: string, stashes: readonly CommitMetadata[]): boolean {
         const previous = this.stashesByRepository.get(repositoryPath);
         const same = previous !== undefined && previous.length === stashes.length
-            && previous.every((entry, index) => entry.hash === stashes[index].hash && entry.stashIndex === stashes[index].stashIndex);
+            && previous.every((entry, index) => entry.hash === stashes[index].hash
+                && entry.stashIndex === stashes[index].stashIndex
+                && entry.stashBaseIdentity === stashes[index].stashBaseIdentity);
         if (same) { return false; }
         this.stashesByRepository.set(repositoryPath, [...stashes]);
         return this.rebuildGraphFromPages();
@@ -671,8 +674,9 @@ export class GitCommitController implements vscode.Disposable {
      * 把 stash 穿插进提交列表: 每条 stash 只保留 parents[0](基线)作为唯一父提交,
      * 放在列表中第一条 hash === 基线的提交之前; 在泳道图里它是基线所在泳道上的一颗珠子(不开新泳道)。
      * stash 的 index / 未跟踪辅助父提交不是历史的一部分, 不进图。
-     * Pull/rebase 后基线可能不再属于已选历史，或尚未加载到当前分页；这种 stash 仍放在列表顶部，
-     * 但清空父提交使它显示为未锚定珠子。后续基线进入分页时，它会自动回到基线之上。
+     * 基线被 Pull --rebase 改写时, 原 hash 不在列表里; 若列表中恰有一条作者、作者时间和完整提交信息
+     * 都相同的提交(同一逻辑提交改写后的新 hash), stash 锚定到它。
+     * 仍无法定位的 stash(分页没加载到、在未选分支上、或基线被 squash/reword) 不进图, 计入 hiddenStashCount。
      */
     private withStashes(repositoryPath: string, commits: readonly CommitMetadata[]): CommitMetadata[] {
         this.hiddenStashCountByRepository.delete(repositoryPath);
@@ -681,24 +685,31 @@ export class GitCommitController implements vscode.Disposable {
             : [];
         if (stashes.length === 0) { return [...commits]; }
         const byBase = new Map<string, CommitMetadata[]>();
-        const unanchored: CommitMetadata[] = [];
         const loaded = new Set(commits.map(commit => commit.hash));
-        for (const stash of stashes) {
-            const base = stash.parents[0];
-            if (!base || !loaded.has(base)) {
-                unanchored.push(new CommitMetadata({
-                    ...stash,
-                    parents: [],
-                    refs: [],
-                    isStash: true,
-                }));
-                continue;
+        // 改写身份 -> 唯一提交 hash; 同一身份出现多次(例如被 cherry-pick 到多个已选分支)时为 null, 不锚定。
+        let rewrittenCopies: Map<string, string | null> | undefined;
+        const rewrittenCopyOf = (identity: string | undefined): string | undefined => {
+            if (!identity) { return undefined; }
+            if (!rewrittenCopies) {
+                rewrittenCopies = new Map();
+                for (const commit of commits) {
+                    const key = rewrittenCommitIdentity(commit.author, commit.authorEmail, commit.authorDate, commit.rawMessage);
+                    if (key) { rewrittenCopies.set(key, rewrittenCopies.has(key) ? null : commit.hash); }
+                }
             }
+            return rewrittenCopies.get(identity) ?? undefined;
+        };
+        let hidden = 0;
+        for (const stash of stashes) {
+            const recorded = stash.parents[0];
+            const base = recorded && loaded.has(recorded) ? recorded : rewrittenCopyOf(stash.stashBaseIdentity);
+            if (!base) { hidden++; continue; }
             const list = byBase.get(base) ?? [];
             list.push(stash);
             byBase.set(base, list);
         }
-        const result: CommitMetadata[] = [...unanchored];
+        if (hidden > 0) { this.hiddenStashCountByRepository.set(repositoryPath, hidden); }
+        const result: CommitMetadata[] = [];
         const placed = new Set<string>();
         for (const commit of commits) {
             if (!placed.has(commit.hash)) {

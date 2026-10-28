@@ -402,11 +402,11 @@ async function main() {
     assert.equal(await toggle.getAttribute('aria-pressed'), 'true');
     assert.equal(await page.locator('#commitVirtualRows .commit-row.stash').count(), 1, 'shown again when re-selected');
 
-    // 8) 基线未加载的 stash: 开关上如实提示数量
+    // 8) 基线不在当前列表中的 stash: 开关上如实提示数量与原因
     state.hiddenStashCount = 2; await publish();
-    assert.match(await toggle.getAttribute('title'), /另有 2 个 Stash 的基线提交尚未加载/);
+    assert.match(await toggle.getAttribute('title'), /另有 2 个 Stash 的基线提交未在当前列表中.*找不到对应提交/);
     state.hiddenStashCount = 0; await publish();
-    assert.doesNotMatch(await toggle.getAttribute('title'), /尚未加载/);
+    assert.doesNotMatch(await toggle.getAttribute('title'), /未在当前列表中/);
 
 
     // 为下面的"样式统一"检查补一组云端提交: 云端行的泳道也是虚线, 必须和 stash/未提交行同款。

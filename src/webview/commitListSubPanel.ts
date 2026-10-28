@@ -1139,8 +1139,8 @@ export const COMMIT_LIST_SUB_PANEL_SCRIPT = `
     button.setAttribute('aria-pressed', String(visible));
     var description = '在commit列表中显示stash提交（当前状态： ' + (visible ? '开' : '关') + '）';
     button.setAttribute('aria-label', description);
-    // 基线提交还没加载(或不在已选分支上)的 stash 无法穿插进图, 在这里如实告知。
-    button.title = hiddenCount > 0 ? description + '；另有 ' + hiddenCount + ' 个 Stash 的基线提交尚未加载，加载更多提交后显示' : description;
+    // 基线未加载、不在已选分支，或基线被改写后找不到对应提交的 stash 无法安全穿插进图, 在这里如实告知。
+    button.title = hiddenCount > 0 ? description + '；另有 ' + hiddenCount + ' 个 Stash 的基线提交未在当前列表中（可能尚未加载、不在所选分支，或基线被改写后找不到对应提交）' : description;
     button.dataset.hidden = hiddenCount > 0 ? String(hiddenCount) : '';
   }
 

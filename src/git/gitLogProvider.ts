@@ -5,7 +5,7 @@ import { fetchRemotes, pull as pullNative, push as pushNative, updateSubmodules 
 // 类型定义统一从 types/ 导入, 消除重复
 export type { ChangeSetMode, FileStatus, GitBranchOption, GitRepositoryOption, GitRepositoryState, WorkingTreeChanges } from '../types';
 export { CommitFile, CommitMetadata } from '../types';
-import { CommitFile, CommitMetadata, GitBranchOption, GitRepositoryOption, GitRepositoryState, WorkingTreeChanges, type FileStatus } from '../types';
+import { CommitFile, CommitMetadata, GitBranchOption, GitRepositoryOption, GitRepositoryState, WorkingTreeChanges, rewrittenCommitIdentity, type FileStatus } from '../types';
 
 
 // 格式化日期
@@ -713,19 +713,44 @@ interface NativeStashEntry extends NativeCommitMetadata {
  * 一次成功读取确认仓库没有 stash，不能把临时 refs 竞态或原生读取错误伪装成空列表。
  */
 export async function getStashes(rootUri: vscode.Uri): Promise<StashEntry[]> {
+    let entries: NativeStashEntry[];
     try {
-        const entries = await invokeNativeGitPriorityRead<NativeStashEntry[]>('stashList', { rootPath: rootUri.fsPath });
-        return entries.map(entry => new CommitMetadata({
-            ...fromNativeCommit(entry),
-            isStash: true,
-            stashIndex: entry.stashIndex,
-            stashRef: entry.stashRef,
-        }) as StashEntry);
+        entries = await invokeNativeGitPriorityRead<NativeStashEntry[]>('stashList', { rootPath: rootUri.fsPath });
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (message.includes('不支持的 libgit2 操作')) { return []; }
         throw error;
     }
+    const baseIdentities = await readStashBaseIdentities(rootUri, entries);
+    return entries.map(entry => new CommitMetadata({
+        ...fromNativeCommit(entry),
+        isStash: true,
+        stashIndex: entry.stashIndex,
+        stashRef: entry.stashRef,
+        stashBaseIdentity: entry.parents[0] ? baseIdentities.get(entry.parents[0]) : undefined,
+    }) as StashEntry);
+}
+
+/**
+ * 读取每个 stash 基线提交的改写身份。Pull --rebase 会改写基线 hash, 提交列表再也找不到原基线;
+ * 有了身份就能把 stash 对应到改写后的新提交。读取失败只影响这种对应, 不影响 stash 列表本身。
+ */
+async function readStashBaseIdentities(rootUri: vscode.Uri, entries: readonly NativeStashEntry[]): Promise<Map<string, string>> {
+    const identities = new Map<string, string>();
+    const hashes = [...new Set(entries.map(entry => entry.parents[0]).filter((hash): hash is string => Boolean(hash)))];
+    if (hashes.length === 0) { return identities; }
+    try {
+        const details = await invokeNativeGitPriorityRead<Array<{
+            hash: string; message: string; author?: string; authorEmail?: string; authorDate?: string;
+        }>>('commitDetails', { rootPath: rootUri.fsPath, hashes });
+        for (const detail of details) {
+            const identity = rewrittenCommitIdentity(detail.author, detail.authorEmail, detail.authorDate, detail.message);
+            if (identity) { identities.set(detail.hash, identity); }
+        }
+    } catch (error) {
+        console.warn('无法读取 stash 基线提交信息，基线被改写的 stash 将无法定位:', rootUri.toString(), error);
+    }
+    return identities;
 }
 
 async function readCommitsFromNative(rootUri: vscode.Uri, limit: number, refs: readonly string[], skip: number, signal?: AbortSignal, priority = false): Promise<CommitMetadata[]> {

@@ -34,6 +34,8 @@ export class CommitMetadata {
     isStash?: boolean;
     stashRef?: string;
     stashIndex?: number;
+    /** stash 基线提交的改写身份(见 rewrittenCommitIdentity); 基线被 Pull --rebase 改写后用它找到对应的新提交。 */
+    stashBaseIdentity?: string;
 
     constructor(init: Partial<CommitMetadata> = {}) {
         Object.assign(this, init);
@@ -45,6 +47,20 @@ export class CommitMetadata {
             : this.gitBranchOption === other.gitBranchOption;
         return this.hash === other.hash && sameBranch;
     }
+}
+
+/**
+ * Rebase / cherry-pick 会改写提交 hash, 但保留作者、作者时间和完整提交信息。
+ * 用这几项识别“同一逻辑提交”的新 hash; 任何一项缺失都不参与匹配, 避免误配。
+ */
+export function rewrittenCommitIdentity(
+    author: string | undefined,
+    authorEmail: string | undefined,
+    authorDate: string | undefined,
+    message: string | undefined,
+): string | undefined {
+    if (!author || !authorDate || !message) { return undefined; }
+    return JSON.stringify([author, authorEmail ?? '', authorDate, message]);
 }
 
 // Webview 之外使用的提交聚合对象；提交元数据、文件元数据和完整 Diff 属于同一提交。

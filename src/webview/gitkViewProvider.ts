@@ -257,6 +257,8 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private readonly stashesByRepository = new Map<string, readonly StashEntry[]>();
     private readonly stashLoadingByRepository = new Map<string, number>();
     private stashLoadsInFlight?: Map<string, { dirty: boolean; promise: Promise<void> }>;
+    // 被动 pushState 不能对持续失败的 stashList 每帧重试；只有显式/监听器强制刷新才重读。
+    private stashReadFailedRepositories?: Set<string>;
     /** Commit 列表是否显示 stash；构造时从 fastergit.showStashes 读取，按钮切换后写回全局设置。 */
     private showStashes = false;
     private readonly repositorySyncKeyByRepository = new Map<string, string>();
@@ -763,6 +765,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                         this.stashesByRepository.delete(cached);
                         this.stashLoadingByRepository.delete(cached);
                         this.stashLoadsInFlight?.delete(cached);
+                        this.stashReadFailedRepositories?.delete(cached);
                         this.commitController.forgetStashes(cached);
                     }
                 }
@@ -3130,7 +3133,7 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
     private async loadRepositoryStashes(repositoryPath: string, force = false): Promise<void> {
         const rootUri = this.getRepoRootUri(repositoryPath);
         if (!rootUri) { return; }
-        if (!force && this.stashesByRepository.has(repositoryPath)) { return; }
+        if (!force && (this.stashesByRepository.has(repositoryPath) || this.stashReadFailedRepositories?.has(repositoryPath))) { return; }
         const loads = this.stashLoadsInFlight ??= new Map();
         const pending = loads.get(repositoryPath);
         if (pending) {
@@ -3150,20 +3153,26 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
                 try {
                     stashes = await getStashes(rootUri);
                 } catch (error) {
+                    if (loads.get(repositoryPath) !== request
+                        || this.stashLoadingByRepository.get(repositoryPath) !== generation) { return; }
+                    if (request.dirty) { continue; }
                     // A failed read is not an authoritative empty list. Keep the last known entries so
                     // Pull/Fetch ref updates cannot make valid Stashes disappear from the commit list.
+                    (this.stashReadFailedRepositories ??= new Set()).add(repositoryPath);
                     console.warn('无法刷新 stash 列表，保留现有缓存:', repositoryPath, error);
-                    if (request.dirty) { continue; }
                     return;
                 }
                 if (loads.get(repositoryPath) !== request
                     || this.stashLoadingByRepository.get(repositoryPath) !== generation) { return; }
                 if (request.dirty) { continue; }
+                this.stashReadFailedRepositories?.delete(repositoryPath);
                 const previous = this.stashesByRepository.get(repositoryPath);
                 this.stashesByRepository.set(repositoryPath, stashes);
                 const unchanged = previous !== undefined
                     && previous.length === stashes.length
-                    && previous.every((entry, index) => entry.hash === stashes[index].hash && entry.stashIndex === stashes[index].stashIndex);
+                    && previous.every((entry, index) => entry.hash === stashes[index].hash
+                        && entry.stashIndex === stashes[index].stashIndex
+                        && entry.stashBaseIdentity === stashes[index].stashBaseIdentity);
                 if (unchanged) { return; }
                 this.commitController.setStashes(repositoryPath, stashes);
                 this.schedulePushState();
