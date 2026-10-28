@@ -70,19 +70,35 @@ async function main() {
         const save = await page.evaluate(() => window.messages.filter(message => message.type === 'saveFile').at(-1));
         assert.ok(save && save.content.endsWith('X'));
 
-        // Host content refreshes while the editor still owns focus must not expose Monaco's transient diff heights either.
-        await publish({ type: 'diffUpdates', revision: 2, identity, loading: false, completed: 1, total: 1, diffs: [{ ...diff, modified: save.content }] });
+        const editorState = () => page.evaluate(() => {
+            const editor = monaco.editor.getEditors().find(candidate => !candidate.getOption(monaco.editor.EditorOption.readOnly));
+            return { value: editor.getValue(), position: editor.getPosition(), scrollTop: editor.getScrollTop() };
+        });
+        const beforeEcho = await editorState();
+
+        // A delayed watcher echo can contain an older file body. It must not replace the active model or reset the cursor to 1:1.
+        await publish({ type: 'diffUpdates', revision: 2, identity, loading: false, completed: 1, total: 1, diffs: [{ ...diff, modified: 'stale watcher body\n' }] });
         await page.waitForTimeout(250);
+        const afterEcho = await editorState();
+        assert.deepEqual(afterEcho, beforeEcho);
         const afterRefresh = await geometry();
         assert.ok(Math.abs(afterRefresh.cardHeight - before.cardHeight) < 1, JSON.stringify({ before, afterRefresh }));
         assert.ok(Math.abs(afterRefresh.bodyHeight - before.bodyHeight) < 1, JSON.stringify({ before, afterRefresh }));
+        assert.equal(afterRefresh.cardTop, before.cardTop);
+        assert.equal(afterRefresh.scrollY, before.scrollY);
+        const savesDuringEcho = await page.evaluate(() => window.messages.filter(message => message.type === 'saveFile'));
+        assert.ok(savesDuringEcho.length >= 2);
+        assert.equal(savesDuringEcho.at(-1).content, save.content);
 
-        // Losing editor focus releases the lock and applies the final stable diff height once.
+        // Losing focus releases the height lock without allowing the stale watcher body to win.
         await page.evaluate(() => { document.body.tabIndex = -1; document.body.focus(); });
         await page.waitForTimeout(300);
         const afterBlur = await geometry();
         assert.equal(afterBlur.collapsed, false);
         assert.ok(afterBlur.bodyHeight > before.bodyHeight + 1, JSON.stringify({ before, afterBlur }));
+        const savesAfterEcho = await page.evaluate(() => window.messages.filter(message => message.type === 'saveFile'));
+        assert.ok(savesAfterEcho.length >= 2);
+        assert.equal(savesAfterEcho.at(-1).content, save.content);
 
         // An empty Host refresh received for an offscreen logical card must replace, not retain, its previous text.
         await page.goto('http://fixture/');
@@ -129,7 +145,7 @@ async function main() {
         assert.equal(await page.locator(`.diff[data-diff-key="${emptyTarget.diffKey}"]`).evaluate(card => card.classList.contains('collapsed')), true);
 
         assert.deepEqual(errors, []);
-        console.log('MultiDiff editing: stable geometry, empty refresh, and pending-save flush passed');
+        console.log('MultiDiff editing: stable geometry, stale watcher echo, empty refresh, and pending-save flush passed');
     } finally {
         await browser.close();
     }

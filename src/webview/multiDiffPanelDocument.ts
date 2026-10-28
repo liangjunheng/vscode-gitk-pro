@@ -440,9 +440,9 @@ function acquireSlot(entry){
   const initialHeight=Math.max(80,entry.bodyHeight||80);
   slot.owner=entry;slot.generation++;slot.host.style.height=initialHeight+'px';entry.body.style.height=initialHeight+'px';entry.body.replaceChildren(slot.host);return slot;
 }
-function flushEntrySave(entry){
-  if(!entry.saveTimer)return;
-  clearTimeout(entry.saveTimer);entry.saveTimer=0;
+function flushEntrySave(entry,force=false){
+  if(!force&&!entry.saveTimer)return;
+  if(entry.saveTimer){clearTimeout(entry.saveTimer);entry.saveTimer=0}
   try{window.gitkVscode.postMessage({type:'saveFile',path:entry.diff.path,content:entry.modifiedValue})}catch(_){}
 }
 function disposeEntry(entry){
@@ -457,8 +457,8 @@ function disposeEntry(entry){
     entry.originalSelections=entry.editor.getOriginalEditor().getSelections();
     entry.modifiedSelections=entry.editor.getModifiedEditor().getSelections();
   }
-  // 折叠或虚拟化回收不能取消尚未到期的防抖保存，否则用户刚输入的内容只留在内存模型中。
-  flushEntrySave(entry);
+  // 折叠或虚拟化回收不能取消尚未到期的防抖保存；若 Host 返回过期正文，也要让当前编辑内容最终落盘。
+  flushEntrySave(entry,entry.hostRefreshMismatch===true&&entry.hostRefreshResaveSent!==true);entry.hostRefreshMismatch=false;entry.hostRefreshResaveSent=false;
   for(const disposable of entry.disposables||[]){try{disposable.dispose()}catch(_){}}
   entry.disposables=[];
   if(entry.slot)releaseSlot(entry.slot);
@@ -606,7 +606,7 @@ function estimateBodyHeight(diff){
 // 先创建轻量逻辑项外壳，Monaco 模板只绑定可视范围，离屏后归还对象池。
 function createEntry(diff,order){
   const key=diffKey(diff),loaded=diff.loaded===true;
-  return {diff:diff,index:order,path:key,filePath:diff.path,card:null,header:null,meta:null,pinnedGroup:null,body:null,slot:null,editor:null,original:null,modified:null,modifiedValue:diff.modified||'',syncingModel:false,editHeightLock:0,originalSelections:null,modifiedSelections:null,navigationChangeCount:null,bodyHeight:loaded?estimateBodyHeight(diff):80,pinnedHeight:62,horizontalLeft:0,flashOverlay:null,flashTimer:0,collapsed:false,staticContent:!loaded,mounted:false,mounting:false,mountVersion:0,saveTimer:0,searchOriginalDecorations:[],searchModifiedDecorations:[],disposables:[],fit:function(){}};
+  return {diff:diff,index:order,path:key,filePath:diff.path,card:null,header:null,meta:null,pinnedGroup:null,body:null,slot:null,editor:null,original:null,modified:null,modifiedValue:diff.modified||'',syncingModel:false,editHeightLock:0,localEditPending:false,hostRefreshMismatch:false,hostRefreshResaveSent:false,originalSelections:null,modifiedSelections:null,navigationChangeCount:null,bodyHeight:loaded?estimateBodyHeight(diff):80,pinnedHeight:62,horizontalLeft:0,flashOverlay:null,flashTimer:0,collapsed:false,staticContent:!loaded,mounted:false,mounting:false,mountVersion:0,saveTimer:0,searchOriginalDecorations:[],searchModifiedDecorations:[],disposables:[],fit:function(){}};
 }
 function ensureVirtualRoot(){
   if(virtualRoot)return;
@@ -1063,14 +1063,16 @@ function mountEntry(entry,fromScroll=false){
         // Monaco 会在每次输入后重新计算 diff 与折叠未改动区域；内容高度会经历多个中间值。
         // 编辑期间锁住卡片外层高度，避免这些内部重排把整张 Unstaged 卡片拉伸/压缩并触发页面锚定跳动。
         if(!entry.editHeightLock)entry.editHeightLock=Math.max(80,entry.bodyHeight||80);
-        entry.modifiedValue=modified.getValue();
+        entry.modifiedValue=modified.getValue();entry.localEditPending=true;
         if(entry.saveTimer)clearTimeout(entry.saveTimer);
         entry.saveTimer=setTimeout(function(){flushEntrySave(entry)},400);
         scheduleSearchRefresh();
       }));
       entry.disposables.push(modifiedEditor.onDidBlurEditorText(function(){
-        if(!entry.editHeightLock)return;
+        if(!entry.editHeightLock&&!entry.hostRefreshMismatch)return;
         entry.editHeightLock=0;
+        // 文件监听可能先返回旧正文；编辑期间本地模型是权威源，若尚未补写则在失焦前确保它最终落盘。
+        if(entry.hostRefreshMismatch&&entry.hostRefreshResaveSent!==true)flushEntrySave(entry,true)
         // 结束编辑后再按最终 diff 一次性收敛高度；不要把 Monaco 计算过程中的中间高度暴露给页面。
         requestAnimationFrame(function(){if(entry.mountVersion===mountVersion&&entry.mounted)fit()});
       }));
@@ -1661,7 +1663,21 @@ function updateEntryFromSnapshot(entry,diff){
   try{
     const old=entry.diff;
     const wasLoaded=entry.diff.loaded===true,isLoaded=diff.loaded===true;
-    entry.diff=diff;entry.filePath=diff.path;if(typeof diff.modified==='string')entry.modifiedValue=diff.modified;
+    const incomingModified=typeof diff.modified==='string'?diff.modified:undefined;
+    const liveModified=entry.modified?entry.modified.getValue():entry.modifiedValue;
+    const incomingMatchesLocal=typeof incomingModified==='string'&&incomingModified===liveModified;
+    // saveFile 后的 watcher/OneDrive 回声可能晚于后续输入到达。只要本地编辑尚未收到等值回声，
+    // 旧正文就不能 setValue 覆盖当前模型；否则 Monaco 会把光标和视口重置到文件开头。
+    const preserveLocalEdit=diff.editable===true&&entry.localEditPending===true&&typeof incomingModified==='string'&&!incomingMatchesLocal;
+    const firstMismatch=preserveLocalEdit&&entry.hostRefreshMismatch!==true;
+    if(incomingMatchesLocal){entry.localEditPending=false;entry.hostRefreshMismatch=false;entry.hostRefreshResaveSent=false}
+    else if(preserveLocalEdit)entry.hostRefreshMismatch=true;
+    else if(typeof incomingModified==='string'){entry.localEditPending=false;entry.hostRefreshMismatch=false;entry.hostRefreshResaveSent=false}
+    entry.diff=preserveLocalEdit?Object.assign({},diff,{modified:liveModified}):diff;
+    entry.filePath=diff.path;
+    if(preserveLocalEdit)entry.modifiedValue=liveModified;else if(typeof incomingModified==='string')entry.modifiedValue=incomingModified;
+    // 卡片即使已滚出虚拟窗口，也要立即重申最新本地正文；同一轮过期回声只补写一次，避免事件循环。
+    if(firstMismatch){entry.hostRefreshResaveSent=true;queueMicrotask(function(){if(entry.hostRefreshMismatch)flushEntrySave(entry,true)})}
     if(entry.card)entry.card.dataset.workingTreeKind=diff.workingTreeKind||'';
     if(diff.workingTreeKind==='conflict'&&!diff.isGitlink){
       entry.staticContent=true;entry.bodyHeight=620;entry.navigationChangeCount=0;layoutDirty=true;
@@ -1696,7 +1712,11 @@ function updateEntryFromSnapshot(entry,diff){
       entry.syncingModel=true;
       try{
         if(original.getValue()!==String(diff.original||''))original.setValue(String(diff.original||''));
-        if(modified.getValue()!==String(diff.modified||'')){modified.setValue(String(diff.modified||''));entry.modifiedValue=String(diff.modified||'')}
+        if(!preserveLocalEdit&&modified.getValue()!==String(diff.modified||'')){
+          const viewState=entry.editor.saveViewState();
+          modified.setValue(String(diff.modified||''));entry.modifiedValue=String(diff.modified||'');
+          if(viewState)entry.editor.restoreViewState(viewState)
+        }
       }finally{entry.syncingModel=false}
       entry.fit();
       scheduleSearchRefresh();
