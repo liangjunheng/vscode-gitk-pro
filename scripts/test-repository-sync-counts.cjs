@@ -139,6 +139,12 @@ async function main() {
     } })), repository.repositoryPath);
     assert.equal(await openFile.isVisible(), true, 'selected file has an open button');
     assert.equal(await row.locator('.repo-file-actions .toolbar-icon').first().getAttribute('data-repo-action'), 'openFile');
+    await page.mouse.move(0, 0);
+    const idleBackground = await openFile.evaluate(node => getComputedStyle(node).backgroundColor);
+    await openFile.hover();
+    const hoverStyle = await openFile.evaluate(node => ({ background: getComputedStyle(node).backgroundColor, shadow: getComputedStyle(node).boxShadow }));
+    assert.notEqual(hoverStyle.background, idleBackground, 'selected action has a distinct hover background');
+    assert.notEqual(hoverStyle.shadow, 'none', 'selected action has a visible hover outline');
     await openFile.click();
     assert.deepEqual(await page.evaluate(() => window.messages.at(-1)), {
       type: 'repositoryChangesFileAction', action: 'openFile', repositoryPath: repository.repositoryPath, section: 'unstaged', path: 'new.cpp',

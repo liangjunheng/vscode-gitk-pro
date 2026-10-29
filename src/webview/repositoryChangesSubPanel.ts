@@ -111,6 +111,7 @@ export const REPOSITORY_CHANGES_STYLES = `
   .repo-file-row.selected .repo-file-actions .toolbar-icon,
   .repo-file-row.multi-selected .repo-file-actions .toolbar-icon,
   .repo-file-row.context-target .repo-file-actions .toolbar-icon { color: inherit; }
+  .repo-file-row:is(.selected, .multi-selected, .context-target) .toolbar-icon:hover:not(:disabled) { background: color-mix(in srgb, currentColor 20%, transparent); border-radius: 3px; box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 35%, transparent); }
   #repositoryGroupContextMenu, #repositoryMessageContextMenu { position: fixed; z-index: 20; box-sizing: border-box; width: max-content; min-width: 160px; max-width: calc(100vw - 8px); max-height: calc(100vh - 8px); overflow-y: auto; margin: 0; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border)); border-radius: 5px; background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 4px 14px rgba(0, 0, 0, .28); }
   #repositoryGroupContextMenu:not(:popover-open), #repositoryMessageContextMenu:not(:popover-open) { display: none; }
   #repositoryGroupContextMenu button, #repositoryMessageContextMenu button { display: block; box-sizing: border-box; width: 100%; max-width: 100%; padding: 5px 8px; border: 0; border-radius: 3px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: transparent; text-align: left; font: inherit; }
