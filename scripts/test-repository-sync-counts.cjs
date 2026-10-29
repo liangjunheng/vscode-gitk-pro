@@ -46,7 +46,7 @@ async function main() {
       for (const [index, value] of [behind, ahead, dirty ? 5 : 0].entries()) {
         assert.equal(await buttons[index].locator('.repo-sync-count').textContent(), String(value));
         assert.equal(await buttons[index].locator('.repo-sync-count').isVisible(), true);
-        assert.equal(await buttons[index].locator('.codicon-' + ['repo-pull', 'repo-push', 'diff-single'][index]).count(), 1);
+        assert.equal(await buttons[index].locator('.codicon-' + ['repo-pull', 'repo-push', 'compare-changes'][index]).count(), 1);
       }
       assert.equal(await page.locator('.repo-changes-badge').count(), 0);
       // 具名分支:有修改 -> git-branch-changes + 星号;无修改 -> git-branch,无星号。

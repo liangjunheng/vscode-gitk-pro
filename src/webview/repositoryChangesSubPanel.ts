@@ -449,7 +449,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     details.readOnly = true; details.rows = 1; details.spellcheck = false;
     details.setAttribute('aria-label', '提交标题与描述');
     card.querySelector('.repo-changes-body').insertBefore(details, card.querySelector('.repo-message-box'));
-    [['repoPull', 'repo-pull', 'Pull'], ['repoPush', 'repo-push', 'Push'], ['worktree', 'diff-single', 'Changed']].forEach(function(item) {
+    [['repoPull', 'repo-pull', 'Pull'], ['repoPush', 'repo-push', 'Push'], ['worktree', 'compare-changes', 'Changed']].forEach(function(item) {
       const button = repoChangesIcon(item[0], item[1], item[2]);
       button.classList.add('repo-sync');
       const count = document.createElement('span'); count.className = 'repo-sync-count'; button.appendChild(count);
