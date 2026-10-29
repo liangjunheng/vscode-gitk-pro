@@ -30,8 +30,7 @@ const manifest = path.join(root, 'native', 'git2-backend', 'Cargo.toml');
 const patch = prepareLibgit2Patch(manifest);
 const buildManifest = prepareBuildWorkspace(root, target);
 // Keep NAPI's filesystem transaction outside the delivered module directory.
-const output = path.join(path.dirname(buildManifest), '..', 'output');
-fs.mkdirSync(output, { recursive: true });
+const output = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'vscode-gitk-napi-'));
 
 
 const cliPackagePath = require.resolve('@napi-rs/cli/package.json');

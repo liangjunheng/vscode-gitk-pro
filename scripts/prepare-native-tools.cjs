@@ -305,6 +305,28 @@ fn main() {
     '',
   ].join('\n'));
 
+  const zigWrapperSource = path.join(bin, 'zig-compat.rs');
+  const zigWrapper = path.join(bin, 'zig-compat.exe');
+  fs.writeFileSync(zigWrapperSource, String.raw`use std::{env, process::{Command, Stdio}};
+
+fn main() {
+    let zig = env::var("VSCODE_GITK_REAL_ZIG").expect("VSCODE_GITK_REAL_ZIG is required");
+    let args: Vec<String> = env::args().skip(1).collect();
+    let compiler = matches!(args.first().map(String::as_str), Some("cc" | "c++"));
+    let version_probe = args.iter().any(|arg| arg == "--version");
+    // cargo-zigbuild injects a link-only ARM source into version probes too.
+    let args: Vec<String> = args.into_iter()
+        .filter(|arg| !compiler || (arg != "-Wl,-O1"
+            && !(version_probe && arg.ends_with("aeabi_unaligned.c"))))
+        .collect();
+    let status = Command::new(zig).args(args)
+        .stdin(Stdio::inherit()).stdout(Stdio::inherit()).stderr(Stdio::inherit())
+        .status().expect("failed to launch Zig");
+    std::process::exit(status.code().unwrap_or(1));
+}
+`);
+  run('rustc', [zigWrapperSource, '-O', '-o', zigWrapper]);
+
   const zigCommand = zig.replaceAll('\\', '/');
   const zigAr = path.join(bin, 'ar.exe');
   const zigRanlib = path.join(bin, 'zig-ranlib.sh');
@@ -331,8 +353,9 @@ fn main() {
   ].map(toMsysPath).join(':');
   const env = {
     ...process.env,
-    CARGO_ZIGBUILD_ZIG_COMMAND: zig,
+    CARGO_ZIGBUILD_ZIG_COMMAND: zigWrapper,
     CARGO_ZIGBUILD_ZIG_VERSION: ZIG_VERSION,
+    VSCODE_GITK_REAL_ZIG: zig,
     CARGO_MAKEFLAGS: process.env.VSCODE_GITK_MAKEFLAGS || '-j8',
     MAKEFLAGS: [process.env.MAKEFLAGS, `SHELL=${shellWrapper.replaceAll('\\', '/')}`, `PERL=${gitTools.perl.replaceAll('\\', '/')}`].filter(Boolean).join(' '),
     BASH_ENV: toMsysPath(bashEnvironment),
