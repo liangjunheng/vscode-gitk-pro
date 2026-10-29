@@ -69,7 +69,7 @@ export const REPOSITORY_CHANGES_STYLES = `
   .repo-group-header .toolbar-icon.merge-action-blocked { opacity: .52; cursor: pointer !important; }
   .repo-group-header .toolbar-icon:focus-visible, .repo-file-row .toolbar-icon:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   .repo-group + .repo-group { margin-top: 7px; }
-  .repo-group-header { display: flex; height: 28px; align-items: center; gap: 4px; min-width: 0; color: var(--vscode-descriptionForeground); }
+  .repo-group-header { display: flex; height: 28px; align-items: center; gap: 0; min-width: 0; color: var(--vscode-descriptionForeground); }
   .repo-group-toggle { display: flex; flex: 1; gap: 5px; align-items: center; min-width: 0; height: 26px; padding: 0 2px; border: 0; background: transparent; color: inherit; font: inherit; font-size: var(--vscode-font-size, 13px); font-weight: 600; text-align: left; cursor: pointer; }
   .repo-group-toggle:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
   /* Count pill: a full-radius capsule with the same side padding for 1, 2 and 3 digits; tabular digits keep every 2-digit count the same width. */
@@ -97,7 +97,10 @@ export const REPOSITORY_CHANGES_STYLES = `
   .repo-file-folder { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); font-size: 11px; }
   .repo-file-status { flex: 0 0 13px; text-align: center; margin-left: auto; }
   .repo-file-row .toolbar-icon { width: 22px; height: 22px; flex: 0 0 22px; border: 0; cursor: pointer; }
-  .repo-file-actions { display: none; align-items: center; align-self: stretch; gap: 4px; border-radius: 0 3px 3px 0; }
+  .repo-file-actions { display: none; align-items: center; align-self: stretch; gap: 0; border-radius: 0 3px 3px 0; }
+  .repo-file-row .repo-open-file { display: none; }
+  .repo-file-row.selected .repo-open-file, .repo-file-row.multi-selected .repo-open-file { display: inline-grid; place-items: center; }
+  .repo-file-row .repo-open-file:disabled { opacity: .32; cursor: default; }
   .repo-file-row:hover .repo-file-actions,
   .repo-file-row.selected .repo-file-actions,
   .repo-file-row.multi-selected .repo-file-actions,
@@ -558,6 +561,10 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
         button.innerHTML = repositoryFileIconHTML(file) + '<span class="repo-file-name">' + escapeHtml(file.path.slice(slash + 1)) + '</span><span class="repo-file-folder">' + escapeHtml(slash < 0 ? '' : file.path.slice(0, slash)) + '</span><span class="repo-file-status file-status-' + escapeAttr(file.status) + '">' + escapeHtml(file.status) + '</span>';
         row.appendChild(button);
         const actions = document.createElement('span'); actions.className = 'repo-file-actions';
+        const openFile = repoChangesIcon('openFile', 'go-to-file', '打开文件');
+        openFile.classList.add('repo-open-file');
+        openFile.disabled = file.status === 'D' || Boolean(file.isGitlink);
+        actions.appendChild(openFile);
         if (stashSnapshot && section.key === 'commit') actions.appendChild(repoChangesIcon('restoreStash', 'discard', '还原贮藏'));
         // 与分组头保持相同顺序；stash 与分组头一样在存在冲突时隐藏。
         if (!hasConflicts && (section.key === 'unstaged' || section.key === 'staged')) actions.appendChild(repoChangesIcon('stash', 'archive', section.key === 'staged' ? 'Stash 当前文件的已暂存更改' : 'Stash 当前文件的未暂存更改'));
@@ -798,6 +805,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
   repositoryChangesList.addEventListener('click', function(event) {
     const card = event.target.closest('.repo-changes'); if (!card) return;
     const button = event.target.closest('[data-repo-action]');
+    if (button && button.disabled) return;
     // An unfocused header selects first; clicking the focused header again toggles expansion.
     if (!button && event.target.closest('button, textarea, input, select, a, .repo-message-box, .repo-commit-details, .repo-file-row, .repo-group-header, .repo-commit-menu')) return;
     const repositoryPath = card.dataset.repositoryPath;
@@ -872,6 +880,13 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       return;
     }
     const snapshot = currentRepositorySnapshot(node, repository);
+    if (action === 'openFile') {
+      const message = section === 'commit'
+        ? { type: 'commitFileAction', action: 'openFile', hash: snapshot.commit.hash, repositoryPath: repositoryPath, path: filePath }
+        : { type: 'repositoryChangesFileAction', action: 'openFile', repositoryPath: repositoryPath, section: section, path: filePath };
+      vscode.postMessage(message);
+      return;
+    }
     if (action === 'restoreStash' && snapshot.kind === 'commit' && snapshot.commit.isStash === true && section === 'commit') {
       const paths = filePath
         ? repositorySelectedPaths(repositoryPath, section, filePath, group)

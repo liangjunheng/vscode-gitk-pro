@@ -128,6 +128,24 @@ async function main() {
         assert.equal(geometry.noWrap, true);
       }
     }
+    await buttons[2].click();
+    const group = page.locator('.repo-group[data-section="unstaged"]');
+    const row = group.locator('.repo-file-row[data-file-path="new.cpp"]');
+    const openFile = row.locator('[data-repo-action="openFile"]');
+    assert.equal(await openFile.isVisible(), false, 'open file is only visible on selected rows');
+    await row.locator('.repo-file').click();
+    await page.evaluate(repositoryPath => window.dispatchEvent(new MessageEvent('message', { data: {
+      type: 'selectedPathChanged', selectedPath: 'unstaged:new.cpp', repositoryPath,
+    } })), repository.repositoryPath);
+    assert.equal(await openFile.isVisible(), true, 'selected file has an open button');
+    assert.equal(await row.locator('.repo-file-actions .toolbar-icon').first().getAttribute('data-repo-action'), 'openFile');
+    await openFile.click();
+    assert.deepEqual(await page.evaluate(() => window.messages.at(-1)), {
+      type: 'repositoryChangesFileAction', action: 'openFile', repositoryPath: repository.repositoryPath, section: 'unstaged', path: 'new.cpp',
+    });
+    assert.equal(await group.locator('.repo-group-header').evaluate(node => getComputedStyle(node).gap), '0px');
+    assert.equal(await row.locator('.repo-file-actions').evaluate(node => getComputedStyle(node).gap), '0px');
+    assert.equal(await group.locator('[data-file-path="old.cpp"] [data-repo-action="openFile"]').isDisabled(), true);
     assert.deepEqual(errors, []);
     if (process.env.GITK_SYNC_SCREENSHOT) {
       await page.setViewportSize({ width: 400, height: 800 });
