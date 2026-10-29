@@ -30,7 +30,8 @@ export const REPOSITORY_CHANGES_STYLES = `
   .repo-changes-branch .codicon-git-branch { margin-right: .1523em; }
   .repo-changes-branch .codicon-git-branch-changes { margin-right: .2773em; }
   .repo-changes-header .toolbar-icon { flex: 0 0 22px; width: 22px; height: 24px; border: 0; border-radius: 3px; cursor: pointer; }
-  .repo-changes-header .repo-sync { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: auto; min-width: 22px; padding: 0 3px; gap: 2px; color: var(--vscode-descriptionForeground); font: inherit; font-size: 11px; }
+  .repo-changes-header .repo-sync { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: auto; min-width: 22px; padding: 0 1px; gap: 0; color: var(--vscode-descriptionForeground); font: inherit; font-size: 11px; }
+  .repo-changes-header .repo-sync + .repo-sync { margin-left: -2px; }
   .repo-changes-header .repo-sync:hover { color: var(--vscode-foreground); }
   .repo-sync-count { white-space: nowrap; line-height: 1; }
   .repo-sync-count[hidden] { display: none; }
@@ -444,10 +445,12 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
     details.readOnly = true; details.rows = 1; details.spellcheck = false;
     details.setAttribute('aria-label', '提交标题与描述');
     card.querySelector('.repo-changes-body').insertBefore(details, card.querySelector('.repo-message-box'));
-    const sync = repoChangesIcon('syncRefresh', 'sync', '同步此仓库');
-    sync.classList.add('repo-sync');
-    const syncCount = document.createElement('span'); syncCount.className = 'repo-sync-count'; sync.appendChild(syncCount);
-    header.append(sync);
+    [['repoPull', 'repo-pull', 'Pull'], ['repoPush', 'repo-push', 'Push'], ['worktree', 'diff-single', 'Changed']].forEach(function(item) {
+      const button = repoChangesIcon(item[0], item[1], item[2]);
+      button.classList.add('repo-sync');
+      const count = document.createElement('span'); count.className = 'repo-sync-count'; button.appendChild(count);
+      header.append(button);
+    });
     header.append(repoChangesIcon('terminal', 'terminal', '在终端中打开此仓库'));
     const menu = card.querySelector('.repo-commit-menu');
     [['commit', 'Commit'], ['amend', 'Commit (Amend)'], ['push', 'Commit & Push'], ['syncCommit', 'Commit & Sync']].forEach(function(item) {
@@ -662,15 +665,14 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       node.card.querySelector('.repo-changes-head-dirty').hidden = !headDirty;
       const behindCount = Number.isFinite(repository.behindCount) ? Math.max(0, repository.behindCount) : 0;
       const aheadCount = Number.isFinite(repository.aheadCount) ? Math.max(0, repository.aheadCount) : 0;
-      const sync = node.card.querySelector('[data-repo-action="syncRefresh"]');
-      const syncCount = sync.querySelector('.repo-sync-count');
-      const hasSyncStatus = behindCount !== 0 || aheadCount !== 0 || changeCount !== 0;
-      syncCount.hidden = !hasSyncStatus;
-      syncCount.textContent = hasSyncStatus ? '↓' + behindCount + '↑' + aheadCount + '∼' + changeCount : '';
-      sync.title = hasSyncStatus ? '同步此仓库（拉取 ' + behindCount + '，推送 ' + aheadCount + '，' + changeCount + ' 个未提交变更文件）' : '同步此仓库';
-      sync.setAttribute('aria-label', hasSyncStatus
-        ? repository.repositoryLabel + '：拉取 ' + behindCount + ' 个提交，推送 ' + aheadCount + ' 个提交，' + changeCount + ' 个未提交变更文件'
-        : repository.repositoryLabel + '：同步此仓库');
+      [['repoPull', behindCount, 'Pull：拉取 ' + behindCount + ' 个提交'],
+        ['repoPush', aheadCount, 'Push：推送 ' + aheadCount + ' 个提交'],
+        ['worktree', changeCount, 'Changed：' + changeCount + ' 个未提交变更文件']].forEach(function(item) {
+        const button = node.card.querySelector('[data-repo-action="' + item[0] + '"]');
+        button.querySelector('.repo-sync-count').textContent = String(item[1]);
+        button.title = item[2];
+        button.setAttribute('aria-label', repository.repositoryLabel + '：' + item[2]);
+      });
       node.card.querySelector('.repo-changes-branch').title = '切换分支：' + (repository.headLabel || 'HEAD');
       node.card.querySelector('.repo-changes-branch').setAttribute('aria-label', repository.repositoryLabel + '：切换分支');
       node.card.querySelector('.repo-changes-title').title = repository.repositoryPath;
@@ -853,7 +855,7 @@ export const REPOSITORY_CHANGES_SCRIPT = String.raw`
       vscode.postMessage({ type: 'repositoryChangesAction', action: 'worktree', repositoryPath: repositoryPath });
       return;
     }
-    if (['syncRefresh', 'branch', 'terminal'].includes(action)) { vscode.postMessage({ type: 'repositoryChangesAction', action: action, repositoryPath: repositoryPath }); return; }
+    if (['repoPull', 'repoPush', 'branch', 'terminal'].includes(action)) { vscode.postMessage({ type: 'repositoryChangesAction', action: action, repositoryPath: repositoryPath }); return; }
     if (action === 'continue' || action === 'abort') { vscode.postMessage({ type: 'repositoryChangesAction', action: action, repositoryPath: repositoryPath }); return; }
     const group = button.closest('.repo-group'); const section = group.dataset.section;
     const fileRow = button.closest('.repo-file-row'); const filePath = fileRow && fileRow.dataset.filePath;

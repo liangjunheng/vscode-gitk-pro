@@ -33,35 +33,33 @@ async function main() {
       workingTreeRows: [], files: [], stagedFiles: [], unstagedFiles: [], filesLoading: false, filesMode: 'flat',
       selectedCommit: { hash: 'uncommitted', repositoryPath: repository.repositoryPath } };
     const publish = () => page.evaluate(state => window.dispatchEvent(new MessageEvent('message', { data: { type: 'stateUpdate', state } })), state);
-    const sync = page.locator('.repo-changes [data-repo-action="syncRefresh"]');
-    const count = sync.locator('.repo-sync-count');
+    const buttons = ['repoPull', 'repoPush', 'worktree'].map(action => page.locator('.repo-changes [data-repo-action="' + action + '"]'));
     const cases = [
-      [2, 3, true, '↓2↑3∼5'], [0, 3, true, '↓0↑3∼5'], [2, 0, true, '↓2↑0∼5'], [0, 0, true, '↓0↑0∼5'],
-      [2, 3, false, '↓2↑3∼0'], [0, 3, false, '↓0↑3∼0'], [2, 0, false, '↓2↑0∼0'], [0, 0, false, ''],
+      [2, 3, true], [0, 3, true], [2, 0, true], [0, 0, true],
+      [2, 3, false], [0, 3, false], [2, 0, false], [0, 0, false],
     ];
     const staged = repository.staged, unstaged = repository.unstaged;
-    for (const [behind, ahead, dirty, expected] of cases) {
+    for (const [behind, ahead, dirty] of cases) {
       repository.behindCount = behind; repository.aheadCount = ahead;
       repository.staged = dirty ? staged : []; repository.unstaged = dirty ? unstaged : [];
       await publish();
-      assert.equal(await count.textContent(), expected);
-      assert.equal(await count.isHidden(), !expected);
+      for (const [index, value] of [behind, ahead, dirty ? 5 : 0].entries()) {
+        assert.equal(await buttons[index].locator('.repo-sync-count').textContent(), String(value));
+        assert.equal(await buttons[index].locator('.repo-sync-count').isVisible(), true);
+        assert.equal(await buttons[index].locator('.codicon-' + ['repo-pull', 'repo-push', 'diff-single'][index]).count(), 1);
+      }
       assert.equal(await page.locator('.repo-changes-badge').count(), 0);
       // 具名分支:有修改 -> git-branch-changes + 星号;无修改 -> git-branch,无星号。
       assert.equal(await page.locator('.repo-changes-branch .codicon').getAttribute('class'), dirty ? 'codicon codicon-git-branch-changes' : 'codicon codicon-git-branch');
       assert.equal(await page.locator('.repo-changes-head-dirty').isVisible(), dirty, 'asterisk follows uncommitted changes');
       assert.equal(await page.locator('.repo-changes-head').textContent(), 'main', 'asterisk is a separate node, the branch name text is unchanged');
-      if (expected) {
-        assert.match(await sync.getAttribute('title'), new RegExp('拉取 ' + behind + '.*推送 ' + ahead + '.*' + (dirty ? 5 : 0) + ' 个未提交变更文件'));
-        assert.match(await sync.getAttribute('aria-label'), /sync-fixture：拉取/);
-        await count.click();
-      } else {
-        assert.equal(await sync.getAttribute('title'), '同步此仓库');
-        await sync.click();
+      for (const [index, action] of ['repoPull', 'repoPush', 'worktree'].entries()) {
+        assert.match(await buttons[index].getAttribute('aria-label'), /sync-fixture：/);
+        await buttons[index].locator('.repo-sync-count').click();
+        assert.deepEqual(await page.evaluate(() => window.messages.at(-1)), {
+          type: 'repositoryChangesAction', action, repositoryPath: repository.repositoryPath,
+        });
       }
-      assert.deepEqual(await page.evaluate(() => window.messages.at(-1)), {
-        type: 'repositoryChangesAction', action: 'syncRefresh', repositoryPath: repository.repositoryPath,
-      });
     }
     // 游离 HEAD:图标固定为 git-commit;星号只取决于是否有修改。
     for (const dirty of [true, false]) {
@@ -119,14 +117,16 @@ async function main() {
     await publish();
     for (const width of [320, 400, 800]) {
       await page.setViewportSize({ width, height: 800 });
-      const geometry = await sync.evaluate(node => {
-        const header = node.closest('.repo-changes-header').getBoundingClientRect(), button = node.getBoundingClientRect();
-        const label = node.querySelector('.repo-sync-count').getBoundingClientRect();
-        return { fits: button.left >= header.left && button.right <= header.right && label.right <= button.right,
-          noWrap: getComputedStyle(node.querySelector('.repo-sync-count')).whiteSpace === 'nowrap' };
-      });
-      assert.equal(geometry.fits, true, 'sync count fits header at ' + width);
-      assert.equal(geometry.noWrap, true);
+      for (const button of buttons) {
+        const geometry = await button.evaluate(node => {
+          const header = node.closest('.repo-changes-header').getBoundingClientRect(), button = node.getBoundingClientRect();
+          const label = node.querySelector('.repo-sync-count').getBoundingClientRect();
+          return { fits: button.left >= header.left && button.right <= header.right && label.right <= button.right,
+            noWrap: getComputedStyle(node.querySelector('.repo-sync-count')).whiteSpace === 'nowrap' };
+        });
+        assert.equal(geometry.fits, true, 'count fits header at ' + width);
+        assert.equal(geometry.noWrap, true);
+      }
     }
     assert.deepEqual(errors, []);
     if (process.env.GITK_SYNC_SCREENSHOT) {
@@ -134,7 +134,7 @@ async function main() {
       await page.evaluate(() => document.fonts.ready);
       await page.locator('.repo-changes-header').screenshot({ path: process.env.GITK_SYNC_SCREENSHOT });
     }
-    console.log('Repository sync counts passed: arrow prefixes, compact tilde, deduplication, zero states, sync clicks and 320/400/800px layout.');
+    console.log('Repository sync counts passed: separate pull/push/changed icons, deduplication, visible zero counts, repository-scoped clicks and 320/400/800px layout.');
   } finally { await browser.close(); }
 }
 

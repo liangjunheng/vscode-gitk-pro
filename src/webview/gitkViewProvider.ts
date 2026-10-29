@@ -2502,8 +2502,12 @@ export class GitkViewProvider implements vscode.WebviewViewProvider {
             const branch = this.uncommittedFilesWatcher.listCurrentHeadBranches()
                 .find(candidate => candidate.repoOption.path === input.repositoryPath);
             if (!branch) { return; }
-            if (input.action === 'syncRefresh') {
-                await this.runCommitPanelPush([input.repositoryPath], true, false);
+            if (input.action === 'repoPull') {
+                await this.runSelectedRepositorySync('pull', input.repositoryPath);
+                return;
+            }
+            if (input.action === 'repoPush') {
+                await this.runCommitPanelPush([input.repositoryPath], false, false);
                 return;
             }
             if (input.action === 'stash') {

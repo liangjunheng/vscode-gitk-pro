@@ -62,17 +62,19 @@ async function main() {
     assert.equal(await page.locator('.repo-changes').nth(1).locator('.repo-changes-ancestry').textContent(), 'inkengine', 'direct child shows its parent repository');
     assert.equal(await page.locator('.repo-changes').nth(2).locator('.repo-changes-ancestry').textContent(), 'inkengine/.../ink-algorithm-parent', 'nested child compresses the recursive parent path');
     assert.equal(await page.locator('.repo-changes').first().locator('.repo-changes-ancestry').isHidden(), true, 'root repository has no parent path');
-    const rootSync = page.locator('.repo-changes').first().locator('[data-repo-action="syncRefresh"]');
-    assert.equal(await rootSync.locator('.repo-sync-count').textContent(), '↓0↑4∼2', 'sync prefixes commit counts with arrows and appends deduplicated changes without spaces');
-    assert.match(await rootSync.getAttribute('title'), /拉取 0.*推送 4.*2 个未提交变更文件/);
+    const rootSync = page.locator('.repo-changes').first().locator('[data-repo-action="repoPush"]');
+    const rootChanged = page.locator('.repo-changes').first().locator('[data-repo-action="worktree"]');
+    assert.equal(await rootSync.locator('.repo-sync-count').textContent(), '4');
+    assert.equal(await rootChanged.locator('.repo-sync-count').textContent(), '2', 'changed deduplicates staged and unstaged paths');
+    assert.match(await rootSync.getAttribute('title'), /推送 4/);
     repositories[0].aheadCount = 0; await publish();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    assert.equal(await rootSync.locator('.repo-sync-count').textContent(), '↓0↑0∼2', 'local changes keep the complete sync status group visible');
-    assert.match(await rootSync.getAttribute('title'), /2 个未提交变更文件/);
-    const cleanSync = page.locator('.repo-changes').nth(1).locator('[data-repo-action="syncRefresh"]');
-    assert.equal(await cleanSync.locator('.repo-sync-count').isHidden(), true, 'fully clean repositories show only the sync icon');
-    assert.equal(await cleanSync.locator('.repo-sync-count').textContent(), '');
-    assert.equal(await cleanSync.getAttribute('title'), '同步此仓库');
+    assert.equal(await rootSync.locator('.repo-sync-count').textContent(), '0');
+    assert.match(await rootChanged.getAttribute('title'), /2 个未提交变更文件/);
+    const cleanSync = page.locator('.repo-changes').nth(1).locator('[data-repo-action="repoPush"]');
+    assert.equal(await cleanSync.locator('.repo-sync-count').isVisible(), true, 'clean repositories retain zero counts');
+    assert.equal(await cleanSync.locator('.repo-sync-count').textContent(), '0');
+    assert.equal(await cleanSync.getAttribute('title'), 'Push：推送 0 个提交');
     repositories[0].aheadCount = 4; await publish();
     repositories[1].message = 'unstaged-only draft'; await publish();
     assert.equal(await page.locator('.repo-changes').nth(1).locator('.repo-commit-main').isDisabled(), true, 'a repository with only unstaged changes cannot be committed');
@@ -260,7 +262,7 @@ async function main() {
     assert.equal(await page.locator('.repo-changes').first().locator('.repo-commit-details').inputValue(), '历史提交\n\n提交说明', 'root historical card does not fall back to Uncommitted Changes');
     assert.equal(await page.locator('.repo-changes').first().locator('.repo-commit-main').isVisible(), false);
     for (const header of await page.locator('.repo-changes-header').all()) {
-      assert.deepEqual(await header.locator('[data-repo-action]').evaluateAll(buttons => buttons.map(button => button.dataset.repoAction)), ['toggle', 'branch', 'syncRefresh', 'terminal'], 'header removes the worktree badge and keeps terminal after sync');
+      assert.deepEqual(await header.locator('[data-repo-action]').evaluateAll(buttons => buttons.map(button => button.dataset.repoAction)), ['toggle', 'branch', 'repoPull', 'repoPush', 'worktree', 'terminal'], 'header shows pull, push and changed before terminal');
     }
     await page.locator('.repo-changes-label').first().click();
     await assertCount(page.locator('.repo-changes-body:visible'), 6);
@@ -337,9 +339,9 @@ async function main() {
     repositories[0].unstaged = [{ path: 'same.cpp', status: 'M' }, { path: 'other.cpp', status: 'M' }];
     state.repositoryChanges = repositories; await publish();
     await assertCount(page.locator('.repo-changes-badge'), 0);
-    assert.equal(await rootSync.locator('.repo-sync-count').textContent(), '↓0↑4∼2', 'sync count deduplicates staged and unstaged paths');
+    assert.equal(await rootSync.locator('.repo-sync-count').textContent(), '4', 'push count shows outgoing commits');
     await rootSync.locator('.repo-sync-count').click();
-    assert.deepEqual(await lastMessage(page), { type: 'repositoryChangesAction', action: 'syncRefresh', repositoryPath: repositories[0].repositoryPath });
+    assert.deepEqual(await lastMessage(page), { type: 'repositoryChangesAction', action: 'repoPush', repositoryPath: repositories[0].repositoryPath });
     assert.equal(await mainCard.locator('.repo-changes-body').isVisible(), true, 'sync control does not toggle its card');
     const beforeCollapse = await page.evaluate(() => window.messages.length);
     await page.locator('.repo-changes-toggle').nth(1).click();
@@ -2374,8 +2376,11 @@ async function verifyProvider() {
   provider.runCommitPanelPush = async (...args) => syncSteps.push(['sync', ...args]);
   provider.uncommittedFilesWatcher.refreshHeadBranch = async value => syncSteps.push(['head', value]);
   provider.uncommittedFilesWatcher.refreshUncommittedFilesByHeadBranch = async branch => syncSteps.push(['status', branch.repoOption.path]);
-  await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', action: 'syncRefresh', repositoryPath: repositories[1].path });
-  assert.deepEqual(syncSteps, [['sync', [repositories[1].path], true, false]], 'card sync opens the Push branch picker without preselecting the current upstream');
+  await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', action: 'repoPush', repositoryPath: repositories[1].path });
+  assert.deepEqual(syncSteps, [['sync', [repositories[1].path], false, false]], 'card push opens the Push branch picker without pulling or preselecting the current upstream');
+  provider.runSelectedRepositorySync = async (...args) => syncSteps.push(['pull', ...args]);
+  await provider.handleRepositoryChangesIntent({ type: 'repositoryChangesAction', action: 'repoPull', repositoryPath: repositories[1].path });
+  assert.deepEqual(syncSteps.at(-1), ['pull', 'pull', repositories[1].path], 'card pull targets its own repository');
   await verifyFocusedRefresh(GitkViewProvider, repositories);
   assert.deepEqual(remoteFetchStarts, [], 'manual refresh stays local and never starts a remote fetch');
   await verifyVisibilityFetch(GitkViewProvider, store, repositories, remoteFetchStarts, remoteFetchResolvers);
